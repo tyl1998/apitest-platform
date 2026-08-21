@@ -1,0 +1,2297 @@
+/* ════════════════════════════════════════════════════════════════
+   Quiet Console — design system
+   Single source of truth for all visual styling in this app.
+
+   Principles (see .kilo/skill/quiet-console/SKILL.md):
+     1. Neutral surfaces, one restrained accent.
+     2. Semantic colors are reserved words: pass/fail/skip/busy.
+        Never reuse them decoratively, never theme them away.
+     3. Character comes from type, not from glow or gradients.
+     4. Motion marks state changes only. No ambient animation.
+     5. The shell owns the viewport; only .content scrolls.
+
+   Do not add: gradients on surfaces, box-shadow glows, scanlines,
+   grid drifts, backdrop-filter, or a second accent hue.
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── Tokens ────────────────────────────────────────────────────────
+   The colour palette is owned by src/theme.ts, which writes these same
+   custom properties onto <html> at runtime. The blocks below are the
+   fallback before hydration and the reference for what exists. Change a
+   colour in theme.ts, not here, or the two will drift.                */
+
+:root {
+  --ui: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC",
+        "Microsoft YaHei", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+
+  /* Space — 4px base */
+  --s1: 4px;  --s2: 8px;  --s3: 12px; --s4: 16px;
+  --s5: 20px; --s6: 24px; --s7: 32px; --s8: 48px;
+
+  --r-sm: 3px; --r: 5px; --r-lg: 6px;
+
+  --shell-w: 210px;
+  --measure: 1680px;
+
+  --t: .12s;
+}
+
+/* Semantic status — identical intent in both modes, never decorative */
+:root {
+  --pass: #1a7f4b;
+  --fail: #c2321f;
+  --skip: #8a6d1f;
+  --busy: #1f5fa8;
+}
+
+[data-theme="light"] {
+  --bg: #f7f7f6;
+  --surface: #ffffff;
+  --raised: #fbfbfa;
+  --line: #e3e3e0;
+  --line-strong: #cfcfca;
+  --ink: #1c1c1a;
+  --ink-2: #5c5c57;
+  --ink-3: #72726b;
+  --accent: #3a5f8a;
+  --accent-ink: #ffffff;
+  --accent-soft: #eef2f7;
+  --selected: #f0f3f7;
+
+  --pass-bg: #eaf4ee;
+  --fail-bg: #fbecea;
+  --skip-bg: #f8f2e2;
+  --busy-bg: #eaf0f8;
+
+  --overlay: rgba(28, 28, 26, .34);
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --bg: #16181d;
+  --surface: #1c1f25;
+  --raised: #21252c;
+  --line: #2c313a;
+  --line-strong: #3a404b;
+  --ink: #e4e6e9;
+  --ink-2: #b0b6c0;
+  --ink-3: #8b929d;
+  --accent: #7aa2d4;
+  --accent-ink: #10131a;
+  --accent-soft: #232a34;
+  --selected: #232833;
+
+  /* Lifted for legibility on dark surfaces; same semantics */
+  --pass: #4fb07a;
+  --fail: #e2705d;
+  --skip: #cfa94a;
+  --busy: #6f9ed6;
+
+  --pass-bg: #1b2822;
+  --fail-bg: #2c1f1d;
+  --skip-bg: #2a2519;
+  --busy-bg: #1e2733;
+
+  --overlay: rgba(0, 0, 0, .58);
+  color-scheme: dark;
+}
+
+/* ── Base ──────────────────────────────────────────────────────── */
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--ui);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Primitives ────────────────────────────────────────────────── */
+
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "zero" 1;
+}
+
+.muted { color: var(--ink-3); }
+
+.unit {
+  margin-left: 2px;
+  font-size: .82em;
+  color: var(--ink-3);
+}
+
+.label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Visually hidden but available to screen readers */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ── Shell ─────────────────────────────────────────────────────── */
+
+.console {
+  display: grid;
+  grid-template-columns: var(--shell-w) minmax(0, 1fr);
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s5);
+  min-width: 0;
+  padding: 18px var(--s3);
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.lockup {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 0 var(--s2);
+}
+
+.lockup-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  background: var(--ink);
+  color: var(--surface);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: -.02em;
+}
+
+.lockup-name { font-weight: 600; letter-spacing: -.01em; }
+
+.sidebar nav {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.nav-section {
+  margin: 14px 0 var(--s1);
+  padding: 0 var(--s2);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.nav-section:first-child { margin-top: 0; }
+
+.nav-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--s2);
+  color: var(--ink-3);
+}
+
+.nav-back:hover { color: var(--ink); }
+
+.nav-item {
+  padding: 6px var(--s2);
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--t), color var(--t);
+}
+
+.nav-item:hover { background: var(--raised); color: var(--ink); }
+
+/* The current page must be unmistakable, since it is now the only indicator
+   of where you are: the in-page back link is gone. */
+.nav-item.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.sidebar-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  min-width: 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.sidebar-who { display: flex; flex-direction: column; min-width: 0; }
+.sidebar-who strong { font-size: 12px; font-weight: 500; }
+.sidebar-who span { font-size: 11px; color: var(--ink-3); }
+
+.chip {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.frame {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.topbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  height: 52px;
+  padding: 0 var(--s6);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.crumb {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.crumb strong { color: var(--ink); font-weight: 600; }
+.crumb-sep { color: var(--ink-3); }
+
+/* Ancestor crumbs are navigation, so they look and behave like links */
+.crumb-link {
+  padding: 2px 4px;
+  margin: 0 -4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: color var(--t), background var(--t);
+}
+
+.crumb-link:hover { color: var(--accent); background: var(--raised); text-decoration: underline; text-underline-offset: 2px; }
+
+.topbar-actions { display: flex; flex: 0 0 auto; gap: var(--s2); align-items: center; }
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin-bottom: var(--s5);
+}
+
+.filter-bar .input { width: min(100%, 320px); }
+
+.bulk-bar {
+  min-height: 42px;
+  margin: calc(var(--s3) * -1) 0 var(--s3);
+  padding: var(--s2) var(--s3);
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  border: 1px solid var(--line);
+  background: var(--raised);
+}
+
+.bulk-bar strong { margin-right: auto; font-size: 13px; }
+.batch-items { border-top: 1px solid var(--line); }
+.batch-row { border-bottom: 1px solid var(--line); }
+.batch-row:last-child { border-bottom: 0; }
+/* Caret · name · status · timing: the caret column keeps names on one edge. */
+.batch-item { width: 100%; min-height: 44px; padding: var(--s2) var(--s3); display: grid; grid-template-columns: 16px minmax(0, 1fr) auto 150px; align-items: center; gap: var(--s3); border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 13px; text-align: left; }
+.batch-caret { display: inline-flex; color: var(--ink-3); }
+.batch-item-button { cursor: pointer; transition: background var(--t); }
+.batch-item-button:hover { background: var(--raised); }
+.batch-item-button[aria-expanded="true"] { background: var(--raised); }
+.batch-detail { padding: 0 var(--s3) var(--s3); }
+.bulk-delete { color: var(--fail); border-color: var(--fail); }
+.bulk-delete:hover:not(:disabled) { color: var(--fail); background: var(--raised); }
+.batch-source { margin-left: var(--s2); }
+.col-select { width: 42px; text-align: center; }
+.col-select input { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; }
+
+/* The only scroll container in the app. */
+.content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 26px var(--s6) var(--s8);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+/* Cap the reading measure without letting the shell go letterboxed */
+.content > * { max-width: var(--measure); }
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s4);
+  margin-bottom: var(--s5);
+}
+
+.page-head h1 {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+}
+
+.page-head p { margin: var(--s1) 0 0; font-size: 13px; color: var(--ink-3); }
+
+/* ── Controls ──────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--t), border-color var(--t);
+}
+
+.btn:hover:not(:disabled) { background: var(--raised); border-color: var(--ink-3); }
+
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 500;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  filter: brightness(1.08);
+}
+
+.btn-icon { padding: 0 var(--s2); }
+
+:where(.btn, .nav-item, .grid tbody tr, .linkish):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.linkish {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.linkish:hover { text-decoration: underline; }
+
+/* ── Readouts ──────────────────────────────────────────────────── */
+
+.readouts {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: var(--s5);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+
+.readout {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 104px;
+  padding: 13px var(--s4);
+}
+
+.readout + .readout { border-left: 1px solid var(--line); }
+
+.readout strong {
+  font-size: 21px;
+  font-weight: 500;
+  line-height: 1.15;
+  letter-spacing: -.02em;
+}
+
+.readout strong[data-tone="pass"] { color: var(--pass); }
+.readout strong[data-tone="fail"] { color: var(--fail); }
+
+/* ── Grid (data table) ─────────────────────────────────────────── */
+
+.grid {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.grid th {
+  padding: 9px 14px;
+  background: var(--raised);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.grid td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  vertical-align: middle;
+}
+
+.grid tbody tr:last-child td { border-bottom: 0; }
+.grid tbody tr:hover { background: var(--raised); }
+
+.grid tbody tr[data-clickable] { cursor: pointer; transition: background var(--t); }
+
+.grid tbody tr.is-selected {
+  background: var(--selected);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* Header alignment always follows its column's content */
+.col-num, .grid th.col-num { text-align: right; }
+.col-num { width: 78px; }
+.col-status { width: 96px; }
+.col-history { width: 132px; }
+.col-actions { width: 56px; text-align: right; }
+.col-path { color: var(--ink-2); }
+
+.cell-name { display: flex; align-items: center; gap: 9px; min-width: 0; }
+
+/* ── Method ────────────────────────────────────────────────────── */
+
+/* Keep every verb's start aligned within the first column */
+.method {
+  flex: 0 0 auto;
+  width: 52px;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: .03em;
+  color: var(--ink-3);
+}
+
+.method[data-method="GET"]    { color: var(--busy); }
+.method[data-method="POST"]   { color: var(--pass); }
+.method[data-method="PUT"]    { color: var(--skip); }
+.method[data-method="PATCH"]  { color: var(--skip); }
+.method[data-method="DELETE"] { color: var(--fail); }
+
+/* ── Status ────────────────────────────────────────────────────── */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.status-mark {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status[data-status="pass"]    { color: var(--pass); }
+.status[data-status="fail"]    { color: var(--fail); }
+.status[data-status="skip"]    { color: var(--skip); }
+.status[data-status="running"] { color: var(--busy); }
+/* Queued shares 执行中's hue: it is the same job, not a fifth kind of outcome.
+   The still dot is what separates "waiting for a worker" from "in flight". */
+.status[data-status="queued"]  { color: var(--busy); }
+/* A canceled run produced no verdict, which is what skip's hollow mark means. */
+.status[data-status="canceled"] { color: var(--skip); }
+.status[data-status="canceled"] .status-mark {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+/* The one animation in the app: an in-flight request */
+.status[data-status="running"] .status-mark {
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .35; }
+}
+
+/* ── Run history strip — signature element ─────────────────────── */
+
+.runstrip {
+  display: flex;
+  gap: 2px;
+  align-items: stretch;
+  height: 16px;
+}
+
+.runstrip-bar {
+  width: 6px;
+  border-radius: 1px;
+  background: var(--line-strong);
+}
+
+.runstrip-bar[data-status="pass"] { background: var(--pass); }
+.runstrip-bar[data-status="fail"] { background: var(--fail); }
+
+/* Skipped reads as absence: same height, hollow fill */
+.runstrip-bar[data-status="skip"] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--skip);
+  opacity: .5;
+}
+
+/* ── Panel ─────────────────────────────────────────────────────── */
+
+.panel {
+  margin-top: var(--s5);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: 13px var(--s4);
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-head strong { font-weight: 600; }
+.panel-body { padding: 18px var(--s4); }
+
+/* A run with no response yet: waiting, queued, or offering a cancel (P1-3). */
+.response-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s3);
+}
+
+/* Stats row at the top of a settled response (status, code, timing, size). */
+.response-stats {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex-wrap: wrap;
+}
+
+/**
+ * The previous response, held on screen while a new run is outstanding.
+ *
+ * Dimmed rather than cleared: clearing it made every fast run flash
+ * response → blank → response. The dimming is what keeps it honest, so a kept
+ * body is not mistaken for the result being waited on.
+ */
+.response-panel .panel-body[data-stale] {
+  opacity: .5;
+  transition: opacity var(--t);
+}
+
+/* Batch progress banner at the top of the drawer while runs are still queued. */
+.batch-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  background: var(--raised);
+  border-radius: 6px;
+  margin-bottom: var(--s4);
+}
+
+/* ── Global project directory ─────────────────────────────────── */
+
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--s4);
+}
+
+.project-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 210px;
+  padding: var(--s5);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+
+.project-card-head { flex: 1; min-width: 0; }
+.project-card-head > div { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
+.project-card h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.project-card p { margin: var(--s2) 0 var(--s4); color: var(--ink-3); font-size: 13px; }
+
+.project-facts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 0 0 var(--s4);
+  padding: var(--s3) 0;
+  border-block: 1px solid var(--line);
+}
+
+.project-facts > div { min-width: 0; text-align: center; }
+.project-facts > div + div { border-left: 1px solid var(--line); }
+.project-facts dt { font-size: 11px; color: var(--ink-3); }
+.project-facts dd { margin: 3px 0 0; color: var(--ink); }
+.project-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.btn.danger { color: var(--fail); border-color: var(--fail); }
+
+.settings-list {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s6);
+  padding: var(--s5);
+}
+
+.setting-row + .setting-row { border-top: 1px solid var(--line); }
+.setting-row strong { font-weight: 600; }
+.setting-row p { margin: 3px 0 0; color: var(--ink-3); font-size: 13px; }
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 28px;
+  min-width: 0;
+}
+
+/* ── Waterfall ─────────────────────────────────────────────────── */
+
+.waterfall { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+
+.waterfall-head { display: flex; align-items: baseline; justify-content: space-between; }
+.waterfall-total { font-size: 13px; color: var(--ink-2); }
+
+.waterfall-track {
+  display: flex;
+  gap: 2px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+
+.waterfall-seg { min-width: 2px; transition: width .3s ease; }
+
+/* Monochrome ramp: one hue, five steps — depth without a second color */
+.waterfall-seg[data-phase="dns"],  .waterfall-key[data-phase="dns"]  { background: #8aa6c4; }
+.waterfall-seg[data-phase="tcp"],  .waterfall-key[data-phase="tcp"]  { background: #6c8db4; }
+.waterfall-seg[data-phase="tls"],  .waterfall-key[data-phase="tls"]  { background: #4f74a3; }
+.waterfall-seg[data-phase="ttfb"], .waterfall-key[data-phase="ttfb"] { background: #34557f; }
+.waterfall-seg[data-phase="body"], .waterfall-key[data-phase="body"] { background: #22405f; }
+
+.waterfall-legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: var(--s2) 14px;
+  margin: 0;
+}
+
+.waterfall-legend > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+
+.waterfall-legend dt {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.waterfall-key { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 1px; }
+
+.waterfall-legend dd { margin: 0; font-size: 13px; }
+
+/* ── Assertions ────────────────────────────────────────────────── */
+
+.assertions { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+
+.assertions ul { margin: 0; padding: 0; list-style: none; }
+
+.assertions li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 7px var(--s3);
+  border-left: 2px solid transparent;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  font-size: 12px;
+}
+
+.assertions li + li { margin-top: 3px; }
+
+.assertions li[data-status="pass"] { border-left-color: var(--pass); background: var(--pass-bg); }
+.assertions li[data-status="fail"] { border-left-color: var(--fail); background: var(--fail-bg); }
+.assertions li[data-status="fail"] .mono:last-child { color: var(--fail); font-weight: 500; }
+
+/* ── Code ──────────────────────────────────────────────────────── */
+
+.code {
+  margin: 0;
+  padding: var(--s3) 14px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  color: var(--ink-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+}
+
+.code-block { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+
+/* Puts the copy action on the label's line so it never displaces the data. */
+.code-block-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); min-width: 0; }
+.code-block-head .label { min-width: 0; }
+.code[data-tone="fail"] { color: var(--fail); }
+pre.code { max-height: 340px; }
+
+/* ── Empty state ───────────────────────────────────────────────── */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s8) var(--s6);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+
+.empty h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.empty p { margin: 0; max-width: 46ch; font-size: 13px; color: var(--ink-3); }
+
+/* ── Login ─────────────────────────────────────────────────────── */
+
+.login {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: var(--s6);
+  background: var(--bg);
+}
+
+.login-card {
+  width: min(100%, 380px);
+  padding: var(--s7);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+
+.login-card .lockup { padding: 0; margin-bottom: var(--s6); }
+
+.login-card h1 {
+  margin: 0 0 var(--s1);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+}
+
+.login-card > p { margin: 0 0 var(--s5); font-size: 13px; color: var(--ink-3); }
+
+.field { display: flex; flex-direction: column; gap: 5px; margin-bottom: var(--s3); }
+.field > span { font-size: 12px; font-weight: 500; color: var(--ink-2); }
+
+.input {
+  height: 34px;
+  padding: 0 var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  transition: border-color var(--t);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; line-height: 1.6; }
+.input.mono { font-size: 12px; }
+
+.login-card .btn { width: 100%; justify-content: center; height: 34px; margin-top: var(--s2); }
+
+/* Centred only under the login form; inline hints read left-aligned */
+.form-note { margin: var(--s3) 0 0; font-size: 12px; color: var(--ink-3); }
+.login-card .form-note { text-align: center; }
+.form-error { margin: var(--s3) 0 0; font-size: 12px; color: var(--fail); }
+
+/* ── Responsive ────────────────────────────────────────────────── */
+
+@media (max-width: 940px) {
+  /* Bar is auto-height and stays put; .content keeps the scroll */
+  .console {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .sidebar {
+    flex-flow: row wrap;
+    align-items: center;
+    gap: 10px 14px;
+    padding: 10px var(--s3);
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    overflow: visible;
+  }
+
+  /* Nav wraps onto more lines rather than scrolling sideways */
+  .sidebar nav { flex: 1 1 auto; flex-flow: row wrap; gap: 2px; }
+
+  .lockup, .sidebar-foot { flex: 0 0 auto; }
+  .nav-section { display: none; }
+  .nav-item { white-space: nowrap; }
+
+  .nav-item.is-active {
+    box-shadow: inset 0 -2px 0 var(--accent);
+    border-radius: 4px 4px 0 0;
+  }
+
+  .sidebar-foot { padding-top: 0; border-top: 0; }
+  .sidebar-who { display: none; }
+  .split { grid-template-columns: 1fr; gap: var(--s5); }
+  .col-path, .col-history { display: none; }
+  /* 画布 + 运行记录侧栏回到纵向堆叠，侧栏落在画布下方。 */
+  .flow-body { flex-direction: column; }
+  .flow-body .workbench-side { flex: 0 0 auto; width: 100%; }
+}
+
+@media (max-width: 700px) {
+  .lockup-name, .chip { display: none; }
+}
+
+@media (max-width: 560px) {
+  .batch-item { grid-template-columns: 16px minmax(0, 1fr) auto; }
+  .batch-item > :last-child { grid-column: 2 / -1; }
+  .content { padding: var(--s5) 14px 36px; }
+  .topbar { padding: 0 14px; }
+
+  .readouts { display: grid; grid-template-columns: repeat(2, 1fr); }
+  .readout { min-width: 0; padding: 11px 13px; }
+  .readout + .readout { border-left: 0; }
+  .readout:nth-child(odd) { border-right: 1px solid var(--line); }
+  .readout:not(:nth-child(-n+2)) { border-top: 1px solid var(--line); }
+  .readout strong { font-size: 19px; }
+
+  .page-head { flex-direction: column; align-items: flex-start; gap: var(--s3); }
+  .page-head h1 { font-size: 19px; }
+  .project-grid { grid-template-columns: 1fr; }
+  .setting-row { align-items: flex-start; flex-direction: column; gap: var(--s3); }
+
+  .grid th, .grid td { padding-inline: 11px; }
+  .col-num { width: 62px; }
+  .col-status { width: 76px; }
+
+  .panel-head { flex-wrap: wrap; gap: var(--s2); }
+  .panel-body { padding: var(--s4) 13px; }
+  .waterfall-legend { grid-template-columns: repeat(auto-fit, minmax(58px, 1fr)); }
+
+  /* Expression and actual value stack instead of colliding */
+  .assertions li { flex-direction: column; align-items: flex-start; gap: 3px; }
+
+  .login-card { padding: var(--s5); border: 0; background: none; }
+}
+
+/* ── Endpoint editor ───────────────────────────────────────────── */
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--s3) var(--s4);
+}
+
+.form-grid .field { margin-bottom: 0; }
+.field-wide { grid-column: 1 / -1; }
+
+/* Method and URL read as one control, the way a request line does */
+.request-line { display: flex; gap: var(--s2); align-items: center; }
+.request-url { flex: 1; min-width: 0; }
+
+.tabs {
+  display: flex;
+  gap: var(--s1);
+  padding: 0 var(--s4);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.tab {
+  padding: 11px var(--s3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--t);
+}
+
+.tab:hover { color: var(--ink); }
+.tab.is-active { color: var(--ink); border-bottom-color: var(--accent); font-weight: 500; }
+
+/* Count sits with the label so a populated tab is legible at a glance */
+.tab-count {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: var(--raised);
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+.subhead {
+  margin: var(--s4) 0 var(--s2);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--ink-2);
+}
+
+.subhead:first-child { margin-top: 0; }
+
+/* `align-items: stretch` (the default) is required: with `flex-start` the
+   heading row shrank to its content, so the mode switch sat next to the title
+   instead of at the trailing edge. */
+.kv { display: flex; flex-direction: column; gap: var(--s2); }
+
+.kv-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  gap: var(--s2);
+  align-items: center;
+  width: 100%;
+}
+
+/* The trailing row is a typing target, not data: its inputs recede until they
+   hold something, which is what lets it replace three "add row" buttons
+   without reading as an empty record. */
+.kv-row.is-blank .input { border-style: dashed; border-color: var(--line); background: none; }
+/* Restores the shared focus treatment, which the dashed rule above would
+   otherwise outrank on specificity. */
+.kv-row.is-blank .input:focus { border-style: solid; border-color: var(--accent); }
+.kv-row.is-blank .kv-toggle { visibility: hidden; }
+
+/* Revealed on hover or keyboard focus. Always-visible ✕ marks put a vertical
+   run of icons beside the values; `:focus-within` keeps the row reachable
+   without a mouse, and the invisible state still occupies its column so no row
+   shifts width when the pointer arrives. Shared with assertion rows, which had
+   the same column of boxes. */
+.row-remove { opacity: 0; transition: opacity var(--t), color var(--t), background var(--t); }
+.kv-row:hover .row-remove,
+.kv-row:focus-within .row-remove,
+.assertion-row:hover .row-remove,
+.assertion-row:focus-within .row-remove,
+.assertion-block:hover .row-remove,
+.assertion-block:focus-within .row-remove { opacity: 1; }
+.row-remove:focus-visible { opacity: 1; }
+.kv-row.is-blank .row-remove { visibility: hidden; }
+
+/* Coarse pointers get no hover, so the mark stays visible there. */
+@media (hover: none) {
+  .row-remove { opacity: 1; }
+}
+
+.kv-toggle { width: 14px; height: 14px; accent-color: var(--accent); }
+
+.body-editor {
+  width: 100%;
+  min-height: 220px;
+  margin-top: var(--s3);
+  line-height: 1.6;
+}
+
+.auth-editor { display: flex; flex-direction: column; gap: var(--s3); align-items: flex-start; }
+.auth-editor .form-grid { width: 100%; }
+
+.inline-field { display: flex; align-items: center; gap: var(--s2); font-size: 12px; color: var(--ink-2); }
+.filter-spacer { flex: 1; }
+
+.tag-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+
+/* ── Definition summary ────────────────────────────────────────── */
+
+.definition-grid { display: flex; flex-direction: column; gap: var(--s3); margin: 0; }
+
+.definition-row {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: var(--s3);
+  align-items: baseline;
+}
+
+.definition-row dt { font-size: 12px; color: var(--ink-3); }
+.definition-row dd { margin: 0; min-width: 0; word-break: break-word; }
+.definition-row-wide { align-items: start; }
+
+.snapshot { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
+
+/* Drawer actions sit on one row; they never wrap into a stack */
+.snapshot-actions { display: flex; gap: var(--s2); flex-wrap: wrap; }
+
+.pager { display: flex; justify-content: flex-end; margin-top: var(--s4); }
+
+/* ── Icon actions ──────────────────────────────────────────────── */
+
+/**
+ * Actions are icon-first so a row keeps them on one line. Every icon-btn
+ * carries a tooltip and aria-label, so the meaning is never icon-only.
+ */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: color var(--t), border-color var(--t), background var(--t);
+}
+
+.icon-btn:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-3); background: var(--raised); }
+/* Disabled must be unmistakable, since icons carry no wording to soften it */
+.icon-btn:disabled { opacity: .35; cursor: not-allowed; }
+.icon-btn.is-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.icon-btn.is-primary:hover:not(:disabled) { filter: brightness(1.08); color: var(--accent-ink); }
+.icon-btn.is-danger:hover:not(:disabled) { color: var(--fail); border-color: var(--fail); }
+.icon-btn.is-active { border-color: var(--accent); color: var(--accent); }
+
+/**
+ * Borderless variant, for icons that repeat once per row.
+ *
+ * A bordered 30px box per row turned the trailing edge of a list into a column
+ * of buttons that read as data. Without the border the icon is a mark on the
+ * row, and the affordance arrives on hover instead of permanently.
+ *
+ * Hover stays neutral: `--fail` means a failed assertion, and spending it on a
+ * delete button would make the one colour that carries meaning decorative.
+ */
+.icon-btn.is-ghost { border-color: transparent; background: none; color: var(--ink-3); }
+.icon-btn.is-ghost:hover:not(:disabled) { border-color: transparent; background: var(--raised); color: var(--ink); }
+/* Matches the app-wide focus ring: with no border of its own, a border-colour
+   focus state would be the only control here that looked different. */
+.icon-btn.is-ghost:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Actions never wrap: wrapping is what made rows different heights */
+.row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
+
+/* ── Endpoint table ────────────────────────────────────────────── */
+
+.endpoint-grid { table-layout: fixed; }
+.endpoint-grid .col-path { width: 28%; }
+.endpoint-grid .col-num { width: 82px; }
+.endpoint-grid .col-history { width: 108px; }
+.endpoint-grid .col-status { width: 92px; }
+/* Four 30px actions plus 6px gaps and the cell's 14px side padding */
+.endpoint-grid .col-actions { width: 166px; }
+.endpoint-grid .col-cases { width: 76px; }
+
+.endpoint-grid td { height: 46px; }
+.cell-name { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+
+/* Tags sit inline rather than on a second line */
+.tag-inline { display: inline-flex; gap: 4px; flex: 0 0 auto; }
+.runstrip-hit { display: inline-flex; }
+.runstrip-hit[role="button"] { cursor: pointer; }
+
+/* ── Endpoint workspace ────────────────────────────────────────── */
+
+.page-head-main { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+/**
+ * Prev / picker / next read as one control.
+ *
+ * Without this the three children lay out in normal inline flow and settle on
+ * the text baseline, which puts the 30px icon buttons and the antd Select on
+ * different centre lines — the arrows visibly sit low next to the dropdown.
+ */
+.switcher { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+
+.title-row { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+
+/* The name is edited in place, so it reads as a heading until focused */
+.title-input {
+  min-width: 0;
+  flex: 1;
+  padding: 2px 6px;
+  margin-left: -6px;
+  border: 1px solid transparent;
+  border-radius: var(--r);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+.subtitle-input {
+  padding: 2px 6px;
+  margin-left: -6px;
+  border: 1px solid transparent;
+  border-radius: var(--r);
+  background: none;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 13px;
+}
+
+.title-input:hover, .subtitle-input:hover { border-color: var(--line); }
+.title-input:focus, .subtitle-input:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+.chip-warn { color: var(--skip); border-color: var(--skip); }
+
+.workbench { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--s4); align-items: start; }
+.workbench.is-solo { grid-template-columns: minmax(0, 1fr) auto; }
+.workbench-main { min-width: 0; }
+.workbench-side { min-width: 0; position: sticky; top: var(--s4); }
+
+.history-card { display: flex; flex-direction: column; max-height: calc(100vh - 210px); }
+.history-tools { display: flex; align-items: center; gap: 6px; }
+.history-list { overflow-y: auto; padding: var(--s2); display: flex; flex-direction: column; gap: 4px; }
+
+.history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t), border-color var(--t);
+}
+
+.history-item:hover { background: var(--raised); }
+.history-item.is-active { border-color: var(--accent); background: var(--selected); }
+.history-item-top { display: flex; align-items: center; gap: var(--s2); font-size: 12px; min-width: 0; overflow: hidden; }
+.history-item-top > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.history-item-top > span.mono { flex: 0 1 auto; }
+.history-time { font-size: 11px; white-space: nowrap; }
+.history-empty { padding: var(--s4); font-size: 12px; }
+/* One control now, so it centres. `flex-wrap` because the size changer and the
+   stepper together can exceed the sidebar's width at the narrowest breakpoint. */
+.history-pager { padding: var(--s2) var(--s3); border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: var(--s2); }
+
+/* Collapsed: a vertical rail that still names itself and shows the count */
+.history-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s3) 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: color var(--t), border-color var(--t);
+  /* 与 URL 卡片区（.panel margin-top var(--s5)）对齐：接口编辑器里 rail 和
+     展开侧栏的卡片 header 必须在同一水平线上，所以需要同样的 sticky 偏移。
+     流程编辑器用 .flow-body 覆盖回 static。 */
+  position: sticky;
+  top: var(--s5);
+}
+
+.workbench .history-rail { margin-top: var(--s5); }
+
+.history-rail:hover { color: var(--ink); border-color: var(--ink-3); }
+.history-rail-label { writing-mode: vertical-rl; font-size: 12px; letter-spacing: .04em; }
+.history-rail-count { font-size: 11px; color: var(--ink-3); }
+
+.meta-row { display: flex; align-items: flex-end; gap: var(--s4); flex-wrap: wrap; margin-top: var(--s4); }
+.meta-row .field { margin-bottom: 0; min-width: 240px; }
+.meta-row .form-note { flex: 1; min-width: 240px; margin: 0; }
+
+@media (max-width: 1100px) {
+  .workbench, .workbench.is-solo { grid-template-columns: minmax(0, 1fr); }
+  .workbench-side { position: static; }
+  .history-card { max-height: 320px; }
+  .history-rail { flex-direction: row; justify-content: center; }
+  .history-rail-label { writing-mode: horizontal-tb; }
+}
+
+@media (max-width: 700px) {
+  .kv-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .kv-row .input:last-of-type { grid-column: 2 / -1; }
+  .definition-row { grid-template-columns: 1fr; gap: 4px; }
+  .request-line { flex-wrap: wrap; }
+  /* Path, run strip and the case placeholder drop before the actions do:
+     a column showing only "—" is the first thing worth its width. */
+  .endpoint-grid .col-path, .endpoint-grid .col-history, .endpoint-grid .col-cases { display: none; }
+}
+
+/* Actions are never hidden by width. Icon buttons stay legible at any size,
+   so an earlier rule that display:none'd secondary actions below 420px is gone:
+   a control the user cannot reach is worse than a tighter row. */
+
+.btn-with-icon { display: inline-flex; align-items: center; gap: 6px; }
+.btn-with-icon svg { flex: 0 0 auto; }
+/* 模式类按钮（如画布的框选/平移）：按下状态用重音边框表示当前生效的那一个。 */
+.btn.is-active { border-color: var(--accent); color: var(--accent); background: var(--selected); }
+
+/* ── Test cases (交互文档 3.1.3) ───────────────────────────────────
+   用例 share the sidebar with 调试记录 through a segmented control, so
+   the box never widens and the main workbench is never narrowed.      */
+
+.segmented { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: var(--r); background: var(--raised); }
+
+.segmented-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color var(--t), background var(--t), border-color var(--t);
+}
+
+.segmented-item:hover { color: var(--ink); }
+/* The active view is marked by the accent edge, the same signal the nav uses. */
+.segmented-item.is-active { background: var(--surface); border-color: var(--accent); color: var(--ink); }
+
+.case-item {
+  display: flex;
+  /* Actions sit on the name's line, not the wrapped meta row below it. */
+  align-items: flex-start;
+  gap: var(--s2);
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r);
+  transition: background var(--t), border-color var(--t);
+}
+
+.case-item:hover { background: var(--raised); }
+.case-item.is-active { border-color: var(--accent); background: var(--selected); }
+
+.case-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.case-name { font-size: 12px; font-weight: 500; color: var(--ink); }
+.case-meta { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; font-size: 11px; }
+
+/* The last result is a control inside the row button, so it is a span with a
+   button role: a nested <button> is invalid HTML and breaks the row's click. */
+.case-last-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font-size: 11px;
+  border-radius: var(--r-sm);
+}
+
+.case-last-run:hover { background: var(--raised); }
+.case-last-run:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Row actions stay visible, matching the endpoint list: an action hidden
+   behind a menu inside a 300px sidebar could not be found. */
+.case-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+
+/* Filters own a full-width row under the tabs. Sharing the header row with the
+   segmented control crowded both once a status filter appeared beside them. */
+.side-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--line);
+}
+
+.side-filter-keyword { flex: 1; min-width: 0; padding: 3px 8px; font-size: 12px; }
+
+/* Names the case a run came from, inside a run record. */
+.history-case { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-2); }
+
+/* The mode switch rides on the section heading, so the control is attached to
+   the thing it switches. A free-standing icon pair above the rows read as an
+   unowned toolbar, especially with two editors on the params tab. */
+.kv + .kv { margin-top: var(--s5); }
+/* The heading's own margins move to the row, so the switch stays centred
+   against the title instead of sitting above its baseline. The title grows to
+   claim the available width, pushing the switch to the trailing edge. */
+.kv-head { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s2); }
+.kv-head .subhead { flex: 1; margin: 0; }
+.kv-head + .form-note { margin-top: calc(-1 * var(--s1)); }
+/* Icons only, right-aligned: the switch is persistent UI, so it shouldn't
+   compete with the section title for weight.
+
+   One segmented control, not two buttons: the border belongs to the pair,
+   because the two icons are states of one view. Two separate bordered boxes
+   read as two independent actions — the same shape a row's delete button uses
+   — which is what made the right edge of the panel look busy. */
+.mode-switch {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--raised);
+}
+
+/* Segments sit inside the group's border and are shorter than a standalone
+   icon button, so the switch stays subordinate to the heading it rides on. */
+.mode-switch .icon-btn {
+  width: 26px;
+  height: 24px;
+  border-color: transparent;
+  background: none;
+  border-radius: var(--r-sm);
+}
+
+.mode-switch .icon-btn:hover:not(:disabled) { border-color: transparent; background: none; color: var(--ink); }
+
+/* The selected segment is a filled chip: on a segmented control the active
+   state has to read as "which one is on", and a border alone competes with the
+   group's own border. */
+.mode-switch .icon-btn.is-active {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.kv-text { width: 100%; min-height: 160px; font-family: var(--mono); font-size: 12px; line-height: 1.6; resize: vertical; }
+
+/* The target cell pairs an input with 快速提取, so the button cannot be
+   mistaken for a column of its own. */
+.assertion-target { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.assertion-target .input { flex: 1; min-width: 0; }
+
+/* Response body as a pickable tree. Rows are indented by depth in JS, so the
+   structure reads without drawing connector lines. */
+.jsonpath-tree { display: flex; flex-direction: column; gap: 1px; font-size: 12px; }
+
+.jsonpath-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 3px 0;
+  border-radius: var(--r-sm);
+  transition: background var(--t);
+}
+
+.jsonpath-row:hover { background: var(--raised); }
+.jsonpath-row.is-selected { background: var(--selected); }
+
+.jsonpath-toggle {
+  flex: 0 0 auto;
+  width: 16px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ink-3);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.jsonpath-pick { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; cursor: pointer; }
+.jsonpath-pick.is-branch { cursor: default; }
+.jsonpath-key { color: var(--ink); }
+.jsonpath-value { flex: 1; min-width: 0; }
+
+/* Description and tags share the line under the title. */
+.head-meta { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.head-meta .subtitle-input { flex: 1; min-width: 180px; }
+.tags-input { flex: 0 1 260px; }
+
+/* The endpoint a case run belongs to, trailing the case name in the records list. */
+.run-subject-parent { margin-left: var(--s2); font-size: 12px; }
+
+/* Names the case occupying the request area and offers the way back. */
+.case-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  margin-bottom: var(--s3);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--r);
+  background: var(--raised);
+  font-size: 12px;
+}
+
+.case-banner-label { font-weight: 500; color: var(--ink); }
+
+.assertions { display: flex; flex-direction: column; gap: var(--s2); }
+
+.assertion-row { display: grid; grid-template-columns: 104px minmax(0, 1fr) 108px minmax(0, 1fr) auto auto; align-items: center; gap: var(--s2); }
+/* Keeps the fixed `$.status` target and the empty value cell on the grid
+   line their editable siblings use, so the columns stay readable. */
+.assertion-fixed { font-size: 12px; color: var(--ink-3); }
+.assertion-verdict { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
+.assertion-actual { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.assertion-list { display: flex; flex-direction: column; gap: 5px; }
+.assertion-result { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; font-size: 11px; }
+.assertion-expr { font-size: 11px; color: var(--ink-2); }
+
+/* Schema and script rules: a bordered block, because their input is an editor
+   rather than a row of cells. The rule stays on the grid via its own header row,
+   so the type select still lines up with the rows above and below. */
+.assertion-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--raised);
+  min-width: 0;
+}
+
+/* Header row: flex, not the shared grid. The grid's middle `1fr` column was
+   built for the verdict cell, and with no verdict present the ✕ button landed in
+   it and stretched across the row. Flex sizes every item to its content and
+   pins the ✕ to the far end. */
+.assertion-block > .assertion-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.assertion-block-error {
+  margin: 0;
+  padding: var(--s2);
+  border-radius: var(--r);
+  background: var(--fail-bg);
+  color: var(--fail);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.assertion-schema { display: flex; flex-direction: column; }
+.assertion-schema .kv-text { min-height: 120px; }
+.assertion-schema .form-note { margin-top: var(--s1); }
+
+/* Script assertion editor. */
+.script-editor { display: flex; flex-direction: column; gap: var(--s2); }
+/* One row, never wrapped: collapse, source select, publish/detach and try-run always stay together. */
+.script-editor-head { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.script-follow-note { font-size: 11px; }
+
+/* Monaco brings its own background, so the wrapper supplies only the frame that
+   matches every other input on the page. */
+.script-code {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+/* A followed public script is not editable in place; the muted frame says so
+   before the user clicks into it. */
+.script-code.is-readonly { border-style: dashed; opacity: .85; }
+
+.script-editor .form-note { margin: 0; }
+
+/* States which response a try-run will feed the script, so a failed try-run on
+   an empty context is not blamed on the script. */
+.script-context { margin: 0; font-size: 11px; }
+.script-context summary {
+  cursor: pointer;
+  color: var(--ink-3);
+  user-select: none;
+}
+.script-context summary:hover { color: var(--ink-2); }
+.script-context-pre {
+  margin: var(--s1) 0 0;
+  padding: var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.script-try-result { display: flex; flex-direction: column; gap: var(--s1); font-size: 11px; }
+.script-error, .script-logs {
+  margin: 0;
+  padding: var(--s2);
+  border-radius: var(--r);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 140px;
+  overflow-y: auto;
+}
+.script-error { color: var(--fail); background: var(--fail-bg); border-color: transparent; }
+.script-logs { color: var(--ink-2); }
+
+/* Per-check verdicts of a script assertion (计划 4.0.2).
+   A flat list rather than a bordered block: it sits directly under the row's
+   pass/fail tag, and a second frame there reads as a nested panel. The tick and
+   cross carry the semantic color; the label stays body text so a long list of
+   passing checks does not turn into a wall of green. */
+.script-checks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.script-returned {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s1);
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.script-returned-label { font-size: 11px; }
+.script-returned-toggle { font-size: 11px; }
+/* The returned value as its own bordered block, so a long JSON cannot spread
+   across the assertion row. Collapsed it is a single truncated line; expanded
+   it scrolls — a returned canonical string can be a thousand characters and
+   still needs to be read in full. */
+.script-returned-body {
+  flex: 1 1 100%;
+  min-width: 0;
+  margin: 0;
+  padding: var(--s1) var(--s2);
+  border-radius: var(--r);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 96px;
+  overflow-y: auto;
+}
+.script-returned-body.collapsed {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-height: none;
+}
+
+.script-followers {
+  margin: var(--s2) 0;
+  padding-left: var(--s4);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+/* Semantic text colour for inline verdicts, reusing the status tokens rather
+   than introducing a second red/green. */
+.text-pass { color: var(--pass); }
+.text-fail { color: var(--fail); }
+
+/* A count that is also a link into the用例 box. */
+.cell-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cell-link:hover { text-decoration: underline; }
+
+.btn-small { padding: 3px 8px; font-size: 12px; }
+
+@media (max-width: 700px) {
+  /* Type and operator keep their width; the free-text cells stack below.
+     Targets the grid children directly: the target cell is a wrapper now, so
+     an `.input` selector would miss it. */
+  .assertion-row { grid-template-columns: 104px minmax(0, 1fr) auto; }
+  .assertion-row > .assertion-target, .assertion-row > .input { grid-column: 2 / -1; }
+  .assertion-verdict { grid-column: 1 / -1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Response headers as a flat pick list — the body picker's tree would be
+   overkill for a single level of name/value pairs. */
+.header-list { display: flex; flex-direction: column; gap: 1px; font-size: 12px; }
+
+.header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background var(--t);
+}
+
+.header-row:hover { background: var(--raised); }
+.header-name { flex: 0 0 auto; color: var(--ink); }
+.header-value { flex: 1; min-width: 0; }
+
+/* Built-in dynamic variables help (Environments drawer) */
+.builtin-help { margin-top: 12px; font-size: 12px; }
+.builtin-help summary {
+  color: var(--ink-3);
+  cursor: pointer;
+  padding: 4px 0;
+  user-select: none;
+}
+.builtin-help summary:hover { color: var(--ink); }
+.builtin-table { margin-top: 8px; width: 100%; font-size: 11px; border-collapse: collapse; }
+.builtin-table td { padding: 4px 8px; vertical-align: top; }
+.builtin-table td:first-child { color: var(--accent); white-space: nowrap; }
+.builtin-table td:last-child { color: var(--ink-3); }
+
+/* Public script list: the name column takes the slack, the rest are sized to
+   their content so four columns do not bunch up in the middle of a wide page. */
+.script-grid { table-layout: fixed; }
+.script-col-refs { width: 96px; }
+.script-col-updated { width: 190px; }
+.script-col-actions { width: 88px; }
+.script-grid td:first-child { min-width: 0; }
+.script-grid td:first-child .truncate { display: block; }
+
+/* Script assertion collapse: several script rows in one case are otherwise a
+   wall of editors, and only one is being edited at a time. */
+.script-collapse { flex: 0 0 auto; }
+.script-preview {
+  margin: 0;
+  padding: 6px var(--s2);
+  border: 1px dashed var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+/* ── Flows: canvas and steps (P1-2) ─────────────────────────────── */
+
+/* The list mirrors the endpoint grid: the name column takes the slack and the
+   rest are sized to their content. */
+.flow-grid { table-layout: fixed; }
+.flow-col-steps { width: 84px; }
+.flow-col-env { width: 170px; }
+.flow-col-result { width: 210px; }
+/* Four 30px actions plus 6px gaps and the cell's 14px side padding */
+.flow-grid .col-actions { width: 166px; }
+.flow-result { display: inline-flex; align-items: center; gap: var(--s2); }
+
+/* The canvas is the one place a page needs a fixed height rather than growing:
+   `.content` is the app's only scroll container, so a canvas that grew with its
+   graph would make the shell scroll and take the toolbar off screen with it. */
+.flow-content { display: flex; flex-direction: column; }
+/* 画布 + 侧栏「运行记录」的并排布局（5.0.9）。顶部间距统一放在 flow-body 上，
+   子项不再各自加 margin——折叠 rail 与展开侧栏因此共享同一条顶部基准线，
+   永远和画布框头严格平齐。 */
+.flow-body { display: flex; gap: var(--s4); align-items: flex-start; flex: 1 1 auto; min-height: 0; margin-top: var(--s5); }
+.flow-canvas {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 0;
+  min-height: 420px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--raised);
+  overflow: hidden;
+}
+.flow-canvas > * { max-width: none; }
+.flow-warning { margin-top: var(--s4); }
+.flow-body .workbench-side { flex: 0 0 300px; min-width: 0; position: static; align-self: flex-start; }
+/* 流程编辑器：rail 与展开侧栏共享同一基准（画布顶部），不需要 sticky。
+   展开侧栏里的 .panel 默认有 margin-top，必须清掉，否则它比画布顶部低一截。 */
+.flow-body .history-rail { flex: 0 0 auto; align-self: flex-start; position: static; top: auto; }
+.flow-body .history-card { margin-top: 0; }
+
+/* Environment list: two actions (edit/delete) need a consistent, explicit
+   width. The header already carries .col-actions, but the body cell did not,
+   so the column was sized by content and drifted wider than intended. */
+.env-grid { table-layout: fixed; }
+/* Two 30px actions plus one 6px gap and the cell's 14px side padding */
+.env-grid .col-actions { width: 94px; }
+
+.flow-run-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  margin-top: var(--s4);
+  padding: 10px var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+/* React Flow ships its own palette; every surface it draws is re-expressed in
+   our tokens so the canvas cannot become a second visual language. */
+.flow-canvas .react-flow__background { background: var(--raised); }
+.flow-canvas .react-flow__background-pattern { color: var(--line); }
+.flow-canvas .react-flow__edge-path { stroke: var(--line-strong); stroke-width: 1.5; }
+.flow-canvas .react-flow__edge.selected .react-flow__edge-path,
+.flow-canvas .react-flow__connection-path { stroke: var(--accent); }
+.flow-canvas .react-flow__handle {
+  width: 7px; height: 7px;
+  background: var(--surface);
+  border: 1.5px solid var(--line-strong);
+}
+.flow-canvas .react-flow__handle:hover { border-color: var(--accent); }
+.flow-canvas .react-flow__controls-button {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  fill: var(--ink-2);
+}
+.flow-canvas .react-flow__controls-button:hover { background: var(--raised); }
+
+.flow-node {
+  width: 240px;
+  padding: 10px var(--s3);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  transition: border-color var(--t), background var(--t);
+  cursor: pointer;
+}
+.flow-node:hover { border-color: var(--line-strong); }
+.flow-node.is-selected { border-color: var(--accent); background: var(--selected); }
+
+/* Run state reuses the reserved status colours, so a step reads the same way as
+   a row in any list — a left edge rather than a fill, which would drown the
+   node's own content. */
+.flow-node[data-status="pass"] { border-left-color: var(--pass); }
+.flow-node[data-status="fail"] { border-left-color: var(--fail); background: var(--fail-bg); }
+.flow-node[data-status="running"],
+.flow-node[data-status="queued"] { border-left-color: var(--busy); }
+.flow-node[data-status="canceled"],
+.flow-node[data-status="skip"] { border-left-color: var(--skip); }
+
+.flow-node-head { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.flow-node-index {
+  flex: 0 0 auto;
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  background: var(--raised);
+  color: var(--ink-3);
+  font-size: 10px;
+  text-align: center;
+}
+.flow-node-name { font-size: 13px; font-weight: 500; color: var(--ink); min-width: 0; }
+.flow-node-url { margin-top: 5px; font-size: 11px; color: var(--ink-3); }
+.flow-node-meta { display: flex; gap: var(--s1); margin-top: 7px; flex-wrap: wrap; }
+.flow-node-meta .chip { font-size: 10px; }
+.flow-condition-branches { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); margin-top: 8px; color: var(--ink-3); font-size: 10px; text-align: center; }
+.flow-canvas .react-flow__edge-text { fill: var(--ink-3); font-family: var(--font-mono); font-size: 10px; }
+.flow-canvas .react-flow__edge-textbg { fill: var(--raised); }
+
+/* 画布操作提示：贴在画布上方，说明多选与出口圆点这两个不写出来没人会试的交互。 */
+.flow-canvas-hint {
+  margin: 0 0 var(--s2);
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+/* 循环抽屉里的体内步骤清单：只读回显，成员关系在画布上编辑。 */
+.loop-body-list { display: flex; flex-direction: column; gap: 4px; margin-top: var(--s2); }
+.loop-body-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--s2);
+  padding: 5px var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+/*
+ * P2-6: 循环是画布上的**容器**。
+ *
+ * 它是一个 React Flow 父节点，被它框住的步骤是真正的子节点（渲染在框内、可拖进
+ * 拖出、可各自双击编辑）。所以这里只画框、标题与「加步骤」，不画内容——内容就是
+ * 那些子节点本身。虚线边框表明它是范围而不是一个会发请求的步骤。
+ */
+.flow-loop {
+  width: 100%;
+  height: 100%;
+  padding: 10px var(--s3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-lg);
+  /* 半透明让框内的子节点读起来仍然是「卡片压在范围上」，而不是两层实心叠加。 */
+  background: color-mix(in oklab, var(--raised) 60%, transparent);
+  transition: border-color var(--t), background var(--t);
+}
+.flow-loop.is-selected { border-color: var(--accent); background: var(--selected); }
+.flow-loop[data-status="pass"] { border-color: var(--pass); }
+.flow-loop[data-status="fail"] { border-color: var(--fail); }
+.flow-loop[data-status="running"],
+.flow-loop[data-status="queued"] { border-color: var(--busy); }
+.flow-loop[data-status="canceled"],
+.flow-loop[data-status="skip"] { border-color: var(--skip); }
+.flow-loop-head { display: flex; align-items: center; gap: var(--s2); min-width: 0; cursor: pointer; }
+.flow-loop-meta { margin-top: 5px; font-size: 11px; color: var(--ink-3); cursor: pointer; }
+.flow-loop-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: border-color var(--t), color var(--t);
+}
+.flow-loop-add:hover { border-color: var(--accent); color: var(--accent); }
+/* 空框要说清下一步：把步骤拖进来，或点 + 直接加一个。 */
+.flow-loop-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: calc(100% - 52px);
+  padding: var(--s3);
+  color: var(--ink-3);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* Node delete, on the node itself: removing a step should not require opening
+   it first. Revealed on hover so the canvas stays quiet at rest. */
+.flow-node-delete {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-3);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity var(--t), color var(--t), background var(--t);
+}
+/* 悬停才显形，画布静止时保持安静。循环容器的根类是 .flow-loop 而不是 .flow-node，
+   所以要分别写——漏了它就等于循环节点没有删除按钮。 */
+.flow-node:hover .flow-node-delete,
+.flow-loop:hover .flow-node-delete,
+.flow-node-delete:focus-visible { opacity: 1; }
+.flow-node-delete:hover { background: var(--fail-bg); color: var(--fail); }
+
+/* Extract rows: the verdict sits under its own row, because "could not extract"
+   as a single combined message hides which value failed and why. */
+.extract-row { margin-bottom: var(--s2); }
+.extract-fields { display: flex; align-items: center; gap: var(--s2); }
+.extract-fields .input { min-width: 0; }
+.extract-verdict {
+  margin: 4px 0 0;
+  padding-left: 2px;
+  font-size: 11px;
+}
+.extract-verdict.is-ok { color: var(--pass); }
+.extract-verdict.is-fail { color: var(--fail); }
+
+/* Variable picker: a popover anchored to the field that opened it. */
+.var-picker { position: relative; display: inline-flex; flex: 0 0 auto; }
+.var-picker-scrim { position: fixed; inset: 0; z-index: 10; }
+.var-picker-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 11;
+  width: 320px;
+  padding: var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: 0 6px 20px var(--overlay);
+}
+.var-picker-list { max-height: 260px; margin-top: var(--s2); overflow-y: auto; }
+.var-picker-group {
+  display: block;
+  margin: var(--s2) 0 2px;
+  font-size: 10px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.var-picker-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  width: 100%;
+  padding: 5px var(--s2);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.var-picker-item:hover { background: var(--raised); }
+.var-picker-name { flex: 0 0 auto; font-size: 12px; color: var(--accent); }
+.var-picker-item .muted { font-size: 11px; min-width: 0; }
+.var-picker-empty { margin: var(--s3) 0; font-size: 12px; }
+
+/* Node source row: kind selector plus the endpoint/case it copies from. */
+.flow-source { display: flex; gap: var(--s2); align-items: center; }
+
+/* ── Variable completion: `{{` opens it (P1-2 收尾) ────────────────── */
+
+.var-field { position: relative; display: inline-flex; min-width: 0; }
+.var-field input, .var-field textarea { width: 100%; }
+.var-field.is-multiline { display: block; }
+/* The URL input used to be the flex child of .request-line and grew via
+   `.request-url { flex: 1 }`. Wrapping it in the completion span moved the flex
+   boundary: the span sized itself to the input's intrinsic ~20ch and the URL
+   box shrank. Grow the wrapper itself; the 240px basis lets it wrap onto its
+   own full row on narrow screens instead of crushing the method select. */
+.request-line > .var-field { flex: 1 1 240px; min-width: 0; }
+
+/* Absolutely positioned against the *page*, not the field, because a body
+   textarea can be taller than the visible area — a popover pinned to the top
+   of a scrolled field would float far from the caret. The caret position is
+   read in `open` and stored, so the popover is drawn under the cursor. */
+.var-field-pop {
+  position: fixed;
+  z-index: 30;
+  min-width: 300px;
+  max-width: 420px;
+  padding: var(--s2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: 0 6px 20px var(--overlay);
+}
+.var-field-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  width: 100%;
+  padding: 6px var(--s2);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.var-field-item.is-active { background: var(--selected); }
+.var-field-item:hover { background: var(--raised); }
+.var-field-name { flex: 0 0 auto; font-size: 12px; color: var(--accent); }
+.var-field-origin { flex: 0 0 auto; font-size: 10px; color: var(--ink-3); }
+.var-field-item .muted { font-size: 11px; min-width: 0; }
+.var-field-empty { margin: var(--s1) 0; padding: var(--s1) var(--s2); font-size: 12px; }
+
+/* Script editor actions: one right-aligned group, so the row reads as
+   "what this script is" on the left and "what you can do with it" on the right
+   instead of three controls of three different weights. */
+.script-editor-actions { display: flex; align-items: center; gap: var(--s2); }
+
+/* Script assertion headers are the one assertion-row shape with an embedded
+   editor. Its old shared grid had six fixed tracks but seven controls, so the
+   delete button overlapped its neighbour at narrow widths (the endpoint
+   workbench column is far narrower than the flow drawer). Two zones instead:
+   identity on the left, actions right-aligned as one group that wraps whole —
+   the same hierarchy as .hook-head, so the case 校验 and flow 校验 read alike. */
+.assertion-block > .assertion-script-row {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.assertion-script-row .script-editor-actions {
+  margin-left: auto;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+@media (max-width: 560px) {
+  .assertion-script-row .script-editor-actions { width: 100%; margin-left: 0; justify-content: flex-start; }
+}
+
+/* Pre-request hook header follows the same two-zone hierarchy as the assertion
+   script toolbar. The name/source shrink; controls never overlap and wrap as a
+   group on a narrow drawer. */
+.hook-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--raised);
+}
+.hook-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.hook-name { flex: 1 1 150px; min-width: 0; }
+/* The assertion script name field shares the hook's shrinking behaviour, so a
+   narrow drawer wraps the input whole instead of squeezing it to nothing. */
+.assertion-name { flex: 1 1 140px; min-width: 0; }
+.hook-head .script-editor-actions { margin-left: auto; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
+.hook-outcome {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border-left: 2px solid var(--line-strong);
+  background: var(--surface);
+}
+.hook-outcome-head { display: flex; gap: var(--s2); align-items: baseline; flex-wrap: wrap; font-size: 12px; }
+.hook-debug { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: var(--s2); }
+.hook-debug-label { font-size: 11px; color: var(--ink-3); }
+.hook-debug-value { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+
+@media (max-width: 560px) {
+  .hook-head .script-editor-actions { width: 100%; margin-left: 0; justify-content: flex-start; }
+  .hook-debug { grid-template-columns: 1fr; }
+}
+
+/* ── Data sources and database steps (P2-1) ────────────────────── */
+
+.table-scroll { max-width: 100%; overflow-x: auto; border-radius: var(--r-lg); }
+.table-scroll > .grid { min-width: 720px; }
+.data-source-grid, .sql-definition-grid { table-layout: fixed; }
+.data-source-grid .col-actions { width: 130px; }
+.sql-definition-grid .col-actions { width: 94px; }
+.resource-type, .cell-description { display: block; margin-top: 3px; font-size: 11px; color: var(--ink-3); }
+.usage-list { margin: var(--s3) 0 0; padding-left: 20px; font-size: 12px; }
+.drawer-actions { display: flex; justify-content: flex-end; gap: var(--s2); }
+.check-field { display: inline-flex; align-items: center; gap: var(--s2); min-height: 30px; color: var(--ink-2); font-size: 12px; }
+.check-field input { width: 14px; height: 14px; accent-color: var(--accent); }
+.detail-tabs { max-width: var(--measure); padding-inline: 0; }
+.detail-panel { margin-top: var(--s4); }
+.data-source-definition { max-width: 680px; }
+.sql-section { margin-top: var(--s4); }
+.section-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); margin-bottom: var(--s3); }
+.section-toolbar h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.section-toolbar p { margin: 3px 0 0; color: var(--ink-3); font-size: 12px; }
+.section-toolbar.compact { margin-top: var(--s4); margin-bottom: var(--s2); }
+.section-toolbar.compact .subhead { margin: 0; }
+.sql-editor { margin-top: var(--s2); }
+.sql-params { display: flex; flex-direction: column; gap: var(--s2); }
+.sql-param-row { display: grid; grid-template-columns: minmax(110px, 1fr) 110px auto minmax(110px, 1fr) 30px; gap: var(--s2); align-items: center; }
+.sql-run-panel { margin-top: var(--s5); }
+.sql-run-values { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--s3); margin-bottom: var(--s4); }
+.sql-result { min-width: 0; }
+.sql-result-meta { display: flex; gap: var(--s3); margin-bottom: var(--s3); color: var(--ink-3); font-size: 11px; }
+.sql-result-grid { width: max-content; min-width: 100%; }
+.sql-result-grid th, .sql-result-grid td { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sql-error { margin: 0; padding: var(--s3); border-left: 2px solid var(--fail); background: var(--fail-bg); color: var(--fail); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+.database-node-editor { display: flex; flex-direction: column; gap: var(--s4); margin-top: var(--s3); }
+.database-step-result { margin-top: var(--s5); }
+.flow-node-kind { display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto; color: var(--ink-3); font-size: 10px; }
+.node-type-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s3); padding-top: var(--s2); }
+.node-type-option { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); min-height: 128px; padding: var(--s4); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); color: var(--ink); font: inherit; text-align: left; cursor: pointer; transition: border-color var(--t), background var(--t); }
+.node-type-option:hover:not(:disabled) { border-color: var(--accent); background: var(--selected); }
+.node-type-option:disabled { opacity: .45; cursor: not-allowed; }
+.node-type-option strong { font-size: 13px; }
+.node-type-option span { color: var(--ink-3); font-size: 12px; line-height: 1.5; }
+
+/* P2-2: script / condition node editors. */
+.script-toolbar { display: flex; align-items: center; gap: var(--s2); margin-top: var(--s3); flex-wrap: wrap; }
+.script-toolbar .script-editor-actions { margin-left: auto; }
+.condition-group-head { display: flex; align-items: center; gap: var(--s3); margin-top: var(--s3); color: var(--ink-3); font-size: 12px; }
+.condition-rules { display: flex; flex-direction: column; gap: var(--s2); margin-top: var(--s3); }
+.condition-rule { display: grid; grid-template-columns: auto minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr) auto; gap: var(--s3); padding: var(--s3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); align-items: end; }
+.condition-rule-number { align-self: center; }
+.condition-rule .field { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.condition-rule .field > span { font-size: 12px; color: var(--ink-3); }
+.kv-list { display: flex; flex-direction: column; gap: var(--s1); margin-top: var(--s2); }
+.kv-list .kv-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--s2); align-items: baseline; }
+.kv-list .kv-key { color: var(--ink-3); font-size: 11px; }
+.kv-list .kv-value { color: var(--ink); overflow-wrap: anywhere; }
+.script-node-outcome { display: flex; flex-direction: column; gap: var(--s2); }
+.script-dependencies-field { margin: var(--s3) 0; }
+.script-library-catalog { margin-top: var(--s2); padding: var(--s2) var(--s3); border-top: 1px solid var(--line); color: var(--ink-3); font-size: 12px; }
+.script-library-catalog summary { cursor: pointer; user-select: none; }
+.script-library-group { display: grid; grid-template-columns: minmax(100px, auto) minmax(0, 1fr); gap: var(--s2); align-items: center; margin-top: var(--s2); }
+.script-library-group strong { color: var(--ink-2); }
+.script-symbol-list { display: flex; flex-wrap: wrap; gap: var(--s1); }
+.script-symbol-list .chip { border: 1px solid var(--line); cursor: pointer; }
+.script-symbol-list .chip:hover { border-color: var(--accent); background: var(--selected); }
+.script-symbol-list .chip:disabled { opacity: .5; cursor: not-allowed; }
+
+/*
+ * P2-6: 循环 / 子流程节点的嵌套步骤证据。
+ *
+ * 迭代行是可折叠的：一个 100 次迭代的循环全展开会把抽屉压垮，而用户通常只关心
+ * 失败的那几次。状态色仍然只由 RunStatusTag 承担，这里不引入第二套颜色。
+ */
+.nested-iterations { display: flex; flex-direction: column; gap: var(--s1); margin-top: var(--s2); }
+.nested-iteration { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); overflow: hidden; }
+.nested-iteration-head { display: flex; align-items: center; gap: var(--s2); width: 100%; padding: var(--s2) var(--s3); border: 0; background: none; color: var(--ink); font: inherit; text-align: left; cursor: pointer; transition: background var(--t); }
+.nested-iteration-head:hover { background: var(--selected); }
+.nested-iteration-head > .mono:first-of-type { color: var(--ink-3); }
+.nested-steps { display: flex; flex-direction: column; gap: var(--s1); padding: var(--s2) var(--s3); }
+.nested-iteration .nested-steps { border-top: 1px solid var(--line); background: var(--raised); }
+.nested-step { min-width: 0; font-size: 12px; }
+.nested-step-row { display: flex; align-items: center; gap: var(--s2); width: 100%; padding: 6px var(--s2); border: 0; border-radius: var(--r); background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; transition: background var(--t); }
+.nested-step-row:hover { background: var(--selected); }
+.nested-step-row[aria-expanded="true"] { background: var(--selected); }
+.nested-step-kind { flex: 0 0 auto; color: var(--ink-3); font-size: 10px; }
+.nested-step-row .truncate { flex: 1 1 auto; }
+.nested-step-row .batch-caret { margin-right: 2px; }
+.nested-step .batch-detail { padding: var(--s1) var(--s2) var(--s2); }
+
+@media (max-width: 700px) {
+  .condition-rule { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .condition-rule .field { grid-column: 2; }
+  .condition-rule > span:not(.condition-rule-number) { display: none; }
+}
+
+@media (max-width: 700px) {
+  .ant-drawer-content-wrapper { max-width: 100vw; }
+  .sql-param-row { grid-template-columns: minmax(0, 1fr) 110px 30px; }
+  .sql-param-row .check-field, .sql-param-row > .input:last-of-type { grid-column: span 1; }
+}
+
+@media (max-width: 560px) {
+  .section-toolbar { align-items: flex-start; flex-direction: column; }
+  .node-type-picker { grid-template-columns: 1fr; }
+  .sql-param-row { grid-template-columns: minmax(0, 1fr) 30px; }
+  .sql-param-row > *:not(.icon-btn) { grid-column: 1; }
+  .sql-param-row > .icon-btn { grid-column: 2; grid-row: 1; }
+  .definition-row { grid-template-columns: 1fr; gap: 2px; }
+}
