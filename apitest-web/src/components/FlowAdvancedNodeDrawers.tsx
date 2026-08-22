@@ -34,7 +34,7 @@ function RepeatIcon({ size }: { size: number }) { return <svg width={size} heigh
 /** 循环体内某步骤的一行副标题，供内联列表展示。 */
 function loopBodyStepSubtitle(step: FlowNode): string {
   if (step.type === "request") return step.request.url || "—";
-  if (step.type === "database") return step.sqlDefinitionId ? "命名 SQL" : step.statementType;
+  if (step.type === "database") return step.sqlDefinitionId ? "命名 SQL" : step.operation ? "操作" : step.statementType ?? "—";
   if (step.type === "script") return "脚本";
   if (step.type === "condition") return `AND · ${step.condition.rules.length} 条条件`;
   if (step.type === "wait") return `等待 ${step.waitMs}ms`;

@@ -3,7 +3,8 @@ import { Drawer, Modal, Select, message } from "antd";
 import Editor from "@monaco-editor/react";
 import { useTranslation } from "react-i18next";
 import { Braces, Crosshair, GitBranch, Play, Plus, Trash2 } from "lucide-react";
-import { api, type Assertion, type AssertionResult, type ConditionFlowNode, type DatabaseFlowNode, type DataSource, type Execution, type ExecutionStep, type FlowEdge, type FlowExtract, type FlowExtractResult, type FlowNode, type FlowStepResult, type RequestFlowNode, type Script, type ScriptFlowNode, type SqlDefinition, type TestCase } from "../api";
+import { api, type Assertion, type AssertionResult, type ConditionFlowNode, type DatabaseFlowNode, type DataSource, type DataSourceType, type Execution, type ExecutionStep, type FlowEdge, type FlowExtract, type FlowExtractResult, type FlowNode, type FlowStepResult, type RequestFlowNode, type Script, type ScriptFlowNode, type SqlDefinition, type TestCase } from "../api";
+import { defaultOperationText, formatOperation, operationLabelFromText, operationTemplates } from "../operationTemplates";
 import { variableOptions } from "../lib/flowVariables";
 import { useProjectStore } from "../stores/projectStore";
 import { AssertionEditor, ScriptChecks } from "./AssertionEditor";
@@ -560,15 +561,29 @@ function DatabaseNodeDrawer({ projectId, flowId, node, nodes, edges, variables, 
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [definitions, setDefinitions] = useState<SqlDefinition[]>([]);
   const [parameters, setParameters] = useState<Pair[]>([]);
+  const [operationText, setOperationText] = useState("");
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ExecutionStep>();
   const [pickExtract, setPickExtract] = useState<number>();
+
+  const selectedSource = dataSources.find((item) => item.id === node.dataSourceId);
+  const isOperationSource = selectedSource?.type === "mongodb" || selectedSource?.type === "redis";
 
   useEffect(() => {
     setTab("database");
     setResult(undefined);
     setParameters(toUnknownPairs(node.parameters));
   }, [node.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* 操作编辑器的文本是本地状态，不是节点数据，但它的默认模板取决于数据源类型——
+     而数据源是下面那个 effect 异步拉回来的。所以这里必须把 isOperationSource 也列进
+     依赖：只在 node.id 变化时算一次的话，首次打开时 dataSources 还是空数组，
+     isOperationSource 还是 false，mongo/redis 节点就会开在一个空编辑器上。
+     打字不会触发重算（node.operation 不在依赖里），所以不会和输入抢状态。 */
+  useEffect(() => {
+    if (node.operation) { setOperationText(formatOperation(node.operation)); return; }
+    setOperationText(isOperationSource ? defaultOperationText(selectedSource?.type) : "");
+  }, [node.id, isOperationSource, selectedSource?.type]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     void api.dataSources(projectId).then(setDataSources).catch(() => message.error(t("dataSources.loadFailed")));
@@ -596,13 +611,54 @@ function DatabaseNodeDrawer({ projectId, flowId, node, nodes, edges, variables, 
   function change(patch: Partial<DatabaseFlowNode>) { onChange({ ...node, ...patch }); }
   function changeParameters(next: Pair[]) { setParameters(next); change({ parameters: fromUnknownPairs(next) }); }
 
+  function defaultOperation(sourceType: DataSourceType | undefined) { return operationTemplates(sourceType)[0]?.operation; }
+
+  function changeDataSource(dataSourceId?: string) {
+    const source = dataSources.find((item) => item.id === dataSourceId);
+    setParameters([]);
+    if (source && (source.type === "mongodb" || source.type === "redis")) {
+      const operation = defaultOperation(source.type);
+      setOperationText(formatOperation(operation));
+      change({ dataSourceId, sqlDefinitionId: undefined, sql: undefined, operation });
+    } else {
+      setOperationText("");
+      change({ dataSourceId, sqlDefinitionId: undefined, operation: undefined });
+    }
+  }
+
   async function selectDefinition(sqlDefinitionId?: string) {
-    if (!sqlDefinitionId) { change({ sqlDefinitionId: undefined, sql: node.sql ?? "" }); return; }
+    if (!sqlDefinitionId) {
+      if (isOperationSource) {
+        const operation = defaultOperation(selectedSource?.type);
+        setOperationText(formatOperation(operation));
+        change({ sqlDefinitionId: undefined, operation });
+      } else {
+        change({ sqlDefinitionId: undefined });
+      }
+      return;
+    }
     const definition = definitions.find((item) => item.id === sqlDefinitionId);
     if (!definition) return;
     const nextParameters = definition.params.map((param) => ({ key: param.name, value: param.defaultValue === undefined ? "" : stringifyUnknown(param.defaultValue), enabled: true }));
     setParameters(nextParameters);
-    change({ sqlDefinitionId, statementType: definition.statementType, sql: undefined, parameters: fromUnknownPairs(nextParameters) });
+    if (definition.kind !== "sql") {
+      /* 只写 sqlDefinitionId：节点不能同时带 operation——校验要求
+         sqlDefinitionId / 现场 SQL / operation 三者恰好命中一个，而入队时
+         (prepareFlowNodes) 本来就会回读定义里的 operation。这里的文本只是编辑器
+         的本地预览状态，不是节点数据。 */
+      setOperationText(formatOperation(definition.operation));
+      change({ sqlDefinitionId, statementType: undefined, operation: undefined, sql: undefined, parameters: fromUnknownPairs(nextParameters) });
+    } else {
+      change({ sqlDefinitionId, statementType: definition.statementType, sql: undefined, operation: undefined, parameters: fromUnknownPairs(nextParameters) });
+    }
+  }
+
+  function patchOperationText(text: string) {
+    setOperationText(text);
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object") change({ operation: parsed });
+    } catch { /* keep the text until it parses; the server validates on run/save */ }
   }
 
   async function runNode() {
@@ -637,11 +693,15 @@ function DatabaseNodeDrawer({ projectId, flowId, node, nodes, edges, variables, 
 
       {tab === "database" && <div className="database-node-editor">
         <div className="form-grid">
-           <label className="field"><span>{t("dataSources.title")}</span><Select value={node.dataSourceId || undefined} onChange={(dataSourceId) => { setParameters([]); change({ dataSourceId, sqlDefinitionId: undefined, parameters: {} }); }} options={dataSources.map((item) => ({ value: item.id, label: item.name }))} placeholder={t("flows.pickDataSource")} showSearch optionFilterProp="label" style={{ width: "100%" }} /></label>
-          <label className="field"><span>{t("flows.sqlSource")}</span><Select value={node.sqlDefinitionId ?? "inline"} onChange={(value) => void selectDefinition(value === "inline" ? undefined : value)} options={[{ value: "inline", label: t("flows.inlineSql") }, ...definitions.map((item) => ({ value: item.id, label: item.name }))]} style={{ width: "100%" }} /></label>
-          {!node.sqlDefinitionId && <label className="field"><span>{t("dataSources.statementType")}</span><Select value={node.statementType} onChange={(statementType) => change({ statementType })} options={[{ value: "query", label: t("dataSources.query") }, { value: "command", label: t("dataSources.command") }]} style={{ width: "100%" }} /></label>}
+           <label className="field"><span>{t("dataSources.title")}</span><Select value={node.dataSourceId || undefined} onChange={(dataSourceId) => changeDataSource(dataSourceId)} options={dataSources.map((item) => ({ value: item.id, label: item.name }))} placeholder={t("flows.pickDataSource")} showSearch optionFilterProp="label" style={{ width: "100%" }} /></label>
+          <label className="field"><span>{isOperationSource ? t("flows.operationSource") : t("flows.sqlSource")}</span><Select value={node.sqlDefinitionId ?? "inline"} onChange={(value) => void selectDefinition(value === "inline" ? undefined : value)} options={[{ value: "inline", label: isOperationSource ? t("flows.inlineOperation") : t("flows.inlineSql") }, ...definitions.map((item) => ({ value: item.id, label: item.name }))]} style={{ width: "100%" }} /></label>
+          {!node.sqlDefinitionId && !isOperationSource && <label className="field"><span>{t("dataSources.statementType")}</span><Select value={node.statementType} onChange={(statementType) => change({ statementType })} options={[{ value: "query", label: t("dataSources.query") }, { value: "command", label: t("dataSources.command") }]} style={{ width: "100%" }} /></label>}
         </div>
-        {!node.sqlDefinitionId && <div className="script-code sql-editor"><Editor height="220px" language="sql" theme={mode === "dark" ? "vs-dark" : "light"} value={node.sql ?? ""} onChange={(sql) => change({ sql: sql ?? "" })} options={{ minimap: { enabled: false }, fontSize: 12, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, automaticLayout: true }} /></div>}
+        {!node.sqlDefinitionId && (isOperationSource ? <div>
+          <div className="section-toolbar compact"><h3 className="subhead">{t("flows.operation")}</h3><Select<string> value={operationLabelFromText(operationText)} placeholder={t("flows.opTemplate")} onChange={(label) => { const picked = operationTemplates(selectedSource?.type).find((tpl) => tpl.label === label); if (picked) patchOperationText(formatOperation(picked.operation)); }} options={operationTemplates(selectedSource?.type).map((tpl) => ({ value: tpl.label, label: tpl.label }))} style={{ width: 200 }} /></div>
+          <div className="script-code sql-editor"><Editor height="220px" language="json" theme={mode === "dark" ? "vs-dark" : "light"} value={operationText} onChange={(text) => patchOperationText(text ?? "")} options={{ minimap: { enabled: false }, fontSize: 12, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, automaticLayout: true }} /></div>
+          <p className="form-note">{t("flows.operationHint")}</p>
+        </div> : <div className="script-code sql-editor"><Editor height="220px" language="sql" theme={mode === "dark" ? "vs-dark" : "light"} value={node.sql ?? ""} onChange={(sql) => change({ sql: sql ?? "" })} options={{ minimap: { enabled: false }, fontSize: 12, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, automaticLayout: true }} /></div>)}
         {node.sqlDefinitionId && <p className="form-note">{t("flows.namedSqlSnapshotNote")}</p>}
         <KeyValueEditor pairs={parameters} onChange={changeParameters} keyPlaceholder="userId" valuePlaceholder="{{userId}}" title={t("flows.parameterBindings")} hint={t("flows.parameterBindingsHint")} variableOptions={variableChoices} />
       </div>}

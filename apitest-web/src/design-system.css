@@ -2194,6 +2194,10 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .table-scroll > .grid { min-width: 720px; }
 .data-source-grid, .sql-definition-grid { table-layout: fixed; }
 .data-source-grid .col-actions { width: 130px; }
+/* SSL 只放是/否，收窄它把宽度让给主机/数据库/用户名。定宽表格不会为超长内容加宽列，
+   而 .grid td 本身不裁剪，所以长用户名会直接压到相邻列上——这里补省略号收口。 */
+.data-source-grid .col-ssl { width: 68px; }
+.data-source-grid td.mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sql-definition-grid .col-actions { width: 94px; }
 .resource-type, .cell-description { display: block; margin-top: 3px; font-size: 11px; color: var(--ink-3); }
 .usage-list { margin: var(--s3) 0 0; padding-left: 20px; font-size: 12px; }
@@ -2218,6 +2222,20 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .sql-result-meta { display: flex; gap: var(--s3); margin-bottom: var(--s3); color: var(--ink-3); font-size: 11px; }
 .sql-result-grid { width: max-content; min-width: 100%; }
 .sql-result-grid th, .sql-result-grid td { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 行头水槽：每行的入口。压掉 .grid th 的加粗与 uppercase——它显示的是行号，
+   不是列名；保留 --raised 底色，让这一列读作水槽而不是数据。 */
+.sql-result-grid .sql-row-head { width: 44px; max-width: 44px; padding: 0; text-align: right; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.sql-row-open { display: block; width: 100%; padding: 10px 10px 10px 6px; border: 0; background: none; color: var(--ink-3); font: inherit; font-size: 11px; text-align: right; cursor: pointer; transition: color var(--t); }
+.sql-row-open:hover { color: var(--accent); }
+.sql-row-open:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* 展开的单行：字段名 / 字段内容。整个 dl 是一个网格，字段名才会对齐成一列
+   （逐行各自 display:grid 会让每行的第一列宽度各算一次）。 */
+.sql-row-detail { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--s2) var(--s4); max-height: 60vh; margin: 0; overflow-y: auto; }
+.sql-row-detail dt { color: var(--ink-3); font-size: 11px; overflow-wrap: anywhere; }
+.sql-row-detail dd { margin: 0; color: var(--ink); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .sql-error { margin: 0; padding: var(--s3); border-left: 2px solid var(--fail); background: var(--fail-bg); color: var(--fail); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
 .database-node-editor { display: flex; flex-direction: column; gap: var(--s4); margin-top: var(--s3); }
 .database-step-result { margin-top: var(--s5); }

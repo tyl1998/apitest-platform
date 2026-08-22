@@ -4,7 +4,8 @@ import Editor from "@monaco-editor/react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Cable, Pencil, Play, Plus, Trash2 } from "lucide-react";
-import { api, type DataSource, type SqlDefinition, type SqlDefinitionInput, type SqlExecutionResult, type SqlParameter, type SqlParameterType } from "../api";
+import { api, type DataSource, type DataSourceOperation, type DataSourceType, type SqlDefinition, type SqlDefinitionInput, type SqlExecutionResult, type SqlParameter, type SqlParameterType } from "../api";
+import { defaultOperationText, formatOperation, operationLabelFromText, operationTemplates } from "../operationTemplates";
 import { useThemeMode } from "../theme";
 import { Empty } from "../ui";
 import { DataSourceDrawer, apiMessage } from "./DataSourceList";
@@ -107,21 +108,23 @@ export function DataSourceDetail() {
       {definitions.length ? <div className="table-scroll"><table className="grid sql-definition-grid"><thead><tr><th>{t("dataSources.sqlName")}</th><th>{t("dataSources.statementType")}</th><th>{t("dataSources.parameters")}</th><th>{t("common.updatedAt")}</th><th className="col-actions" /></tr></thead><tbody>
         {definitions.map((definition) => <tr key={definition.id} data-clickable onClick={() => setUrl({ tab: "sql", editSql: definition.id })}>
           <td><strong>{definition.name}</strong>{definition.description && <span className="cell-description truncate">{definition.description}</span>}</td>
-          <td className="mono">{definition.statementType}</td><td className="mono">{definition.params.length}</td><td className="mono muted">{new Date(definition.updatedAt).toLocaleString()}</td>
+          <td className="mono">{definition.kind !== "sql" ? definition.kind : definition.statementType}</td><td className="mono">{definition.params.length}</td><td className="mono muted">{new Date(definition.updatedAt).toLocaleString()}</td>
           <td className="col-actions"><div className="row-actions" onClick={(event) => event.stopPropagation()}><IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => setUrl({ tab: "sql", editSql: definition.id })} /><IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => void removeDefinition(definition)} /></div></td>
         </tr>)}
       </tbody></table></div> : <Empty title={t("dataSources.sqlEmptyTitle")} hint={t("dataSources.sqlEmptyHint")} action={<button className="btn btn-primary" onClick={() => setUrl({ tab: "sql", editSql: "new" })}>{t("dataSources.createSql")}</button>} />}
     </section>}
 
     <DataSourceDrawer projectId={projectId!} source={editingSource ? source : undefined} onClose={() => setEditingSource(false)} onSaved={(saved) => { setSource(saved); setEditingSource(false); }} />
-    <SqlDefinitionDrawer projectId={projectId!} dataSourceId={dataSourceId!} source={editSql === "new" ? "new" : definitions.find((item) => item.id === editSql)} open={Boolean(editSql)} onClose={() => setUrl({ tab: "sql" })} onSaved={async () => { setUrl({ tab: "sql" }); await load(); }} />
+    <SqlDefinitionDrawer projectId={projectId!} dataSourceId={dataSourceId!} sourceType={source.type} source={editSql === "new" ? "new" : definitions.find((item) => item.id === editSql)} open={Boolean(editSql)} onClose={() => setUrl({ tab: "sql" })} onSaved={async () => { setUrl({ tab: "sql" }); await load(); }} />
   </main>;
 }
 
-function SqlDefinitionDrawer({ projectId, dataSourceId, source, open, onClose, onSaved }: { projectId: string; dataSourceId: string; source?: SqlDefinition | "new"; open: boolean; onClose: () => void; onSaved: () => void | Promise<void> }) {
+function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open, onClose, onSaved }: { projectId: string; dataSourceId: string; sourceType: DataSourceType; source?: SqlDefinition | "new"; open: boolean; onClose: () => void; onSaved: () => void | Promise<void> }) {
   const { t } = useTranslation();
   const mode = useThemeMode();
+  const kind: "sql" | "mongo" | "redis" = sourceType === "mongodb" ? "mongo" : sourceType === "redis" ? "redis" : "sql";
   const [draft, setDraft] = useState<SqlDefinitionInput>({ name: "", description: "", statementType: "query", sql: "", params: [] });
+  const [operationText, setOperationText] = useState(defaultOperationText(sourceType));
   const [values, setValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
@@ -130,21 +133,52 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, source, open, onClose, o
 
   useEffect(() => {
     if (!open) return;
-    const next = source && source !== "new" ? { name: source.name, description: source.description, statementType: source.statementType, sql: source.sql, params: source.params } : { name: "", description: "", statementType: "query" as const, sql: "", params: [] };
+    if (kind !== "sql") {
+      const operation = source && source !== "new" ? source.operation : undefined;
+      setDraft({ name: source && source !== "new" ? source.name : "", description: source && source !== "new" ? source.description : "", params: source && source !== "new" ? source.params : [] });
+      setOperationText(operation ? formatOperation(operation) : defaultOperationText(sourceType));
+      setValues(Object.fromEntries((source && source !== "new" ? source.params : []).map((param) => [param.name, param.defaultValue === undefined ? "" : stringifyValue(param.defaultValue)])));
+      setResult(undefined); setError(undefined);
+      return;
+    }
+    const next = source && source !== "new" ? { name: source.name, description: source.description, statementType: source.statementType ?? "query", sql: source.sql ?? "", params: source.params } : { name: "", description: "", statementType: "query" as const, sql: "", params: [] };
     setDraft(next);
     setValues(Object.fromEntries(next.params.map((param) => [param.name, param.defaultValue === undefined ? "" : stringifyValue(param.defaultValue)])));
     setResult(undefined); setError(undefined);
-  }, [open, source]);
+  }, [open, source, kind]);
 
   function patchParam(index: number, patch: Partial<SqlParameter>) { setDraft((current) => ({ ...current, params: current.params.map((param, at) => at === index ? { ...param, ...patch } : param) })); }
 
+  function parseOperation(): DataSourceOperation | undefined {
+    try {
+      const parsed = JSON.parse(operationText);
+      if (!parsed || typeof parsed !== "object") { message.error(t("dataSources.opJsonInvalid")); return undefined; }
+      return parsed;
+    } catch { message.error(t("dataSources.opJsonInvalid")); return undefined; }
+  }
+
   async function save() {
-    if (!draft.name.trim() || !draft.sql.trim()) { message.error(t("dataSources.sqlRequired")); return; }
+    if (!draft.name.trim()) { message.error(t("dataSources.sqlRequired")); return; }
     const names = draft.params.map((param) => param.name.trim());
     if (names.some((name) => !name) || new Set(names).size !== names.length) { message.error(t("dataSources.sqlParamsInvalid")); return; }
+    if (kind !== "sql") {
+      const operation = parseOperation();
+      if (!operation) return;
+      setSaving(true);
+      try {
+        const input: SqlDefinitionInput = { name: draft.name.trim(), description: draft.description.trim(), kind, operation, params: draft.params.map((param) => ({ ...param, defaultValue: parseDefaultValue(param) })) };
+        if (source === "new") await api.createSqlDefinition(projectId, dataSourceId, input);
+        else if (source) await api.updateSqlDefinition(projectId, source.id, input);
+        message.success(t(source === "new" ? "dataSources.sqlCreated" : "dataSources.sqlUpdated"));
+        await onSaved();
+      } catch (nextError) { message.error(apiMessage(nextError) ?? t("dataSources.sqlSaveFailed")); }
+      finally { setSaving(false); }
+      return;
+    }
+    if (!draft.sql?.trim()) { message.error(t("dataSources.sqlRequired")); return; }
     setSaving(true);
     try {
-      const input = { ...draft, params: draft.params.map((param) => ({ ...param, defaultValue: parseDefaultValue(param) })) };
+      const input: SqlDefinitionInput = { name: draft.name.trim(), description: draft.description.trim(), statementType: draft.statementType ?? "query", sql: draft.sql.trim(), params: draft.params.map((param) => ({ ...param, defaultValue: parseDefaultValue(param) })) };
       if (source === "new") await api.createSqlDefinition(projectId, dataSourceId, input);
       else if (source) await api.updateSqlDefinition(projectId, source.id, input);
       message.success(t(source === "new" ? "dataSources.sqlCreated" : "dataSources.sqlUpdated"));
@@ -154,23 +188,42 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, source, open, onClose, o
   }
 
   async function run() {
-    if (!draft.sql.trim()) return;
+    if (kind === "sql" && !draft.sql?.trim()) return;
+    const valuesInput = parameterValues(draft.params, values);
     setRunning(true); setResult(undefined); setError(undefined);
-    try { setResult(await api.queryDataSource(projectId, dataSourceId, { sql: draft.sql, statementType: draft.statementType, params: draft.params, values: parameterValues(draft.params, values) })); }
-    catch (nextError) { setError(apiMessage(nextError) ?? t("dataSources.queryFailed")); }
+    try {
+      if (kind !== "sql") {
+        const operation = parseOperation();
+        if (!operation) { setRunning(false); return; }
+        setResult(await api.queryDataSource(projectId, dataSourceId, { kind, operation, params: draft.params, values: valuesInput }));
+      } else {
+        setResult(await api.queryDataSource(projectId, dataSourceId, { sql: draft.sql, statementType: draft.statementType ?? "query", params: draft.params, values: valuesInput }));
+      }
+    } catch (nextError) { setError(apiMessage(nextError) ?? t("dataSources.queryFailed")); }
     finally { setRunning(false); }
   }
+
+  const templates = operationTemplates(sourceType);
+  /* 受控下拉框：重新打开一条已保存的定义时要能看出它是哪种操作，而不是一个空占位符。
+     跟着编辑器文本走，所以手改 JSON 也会同步。 */
+  const currentOperation = operationLabelFromText(operationText);
 
   return <Drawer title={source === "new" ? t("dataSources.createSql") : t("dataSources.editSql")} open={open} onClose={onClose} width={820} footer={<div className="drawer-actions"><button className="btn" onClick={onClose}>{t("action.cancel")}</button><button className="btn btn-primary" disabled={saving || !source} onClick={() => void save()}>{saving ? "…" : t("action.save")}</button></div>}>
     {!source && open ? <p className="muted">{t("common.loading")}</p> : <>
       <div className="form-grid">
         <label className="field"><span>{t("dataSources.sqlName")}</span><input className="input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} autoFocus /></label>
-        <label className="field"><span>{t("dataSources.statementType")}</span><Select value={draft.statementType} onChange={(statementType) => setDraft({ ...draft, statementType })} options={[{ value: "query", label: t("dataSources.query") }, { value: "command", label: t("dataSources.command") }]} style={{ width: "100%" }} /></label>
+        {kind === "sql" ? <label className="field"><span>{t("dataSources.statementType")}</span><Select value={draft.statementType ?? "query"} onChange={(statementType) => setDraft({ ...draft, statementType })} options={[{ value: "query", label: t("dataSources.query") }, { value: "command", label: t("dataSources.command") }]} style={{ width: "100%" }} /></label> : <label className="field"><span>{t("dataSources.opType")}</span><Select value={currentOperation} placeholder={t("dataSources.opTemplate")} onChange={(label) => { const picked = templates.find((tpl) => tpl.label === label); if (picked) setOperationText(formatOperation(picked.operation)); }} options={templates.map((tpl) => ({ value: tpl.label, label: tpl.label }))} style={{ width: "100%" }} /></label>}
         <label className="field field-wide"><span>{t("dataSources.description")}</span><input className="input" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label>
       </div>
-      <h3 className="subhead">SQL</h3>
-      <div className="script-code sql-editor"><Editor height="250px" language="sql" theme={mode === "dark" ? "vs-dark" : "light"} value={draft.sql} onChange={(sql) => setDraft({ ...draft, sql: sql ?? "" })} options={{ minimap: { enabled: false }, fontSize: 12, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, automaticLayout: true }} /></div>
-      <p className="form-note">{t("dataSources.sqlSafetyHint")}</p>
+      {kind === "sql" ? <>
+        <h3 className="subhead">SQL</h3>
+        <div className="script-code sql-editor"><Editor height="250px" language="sql" theme={mode === "dark" ? "vs-dark" : "light"} value={draft.sql ?? ""} onChange={(sql) => setDraft({ ...draft, sql: sql ?? "" })} options={{ minimap: { enabled: false }, fontSize: 12, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, automaticLayout: true }} /></div>
+        <p className="form-note">{t("dataSources.sqlSafetyHint")}</p>
+      </> : <>
+        <h3 className="subhead">{t("dataSources.operation")}</h3>
+        <div className="script-code sql-editor"><Editor height="250px" language="json" theme={mode === "dark" ? "vs-dark" : "light"} value={operationText} onChange={(text) => setOperationText(text ?? "")} options={{ minimap: { enabled: false }, fontSize: 12, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, automaticLayout: true }} /></div>
+        <p className="form-note">{t("dataSources.opHint")}</p>
+      </>}
       <div className="section-toolbar compact"><h3 className="subhead">{t("dataSources.parameterDefinitions")}</h3><button className="btn btn-small" onClick={() => setDraft({ ...draft, params: [...draft.params, { name: "", type: "string", required: false }] })}>{t("dataSources.addParameter")}</button></div>
       <div className="sql-params">
         {draft.params.map((param, index) => <div className="sql-param-row" key={index}>
@@ -181,7 +234,7 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, source, open, onClose, o
           <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => setDraft({ ...draft, params: draft.params.filter((_, at) => at !== index) })} />
         </div>)}
       </div>
-      <section className="panel sql-run-panel"><div className="panel-head"><strong>{t("dataSources.tryRun")}</strong><button className="btn btn-with-icon" disabled={running || !draft.sql.trim()} onClick={() => void run()}><Play size={14} />{running ? t("action.running") : t("action.run")}</button></div><div className="panel-body">
+      <section className="panel sql-run-panel"><div className="panel-head"><strong>{t("dataSources.tryRun")}</strong><button className="btn btn-with-icon" disabled={running || (kind === "sql" && !draft.sql?.trim())} onClick={() => void run()}><Play size={14} />{running ? t("action.running") : t("action.run")}</button></div><div className="panel-body">
         {draft.params.length > 0 && <div className="sql-run-values">{draft.params.map((param, index) => <label className="field" key={`${param.name}:${index}`}><span className="mono">{param.name || "—"}</span><input className="input mono" value={values[param.name] ?? ""} onChange={(event) => setValues((current) => ({ ...current, [param.name]: event.target.value }))} placeholder={param.defaultValue === undefined ? "" : stringifyValue(param.defaultValue)} /></label>)}</div>}
         {!result && !error && <p className="form-note">{t("dataSources.tryRunHint")}</p>}
         <DatabaseResult result={result} error={error} />

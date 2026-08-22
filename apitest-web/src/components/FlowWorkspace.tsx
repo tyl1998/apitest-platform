@@ -98,7 +98,7 @@ function SourceHandle({ nodeId, handleId, style, onAddAfter }: {
  */
 function stepSubtitle(node: FlowNode, t: (key: string, options?: Record<string, unknown>) => string, dataSourceName?: string, bodyName?: string): string {
   if (node.type === "request") return node.request.url || "—";
-  if (node.type === "database") return `${dataSourceName ?? node.dataSourceId ?? "—"} · ${node.sqlDefinitionId ? t("flows.namedSql") : node.statementType}`;
+  if (node.type === "database") return `${dataSourceName ?? node.dataSourceId ?? "—"} · ${node.sqlDefinitionId ? t("flows.namedSql") : node.operation ? t("flows.operation") : node.statementType ?? "—"}`;
   if (node.type === "script") return t("flows.scriptNodeSub");
   if (node.type === "condition") return `${node.condition.mode === "any" ? "OR" : "AND"} · ${t("flows.conditionCount", { count: node.condition.rules.length })}`;
   if (node.type === "wait") return t("flows.waitNodeSub", { seconds: (node.waitMs / 1000).toFixed(node.waitMs % 1000 === 0 ? 0 : 1) });

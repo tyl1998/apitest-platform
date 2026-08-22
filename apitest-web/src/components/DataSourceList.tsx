@@ -10,11 +10,19 @@ import { IconButton } from "./IconButton";
 const DATA_SOURCE_TYPES: { value: DataSourceType; label: string; port: number; username: string }[] = [
   { value: "postgresql", label: "PostgreSQL", port: 5432, username: "postgres" },
   { value: "mysql", label: "MySQL", port: 3306, username: "root" },
+  { value: "sqlserver", label: "SQL Server", port: 1433, username: "sa" },
+  { value: "oracle", label: "Oracle", port: 1521, username: "system" },
+  { value: "mongodb", label: "MongoDB", port: 27017, username: "" },
+  { value: "redis", label: "Redis", port: 6379, username: "" },
 ];
 
 const DEFAULT_CONFIGS: Record<DataSourceType, DataSourceConfig> = {
-  postgresql: { host: "localhost", port: 5432, database: "", username: "postgres", ssl: false, connectTimeoutMs: 5000, queryTimeoutMs: 30000, maxRows: 1000, maxResultBytes: 1048576 },
-  mysql: { host: "localhost", port: 3306, database: "", username: "root", ssl: false, connectTimeoutMs: 5000, queryTimeoutMs: 30000, maxRows: 1000, maxResultBytes: 1048576 },
+  postgresql: { host: "localhost", port: 5432, database: "", username: "postgres", ssl: false, sslRejectUnauthorized: true, connectTimeoutMs: 5000, queryTimeoutMs: 30000, maxRows: 1000, maxResultBytes: 1048576 },
+  mysql: { host: "localhost", port: 3306, database: "", username: "root", ssl: false, sslRejectUnauthorized: true, connectTimeoutMs: 5000, queryTimeoutMs: 30000, maxRows: 1000, maxResultBytes: 1048576 },
+  sqlserver: { host: "localhost", port: 1433, database: "", username: "sa", ssl: false, sslRejectUnauthorized: true, connectTimeoutMs: 5000, queryTimeoutMs: 30000, maxRows: 1000, maxResultBytes: 1048576 },
+  oracle: { host: "localhost", port: 1521, database: "", username: "system", ssl: false, sslRejectUnauthorized: true, connectTimeoutMs: 5000, queryTimeoutMs: 30000, maxRows: 1000, maxResultBytes: 1048576 },
+  mongodb: { host: "localhost", port: 27017, database: "", username: "", ssl: false, sslRejectUnauthorized: true, connectTimeoutMs: 5000, queryTimeoutMs: 30000, maxRows: 1000, maxResultBytes: 1048576 },
+  redis: { host: "localhost", port: 6379, database: "0", username: "", ssl: false, sslRejectUnauthorized: true, connectTimeoutMs: 5000, queryTimeoutMs: 30000, maxRows: 1000, maxResultBytes: 1048576 },
 };
 
 export function DataSourceList() {
@@ -71,13 +79,14 @@ export function DataSourceList() {
       <button className="btn btn-primary btn-with-icon" onClick={() => setEditing("new")}><Plus size={14} />{t("dataSources.create")}</button>
     </div>
     {loading ? <p className="muted">{t("common.loading")}</p> : items.length ? <div className="table-scroll"><table className="grid data-source-grid">
-      <thead><tr><th>{t("dataSources.name")}</th><th>{t("dataSources.host")}</th><th>{t("dataSources.database")}</th><th>{t("dataSources.user")}</th><th>{t("dataSources.ssl")}</th><th className="col-actions" /></tr></thead>
+      <thead><tr><th>{t("dataSources.name")}</th><th>{t("dataSources.host")}</th><th>{t("dataSources.database")}</th><th>{t("dataSources.user")}</th><th className="col-ssl">{t("dataSources.ssl")}</th><th className="col-actions" /></tr></thead>
       <tbody>{items.map((item) => <tr key={item.id} data-clickable onClick={() => navigate(`/projects/${projectId}/data-sources/${item.id}`)}>
         <td><strong>{item.name}</strong><span className="resource-type mono">{item.type}</span></td>
-        <td className="mono">{item.config.host}:{item.config.port}</td>
-        <td className="mono">{item.config.database}</td>
-        <td className="mono">{item.config.username}</td>
-        <td>{item.config.ssl ? t("common.yes") : t("common.no")}</td>
+        {/* 截断的单元格挂 title：定宽列里长主机名/用户名只剩省略号，悬停是唯一的读全途径。 */}
+        <td className="mono" title={`${item.config.host}:${item.config.port}`}>{item.config.host}:{item.config.port}</td>
+        <td className="mono" title={item.config.database}>{item.config.database}</td>
+        <td className="mono" title={item.config.username}>{item.config.username}</td>
+        <td className="col-ssl">{item.config.ssl ? t("common.yes") : t("common.no")}</td>
         <td className="col-actions"><div className="row-actions" onClick={(event) => event.stopPropagation()}>
           <IconButton icon={<Cable size={14} />} label={t("dataSources.testConnection")} disabled={testing === item.id} onClick={() => void test(item)} />
           <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => setEditing(item)} />
@@ -119,7 +128,15 @@ export function DataSourceDrawer({ projectId, source, onClose, onSaved }: { proj
   }
 
   async function save() {
-    if (!source || !name.trim() || !config.host.trim() || !config.database.trim() || !config.username.trim()) { message.error(t("dataSources.required")); return; }
+    /* 必填项按类型不同：Redis 在 6.0 ACL 之前根本没有用户名，且常见于无认证部署，
+       它的 database 只是个库序号（缺省 0）；MongoDB 无认证也很常见，但仍需要库名才能
+       定位集合。这份规则必须和后端 requiredConfigFields 保持一致。 */
+    const needsDatabase = type !== "redis";
+    const needsUsername = type !== "redis" && type !== "mongodb";
+    const missing = !source || !name.trim() || !config.host.trim()
+      || (needsDatabase && !config.database.trim())
+      || (needsUsername && !config.username.trim());
+    if (missing) { message.error(t("dataSources.required")); return; }
     const input: DataSourceInput = { name: name.trim(), type, config };
     if (clearPassword) input.password = null;
     else if (password) input.password = password;
@@ -138,11 +155,13 @@ export function DataSourceDrawer({ projectId, source, onClose, onSaved }: { proj
       <label className="field"><span>{t("dataSources.type")}</span><Select value={type} onChange={(value) => changeType(value as DataSourceType)} options={DATA_SOURCE_TYPES.map((item) => ({ value: item.value, label: item.label }))} style={{ width: "100%" }} /></label>
       <label className="field"><span>{t("dataSources.host")}</span><input className="input mono" value={config.host} onChange={(event) => patch("host", event.target.value)} /></label>
       <NumberField label={t("dataSources.port")} value={config.port} onChange={(value) => patch("port", value)} />
-      <label className="field"><span>{t("dataSources.database")}</span><input className="input mono" value={config.database} onChange={(event) => patch("database", event.target.value)} /></label>
-      <label className="field"><span>{t("dataSources.user")}</span><input className="input mono" value={config.username} onChange={(event) => patch("username", event.target.value)} /></label>
+      <label className="field"><span>{type === "redis" ? t("dataSources.databaseIndex") : t("dataSources.database")}</span><input className="input mono" value={config.database} onChange={(event) => patch("database", event.target.value)} placeholder={type === "redis" ? "0" : ""} /></label>
+      <label className="field"><span>{type === "redis" || type === "mongodb" ? t("dataSources.userOptional") : t("dataSources.user")}</span><input className="input mono" value={config.username} onChange={(event) => patch("username", event.target.value)} placeholder={type === "redis" || type === "mongodb" ? t("dataSources.noAuth") : ""} /></label>
+      {type === "mongodb" && <label className="field"><span>{t("dataSources.authSource")}</span><input className="input mono" value={config.authSource ?? ""} onChange={(event) => patch("authSource", event.target.value)} placeholder="admin" /></label>}
       <label className="field"><span>{t("dataSources.password")}</span><input className="input mono" type="password" value={password} disabled={clearPassword} onChange={(event) => setPassword(event.target.value)} placeholder={source !== "new" && source?.passwordConfigured ? t("dataSources.passwordKeep") : ""} autoComplete="new-password" /></label>
       {source !== "new" && source?.passwordConfigured && <label className="check-field field-wide"><input type="checkbox" checked={clearPassword} onChange={(event) => { setClearPassword(event.target.checked); if (event.target.checked) setPassword(""); }} />{t("dataSources.clearPassword")}</label>}
       <label className="check-field field-wide"><input type="checkbox" checked={config.ssl} onChange={(event) => patch("ssl", event.target.checked)} />{t("dataSources.useSsl")}</label>
+      <label className="check-field field-wide"><input type="checkbox" checked={config.sslRejectUnauthorized !== false} onChange={(event) => patch("sslRejectUnauthorized", event.target.checked)} />{t("dataSources.verifyTls")}</label>
       <NumberField label={t("dataSources.connectTimeout")} value={config.connectTimeoutMs} onChange={(value) => patch("connectTimeoutMs", value)} />
       <NumberField label={t("dataSources.queryTimeout")} value={config.queryTimeoutMs} onChange={(value) => patch("queryTimeoutMs", value)} />
       <NumberField label={t("dataSources.maxRows")} value={config.maxRows} onChange={(value) => patch("maxRows", value)} />

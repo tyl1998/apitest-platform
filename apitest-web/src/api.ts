@@ -20,13 +20,15 @@ export type EnvironmentUsage = {
   blocked: boolean;
 };
 
-export type DataSourceType = "postgresql" | "mysql";
+export type DataSourceType = "postgresql" | "mysql" | "sqlserver" | "oracle" | "mongodb" | "redis";
 export type DataSourceConfig = {
   host: string;
   port: number;
   database: string;
   username: string;
   ssl: boolean;
+  sslRejectUnauthorized?: boolean;
+  authSource?: string;
   connectTimeoutMs: number;
   queryTimeoutMs: number;
   maxRows: number;
@@ -65,20 +67,44 @@ export type SqlDefinition = {
   projectId: string;
   dataSourceId: string;
   name: string;
-  /** 'sql' for the relational drivers; mongo/redis land in P2-7.3+. */
+  /** 'sql' for the relational drivers; mongo/redis carry an `operation`. */
   kind: "sql" | "mongo" | "redis";
-  statementType: SqlStatementType;
-  sql: string;
-  operation?: unknown;
+  statementType?: SqlStatementType;
+  sql?: string;
+  operation?: DataSourceOperation;
   params: SqlParameter[];
   description: string;
   createdAt: string;
   updatedAt: string;
 };
-export type SqlDefinitionInput = Pick<SqlDefinition, "name" | "statementType" | "sql" | "params" | "description">;
+export type SqlDefinitionInput = {
+  name: string;
+  description: string;
+  kind?: "sql" | "mongo" | "redis";
+  statementType?: SqlStatementType;
+  sql?: string;
+  operation?: DataSourceOperation;
+  params: SqlParameter[];
+};
 export type SqlExecutionResult = { rows: Record<string, unknown>[]; rowCount: number; truncated: boolean; durationMs: number };
-export type SqlExecutionInput = { sql: string; statementType: SqlStatementType; params?: SqlParameter[]; values: Record<string, unknown> };
+export type SqlExecutionInput = { sql?: string; statementType?: SqlStatementType; kind?: "sql" | "mongo" | "redis"; operation?: DataSourceOperation; params?: SqlParameter[]; values: Record<string, unknown> };
 export type DataSourceTestResult = SqlExecutionResult;
+/** MongoDB operations (P2-7.3). Filter/pipeline values may carry `{{name}}`. */
+export type MongoOperation =
+  | { op: "find"; collection: string; filter?: Record<string, unknown>; projection?: Record<string, unknown>; sort?: Record<string, unknown>; limit?: number }
+  | { op: "aggregate"; collection: string; pipeline: unknown[] }
+  | { op: "count"; collection: string; filter?: Record<string, unknown> }
+  | { op: "distinct"; collection: string; field: string; filter?: Record<string, unknown> }
+  | { op: "insertOne"; collection: string; document: Record<string, unknown> }
+  | { op: "insertMany"; collection: string; documents: Record<string, unknown>[] }
+  | { op: "updateOne"; collection: string; filter: Record<string, unknown>; update: Record<string, unknown>; upsert?: boolean }
+  | { op: "updateMany"; collection: string; filter: Record<string, unknown>; update: Record<string, unknown>; upsert?: boolean }
+  | { op: "replaceOne"; collection: string; filter: Record<string, unknown>; replacement: Record<string, unknown>; upsert?: boolean }
+  | { op: "deleteOne"; collection: string; filter: Record<string, unknown> }
+  | { op: "deleteMany"; collection: string; filter: Record<string, unknown> };
+/** Redis operations (P2-7.4): a whitelisted command with raw args. */
+export type RedisOperation = { op: "command"; command: string; args: unknown[] };
+export type DataSourceOperation = MongoOperation | RedisOperation;
 export type BodyType = "none" | "json" | "form" | "text";
 export type EndpointAuth =
   | { type: "none" }
@@ -518,8 +544,10 @@ export type DatabaseFlowNode = FlowNodeBase & {
   type: "database";
   dataSourceId: string;
   sqlDefinitionId?: string;
-  statementType: SqlStatementType;
+  statementType?: SqlStatementType;
   sql?: string;
+  /** mongo/redis data sources: an inline operation instead of SQL (P2-7.3). */
+  operation?: DataSourceOperation;
   parameters: Record<string, unknown>;
   assertions: Assertion[];
   extracts: FlowExtract[];
