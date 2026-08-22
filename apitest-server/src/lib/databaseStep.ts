@@ -1,5 +1,6 @@
 import { evaluateAssertions } from "./assert.js";
 import { applyExtracts } from "./flow.js";
+import { executeOperation } from "./operationExecutor.js";
 import { resolveDeep } from "./resolve.js";
 import { sanitizeValue } from "./sanitize.js";
 import { executeSql } from "./sqlExecutor.js";
@@ -7,18 +8,20 @@ import type { LoadedEnvironment } from "./run.js";
 import type { Assertion, FlowExtract, SqlParameterDefinition, SqlStatementType } from "../models/types.js";
 
 /**
- * 数据库步骤的执行与断言，流程数据库节点与场景数据库步骤共用（计划 5.0.3 第 1 批：
- * 「与场景数据库步骤共用同一套执行与断言实现」）。
- *
- * 两处唯一的差别是配置存在哪份文档里，判定、断言主体、提取语义与限流必须一致——
- * 各写一份的结果一定是「同一条 SQL 在流程里通过、在场景里失败」。
+ * 数据库步骤的执行与断言，流程数据库节点与命名定义试跑共用（计划 5.0.3 第 1 批：
+ * 「共用同一套执行与断言实现」）。SQL 数据源走 `executeSql`，mongo/redis 数据源
+ * 走 `executeOperation`，两种结果都被归一成同一个 `{ rows, rowCount, truncated }`
+ * 形状——判定、断言主体、提取语义与限流必须一致，各写一份的结果一定是「同一条
+ * SQL 在流程里通过、在别处失败」。
  */
 
-/** A database call with its SQL already resolved and no credentials in sight. */
+/** A database call with its payload already resolved and no credentials in sight. */
 export type PreparedDatabaseWork = {
   dataSourceId: string;
-  statementType: SqlStatementType;
-  sql: string;
+  kind: "sql" | "mongo" | "redis";
+  statementType?: SqlStatementType;
+  sql?: string;
+  operation?: unknown;
   parameterDefinitions: SqlParameterDefinition[];
   /** Values at the call site; `{{var}}` is resolved before driver binding. */
   parameters: Record<string, unknown>;
@@ -52,10 +55,9 @@ export async function executeDatabaseWork(
   const mask = (value: unknown) => environment.storePlaintext ? value : sanitizeValue(value, environment.secretValues);
   try {
     const values = resolveDeep(work.parameters, bag) as Record<string, unknown>;
-    const result = await executeSql({
-      projectId, dataSourceId: work.dataSourceId, statementType: work.statementType,
-      sql: work.sql, params: work.parameterDefinitions, values,
-    });
+    const result = work.kind === "sql"
+      ? await executeSql({ projectId, dataSourceId: work.dataSourceId, statementType: work.statementType!, sql: work.sql!, params: work.parameterDefinitions, values })
+      : await executeOperation({ projectId, dataSourceId: work.dataSourceId, kind: work.kind, operation: work.operation, params: work.parameterDefinitions, values });
     const body = JSON.stringify({ rows: result.rows, rowCount: result.rowCount, truncated: result.truncated });
     const assertion = evaluateAssertions(work.assertions ?? [], { statusCode: 200, headers: SUBJECT_HEADERS, body });
     const extraction = applyExtracts(extracts, { statusCode: 200, headers: SUBJECT_HEADERS, body });

@@ -1,21 +1,25 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { pool } from "../db.js";
-import { getAdapter } from "../lib/adapters/index.js";
+import { isSupportedDataSourceType } from "../lib/adapters/index.js";
+import { validateOperation } from "../lib/adapters/operations.js";
 import { encryptSecret } from "../lib/crypto.js";
-import { loadSqlDefinition } from "../lib/dataSources.js";
+import { loadDataSource, loadSqlDefinition } from "../lib/dataSources.js";
+import { executeOperation } from "../lib/operationExecutor.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { executeSql, validateSqlDefinition, validateSqlParams } from "../lib/sqlExecutor.js";
 import { isUuid } from "../lib/uuid.js";
-import { defaultPort, mapDataSource, mapSqlDefinition, type DataSourceConfig, type DataSourceType, type SqlParameterDefinition, type SqlStatementType } from "../models/types.js";
+import { defaultPort, definitionKind, mapDataSource, mapSqlDefinition, type DataSourceConfig, type DataSourceType, type DataSourceOperation, type SqlParameterDefinition, type SqlStatementType } from "../models/types.js";
 
 type DataSourceBody = { name?: string; type?: DataSourceType; config?: Partial<DataSourceConfig>; password?: string | null };
-type SqlBody = { name?: string; description?: string; statementType?: SqlStatementType; sql?: string; params?: SqlParameterDefinition[] };
+type SqlBody = { name?: string; description?: string; kind?: "sql" | "mongo" | "redis"; statementType?: SqlStatementType; sql?: string; operation?: unknown; params?: SqlParameterDefinition[] };
 type RunBody = {
   sqlDefinitionId?: string;
+  kind?: "sql" | "mongo" | "redis";
   statementType?: SqlStatementType;
   sql?: string;
+  operation?: unknown;
   params?: SqlParameterDefinition[];
   values?: Record<string, unknown>;
   timeoutMs?: number;
@@ -25,11 +29,30 @@ type RunBody = {
 
 const STATEMENT_TYPES: SqlStatementType[] = ["query", "command"];
 
-function validateConfig(config: Partial<DataSourceConfig> | undefined, partial = false): string | undefined {
+/**
+ * Which connection fields a type actually needs.
+ *
+ * Redis has no username at all before the 6.0 ACLs and is routinely deployed
+ * with no auth, and its `database` is a numbered index that defaults to 0 —
+ * requiring either made an unauthenticated Redis impossible to save. MongoDB is
+ * commonly unauthenticated in a dev cluster but still needs a database name to
+ * address a collection.
+ */
+function requiredConfigFields(type: DataSourceType | undefined): { database: boolean; username: boolean } {
+  if (type === "redis") return { database: false, username: false };
+  if (type === "mongodb") return { database: true, username: false };
+  return { database: true, username: true };
+}
+
+function validateConfig(config: Partial<DataSourceConfig> | undefined, type?: DataSourceType, partial = false): string | undefined {
   if (!config && partial) return undefined;
   if (!config?.host?.trim()) return "config.host is required";
-  if (!config.database?.trim()) return "config.database is required";
-  if (!config.username?.trim()) return "config.username is required";
+  const required = requiredConfigFields(type);
+  if (required.database && !config.database?.trim()) return "config.database is required";
+  if (required.username && !config.username?.trim()) return "config.username is required";
+  /* Redis addresses a numbered db, not a named one: the driver coerces with
+     `Number(database) || 0`, so a typo would silently land on db 0. */
+  if (type === "redis" && config.database?.trim() && !/^\d+$/.test(config.database.trim())) return "config.database must be a Redis database index";
   if (config.port !== undefined && (!Number.isInteger(Number(config.port)) || Number(config.port) < 1 || Number(config.port) > 65535)) return "config.port must be between 1 and 65535";
   for (const key of ["connectTimeoutMs", "queryTimeoutMs", "maxRows", "maxResultBytes"] as const) {
     if (config[key] !== undefined && (!Number.isFinite(Number(config[key])) || Number(config[key]) <= 0)) return `config.${key} must be a positive number`;
@@ -40,7 +63,9 @@ function validateConfig(config: Partial<DataSourceConfig> | undefined, partial =
 function cleanConfig(config: Partial<DataSourceConfig>, stored?: DataSourceConfig, type?: DataSourceType): DataSourceConfig {
   const merged = { ...(stored ?? {}), ...config } as DataSourceConfig;
   return {
-    host: merged.host.trim(), port: Number(merged.port ?? defaultPort(type)), database: merged.database.trim(), username: merged.username.trim(),
+    /* `?? ""` on database/username: they are optional for redis/mongodb, so the
+       body may legitimately omit them and `.trim()` would throw. */
+    host: merged.host.trim(), port: Number(merged.port ?? defaultPort(type)), database: (merged.database ?? "").trim(), username: (merged.username ?? "").trim(),
     ssl: Boolean(merged.ssl), sslRejectUnauthorized: merged.sslRejectUnauthorized !== false,
     connectTimeoutMs: Number(merged.connectTimeoutMs ?? 5_000),
     queryTimeoutMs: Number(merged.queryTimeoutMs ?? 30_000),
@@ -51,8 +76,16 @@ function cleanConfig(config: Partial<DataSourceConfig>, stored?: DataSourceConfi
 
 function validateSqlBody(body: SqlBody, partial = false): string | undefined {
   if (!partial || body.name !== undefined) if (!body.name?.trim()) return "name is required";
-  if (!partial || body.statementType !== undefined) if (!body.statementType || !STATEMENT_TYPES.includes(body.statementType)) return "statementType must be query or command";
-  if (!partial || body.sql !== undefined) if (!body.sql?.trim()) return "sql is required";
+  const kind = body.kind ?? "sql";
+  if (kind !== "sql") {
+    if (!partial || body.operation !== undefined) {
+      const invalid = validateOperation(body.operation);
+      if (invalid) return invalid;
+    }
+  } else {
+    if (!partial || body.statementType !== undefined) if (!body.statementType || !STATEMENT_TYPES.includes(body.statementType)) return "statementType must be query or command";
+    if (!partial || body.sql !== undefined) if (!body.sql?.trim()) return "sql is required";
+  }
   if (body.params !== undefined) return validateSqlParams(body.params);
   return undefined;
 }
@@ -86,19 +119,54 @@ async function sqlUsage(projectId: string, sqlId: string) {
   };
 }
 
-async function resolveRun(projectId: string, dataSourceId: string, body: RunBody) {
+/** The definition kind the data source can hold, or undefined when it does not
+    exist in this project. A type-only lookup: no config, no decrypted password,
+    so it is cheap enough to run on every definition write. */
+async function definitionKindFor(projectId: string, dataSourceId: string): Promise<"sql" | "mongo" | "redis" | undefined> {
+  const found = await pool.query("SELECT type FROM data_sources WHERE id = $1 AND project_id = $2", [dataSourceId, projectId]);
+  if (!found.rowCount) return undefined;
+  return definitionKind(String(found.rows[0].type) as DataSourceType);
+}
+
+/** A try-run payload, discriminated so the caller picks executeSql vs
+    executeOperation without non-null assertions on the other kind's fields. */
+type ResolvedRun =
+  | { kind: "sql"; statementType: SqlStatementType; sql: string; params: SqlParameterDefinition[] }
+  | { kind: "mongo" | "redis"; operation: unknown; params: SqlParameterDefinition[] };
+
+async function resolveRun(projectId: string, dataSourceId: string, body: RunBody): Promise<ResolvedRun> {
   if (body.values !== undefined && (typeof body.values !== "object" || body.values === null || Array.isArray(body.values))) throw new Error("values must be an object");
   if (body.sqlDefinitionId) {
     if (!isUuid(body.sqlDefinitionId)) throw new Error("SQL definition not found");
     const definition = await loadSqlDefinition(projectId, body.sqlDefinitionId);
     if (!definition || definition.dataSourceId !== dataSourceId) throw new Error("SQL definition not found");
-    return { statementType: definition.statementType, sql: definition.sql, params: definition.params };
+    if (definition.kind === "sql") {
+      /* Migration 025 makes the shape a DB constraint, so a sql row always has
+         both; the check keeps the type honest and turns any drift into a clear
+         message instead of a driver-level surprise. */
+      if (!definition.statementType || !definition.sql) throw new Error("SQL definition is missing its statement");
+      return { kind: "sql", statementType: definition.statementType, sql: definition.sql, params: definition.params };
+    }
+    if (definition.operation === undefined) throw new Error("operation definition is missing its operation");
+    return { kind: definition.kind, operation: definition.operation, params: definition.params };
+  }
+  const kind = body.kind ?? "sql";
+  /* An inline try-run states its own kind, so it has to be checked against the
+     data source before dispatch — otherwise a mongo body against a relational
+     source only fails deep inside a driver, with a message about the wrong thing. */
+  const sourceKind = await definitionKindFor(projectId, dataSourceId);
+  if (!sourceKind) throw new Error("data source not found");
+  if (kind !== sourceKind) throw new Error(`a ${sourceKind === "sql" ? "relational" : sourceKind} data source runs ${sourceKind} payloads, not ${kind}`);
+  if (kind !== "sql") {
+    const invalid = validateOperation(body.operation);
+    if (invalid) throw new Error(invalid);
+    return { kind, operation: body.operation, params: body.params ?? [] };
   }
   if (!body.statementType || !STATEMENT_TYPES.includes(body.statementType)) throw new Error("statementType must be query or command");
   if (!body.sql?.trim()) throw new Error("sql is required");
   const invalid = validateSqlDefinition(body.statementType, body.sql, body.params);
   if (invalid) throw new Error(invalid);
-  return { statementType: body.statementType, sql: body.sql, params: body.params ?? [] };
+  return { kind: "sql", statementType: body.statementType, sql: body.sql, params: body.params ?? [] };
 }
 
 function sendUsageConflict(reply: FastifyReply, message: string, usage: unknown) {
@@ -118,8 +186,8 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     if (!name) return fail(reply, 400, 1001, "name is required");
     const type = request.body.type ?? "postgresql";
     /* The adapter registry, not the schema CHECK, is what makes a type real. */
-    if (!getAdapter(type)) return fail(reply, 400, 1001, `data source type "${type}" is not supported`);
-    const invalid = validateConfig(request.body.config);
+    if (!isSupportedDataSourceType(type)) return fail(reply, 400, 1001, `data source type "${type}" is not supported`);
+    const invalid = validateConfig(request.body.config, type);
     if (invalid) return fail(reply, 400, 1001, invalid);
     if (request.body.password !== undefined && request.body.password !== null && typeof request.body.password !== "string") return fail(reply, 400, 1001, "password must be a string or null");
     const duplicate = await pool.query("SELECT 1 FROM data_sources WHERE project_id = $1 AND lower(name) = lower($2)", [context.project.id, name]);
@@ -151,11 +219,11 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     if (!existing.rowCount) return fail(reply, 404, 2001, "data source not found");
     const name = request.body.name?.trim();
     if (request.body.name !== undefined && !name) return fail(reply, 400, 1001, "name is required");
-    if (request.body.type !== undefined && !getAdapter(request.body.type)) return fail(reply, 400, 1001, `data source type "${request.body.type}" is not supported`);
+    if (request.body.type !== undefined && !isSupportedDataSourceType(request.body.type)) return fail(reply, 400, 1001, `data source type "${request.body.type}" is not supported`);
     if (request.body.password !== undefined && request.body.password !== null && typeof request.body.password !== "string") return fail(reply, 400, 1001, "password must be a string or null");
     const nextType = String(existing.rows[0].type) as DataSourceType;
     const config = request.body.config ? cleanConfig(request.body.config, existing.rows[0].config as DataSourceConfig, nextType) : existing.rows[0].config as DataSourceConfig;
-    const invalid = validateConfig(config);
+    const invalid = validateConfig(config, nextType);
     if (invalid) return fail(reply, 400, 1001, invalid);
     if (name) {
       const duplicate = await pool.query("SELECT 1 FROM data_sources WHERE project_id = $1 AND lower(name) = lower($2) AND id <> $3", [context.project.id, name, request.params.dataSourceId]);
@@ -197,7 +265,14 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
     if (!isUuid(request.params.dataSourceId)) return fail(reply, 404, 2001, "data source not found");
     try {
-      const result = await executeSql({ projectId: context.project.id, dataSourceId: request.params.dataSourceId, statementType: "query", sql: "SELECT 1 AS ok" });
+      /* Connection probe is per driver: SELECT 1 (dual for Oracle), a mongo
+         count on a throwaway collection, or a redis PING. */
+      const source = await loadDataSource(context.project.id, request.params.dataSourceId);
+      const result = source.type === "mongodb"
+        ? await executeOperation({ projectId: context.project.id, dataSourceId: request.params.dataSourceId, kind: "mongo", operation: { op: "count", collection: "apitest_ping" } })
+        : source.type === "redis"
+          ? await executeOperation({ projectId: context.project.id, dataSourceId: request.params.dataSourceId, kind: "redis", operation: { op: "command", command: "PING", args: [] } })
+          : await executeSql({ projectId: context.project.id, dataSourceId: request.params.dataSourceId, statementType: "query", sql: source.type === "oracle" ? "SELECT 1 FROM dual" : "SELECT 1 AS ok" });
       return success(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : "connection test failed";
@@ -210,7 +285,11 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     if (!isUuid(request.params.dataSourceId)) return fail(reply, 404, 2001, "data source not found");
     try {
       const definition = await resolveRun(context.project.id, request.params.dataSourceId, request.body ?? {});
-      return success(await executeSql({ projectId: context.project.id, dataSourceId: request.params.dataSourceId, ...definition, values: request.body?.values, timeoutMs: request.body?.timeoutMs, maxRows: request.body?.maxRows, maxResultBytes: request.body?.maxResultBytes }));
+      const limits = { timeoutMs: request.body?.timeoutMs, maxRows: request.body?.maxRows, maxResultBytes: request.body?.maxResultBytes };
+      const result = definition.kind === "sql"
+        ? await executeSql({ projectId: context.project.id, dataSourceId: request.params.dataSourceId, statementType: definition.statementType, sql: definition.sql, params: definition.params, values: request.body?.values, ...limits })
+        : await executeOperation({ projectId: context.project.id, dataSourceId: request.params.dataSourceId, kind: definition.kind, operation: definition.operation, params: definition.params, values: request.body?.values, ...limits });
+      return success(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : "SQL execution failed";
       return message === "data source not found" ? fail(reply, 404, 2001, message) : fail(reply, 400, 2002, message);
@@ -229,15 +308,19 @@ export async function dataSourceRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string; dataSourceId: string }; Body: SqlBody }>("/api/v1/projects/:id/data-sources/:dataSourceId/sql-definitions", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
     if (!isUuid(request.params.dataSourceId)) return fail(reply, 404, 2001, "data source not found");
-    const invalid = validateSqlBody(request.body) ?? validateSqlDefinition(request.body.statementType!, request.body.sql!, request.body.params);
+    const kind = request.body.kind ?? "sql";
+    const invalid = validateSqlBody(request.body) ?? (kind === "sql" ? validateSqlDefinition(request.body.statementType!, request.body.sql!, request.body.params) : undefined);
     if (invalid) return fail(reply, 400, 1001, invalid);
-    const source = await pool.query("SELECT 1 FROM data_sources WHERE id = $1 AND project_id = $2", [request.params.dataSourceId, context.project.id]);
-    if (!source.rowCount) return fail(reply, 404, 2001, "data source not found");
+    const source = await definitionKindFor(context.project.id, request.params.dataSourceId);
+    if (!source) return fail(reply, 404, 2001, "data source not found");
+    if (kind !== source) return fail(reply, 400, 1001, `a ${source === "sql" ? "relational" : source} data source holds ${source} definitions, not ${kind}`);
     const duplicate = await pool.query("SELECT 1 FROM sql_definitions WHERE data_source_id = $1 AND lower(name) = lower($2)", [request.params.dataSourceId, request.body.name!.trim()]);
     if (duplicate.rowCount) return fail(reply, 409, 2003, "an SQL definition with this name already exists");
     const result = await pool.query(
-      "INSERT INTO sql_definitions (id, project_id, data_source_id, name, description, statement_type, sql, params) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb) RETURNING *",
-      [randomUUID(), context.project.id, request.params.dataSourceId, request.body.name!.trim(), request.body.description?.trim() ?? "", request.body.statementType, request.body.sql!.trim(), JSON.stringify(request.body.params ?? [])],
+      `INSERT INTO sql_definitions (id, project_id, data_source_id, name, description, kind, statement_type, sql, operation, params)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb) RETURNING *`,
+      [randomUUID(), context.project.id, request.params.dataSourceId, request.body.name!.trim(), request.body.description?.trim() ?? "", kind,
+       kind === "sql" ? request.body.statementType : null, kind === "sql" ? request.body.sql!.trim() : null, kind === "sql" ? null : request.body.operation ?? null, JSON.stringify(request.body.params ?? [])],
     );
     return reply.code(201).send(success(mapSqlDefinition(result.rows[0])));
   });
@@ -257,17 +340,41 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     if (!existing) return fail(reply, 404, 2001, "SQL definition not found");
     const invalid = validateSqlBody(request.body, true);
     if (invalid) return fail(reply, 400, 1001, invalid);
-    const nextType = request.body.statementType ?? existing.statementType; const nextSql = request.body.sql?.trim() ?? existing.sql; const nextParams = request.body.params ?? existing.params;
-    const statementInvalid = validateSqlDefinition(nextType, nextSql, nextParams);
-    if (statementInvalid) return fail(reply, 400, 1001, statementInvalid);
+    const nextKind = request.body.kind ?? existing.kind;
+    const nextParams = request.body.params ?? existing.params;
+    /* The data source's type decides the kind; a PUT may not move a definition
+       to a kind its driver cannot run. */
+    const sourceKind = await definitionKindFor(context.project.id, existing.dataSourceId);
+    if (sourceKind && nextKind !== sourceKind) return fail(reply, 400, 1001, `a ${sourceKind === "sql" ? "relational" : sourceKind} data source holds ${sourceKind} definitions, not ${nextKind}`);
+    if (nextKind === "sql") {
+      /* Changing kind must carry the new kind's payload: a mongo/redis row has no
+         sql to fall back on, and reaching `validateSqlDefinition` with undefined
+         would throw instead of answering 400 (migration 025 enforces the same
+         shape, so the DB would otherwise reject the UPDATE as a 500). */
+      const nextType = request.body.statementType ?? existing.statementType; const nextSql = request.body.sql?.trim() ?? existing.sql;
+      if (!nextType || !nextSql) return fail(reply, 400, 1001, "changing kind to sql requires statementType and sql");
+      const statementInvalid = validateSqlDefinition(nextType, nextSql, nextParams);
+      if (statementInvalid) return fail(reply, 400, 1001, statementInvalid);
+    } else {
+      if (request.body.operation === undefined && existing.operation === undefined) return fail(reply, 400, 1001, `changing kind to ${nextKind} requires an operation`);
+      if (request.body.operation !== undefined) {
+        const operationInvalid = validateOperation(request.body.operation);
+        if (operationInvalid) return fail(reply, 400, 1001, operationInvalid);
+      }
+    }
     const name = request.body.name?.trim();
     if (name) {
       const duplicate = await pool.query("SELECT 1 FROM sql_definitions WHERE data_source_id = $1 AND lower(name) = lower($2) AND id <> $3", [existing.dataSourceId, name, existing.id]);
       if (duplicate.rowCount) return fail(reply, 409, 2003, "an SQL definition with this name already exists");
     }
     const result = await pool.query(
-      "UPDATE sql_definitions SET name = COALESCE($1, name), description = COALESCE($2, description), statement_type = $3, sql = $4, params = $5::jsonb, updated_at = now() WHERE id = $6 AND project_id = $7 RETURNING *",
-      [name ?? null, request.body.description?.trim() ?? null, nextType, nextSql, JSON.stringify(nextParams), existing.id, context.project.id],
+      `UPDATE sql_definitions SET name = COALESCE($1, name), description = COALESCE($2, description), kind = $3,
+        statement_type = CASE WHEN $3 = 'sql' THEN COALESCE($4, statement_type) ELSE NULL END,
+        sql = CASE WHEN $3 = 'sql' THEN COALESCE($5, sql) ELSE NULL END,
+        operation = CASE WHEN $3 = 'sql' THEN NULL ELSE COALESCE($6::jsonb, operation) END,
+        params = $7::jsonb, updated_at = now() WHERE id = $8 AND project_id = $9 RETURNING *`,
+      [name ?? null, request.body.description?.trim() ?? null, nextKind, request.body.statementType ?? null, request.body.sql?.trim() ?? null,
+       request.body.operation !== undefined ? JSON.stringify(request.body.operation) : null, JSON.stringify(nextParams), existing.id, context.project.id],
     );
     return success(mapSqlDefinition(result.rows[0]));
   });
@@ -288,7 +395,11 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     const definition = await loadSqlDefinition(context.project.id, request.params.sqlId);
     if (!definition) return fail(reply, 404, 2001, "SQL definition not found");
     try {
-      return success(await executeSql({ projectId: context.project.id, dataSourceId: definition.dataSourceId, statementType: definition.statementType, sql: definition.sql, params: definition.params, values: request.body?.values, timeoutMs: request.body?.timeoutMs, maxRows: request.body?.maxRows, maxResultBytes: request.body?.maxResultBytes }));
+      const limits = { timeoutMs: request.body?.timeoutMs, maxRows: request.body?.maxRows, maxResultBytes: request.body?.maxResultBytes };
+      const result = definition.kind === "sql"
+        ? await executeSql({ projectId: context.project.id, dataSourceId: definition.dataSourceId, statementType: definition.statementType!, sql: definition.sql!, params: definition.params, values: request.body?.values, ...limits })
+        : await executeOperation({ projectId: context.project.id, dataSourceId: definition.dataSourceId, kind: definition.kind, operation: definition.operation, params: definition.params, values: request.body?.values, ...limits });
+      return success(result);
     } catch (error) { return fail(reply, 400, 2002, error instanceof Error ? error.message : "SQL execution failed"); }
   });
 }

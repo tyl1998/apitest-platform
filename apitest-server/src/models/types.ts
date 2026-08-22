@@ -387,12 +387,36 @@ export type SqlParameterDefinition = {
   defaultValue?: unknown;
 };
 
+/** MongoDB operations (P2-7.3). Filter/pipeline values may carry `{{name}}`
+    tokens that are deep-resolved before driver binding. */
+export type MongoOperation =
+  | { op: "find"; collection: string; filter?: Record<string, unknown>; projection?: Record<string, unknown>; sort?: Record<string, unknown>; limit?: number }
+  | { op: "aggregate"; collection: string; pipeline: unknown[] }
+  | { op: "count"; collection: string; filter?: Record<string, unknown> }
+  | { op: "distinct"; collection: string; field: string; filter?: Record<string, unknown> }
+  | { op: "insertOne"; collection: string; document: Record<string, unknown> }
+  | { op: "insertMany"; collection: string; documents: Record<string, unknown>[] }
+  | { op: "updateOne"; collection: string; filter: Record<string, unknown>; update: Record<string, unknown>; upsert?: boolean }
+  | { op: "updateMany"; collection: string; filter: Record<string, unknown>; update: Record<string, unknown>; upsert?: boolean }
+  | { op: "replaceOne"; collection: string; filter: Record<string, unknown>; replacement: Record<string, unknown>; upsert?: boolean }
+  | { op: "deleteOne"; collection: string; filter: Record<string, unknown> }
+  | { op: "deleteMany"; collection: string; filter: Record<string, unknown> };
+
+/** Redis operations (P2-7.4): a whitelisted command with raw args. */
+export type RedisOperation = { op: "command"; command: string; args: unknown[] };
+
+export type DataSourceOperation = MongoOperation | RedisOperation;
+
 export type DatabaseFlowNode = FlowNodeBase & {
   type: "database";
   dataSourceId: string;
   sqlDefinitionId?: string;
+  /** Inline SQL, mutually exclusive with `operation` and `sqlDefinitionId`. */
   sql?: string;
-  statementType: SqlStatementType;
+  /** Present only for mongo/redis data sources; inline operations for the
+      mongo/redis drivers (P2-7.3). */
+  operation?: DataSourceOperation;
+  statementType?: SqlStatementType;
   /** Values at this call site. `{{flowVar}}` is resolved before driver binding. */
   parameters: Record<string, unknown>;
   assertions: Assertion[];
@@ -558,6 +582,14 @@ export function defaultPort(type: DataSourceType | undefined): number {
   }
 }
 
+/** The one definition kind a data source of this type can hold: the four
+    relational drivers store SQL, mongo/redis store an `operation` document
+    (P2-7). Lets the route layer reject a kind/type mismatch at save time
+    without loading a driver. */
+export function definitionKind(type: DataSourceType | undefined): "sql" | "mongo" | "redis" {
+  return type === "mongodb" ? "mongo" : type === "redis" ? "redis" : "sql";
+}
+
 export type DataSourceConfig = {
   host: string;
   port: number;
@@ -565,6 +597,8 @@ export type DataSourceConfig = {
   username: string;
   ssl?: boolean;
   sslRejectUnauthorized?: boolean;
+  /** MongoDB authentication database (mongodb driver only). */
+  authSource?: string;
   connectTimeoutMs?: number;
   queryTimeoutMs?: number;
   maxRows?: number;
@@ -580,6 +614,7 @@ export function normalizeDataSourceConfig(value: unknown, type?: DataSourceType)
     username: String(config.username ?? ""),
     ssl: Boolean(config.ssl),
     sslRejectUnauthorized: config.sslRejectUnauthorized !== false,
+    authSource: config.authSource ? String(config.authSource) : undefined,
     // The first P2 draft persisted these two fields under longer names.
     connectTimeoutMs: Number(config.connectTimeoutMs ?? config.connectionTimeoutMs ?? 5_000),
     queryTimeoutMs: Number(config.queryTimeoutMs ?? config.statementTimeoutMs ?? 30_000),
@@ -607,8 +642,8 @@ export type SqlDefinition = {
   description: string;
   /** 'sql' for the four relational drivers; mongo/redis use `operation` (P2-7). */
   kind: "sql" | "mongo" | "redis";
-  statementType: SqlStatementType;
-  sql: string;
+  statementType?: SqlStatementType;
+  sql?: string;
   operation?: unknown;
   params: SqlParameterDefinition[];
   createdAt: string;
@@ -931,8 +966,8 @@ export function mapSqlDefinition(row: Record<string, unknown>): SqlDefinition {
   return {
     id: String(row.id), projectId: String(row.project_id), dataSourceId: String(row.data_source_id), name: String(row.name),
     description: String(row.description ?? ""), kind: String(row.kind ?? "sql") as SqlDefinition["kind"],
-    statementType: String(row.statement_type) as SqlStatementType,
-    sql: String(row.sql), operation: row.operation ?? undefined, params: (row.params ?? []) as SqlParameterDefinition[],
+    statementType: row.statement_type ? String(row.statement_type) as SqlStatementType : undefined,
+    sql: row.sql ? String(row.sql) : undefined, operation: row.operation ?? undefined, params: (row.params ?? []) as SqlParameterDefinition[],
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }

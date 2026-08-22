@@ -3,7 +3,7 @@ import { validateSqlParams } from "./adapters/common.js";
 import { SUPERSET_FLAGS, validateStatement } from "./adapters/skeleton.js";
 import type { SqlExecutionInput, SqlExecutionResult } from "./adapters/types.js";
 import { loadDataSource } from "./dataSources.js";
-import type { SqlParameterDefinition, SqlStatementType } from "./models/types.js";
+import type { SqlParameterDefinition, SqlStatementType } from "../models/types.js";
 
 export type { SqlExecutionInput, SqlExecutionResult } from "./adapters/types.js";
 export { validateSqlParams };
@@ -24,7 +24,7 @@ export function validateSqlDefinition(statementType: SqlStatementType, sql: stri
     concern; the caller (route, database step) only supplies the SQL contract. */
 export async function executeSql(input: SqlExecutionInput): Promise<SqlExecutionResult> {
   const source = await loadDataSource(input.projectId, input.dataSourceId);
-  const adapter = getAdapter(source.type);
+  const adapter = await getAdapter(source.type);
   if (!adapter) throw new Error(`data source type "${source.type}" is not supported yet`);
   return adapter.execute(input, { type: source.type, config: source.config, password: source.password });
 }

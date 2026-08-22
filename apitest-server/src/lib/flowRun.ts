@@ -1,4 +1,5 @@
 import { pool } from "../db.js";
+import { inferOperationKind } from "./adapters/operations.js";
 import { publishEvent } from "./events.js";
 import { loadFlowBody } from "./flowRefs.js";
 import { runGraph, TokenPool, type GraphContext } from "./flowGraph.js";
@@ -7,7 +8,7 @@ import { loadEnvironment, type LoadedEnvironment } from "./run.js";
 import { sanitizeValue } from "./sanitize.js";
 import { topologicalOrder } from "./flow.js";
 import { loadSqlDefinition } from "./dataSources.js";
-import type { FlowEdge, FlowNode, FlowPlanStep } from "../models/types.js";
+import type { FlowEdge, FlowNode, FlowPlanStep, SqlParameterDefinition } from "../models/types.js";
 
 export type FlowRunSpec = {
   nodes: PreparedFlowNode[];
@@ -44,13 +45,26 @@ export async function prepareFlowNodes(
   return Promise.all(nodes.map(async (node): Promise<PreparedFlowNode> => {
     if (node.type === "database") {
       /* Database nodes keep their assertion/extract handling inside flowNodes,
-         but the SQL itself is resolved here because credentials must never ride
-         along in run_spec. */
-      if (!node.sqlDefinitionId) return { ...node, resolvedSql: node.sql!, parameterDefinitions: Object.entries(node.parameters).map(([name, value]) => ({ name, type: typeof value === "number" ? "number" : typeof value === "boolean" ? "boolean" : typeof value === "object" ? "json" : "string" })) };
+         but the payload (SQL or mongo/redis operation) is resolved here because
+         credentials must never ride along in run_spec. */
+      const inferred: SqlParameterDefinition[] = Object.entries(node.parameters).map(([name, value]) => ({ name, type: typeof value === "number" ? "number" : typeof value === "boolean" ? "boolean" : typeof value === "object" ? "json" : "string" }));
+      if (!node.sqlDefinitionId) {
+        if (node.operation) return { ...node, kind: inferOperationKind(node.operation), resolvedOperation: node.operation, parameterDefinitions: inferred };
+        return { ...node, kind: "sql", resolvedSql: node.sql!, parameterDefinitions: inferred };
+      }
       const definition = await loadSqlDefinition(projectId, node.sqlDefinitionId);
       if (!definition || definition.dataSourceId !== node.dataSourceId) throw new Error("database node SQL definition must belong to its data source and project");
-      if (definition.statementType !== node.statementType) throw new Error("database node statementType does not match its SQL definition");
-      return { ...node, resolvedSql: definition.sql, parameterDefinitions: definition.params };
+      if (definition.kind === "sql") {
+        /* The definition is the source of truth. A node only authors its own
+           statementType in inline mode, so a present-but-different one is a real
+           conflict, while an absent one simply adopts the definition's. */
+        if (node.statementType && definition.statementType !== node.statementType) throw new Error("database node statementType does not match its SQL definition");
+        return { ...node, kind: "sql", statementType: definition.statementType, resolvedSql: definition.sql, parameterDefinitions: definition.params };
+      }
+      /* A mongo/redis definition has no statementType: clear whatever the node
+         kept from an earlier relational data source so the snapshot cannot imply
+         a read-only guarantee the operation path does not make. */
+      return { ...node, kind: definition.kind, statementType: undefined, resolvedOperation: definition.operation, parameterDefinitions: definition.params };
     }
     if (node.type === "subflow") {
       const body = await loadFlowBody(projectId, node, chain);

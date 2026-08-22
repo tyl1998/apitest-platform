@@ -1,5 +1,5 @@
 import { evaluateConditionGroup } from "./flow.js";
-import { executeDatabaseWork } from "./databaseStep.js";
+import { executeDatabaseWork, type PreparedDatabaseWork } from "./databaseStep.js";
 import { runScriptNode } from "./sandbox.js";
 import { sanitizeValue } from "./sanitize.js";
 import type { LoadedEnvironment } from "./run.js";
@@ -17,8 +17,13 @@ import type { DatabaseFlowNode, FlowEdge, FlowNode, LoopFlowNode, SqlParameterDe
  * 它们的实现本质上是「准备一个变量袋，然后 runGraph」。
  */
 
-/** SQL resolved at enqueue time; credentials never enter `run_spec`. */
-export type PreparedDatabaseFlowNode = DatabaseFlowNode & { resolvedSql: string; parameterDefinitions: SqlParameterDefinition[] };
+/** SQL/operation resolved at enqueue time; credentials never enter `run_spec`. */
+export type PreparedDatabaseFlowNode = DatabaseFlowNode & {
+  kind: "sql" | "mongo" | "redis";
+  resolvedSql?: string;
+  resolvedOperation?: unknown;
+  parameterDefinitions: SqlParameterDefinition[];
+};
 
 /**
  * 一张已冻结的内层图（P2-6）。
@@ -88,10 +93,10 @@ type DatabaseOutcome = {
  * 同一条 SQL 不该在流程里通过而在别处失败。
  */
 export async function executeDatabaseNode(projectId: string, node: PreparedDatabaseFlowNode, bag: Record<string, string>, environment: LoadedEnvironment): Promise<DatabaseOutcome> {
-  const outcome = await executeDatabaseWork(projectId, {
-    dataSourceId: node.dataSourceId, statementType: node.statementType, sql: node.resolvedSql,
-    parameterDefinitions: node.parameterDefinitions, parameters: node.parameters, assertions: node.assertions ?? [],
-  }, bag, environment, node.extracts ?? []);
+  const work: PreparedDatabaseWork = node.kind === "sql"
+    ? { dataSourceId: node.dataSourceId, kind: "sql", statementType: node.statementType!, sql: node.resolvedSql!, parameterDefinitions: node.parameterDefinitions, parameters: node.parameters, assertions: node.assertions ?? [] }
+    : { dataSourceId: node.dataSourceId, kind: node.kind, operation: node.resolvedOperation, parameterDefinitions: node.parameterDefinitions, parameters: node.parameters, assertions: node.assertions ?? [] };
+  const outcome = await executeDatabaseWork(projectId, work, bag, environment, node.extracts ?? []);
   /* assertionVariables stayed in the shape after declarative assertions stopped
      writing variables (P2-2.1); kept empty rather than removed so the node's
      `produced` spread reads the same as it did. */

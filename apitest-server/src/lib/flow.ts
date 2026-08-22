@@ -1,4 +1,5 @@
 import { readPath, validateAssertions, validateDeclarativeAssertions } from "./assert.js";
+import { validateOperation } from "./adapters/operations.js";
 import { BODY_TYPES, METHODS } from "./http.js";
 import { isUuid } from "./uuid.js";
 import { validateSqlDefinition } from "./sqlExecutor.js";
@@ -189,10 +190,18 @@ export function validateNode(node: FlowNode | undefined, where: string): string 
   } else if (node.type === "database") {
     if (!isUuid(node.dataSourceId ?? "")) return `${where}: node must reference a data source`;
     if (node.sqlDefinitionId !== undefined && !isUuid(node.sqlDefinitionId)) return `${where}: sqlDefinitionId must be a uuid`;
-    if (Boolean(node.sqlDefinitionId) === Boolean(node.sql?.trim())) return `${where}: choose either sqlDefinitionId or inline sql`;
-    if (node.statementType !== "query" && node.statementType !== "command") return `${where}: statementType must be query or command`;
+    const modes = [Boolean(node.sqlDefinitionId), Boolean(node.sql?.trim()), node.operation !== undefined && node.operation !== null];
+    if (modes.filter(Boolean).length !== 1) return `${where}: choose exactly one of sqlDefinitionId, inline sql or an operation`;
     if (!node.parameters || typeof node.parameters !== "object" || Array.isArray(node.parameters)) return `${where}: parameters must be an object`;
-    if (node.sql) {
+    if (node.operation) {
+      const invalid = validateOperation(node.operation);
+      if (invalid) return `${where}: ${invalid}`;
+    } else if (node.sql) {
+      /* statementType belongs to inline SQL only. A node referencing a named
+         definition takes that definition's kind and statementType at enqueue
+         time (flowRun.prepareFlowNodes); demanding one here would make every
+         mongo/redis definition unusable, because it has none to match. */
+      if (node.statementType !== "query" && node.statementType !== "command") return `${where}: statementType must be query or command`;
       const inferred = Object.entries(node.parameters).map(([name, value]) => ({ name, type: (typeof value === "number" ? "number" : typeof value === "boolean" ? "boolean" : typeof value === "object" ? "json" : "string") as "number" | "boolean" | "json" | "string" }));
       const invalid = validateSqlDefinition(node.statementType, node.sql, inferred);
       if (invalid) return `${where}: ${invalid}`;
@@ -428,6 +437,7 @@ export function toFlowNode(node: FlowNode): FlowNode {
     return {
       ...common, type: "database", dataSourceId: node.dataSourceId,
       sqlDefinitionId: node.sqlDefinitionId || undefined, sql: node.sql?.trim() || undefined,
+      operation: node.operation,
       statementType: node.statementType, parameters: node.parameters ?? {},
       assertions: (node.assertions ?? []).filter((assertion) => assertion.type !== "script") as Assertion[],
       extracts: (node.extracts ?? []).map((extract) => ({ name: extract.name.trim(), from: extract.from, path: extract.path?.trim() || undefined })),

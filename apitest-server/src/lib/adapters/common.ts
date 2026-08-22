@@ -1,5 +1,6 @@
 import type { SqlParameterDefinition } from "../../models/types.js";
 import { sqlSkeleton, type SkeletonFlags } from "./skeleton.js";
+import type { CompiledSql } from "./types.js";
 
 const PARAM_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
 const PARAM_TYPES: SqlParameterDefinition["type"][] = ["string", "number", "boolean", "date", "json"];
@@ -61,9 +62,9 @@ export function compileSql(
   supplied: Record<string, unknown>,
   placeholder: (index: number) => string,
   flags: SkeletonFlags,
-) {
+): CompiledSql {
   const byName = new Map(definitions.map((item) => [item.name.trim(), { ...item, name: item.name.trim() }]));
-  const values: unknown[] = [];
+  const values: unknown[] = []; const kinds: SqlParameterDefinition[] = [];
   const skeleton = sqlSkeleton(sql, flags);
   const compiled = sql.replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}/g, (token: string, rawName: string, offset: number) => {
     /* A token in a SQL string/comment is data, not a bind location. */
@@ -73,11 +74,12 @@ export function compileSql(
     let value = Object.prototype.hasOwnProperty.call(supplied, rawName) ? supplied[rawName] : definition.defaultValue;
     if ((value === undefined || value === null) && definition.required) throw new Error(`SQL parameter "${rawName}" is required`);
     values.push(convertValue(definition, value));
+    kinds.push(definition);
     return placeholder(values.length);
   });
   const unused = Object.keys(supplied).filter((name) => !byName.has(name));
   if (unused.length) throw new Error(`undeclared SQL parameter values: ${unused.join(", ")}`);
-  return { sql: compiled.replace(/;\s*$/, ""), values };
+  return { sql: compiled.replace(/;\s*$/, ""), values, definitions: kinds };
 }
 
 export function clamp(value: number | undefined, fallback: number, maximum: number) {
