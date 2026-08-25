@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Braces, Database, GitBranch, Globe2, Play, Plus, Timer, Trash2, Workflow } from "lucide-react";
 import { api, type ExecutionStep, type FlowNode, type FlowStepResult, type FlowSummary, type LoopFlowNode, type SubflowFlowNode, type WaitFlowNode } from "../api";
 import { variableOptions } from "../lib/flowVariables";
+import { useLimitsStore } from "../stores/limitsStore";
 import { useProjectStore } from "../stores/projectStore";
 import { IconButton } from "./IconButton";
 import { KeyValueEditor, fromPairs, toPairs, type Pair } from "./KeyValueEditor";
@@ -137,6 +138,8 @@ export function WaitNodeDrawer({ projectId, flowId, node, variables, evidence, o
   const [result, setResult] = useNodeEvidence(projectId, flowId, node.id, "wait", evidence);
   const [running, run] = useSingleStep(projectId, flowId, node, variables, "wait", setResult);
   const seconds = node.waitMs / 1000;
+  /* 等待上限由服务端说（MAX_WAIT_MS）：等待期间节点占着并发槽，上限属于平台而不是页面。 */
+  const maxSeconds = useLimitsStore((state) => state.limits.maxWaitMs) / 1000;
   const output = result?.output as { waitMs?: number; waitedMs?: number; interrupted?: boolean } | undefined;
 
   return <Drawer title={t("flows.nodeTitle")} open onClose={onClose} width={640} extra={<DrawerActions running={running} onRun={() => void run()} onDelete={onDelete} />}>
@@ -147,17 +150,17 @@ export function WaitNodeDrawer({ projectId, flowId, node, variables, evidence, o
         className="input mono"
         type="number"
         min={0.1}
-        max={30}
+        max={maxSeconds}
         step={0.1}
         value={Number.isFinite(seconds) ? seconds : ""}
         onChange={(event) => {
           const next = Number(event.target.value);
           /* 毫秒是存储单位，秒只是输入单位；四舍五入避免 1.1*1000 出现浮点尾数。 */
-          onChange({ ...node, waitMs: Number.isFinite(next) ? Math.round(next * 1000) : 0 });
+          onChange({ ...node, waitMs: Number.isFinite(next) ? Math.min(maxSeconds * 1000, Math.round(next * 1000)) : 0 });
         }}
       />
     </label>
-    <p className="form-note">{t("flows.waitNodeHint")}</p>
+    <p className="form-note">{t("flows.waitNodeHint", { max: maxSeconds })}</p>
 
     {result && <section className="panel" style={{ marginTop: 16 }}>
       <div className="panel-head">
@@ -331,6 +334,10 @@ export function SubflowNodeDrawer({ projectId, flowId, node, nodes, edges, varia
 export function LoopNodeDrawer({ projectId, flowId, node, nodes, edges, variables, environmentId, evidence, onChange, onClose, onDelete }: AdvancedProps<LoopFlowNode>) {
   const { t } = useTranslation();
   const { environments } = useProjectStore();
+  /* 迭代数与循环并发的上限都由服务端说（MAX_LOOP_ITERATIONS / MAX_LOOP_CONCURRENCY）。
+     注意循环并发**不受**令牌预算约束：迭代互相独立，池子紧张时分批跑完，结论不变。 */
+  const maxIterations = useLimitsStore((state) => state.limits.maxLoopIterations);
+  const maxLoopConcurrency = useLimitsStore((state) => state.limits.maxLoopConcurrency);
   const [result, setResult] = useNodeEvidence(projectId, flowId, node.id, "loop", evidence);
   const [running, run] = useSingleStep(projectId, flowId, node, variables, "loop", setResult);
 
@@ -369,9 +376,9 @@ export function LoopNodeDrawer({ projectId, flowId, node, nodes, edges, variable
         ? <label className="field">
             <span>{t("flows.loopCount")}</span>
             <input
-              className="input mono" type="number" min={1} max={100}
+              className="input mono" type="number" min={1} max={maxIterations}
               value={node.count ?? 1}
-              onChange={(event) => onChange({ ...node, count: Math.trunc(Number(event.target.value)) || 1 })}
+              onChange={(event) => onChange({ ...node, count: Math.min(maxIterations, Math.max(1, Math.trunc(Number(event.target.value)) || 1)) })}
             />
           </label>
         : <label className="field">
@@ -399,13 +406,13 @@ export function LoopNodeDrawer({ projectId, flowId, node, nodes, edges, variable
       <label className="field">
         <span>{t("flows.loopConcurrency")}</span>
         <input
-          className="input mono" type="number" min={1} max={10}
+          className="input mono" type="number" min={1} max={maxLoopConcurrency}
           value={node.concurrency ?? 1}
-          onChange={(event) => onChange({ ...node, concurrency: Math.trunc(Number(event.target.value)) || 1 })}
+          onChange={(event) => onChange({ ...node, concurrency: Math.min(maxLoopConcurrency, Math.max(1, Math.trunc(Number(event.target.value)) || 1)) })}
         />
       </label>
     </div>
-    <p className="form-note">{t("flows.loopNodeHint")}</p>
+    <p className="form-note">{t("flows.loopNodeHint", { max: maxIterations })}</p>
     {(node.concurrency ?? 1) > 1 && <p className="form-note">{t("flows.loopConcurrencyHint")}</p>}
 
     {/* 体内步骤由**画布**管理：拖进框、或点框上的 + 添加，双击框内的步骤编辑它。

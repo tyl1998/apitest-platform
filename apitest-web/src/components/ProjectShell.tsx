@@ -9,7 +9,7 @@ import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 import { IconButton } from "./IconButton";
 
-const PAGES = ["endpoints", "flows", "environments", "data-sources", "reports"] as const;
+const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "reports"] as const;
 export type ProjectPage = typeof PAGES[number];
 
 /**
@@ -38,8 +38,9 @@ export function ProjectShell() {
   /* A detail page is open when the path carries an id past the section. */
   const endpointOpen = active === "endpoints" && Boolean(segments[3]);
   const flowOpen = active === "flows" && Boolean(segments[3]);
+  const suiteOpen = active === "suites" && Boolean(segments[3]);
   const dataSourceOpen = active === "data-sources" && Boolean(segments[3]);
-  const detailOpen = endpointOpen || flowOpen || dataSourceOpen;
+  const detailOpen = endpointOpen || flowOpen || suiteOpen || dataSourceOpen;
 
   useEffect(() => { void refresh(); }, [refresh]);
   /* The URL owns which project is open, never leftover store state. */
@@ -52,7 +53,7 @@ export function ProjectShell() {
 
   const nav: { group: string; items: [ProjectPage, string][] }[] = [
     { group: t("nav.interfaceAssets"), items: [["endpoints", t("nav.endpoints")], ["environments", t("nav.environments")], ["data-sources", t("nav.dataSources")]] },
-    { group: t("nav.orchestration"), items: [["flows", t("nav.flows")]] },
+    { group: t("nav.orchestration"), items: [["flows", t("nav.flows")], ["suites", t("nav.suites")]] },
     { group: t("nav.common"), items: [["reports", t("nav.reports")]] },
   ];
   const pageTitle = active === "data-sources" ? t("dataSources.title") : t(`${active}.title`);
@@ -97,7 +98,7 @@ export function ProjectShell() {
           {detailOpen ? <>
              <button className="crumb-link" onClick={() => void go(`/projects/${projectId}/${active}`)}>{pageTitle}</button>
              <span className="crumb-sep">/</span>
-             <strong>{flowOpen ? t("flows.current") : dataSourceOpen ? t("dataSources.current") : t("editor.current")}</strong>
+             <strong>{flowOpen ? t("flows.current") : suiteOpen ? t("suites.current") : dataSourceOpen ? t("dataSources.current") : t("editor.current")}</strong>
            </> : <strong>{pageTitle}</strong>}
         </nav>
         <div className="topbar-actions">

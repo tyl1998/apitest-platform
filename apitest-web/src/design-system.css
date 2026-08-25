@@ -1810,6 +1810,34 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .flow-grid .col-actions { width: 166px; }
 .flow-result { display: inline-flex; align-items: center; gap: var(--s2); }
 
+/* 套件列表：名称吃剩余宽度，选择方式与最近结果按内容定宽。只有编辑/删除两个动作，
+   所以 actions 比流程窄一半（两个 30px + 6px 间距 + 14px 侧边距）。 */
+.suite-grid { table-layout: fixed; }
+.suite-col-selection { width: 220px; }
+.suite-col-result { width: 210px; }
+.suite-grid .col-actions { width: 94px; }
+
+/* 成员选择器：弹窗里唯一可滚动的区域。`.content` 是页面级唯一滚动容器，Modal 自己
+   是 portal 里的独立层，所以这里给一个受限高度，而不是让弹窗跟着成员数变高。 */
+.picker-scroll { max-height: 46vh; overflow: auto; border: 1px solid var(--line); border-radius: var(--r); }
+.picker-grid { table-layout: fixed; }
+.picker-grid td { padding: 6px 10px; }
+/* 接口分组头：同名用例只能靠所属接口区分，所以分组名必须先读到。 */
+.picker-group td {
+  position: sticky;
+  top: 0;
+  background: var(--raised);
+  color: var(--ink-3);
+  font-size: 12px;
+  font-family: var(--mono);
+  border-bottom: 1px solid var(--line);
+}
+.picker-group td:hover { background: var(--raised); }
+/* 成员行的类型标（用例 / 流程）：定宽，让名称列在两种成员之间对齐。 */
+.suite-col-kind { width: 56px; }
+/* 并排的勾选项（成员范围：用例 / 流程）。 */
+.check-row { display: flex; gap: var(--s4); flex-wrap: wrap; }
+
 /* The canvas is the one place a page needs a fixed height rather than growing:
    `.content` is the app's only scroll container, so a canvas that grew with its
    graph would make the shell scroll and take the toolbar off screen with it. */

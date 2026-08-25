@@ -3,9 +3,11 @@ import { Drawer, Modal, Select, message } from "antd";
 import Editor from "@monaco-editor/react";
 import { useTranslation } from "react-i18next";
 import { Braces, Crosshair, GitBranch, Play, Plus, Trash2 } from "lucide-react";
-import { api, type Assertion, type AssertionResult, type ConditionFlowNode, type DatabaseFlowNode, type DataSource, type DataSourceType, type Execution, type ExecutionStep, type FlowEdge, type FlowExtract, type FlowExtractResult, type FlowNode, type FlowStepResult, type RequestFlowNode, type Script, type ScriptFlowNode, type SqlDefinition, type TestCase } from "../api";
+import { api, type Assertion, type AssertionResult, type ConditionFlowNode, type DatabaseFlowNode, type DataSource, type DataSourceType, type Execution, type ExecutionStep, type FlowEdge, type FlowExtract, type FlowExtractResult, type FlowNode, type FlowStepResult, type RequestFlowNode, type Script, type ScriptFlowNode, type SqlDefinition, type TestCaseSummary } from "../api";
 import { defaultOperationText, formatOperation, operationLabelFromText, operationTemplates } from "../operationTemplates";
 import { variableOptions } from "../lib/flowVariables";
+import { useDebounced } from "../hooks/useDebounced";
+import { useLimitsStore } from "../stores/limitsStore";
 import { useProjectStore } from "../stores/projectStore";
 import { AssertionEditor, ScriptChecks } from "./AssertionEditor";
 import { ExecutionDetail } from "./ExecutionSnapshot";
@@ -76,6 +78,8 @@ export function FlowNodeDrawer(props: FlowNodeDrawerProps) {
 function RequestNodeDrawer({ projectId, flowId, node, nodes, edges, variables, environmentId, evidence, onChange, onClose, onDelete }: Omit<FlowNodeDrawerProps, "node"> & { node: RequestFlowNode }) {
   const { t } = useTranslation();
   const { endpoints, environments } = useProjectStore();
+  /* 请求并发的上限 = 一次执行的叶子令牌预算（服务端 FLOW_PARALLELISM，P2-4.2）。 */
+  const concurrencyMax = useLimitsStore((state) => state.limits.flowParallelism);
   const [tab, setTab] = useState<Tab>("request");
   const [bodyText, setBodyText] = useState("");
   const [bodyError, setBodyError] = useState<string>();
@@ -85,7 +89,10 @@ function RequestNodeDrawer({ projectId, flowId, node, nodes, edges, variables, e
   const [concurrent, setConcurrent] = useState<ExecutionStep>();
   const [loadingRuns, setLoadingRuns] = useState(false);
   const [sourceKind, setSourceKind] = useState<SourceKind>("endpoint");
-  const [cases, setCases] = useState<TestCase[]>([]);
+  const [cases, setCases] = useState<TestCaseSummary[]>([]);
+  /** 用例下拉的搜索词。列表是分页的，所以筛选只能发生在服务端。 */
+  const [caseKeyword, setCaseKeyword] = useState("");
+  const debouncedCaseKeyword = useDebounced(caseKeyword);
   const [pickBody, setPickBody] = useState<number>();
   const [pickHeader, setPickHeader] = useState<number>();
   /**
@@ -134,12 +141,20 @@ function RequestNodeDrawer({ projectId, flowId, node, nodes, edges, variables, e
       .finally(() => setLoadingRuns(false));
   }, [projectId, flowId, node?.id, evidence]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* Cases are loaded once the user asks for them: most nodes are seeded from an
-     endpoint, and this is a second request per project otherwise. */
+  /**
+   * Cases are loaded once the user asks for them: most nodes are seeded from an
+   * endpoint, and this is a second request per project otherwise.
+   *
+   * The list is paged server-side (P2-4), so the dropdown shows the first page
+   * and narrows by re-querying — a client-side filter would only ever search the
+   * page already loaded, which reads as「我的用例不见了」on a large project.
+   */
   useEffect(() => {
-    if (sourceKind !== "case" || cases.length) return;
-    void api.projectCases(projectId).then(setCases).catch(() => message.error(t("flows.sourceFailed")));
-  }, [sourceKind, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (sourceKind !== "case") return;
+    void api.projectCases(projectId, { keyword: debouncedCaseKeyword, pageSize: 50 })
+      .then((page) => setCases(page.items))
+      .catch(() => message.error(t("flows.sourceFailed")));
+  }, [sourceKind, projectId, debouncedCaseKeyword]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const options = useMemo(
     () => variableOptions({
@@ -315,10 +330,16 @@ function RequestNodeDrawer({ projectId, flowId, node, nodes, edges, variables, e
                     ...(current.sourceCaseId && !cases.some((item) => item.id === current.sourceCaseId)
                       ? [{ value: current.sourceCaseId, label: current.sourceCaseName ?? current.sourceCaseId }]
                       : []),
-                    ...cases.map((item) => ({ value: item.id, label: item.name })),
+                    ...cases.map((item) => ({ value: item.id, label: `${item.name}  ·  ${item.endpointName}` })),
                   ]}
                   placeholder={t("flows.pickCase")}
-                  showSearch optionFilterProp="label" style={{ flex: 1 }}
+                  /* 搜索走服务端（列表分页）：`filterOption={false}` 关掉 antd 的本地
+                     过滤，否则它会在「服务端刚返回的这一页」里再筛一遍，把命中的结果
+                     又藏掉。搜索框本身保持非受控，只把词捞出来发查询；收起时清空，
+                     免得下次打开还停在上一次的筛选结果上。 */
+                  showSearch filterOption={false} onSearch={setCaseKeyword}
+                  onDropdownVisibleChange={(open) => { if (!open) setCaseKeyword(""); }}
+                  style={{ flex: 1 }}
                 />}
           </div>
         </div>
@@ -338,17 +359,19 @@ function RequestNodeDrawer({ projectId, flowId, node, nodes, edges, variables, e
       </label>
 
       {/* P2-6: 请求并发。这个请求自己跑 N 次并发，提取按迭代序收集成数组——
-          并发只属于请求，所以只在请求抽屉里有这个字段。 */}
+          并发只属于请求，所以只在请求抽屉里有这个字段。
+          上限由服务端说（P2-4.2）：N 枚令牌是一次凑齐的，所以「一次执行的并发预算」
+          就是这里的上限，而它是环境变量，写死必然与服务端不一致。 */}
       <label className="field" style={{ marginTop: 12 }}>
         <span>{t("flows.requestConcurrency")}</span>
         <div className="form-grid" style={{ gridTemplateColumns: "120px 1fr", alignItems: "end", gap: 8 }}>
           <input
-            className="input mono" type="number" min={1} max={10}
+            className="input mono" type="number" min={1} max={concurrencyMax}
             value={current.concurrency ?? 1}
-            onChange={(event) => onChange({ ...current, concurrency: Math.trunc(Number(event.target.value)) || 1 })}
+            onChange={(event) => onChange({ ...current, concurrency: Math.min(concurrencyMax, Math.max(1, Math.trunc(Number(event.target.value)) || 1)) })}
             aria-label={t("flows.requestConcurrency")}
           />
-          <span className="form-note" style={{ margin: 0 }}>{t("flows.requestConcurrencyHint")}</span>
+          <span className="form-note" style={{ margin: 0 }}>{t("flows.requestConcurrencyHint", { max: concurrencyMax })}</span>
         </div>
       </label>
 

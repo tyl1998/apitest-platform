@@ -16,12 +16,15 @@ import { EndpointList } from "./components/EndpointList";
 import { EndpointWorkspace } from "./components/EndpointWorkspace";
 import { FlowList } from "./components/FlowList";
 import { FlowWorkspace } from "./components/FlowWorkspace";
+import { SuiteList } from "./components/SuiteList";
+import { SuiteWorkspace } from "./components/SuiteWorkspace";
 import { Environments } from "./components/Environments";
 import { ExecutionRecords } from "./components/ExecutionRecords";
 import { DataSourceList } from "./components/DataSourceList";
 import { DataSourceDetail } from "./components/DataSourceDetail";
 import { antdTheme, useMode } from "./theme";
 import { useAuthStore } from "./stores/authStore";
+import { useLimitsStore } from "./stores/limitsStore";
 
 function Protected() {
   const token = useAuthStore((state) => state.token);
@@ -32,6 +35,7 @@ function Root() {
   const { mode, preference, setPreference } = useMode();
   const token = useAuthStore((state) => state.token);
   const hydrate = useAuthStore((state) => state.hydrate);
+  const loadLimits = useLimitsStore((state) => state.load);
 
   /**
    * Restores the signed-in user on a reload.
@@ -41,6 +45,14 @@ function Root() {
    * `isSystemAdmin` would silently render as if the user had no rights.
    */
   useEffect(() => { void hydrate(); }, [hydrate]);
+
+  /**
+   * 平台执行预算，登录后拉一次（P2-4.2）。
+   *
+   * 在这里而不是各个编辑器里各拉一次：请求并发、循环并发、等待上限、套件成员并发四个
+   * 输入框都要用它，分散拉取会让同一个常量被请求四遍，而它整个会话都不变。
+   */
+  useEffect(() => { if (token) void loadLimits(); }, [token, loadLimits]);
 
   return <ConfigProvider theme={antdTheme(mode)}><AntApp><Routes>
     <Route path="/login" element={token ? <Navigate to="/dashboard" replace /> : <Login />} />
@@ -61,6 +73,9 @@ function Root() {
         <Route path="flows" element={<FlowList />} />
         {/* Same rule as endpoints: opening a flow is opening its canvas. */}
         <Route path="flows/:flowId" element={<FlowWorkspace />} />
+        <Route path="suites" element={<SuiteList />} />
+        {/* Same rule again: opening a suite is opening its configuration. */}
+        <Route path="suites/:suiteId" element={<SuiteWorkspace />} />
         <Route path="environments" element={<Environments />} />
         <Route path="data-sources" element={<DataSourceList />} />
         <Route path="data-sources/:dataSourceId" element={<DataSourceDetail />} />

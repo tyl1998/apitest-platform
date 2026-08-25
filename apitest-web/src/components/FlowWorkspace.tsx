@@ -250,6 +250,9 @@ function FlowCanvas() {
   /** The flow document, kept apart from the canvas nodes that render it. */
   const [steps, setSteps] = useState<FlowNode[]>([]);
   const [baseline, setBaseline] = useState("");
+  /** 标签与项目里已用过的标签建议（供「按标签」的套件选择命中这条流程）。 */
+  const [tags, setTags] = useState<string[]>([]);
+  const [memberTags, setMemberTags] = useState<string[]>([]);
   const [order, setOrder] = useState<string[]>([]);
   const [stages, setStages] = useState<string[][]>([]);
   const [planError, setPlanError] = useState<string>();
@@ -331,13 +334,14 @@ function FlowCanvas() {
         setFlow(loaded);
         setSteps(loaded.nodes);
         setName(loaded.name);
+        setTags(loaded.tags);
         setVariables(loaded.variables);
         setVariablePairs(toPairs(loaded.variables));
         setEnvironmentId(loaded.environmentId ?? "none");
         /* 画布要画的连线是顶层的加上每个循环体内的——框内的连线也在画布上。 */
         setEdges(collectEdges(loaded.nodes, loaded.edges).map((edge) => toCanvasEdge(edge, t)));
         nextPosition.current = loaded.nodes.length;
-        setBaseline(snapshot(loaded.name, loaded.environmentId ?? "none", loaded.nodes, loaded.edges, loaded.variables));
+        setBaseline(snapshot(loaded.name, loaded.environmentId ?? "none", loaded.nodes, loaded.edges, loaded.variables, loaded.tags));
       } catch { message.error(t("flows.loadFailed")); }
       finally { setLoading(false); }
     })();
@@ -346,6 +350,8 @@ function FlowCanvas() {
   useEffect(() => {
     if (!projectId) return;
     void api.dataSources(projectId).then(setDataSources).catch(() => setDataSources([]));
+    /* 标签建议服务端 DISTINCT：用例与流程共用一套「用来匹配成员」的标签词汇。 */
+    void api.projectTags(projectId, "members").then(setMemberTags).catch(() => setMemberTags([]));
   }, [projectId]);
 
   /* 可引用的流程：一条流程不能把自己当子流程。 */
@@ -575,8 +581,8 @@ function FlowCanvas() {
     /* 与保存写出的形状对齐：位置写回 + 连线分派，否则循环体内的连线会让流程
        永远显示「未保存」。 */
     const document = documentNow();
-    return snapshot(name, environmentId, document.nodes, document.edges, variables) !== baseline;
-  }, [flow, name, environmentId, documentNow, variables, baseline]);
+    return snapshot(name, environmentId, document.nodes, document.edges, variables, tags) !== baseline;
+  }, [flow, name, environmentId, documentNow, variables, tags, baseline]);
 
   /**
    * Variables a seed value may reference.
@@ -622,19 +628,20 @@ function FlowCanvas() {
       const saved = await api.updateFlow(projectId, flowId, {
         name: name.trim(),
         environmentId: environmentId === "none" ? null : environmentId,
-        nodes: document.nodes, edges: document.edges, variables,
+        nodes: document.nodes, edges: document.edges, variables, tags,
       });
       setFlow(saved);
       /* Re-seeded from the response: the server hands back script ids the client
          did not have when it built the request. */
       setSteps(saved.nodes);
-      setBaseline(snapshot(saved.name, saved.environmentId ?? "none", saved.nodes, saved.edges, saved.variables));
+      setTags(saved.tags);
+      setBaseline(snapshot(saved.name, saved.environmentId ?? "none", saved.nodes, saved.edges, saved.variables, saved.tags));
       message.success(t("flows.saved"));
     } catch (error) {
       const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
       message.error(detail ?? t("flows.saveFailed"));
     } finally { setSaving(false); }
-  }, [projectId, flowId, name, environmentId, documentNow, variables, t]);
+  }, [projectId, flowId, name, environmentId, documentNow, variables, tags, t]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -825,6 +832,14 @@ function FlowCanvas() {
             onChange={setEnvironmentId}
             options={[{ value: "none", label: t("flows.noEnvironment") }, ...environments.map((item) => ({ value: item.id, label: item.name }))]}
             style={{ width: 160 }}
+          />
+          {/* 标签一直存在库里、列表也一直在显示，却没有编辑入口——于是「按标签选择」
+              永远选不到任何流程（P2-4）。建议来自项目里已用过的标签，也允许输入新的。 */}
+          <Select
+            mode="tags" value={tags} onChange={setTags}
+            options={memberTags.map((tag) => ({ value: tag, label: tag }))}
+            placeholder={t("flows.tagsPlaceholder")} aria-label={t("flows.tags")}
+            style={{ minWidth: 180, maxWidth: 320 }} tokenSeparators={[","]}
           />
           <button className="cell-link mono" onClick={() => setVariablesOpen(true)}>
             {t("flows.variableCount", { count: Object.keys(variables).length })}
@@ -1196,6 +1211,6 @@ function stableJson(value: unknown): unknown {
   return value;
 }
 
-function snapshot(name: string, environmentId: string, steps: FlowNode[], edges: FlowEdge[], variables: Record<string, string>) {
-  return JSON.stringify(stableJson({ name, environmentId, steps, edges: [...edges].sort((a, b) => a.id.localeCompare(b.id)), variables }));
+function snapshot(name: string, environmentId: string, steps: FlowNode[], edges: FlowEdge[], variables: Record<string, string>, tags: string[]) {
+  return JSON.stringify(stableJson({ name, environmentId, steps, edges: [...edges].sort((a, b) => a.id.localeCompare(b.id)), variables, tags }));
 }

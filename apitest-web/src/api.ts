@@ -362,6 +362,29 @@ export type TestCase = {
   updatedAt: string;
 };
 
+/**
+ * 列表用的用例摘要（跨接口选择器 / 套件成员）。
+ *
+ * 没有 request / assertions / hooks / extracts / responseScripts：选择器只需要
+ * 认出是哪一条用例。需要完整定义时用 `api.case(projectId, caseId)`。
+ */
+export type TestCaseSummary = {
+  id: string;
+  endpointId: string;
+  /** 供按接口分组。 */
+  endpointName: string;
+  name: string;
+  description: string;
+  environmentId?: string;
+  environmentName?: string;
+  /** 声明式校验条数。 */
+  assertionCount: number;
+  tags: string[];
+  lastRun?: Execution;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type TestCaseInput = {
   name: string;
   description?: string;
@@ -788,6 +811,100 @@ export type FlowInput = {
   tags?: string[];
 };
 
+/* ── 测试套件 (P2-4) ─────────────────────────────────────────────────────────
+   套件只编排成员：成员是用例或流程，各自是一次独立执行，成员之间不传变量。
+   需要传值的链路建成一条流程，而不是靠套件的执行顺序隐式串起来。 */
+
+export type SuiteMemberRef = { type: "case" | "flow"; id: string };
+
+/** 入队时冻结的成员：名称快照让报告在成员被删/改名后仍读得通。 */
+export type SuiteMemberSnapshot = SuiteMemberRef & {
+  name: string;
+  /** 用例成员所属接口，供报告分组。流程成员为空。 */
+  endpointId?: string;
+  endpointName?: string;
+  environmentId?: string;
+  environmentName?: string;
+};
+
+/**
+ * 成员选择方式。
+ *
+ * `manual` 是显式引用，会参与「删用例/流程前的引用检查」；`tag`/`all` 是动态选择，
+ * 在入队那一刻才解析成快照，不构成引用。
+ */
+export type SuiteSelection =
+  | { type: "manual"; members: SuiteMemberRef[] }
+  | { type: "tag"; tags: string[]; match: "any" | "all"; includeCases: boolean; includeFlows: boolean }
+  | { type: "all"; includeCases: boolean; includeFlows: boolean };
+
+/**
+ * `concurrency` 是「几个成员同时开跑」，不是「几个请求同时在飞」——后者由平台级
+ * 令牌预算封顶，声明再高也不会突破。
+ */
+export type SuiteExecutionConfig = {
+  concurrency: number;
+  failFast: boolean;
+  /** 'member_default' 用成员自己保存的环境；'override' 全部改用 environmentId。 */
+  environmentStrategy: "member_default" | "override";
+  environmentId?: string;
+};
+
+export type SuiteExecution = {
+  id: string;
+  suiteId?: string;
+  suiteName: string;
+  executionIndexId?: string;
+  environmentId?: string;
+  environmentName?: string;
+  status: ExecutionStatus;
+  total: number;
+  successCount: number;
+  failedCount: number;
+  /** fail-fast 或取消后没能开跑的成员。 */
+  skippedCount: number;
+  error?: string;
+  members: SuiteMemberSnapshot[];
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+};
+
+export type TestSuite = {
+  id: string;
+  name: string;
+  description: string;
+  selection: SuiteSelection;
+  execution: SuiteExecutionConfig;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * 列表不解析 tag/all 的成员数：那要为每一行跑两条查询，而列表能显示的只是筛选
+ * 条件本身。真实成员数由 `previewSuite` 给出。
+ */
+export type SuiteSummary = TestSuite & { lastRun?: SuiteExecution };
+
+export type SuitePreview = {
+  members: SuiteMemberSnapshot[];
+  total: number;
+  /** manual 引用了但已不存在的成员。 */
+  missing: SuiteMemberRef[];
+  memberLimit: number;
+  /** 超上限、引用悬空之类要摊开说的问题；不静默截断。 */
+  warnings: string[];
+};
+
+export type TestSuiteInput = {
+  name?: string;
+  description?: string;
+  selection?: SuiteSelection;
+  execution?: Partial<SuiteExecutionConfig>;
+  tags?: string[];
+};
+
 export type WorkerMode = "endpoint" | "repository";
 /**
  * One execution worker, as it last described itself (P1-3).
@@ -875,6 +992,26 @@ export type Dashboard = {
 };
 
 export type Preferences = { theme: "light" | "dark" | "system"; language: "zh-CN" | "en"; restoreLastPage: boolean };
+
+/**
+ * 平台的执行预算与保护性上限（P2-4.2）。
+ *
+ * 这些数由**服务端**说，界面只显示：`flowParallelism` 与 `suiteLeafBudget` 是环境变量
+ * （`FLOW_PARALLELISM` / `SUITE_LEAF_BUDGET`），把它们写死在输入框上必然与服务端不一致
+ * ——用户填得进去、保存却被拒。
+ *
+ * 尤其是 `flowParallelism`：请求节点的并发是**原子领取**的（N 枚令牌一次凑齐），所以它
+ * 同时就是「一个请求最多并发几次」的上限。
+ */
+export type PlatformLimits = {
+  flowParallelism: number;
+  suiteLeafBudget: number;
+  suiteMaxConcurrency: number;
+  maxLoopIterations: number;
+  maxLoopConcurrency: number;
+  maxWaitMs: number;
+  suiteMaxMembers: number;
+};
 export type ProjectFilters = { keyword?: string; projectIds?: string[] };
 export type ExecutionSourceFilter = "endpoint_debug" | "test_case" | "flow_step" | "all";
 export type ExecutionFilters = { status?: string; endpointId?: string; source?: ExecutionSourceFilter; caseId?: string; page?: number; pageSize?: number };
@@ -977,6 +1114,8 @@ export const api = {
   updatePreferences: (input: Partial<Preferences>) => client.put("/system/preferences", input).then(data<Preferences>),
   /** Execution fleet status. System admin only; read-only (P1-3). */
   workers: () => client.get("/system/workers").then(data<WorkerFleet>),
+  /** 执行预算与上限。任何能编辑流程或套件的人都要读它，所以不限系统管理员。 */
+  systemLimits: () => client.get("/system/limits").then(data<PlatformLimits>),
 
   projects: (filters?: ProjectFilters) => client.get("/projects", { params: projectParams(filters) }).then(data<ProjectMetric[]>),
   project: (id: string) => client.get(`/projects/${id}`).then(data<Project>),
@@ -1049,9 +1188,15 @@ export const api = {
 
   /* 用例 live under their endpoint; there is no standalone用例 navigation page. */
   cases: (projectId: string, endpointId: string) => client.get(`/projects/${projectId}/endpoints/${endpointId}/cases`).then(data<TestCase[]>),
-  /** Cross-endpoint search, for the跨接口用例选择器 that 测试套件 (P2-4) uses. */
-  projectCases: (projectId: string, filters?: { keyword?: string; tag?: string; endpointId?: string }) =>
-    client.get(`/projects/${projectId}/cases`, { params: { keyword: filters?.keyword?.trim() || undefined, tag: filters?.tag || undefined, endpointId: filters?.endpointId || undefined } }).then(data<TestCase[]>),
+  /**
+   * Cross-endpoint search, for the跨接口用例选择器 that 测试套件 (P2-4) uses.
+   *
+   * Paged and summary-only: a picker never needs every case's request body.
+   * Search is therefore server-side — filtering a loaded page would only match
+   * what happens to be on it.
+   */
+  projectCases: (projectId: string, filters?: { keyword?: string; tag?: string; endpointId?: string; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/cases`, { params: { keyword: filters?.keyword?.trim() || undefined, tag: filters?.tag || undefined, endpointId: filters?.endpointId || undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<TestCaseSummary>),
   case: (projectId: string, caseId: string) => client.get(`/projects/${projectId}/cases/${caseId}`).then(data<TestCase>),
   createCase: (projectId: string, endpointId: string, input: TestCaseInput) => client.post(`/projects/${projectId}/endpoints/${endpointId}/cases`, input).then(data<TestCase>),
   updateCase: (projectId: string, caseId: string, input: Partial<TestCaseInput>) => client.patch(`/projects/${projectId}/cases/${caseId}`, input).then(data<TestCase>),
@@ -1149,9 +1294,35 @@ export const api = {
    */
   flowNodeExecutions: (projectId: string, flowId: string, nodeId: string) =>
     client.get(`/projects/${projectId}/flows/${flowId}/nodes/executions`, { params: { nodeId } }).then(data<FlowStepResult[]>),
+  /**
+   * 项目里已经用过的标签，最常用的排在前面。
+   *
+   * `members` 是用例 + 流程的标签（套件「按标签」匹配的就是这两者），`suites` 是套件
+   * 自己的标签。服务端 DISTINCT 而不是从已加载的一页里收集——分页列表凑出来的标签清单
+   * 一定是不全的。
+   */
+  projectTags: (projectId: string, scope: "members" | "suites") =>
+    client.get(`/projects/${projectId}/tags`, { params: { scope } }).then(data<string[]>),
+
   /** Resolves what a node starts from; a case brings its checks along. */
   flowNodeSource: (projectId: string, source: { endpointId?: string; caseId?: string }) =>
     client.get(`/projects/${projectId}/flows/node-source`, { params: source }).then(data<FlowNodeSource>),
+
+  /* 测试套件 (P2-4)。执行、运行记录与取消随 P2-4.2/4.3 接入。 */
+  testSuites: (projectId: string, filters?: { keyword?: string; tag?: string }) =>
+    client.get(`/projects/${projectId}/test-suites`, { params: { keyword: filters?.keyword?.trim() || undefined, tag: filters?.tag || undefined } }).then(data<SuiteSummary[]>),
+  testSuite: (projectId: string, suiteId: string) => client.get(`/projects/${projectId}/test-suites/${suiteId}`).then(data<TestSuite>),
+  createTestSuite: (projectId: string, input: TestSuiteInput) => client.post(`/projects/${projectId}/test-suites`, input).then(data<TestSuite>),
+  updateTestSuite: (projectId: string, suiteId: string, input: TestSuiteInput) => client.put(`/projects/${projectId}/test-suites/${suiteId}`, input).then(data<TestSuite>),
+  deleteTestSuite: (projectId: string, suiteId: string) => client.delete(`/projects/${projectId}/test-suites/${suiteId}`).then(data<{ id: string }>),
+  /**
+   * 「这个套件现在会跑哪些成员」。
+   *
+   * 传 selection 就预览**还没保存的那份配置**——标签/全部是动态选择，不这样用户只能
+   * 靠保存来试。不传就预览已存的那份。
+   */
+  previewSuite: (projectId: string, suiteId: string, selection?: SuiteSelection) =>
+    client.post(`/projects/${projectId}/test-suites/${suiteId}/preview`, selection ? { selection } : {}).then(data<SuitePreview>),
   /**
    * What ran *inside* a loop or subflow step (P2-6).
    *
