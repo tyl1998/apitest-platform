@@ -18,7 +18,10 @@ export type ExecutionEvent =
   | { kind: "step"; projectId: string; stepId: string; status: string; flowExecutionId?: string; flowNodeId: string; nodeType: string }
   /* 流程父记录的进度（P1-2）。节点级进度仍走 execution/step 事件，只是多带一个
      flowExecutionId，这样画布与执行记录页可以复用同一条流。 */
-  | { kind: "flow"; projectId: string; flowExecutionId: string; executionIndexId?: string; status: string; total: number; successCount: number; failedCount: number; skippedCount: number };
+  | { kind: "flow"; projectId: string; flowExecutionId: string; executionIndexId?: string; status: string; total: number; successCount: number; failedCount: number; skippedCount: number }
+  /* 套件父记录的进度（P2-4）。成员级进度不需要新事件：一个成员就是一次独立执行，
+     它自己已经在流上发 execution / flow 事件，这一条只描述父级计数与终态。 */
+  | { kind: "suite"; projectId: string; suiteExecutionId: string; executionIndexId?: string; status: string; total: number; successCount: number; failedCount: number; skippedCount: number };
 
 let publisher: ReturnType<typeof createRedis> | undefined;
 

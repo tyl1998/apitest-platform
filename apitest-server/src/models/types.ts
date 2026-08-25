@@ -194,6 +194,31 @@ export type TestCase = {
 };
 
 /**
+ * 列表用的用例摘要：跨接口用例选择器与套件成员（P2-4）看的就是这个。
+ *
+ * 刻意**不含** request / assertions / preRequestHooks / extracts / responseScripts。
+ * 一个几百条用例的项目，把每条的请求正文和整套校验配置都发给一个选择器，传输量比
+ * 编辑器本身还大——与 flows 列表返回 `nodeCount` 而不是 `nodes` 是同一条理由。
+ * 需要完整定义的地方走 `GET /projects/:id/cases/:caseId`。
+ */
+export type TestCaseSummary = {
+  id: string;
+  projectId: string;
+  endpointId: string;
+  /** Joined，供选择器按接口分组。 */
+  endpointName: string;
+  name: string;
+  description: string;
+  environmentId?: string;
+  environmentName?: string;
+  /** 声明式校验条数：让选择器显示「3 条校验」而不必带上校验内容。 */
+  assertionCount: number;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
  * One value a节点 lifts out of its response into the flow variable bag (P1-2).
  *
  * This is the only channel between steps. Without it a DAG is just a list of
@@ -653,8 +678,8 @@ export type SqlDefinition = {
 export type ExecutionIndex = {
   id: string;
   projectId: string;
-  /* 'scenario' 仍在表的 CHECK 里但已无写入方（P2-3 场景已下线，见 021 迁移）；
-     收窄 CHECK 需要重建约束且 P2-4 还要再改一次，所以留着不用。 */
+  /* 'scenario' 已由 026 从 CHECK 中移除（P2-3 场景下线，行由 021 删净）。
+     'batch' 仍在 CHECK 里但暂无写入方：批量调试有自己的 batch_executions。 */
   kind: "flow" | "suite" | "batch";
   targetId?: string;
   targetName: string;
@@ -692,6 +717,13 @@ export type ExecutionStep = {
   output: Record<string, unknown>;
   error?: string;
   httpExecutionId?: string;
+  /**
+   * Set when this step *delegates to a whole parent execution* — a suite member
+   * that is a flow (P2-4). `httpExecutionId` covers the one-request case; a flow
+   * member has its own index, detail row and step tree, so the evidence lives
+   * behind this id instead of being copied up.
+   */
+  childIndexId?: string;
   durationMs: number;
   createdAt: string;
   startedAt?: string;
@@ -814,6 +846,100 @@ export type BatchExecution = {
   finishedAt?: string;
 };
 
+/**
+ * 一个套件成员：一次**独立执行**的目标（P2-4）。
+ *
+ * 成员之间不传变量——需要传值的链路本来就该建成一条流程（5.0.6）。所以成员只有
+ * 「是谁」，没有入参映射、没有前后置。
+ */
+export type SuiteMemberRef = {
+  type: "case" | "flow";
+  id: string;
+};
+
+/** 入队时冻结的成员，名称快照让报告在成员被删/改名后仍读得通。 */
+export type SuiteMemberSnapshot = SuiteMemberRef & {
+  name: string;
+  /** 用例成员所属接口，供报告分组显示。流程成员为空。 */
+  endpointId?: string;
+  endpointName?: string;
+  /** 成员自身的环境（environmentStrategy='member_default' 时实际生效的那个）。 */
+  environmentId?: string;
+  environmentName?: string;
+};
+
+/**
+ * 成员选择方式。
+ *
+ * `manual` 是显式引用，因此**只有它**参与「删用例/流程前的 usage 扫描」；
+ * `tag` / `all` 是动态选择，在入队那一刻才解析成快照，不构成引用。
+ */
+export type SuiteSelection =
+  | { type: "manual"; members: SuiteMemberRef[] }
+  | { type: "tag"; tags: string[]; match: "any" | "all"; includeCases: boolean; includeFlows: boolean }
+  | { type: "all"; includeCases: boolean; includeFlows: boolean };
+
+/**
+ * 一次套件执行怎么跑。
+ *
+ * `concurrency` 是「几个成员同时开跑」，**不是**「几个请求同时在飞」——后者由平台级
+ * 令牌池 `SUITE_LEAF_BUDGET` 封顶，声明再高也不会突破（见 DEVELOPMENT_PLAN 5.0.11）。
+ * `failFast` 为真时不再启动新成员，在途成员跑完，未启动的成员留 skipped 证据行。
+ */
+export type SuiteExecutionConfig = {
+  concurrency: number;
+  failFast: boolean;
+  /** 'member_default' 用成员自己保存的环境；'override' 全部改用 environmentId。 */
+  environmentStrategy: "member_default" | "override";
+  environmentId?: string;
+};
+
+/**
+ * 成员并发的默认与上限，以及一次套件的成员上限。
+ *
+ * 上限存在的意义是「超限直接拒绝，不静默降级」（与循环迭代 ≤100 同一原则）。
+ * 真实在飞的请求数另由平台级令牌池封顶，成员并发只决定几个成员同时开跑。
+ */
+export const SUITE_DEFAULT_CONCURRENCY = 4;
+export const SUITE_MAX_CONCURRENCY = 10;
+export const SUITE_MAX_MEMBERS = 200;
+
+export type TestSuite = {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string;
+  selection: SuiteSelection;
+  execution: SuiteExecutionConfig;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SuiteExecution = {
+  id: string;
+  projectId: string;
+  /** Absent once the suite itself was deleted; `suiteName` still reads correctly. */
+  suiteId?: string;
+  suiteName: string;
+  executionIndexId?: string;
+  /** Only set for environmentStrategy='override'. */
+  environmentId?: string;
+  environmentName?: string;
+  status: "queued" | "running" | "success" | "failed" | "canceled";
+  total: number;
+  successCount: number;
+  failedCount: number;
+  /** Members fail-fast or a cancel never got to start. */
+  skippedCount: number;
+  error?: string;
+  /** Frozen at enqueue so a tag/all selection stays reproducible. */
+  members: SuiteMemberSnapshot[];
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+};
+
 export function mapUser(row: Record<string, unknown>): User {
   return { id: String(row.id), email: String(row.email), name: String(row.name), passwordHash: String(row.password_hash), isSystemAdmin: Boolean(row.is_system_admin) };
 }
@@ -871,6 +997,24 @@ export function mapTestCase(row: Record<string, unknown>): TestCase {
     preRequestHooks: (row.pre_request_hooks ?? []) as HookConfig[],
     extracts: (row.extracts ?? []) as FlowExtract[],
     responseScripts: (row.response_scripts ?? []) as ResponseScriptConfig[],
+    tags: (row.tags as string[]) ?? [],
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+  };
+}
+
+/** `assertion_count` 与 `endpoint_name` 由查询算出，不在 test_cases 表里。 */
+export function mapTestCaseSummary(row: Record<string, unknown>): TestCaseSummary {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    endpointId: String(row.endpoint_id),
+    endpointName: String(row.endpoint_name),
+    name: String(row.name),
+    description: String(row.description ?? ""),
+    environmentId: row.environment_id ? String(row.environment_id) : undefined,
+    environmentName: row.environment_name ? String(row.environment_name) : undefined,
+    assertionCount: Number(row.assertion_count ?? 0),
     tags: (row.tags as string[]) ?? [],
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
@@ -953,6 +1097,63 @@ export function mapFlowExecution(row: Record<string, unknown>): FlowExecution {
   };
 }
 
+/**
+ * `selection_type` + `selection_config` → 判别联合。
+ *
+ * 单独导出而不是只写在 mapper 里：预览「还没保存的那份配置」时要用同一套归一，
+ * 两份实现必然在默认值上分叉（比如 include 开关缺省是 true 还是 false）。
+ */
+export function normalizeSuiteSelection(type: unknown, config: unknown): SuiteSelection {
+  const raw = (config ?? {}) as Record<string, unknown>;
+  const kind = String(type) as SuiteSelection["type"];
+  const includeCases = raw.includeCases === undefined ? true : Boolean(raw.includeCases);
+  const includeFlows = raw.includeFlows === undefined ? true : Boolean(raw.includeFlows);
+  if (kind === "manual") return { type: "manual", members: (raw.members ?? []) as SuiteMemberRef[] };
+  if (kind === "tag") return { type: "tag", tags: (raw.tags ?? []) as string[], match: raw.match === "all" ? "all" : "any", includeCases, includeFlows };
+  return { type: "all", includeCases, includeFlows };
+}
+
+/**
+ * execution_config 的默认值放在 mapper 而不是 DB DEFAULT：并发上限这类保护性数值会随
+ * 平台调整，写进建表默认值以后既有行不会跟着变，反而留下两套真相。
+ */
+export function mapTestSuite(row: Record<string, unknown>): TestSuite {
+  const execution = (row.execution_config ?? {}) as Record<string, unknown>;
+  return {
+    id: String(row.id), projectId: String(row.project_id), name: String(row.name), description: String(row.description ?? ""),
+    selection: normalizeSuiteSelection(row.selection_type, row.selection_config),
+    execution: {
+      concurrency: Number(execution.concurrency ?? SUITE_DEFAULT_CONCURRENCY),
+      failFast: Boolean(execution.failFast ?? false),
+      environmentStrategy: execution.environmentStrategy === "override" ? "override" : "member_default",
+      environmentId: execution.environmentId ? String(execution.environmentId) : undefined,
+    },
+    tags: (row.tags ?? []) as string[],
+    createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
+  };
+}
+
+export function mapSuiteExecution(row: Record<string, unknown>): SuiteExecution {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    suiteId: row.suite_id ? String(row.suite_id) : undefined,
+    suiteName: String(row.suite_name),
+    executionIndexId: row.execution_index_id ? String(row.execution_index_id) : undefined,
+    environmentId: row.environment_id ? String(row.environment_id) : undefined,
+    environmentName: row.environment_name ? String(row.environment_name) : undefined,
+    status: String(row.status) as SuiteExecution["status"],
+    total: Number(row.total),
+    successCount: Number(row.success_count), failedCount: Number(row.failed_count), skippedCount: Number(row.skipped_count ?? 0),
+    error: row.error === null || row.error === undefined ? undefined : String(row.error),
+    members: (row.member_snapshot ?? []) as SuiteMemberSnapshot[],
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    startedAt: row.started_at ? new Date(String(row.started_at)).toISOString() : undefined,
+    finishedAt: row.finished_at ? new Date(String(row.finished_at)).toISOString() : undefined,
+    /* run_spec 同样不映射：它只为 worker 认领而存在。 */
+  };
+}
+
 export function mapDataSource(row: Record<string, unknown>): DataSource {
   const type = String(row.type) as DataSourceType;
   return {
@@ -992,7 +1193,8 @@ export function mapExecutionStep(row: Record<string, unknown>): ExecutionStep {
     iteration: row.iteration === null || row.iteration === undefined ? undefined : Number(row.iteration),
     input: (row.input_snapshot ?? {}) as Record<string, unknown>, output: (row.output_snapshot ?? {}) as Record<string, unknown>,
     error: row.error === null || row.error === undefined ? undefined : String(row.error),
-    httpExecutionId: row.http_execution_id ? String(row.http_execution_id) : undefined, durationMs: Number(row.duration_ms ?? 0),
+    httpExecutionId: row.http_execution_id ? String(row.http_execution_id) : undefined,
+    childIndexId: row.child_index_id ? String(row.child_index_id) : undefined, durationMs: Number(row.duration_ms ?? 0),
     createdAt: new Date(String(row.created_at)).toISOString(),
     startedAt: row.started_at ? new Date(String(row.started_at)).toISOString() : undefined,
     finishedAt: row.finished_at ? new Date(String(row.finished_at)).toISOString() : undefined,

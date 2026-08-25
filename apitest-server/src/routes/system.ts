@@ -1,10 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
 import { currentUser } from "../lib/auth.js";
+import { FLOW_PARALLELISM, MAX_LOOP_CONCURRENCY, MAX_LOOP_ITERATIONS, MAX_WAIT_MS, SUITE_LEAF_BUDGET } from "../lib/flow.js";
 import { executionQueue } from "../lib/queue.js";
 import { requireSystemAdmin } from "../lib/rbac.js";
 import { success } from "../lib/response.js";
-import { mapWorker } from "../models/types.js";
+import { mapWorker, SUITE_MAX_CONCURRENCY, SUITE_MAX_MEMBERS } from "../models/types.js";
 
 type Preferences = { theme?: "light" | "dark" | "system"; language?: "zh-CN" | "en"; restoreLastPage?: boolean };
 
@@ -19,6 +20,32 @@ const OFFLINE_AFTER_SECONDS = 30;
 export async function systemRoutes(app: FastifyInstance) {
   app.get("/api/v1/system/preferences", async (request, reply) => { const user = await currentUser(request, reply); if (!user) return; const result = await pool.query("SELECT preferences FROM users WHERE id = $1", [user.id]); return success(result.rows[0]?.preferences ?? {}); });
   app.put<{ Body: Preferences }>("/api/v1/system/preferences", async (request, reply) => { const user = await currentUser(request, reply); if (!user) return; const result = await pool.query("UPDATE users SET preferences = preferences || $1::jsonb WHERE id = $2 RETURNING preferences", [JSON.stringify(request.body), user.id]); return success(result.rows[0].preferences); });
+
+  /**
+   * 执行预算与保护性上限（P2-4.2）。
+   *
+   * 存在的理由很具体：P2-4.2 起请求节点的并发是**原子领取**的，所以「一个请求最多并发几次」
+   * 等于 `FLOW_PARALLELISM`，而它是环境变量。编辑器把这个上限写死就必然与服务端不一致
+   * ——用户填得进去、保存却被拒。所以由服务端说出这些数，界面只负责显示。
+   *
+   * 只要登录即可读（不是 `requireSystemAdmin`）：任何能编辑流程或套件的人都需要它，而
+   * 这里没有任何一项是敏感信息。
+   */
+  app.get("/api/v1/system/limits", async (request, reply) => {
+    const user = await currentUser(request, reply); if (!user) return;
+    return success({
+      /* 一次流程执行同时在飞的叶子数，同时也是请求节点并发的上限。 */
+      flowParallelism: FLOW_PARALLELISM,
+      /* 一次套件执行共享的令牌池容量，同时也是「成员并发」的上限。 */
+      suiteLeafBudget: SUITE_LEAF_BUDGET,
+      /* 成员并发另有一条与预算无关的保护性上限，两条取更严的那个才是界面该显示的。 */
+      suiteMaxConcurrency: SUITE_MAX_CONCURRENCY,
+      maxLoopIterations: MAX_LOOP_ITERATIONS,
+      maxLoopConcurrency: MAX_LOOP_CONCURRENCY,
+      maxWaitMs: MAX_WAIT_MS,
+      suiteMaxMembers: SUITE_MAX_MEMBERS,
+    });
+  });
 
   /**
    * 执行器状态（P1-3）. Read-only: this reports the fleet, it does not steer it.

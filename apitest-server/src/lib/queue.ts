@@ -16,11 +16,15 @@ export const CANCEL_CHANNEL = "executions:cancel";
 /**
  * job 载荷。
  *
- * 流程执行与单次执行共用同一个队列而不是各开一条：两者都是「等 HTTP 响应」的
+ * 流程执行、套件执行与单次执行共用同一个队列而不是各开一条：三者都是「等 HTTP 响应」的
  * IO 型任务，抢的是同一份并发预算，分队列只会让一边饿死另一边闲着。用可辨识
  * 联合区分，worker 按形状分派——载荷仍然只有 id。
+ *
+ * 套件的**成员不入队**（P2-4.2，计划 5.0.11 边界 2）：成员在套件自己的槽内进程内扇出。
+ * 给成员入队会让「等子任务的父槽」把 `WORKER_CONCURRENCY` 吃光——与 5.0.8 容器持令牌
+ * 的死锁同一类错误。
  */
-export type ExecutionJob = { executionId: string } | { flowExecutionId: string };
+export type ExecutionJob = { executionId: string } | { flowExecutionId: string } | { suiteExecutionId: string };
 
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 

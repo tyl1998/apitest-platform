@@ -2,6 +2,7 @@ import { hostname } from "node:os";
 import { Worker } from "bullmq";
 import { pool } from "./db.js";
 import { performFlowRun } from "./lib/flowRun.js";
+import { performSuiteRun } from "./lib/suiteRun.js";
 import { inflightCount, listenForCancels, registerInflight, releaseInflight } from "./lib/inflight.js";
 import { EXECUTION_QUEUE, createRedis, executionQueue, type ExecutionJob } from "./lib/queue.js";
 import { performRun, settleBatch } from "./lib/run.js";
@@ -40,19 +41,25 @@ const WORKER_MODE = process.env.WORKER_MODE ?? "endpoint";
 listenForCancels();
 
 /**
- * 单次执行与流程执行共用队列，按载荷形状分派（P1-2）。
+ * 单次执行、流程执行与套件执行共用队列，按载荷形状分派（P1-2 / P2-4.2）。
  *
- * 两者都占一个并发槽：流程本身不发请求，它是一串节点执行，占着槽等自己的每一步
+ * 三者都占一个并发槽：流程与套件本身不发请求，它们是一串子执行，占着槽等自己的每一步
  * 跑完。因此 `WORKER_CONCURRENCY` 是「同时几件事」而不是「同时几个请求」——跑长
- * 流程时要按流程数而不是节点数估容量。
+ * 流程或套件时要按父任务数而不是节点/成员数估容量。
+ *
+ * 套件的成员**不入队**：它们在这一个槽内进程内扇出（计划 5.0.11 边界 2）。给成员入队
+ * 会让「等子任务的父槽」把并发吃光——与容器持令牌的死锁同一类错误。
  */
 const worker = new Worker<ExecutionJob>(
   EXECUTION_QUEUE,
   async (job) => {
-    const id = "flowExecutionId" in job.data ? job.data.flowExecutionId : job.data.executionId;
+    const id = "suiteExecutionId" in job.data ? job.data.suiteExecutionId
+      : "flowExecutionId" in job.data ? job.data.flowExecutionId
+        : job.data.executionId;
     const controller = registerInflight(id);
     try {
-      if ("flowExecutionId" in job.data) await performFlowRun(id, controller.signal, WORKER_ID);
+      if ("suiteExecutionId" in job.data) await performSuiteRun(id, controller.signal, WORKER_ID);
+      else if ("flowExecutionId" in job.data) await performFlowRun(id, controller.signal, WORKER_ID);
       else await performRun(id, controller.signal, WORKER_ID);
     } finally {
       releaseInflight(id);
@@ -89,6 +96,45 @@ async function heartbeat() {
 worker.on("failed", async (job, error) => {
   if (!job) return;
   const message = error.message || "worker failed";
+
+  /**
+   * 套件父记录同理。
+   *
+   * 只落套件自己与它的成员证据行：成员的子执行（用例的 `executions`、流程成员的
+   * `flow_executions`）各有自己的回收阈值，而走到这里说明进程已经不知道每个成员跑到
+   * 哪了——由各自的回收去判死比在这里替它们猜一个终态诚实。
+   */
+  if (job.data && "suiteExecutionId" in job.data) {
+    const suiteExecutionId = job.data.suiteExecutionId;
+    const result = await pool.query(
+      `UPDATE suite_executions SET status = 'failed', error = $2, finished_at = now(), run_spec = NULL
+        WHERE id = $1 AND status IN ('queued', 'running') RETURNING id, execution_index_id, total`,
+      [suiteExecutionId, message],
+    );
+    if (!result.rowCount) return;
+    const indexId = result.rows[0].execution_index_id;
+    await pool.query(
+      `UPDATE execution_steps SET status = 'failed', error = $2, finished_at = now()
+        WHERE index_id = $1 AND status IN ('queued', 'running')`, [indexId, message],
+    );
+    const counts = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE status = 'success')::int AS succeeded,
+         COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+         COUNT(*) FILTER (WHERE status = 'canceled')::int AS canceled
+       FROM execution_steps WHERE index_id = $1 AND parent_step_id IS NULL`, [indexId],
+    );
+    const aggregate = counts.rows[0];
+    /* 一个成员都没来得及起的套件：total 减去有证据的那些就是「从未开跑」。 */
+    const skipped = Math.max(0, Number(result.rows[0].total) - Number(aggregate.succeeded) - Number(aggregate.failed) - Number(aggregate.canceled));
+    await pool.query("UPDATE suite_executions SET success_count = $2, failed_count = $3, skipped_count = $4 WHERE id = $1", [suiteExecutionId, aggregate.succeeded, aggregate.failed, skipped]);
+    await pool.query(
+      `UPDATE execution_index SET status = 'failed', success_count = $2, failed_count = $3,
+         canceled_count = $4, skipped_count = $5, finished_at = now()
+        WHERE id = $1 AND status IN ('queued', 'running')`, [indexId, aggregate.succeeded, aggregate.failed, aggregate.canceled, skipped],
+    );
+    return;
+  }
 
   /* 流程父记录同理：它停在 running 就没有人会来收尾，且它的在途步骤也一样。 */
   if (job.data && "flowExecutionId" in job.data) {
@@ -156,6 +202,11 @@ const REAP_AFTER = "5 minutes";
  */
 const REAP_FLOW_AFTER = "20 minutes";
 /**
+ * 套件的回收阈值沿用同一个比例（自身超时的两倍）：`SUITE_TIMEOUT_MS` 是 30 分钟，
+ * 所以 45 分钟仍未终态的一定是事故，而不是一个正在老实跑成员的长套件。
+ */
+const REAP_SUITE_AFTER = "45 minutes";
+/**
  * 回收的互斥键（值本身无意义，只要全局唯一）。
  *
  * 每个 worker 都挂着回收定时器，不加锁就是 N 个进程同时扫。UPDATE 本身幂等，
@@ -209,6 +260,36 @@ async function reapStale() {
     }
     if (result.rowCount) console.warn(`[worker] reaped ${result.rowCount} stale execution(s)`);
     if (flows.rowCount) console.warn(`[worker] reaped ${flows.rowCount} stale flow execution(s)`);
+
+    /* 套件与流程同款：父行停在 running 就没有人会来收尾，成员证据行同理。计数从证据行
+       重算而不是相信父行上的数字——父行的计数是进度快照，进程死掉时它可能落后几个成员。 */
+    const suites = await client.query(
+      `UPDATE suite_executions SET status = 'failed', error = 'suite abandoned by worker', finished_at = now(), run_spec = NULL
+        WHERE status IN ('queued', 'running') AND created_at < now() - INTERVAL '${REAP_SUITE_AFTER}'
+        RETURNING id, execution_index_id, total`,
+    );
+    for (const suite of suites.rows) {
+      await client.query(
+        `UPDATE execution_steps SET status = 'failed', error = 'suite abandoned by worker', finished_at = now()
+          WHERE index_id = $1 AND status IN ('queued', 'running')`, [suite.execution_index_id],
+      );
+      const counts = await client.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE status = 'success')::int AS succeeded,
+           COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+           COUNT(*) FILTER (WHERE status = 'canceled')::int AS canceled
+         FROM execution_steps WHERE index_id = $1 AND parent_step_id IS NULL`, [suite.execution_index_id],
+      );
+      const aggregate = counts.rows[0];
+      const skipped = Math.max(0, Number(suite.total) - Number(aggregate.succeeded) - Number(aggregate.failed) - Number(aggregate.canceled));
+      await client.query("UPDATE suite_executions SET success_count = $2, failed_count = $3, skipped_count = $4 WHERE id = $1", [suite.id, aggregate.succeeded, aggregate.failed, skipped]);
+      await client.query(
+        `UPDATE execution_index SET status = 'failed', success_count = $2, failed_count = $3,
+           canceled_count = $4, skipped_count = $5, finished_at = now()
+          WHERE id = $1 AND status IN ('queued', 'running')`, [suite.execution_index_id, aggregate.succeeded, aggregate.failed, aggregate.canceled, skipped],
+      );
+    }
+    if (suites.rowCount) console.warn(`[worker] reaped ${suites.rowCount} stale suite execution(s)`);
     /**
      * 必须显式提交。
      *
@@ -279,13 +360,14 @@ async function pruneLocalDead() {
 async function requeueOrphans() {
   const queue = executionQueue();
   /* 先老的后新的：真要排队，也让等得最久的先跑。 */
-  const [runs, flows] = await Promise.all([
+  const [runs, flows, suites] = await Promise.all([
     pool.query("SELECT id FROM executions WHERE status = 'queued' ORDER BY created_at"),
     pool.query("SELECT id FROM flow_executions WHERE status = 'queued' ORDER BY created_at"),
+    pool.query("SELECT id FROM suite_executions WHERE status = 'queued' ORDER BY created_at"),
   ]);
 
   let requeued = 0;
-  const submit = async (id: string, name: "run" | "flow", data: ExecutionJob) => {
+  const submit = async (id: string, name: "run" | "flow" | "suite", data: ExecutionJob) => {
     const existing = await queue.getJob(id);
     if (existing) {
       /* 还在队列里（等待 / 在途 / 延迟）：本来就会被跑到，不要碰它。 */
@@ -298,6 +380,7 @@ async function requeueOrphans() {
 
   for (const row of runs.rows) await submit(String(row.id), "run", { executionId: String(row.id) });
   for (const row of flows.rows) await submit(String(row.id), "flow", { flowExecutionId: String(row.id) });
+  for (const row of suites.rows) await submit(String(row.id), "suite", { suiteExecutionId: String(row.id) });
   if (requeued) console.warn(`[worker] requeued ${requeued} orphaned queued job(s)`);
 }
 

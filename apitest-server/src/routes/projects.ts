@@ -33,6 +33,36 @@ export async function projectRoutes(app: FastifyInstance) {
 
   app.get<{ Params: { id: string } }>("/api/v1/projects/:id", async (request, reply) => { const context = await requireProjectAccess(request, reply); return context && success(context.project); });
 
+  /**
+   * 项目里已经用过的标签，最常用的排在前面。
+   *
+   * 存在的理由是标签**无法从一页数据里枚举**：用例列表是分页的，从当前页收集出来的
+   * 标签清单会漏掉其他页的，一个选项不全的标签下拉比没有下拉更容易误导。
+   *
+   * `scope=members` 汇总用例与流程的标签——套件「按标签」选择匹配的正是这两者；
+   * `scope=suites` 只看套件自己的标签，用于给套件分类。两个来源分开，是因为「用来
+   * 匹配成员的标签」和「用来归档套件的标签」是两套词汇，混在一起会互相污染建议。
+   *
+   * 顺序即热度：按使用次数倒序，所以调用方不需要拿到次数也能得到有用的排序。
+   */
+  app.get<{ Params: { id: string }; Querystring: { scope?: string } }>("/api/v1/projects/:id/tags", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply); if (!context) return;
+    const sources = request.query.scope === "suites"
+      ? "SELECT unnest(tags) AS tag FROM test_suites WHERE project_id = $1"
+      : `SELECT unnest(tags) AS tag FROM test_cases WHERE project_id = $1
+         UNION ALL
+         SELECT unnest(tags) AS tag FROM flows WHERE project_id = $1`;
+    const result = await pool.query(
+      `SELECT tag FROM (${sources}) used
+        WHERE btrim(tag) <> ''
+        GROUP BY tag
+        ORDER BY COUNT(*) DESC, tag`,
+      [context.project.id],
+    );
+    const data = result.rows.map((row) => String(row.tag));
+    return success(data, { total: data.length });
+  });
+
   app.get<{ Params: { id: string } }>("/api/v1/projects/:id/settings", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     const result = await pool.query("SELECT default_environment_id, store_plaintext FROM project_settings WHERE project_id = $1", [context.project.id]);

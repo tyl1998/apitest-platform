@@ -50,6 +50,27 @@ export const MAX_LOOP_CONCURRENCY = 10;
  * （规范 3.2），不在本切片。
  */
 export const MAX_WAIT_MS = 30_000;
+
+/**
+ * 一次**流程**执行允许同时在飞的叶子步骤数，即令牌池容量（计划 5.0.2：默认 4、最大 10）。
+ *
+ * 放在这里而不是 flowRun.ts，是因为它现在有三个读者且必须是同一个数：调度器建池、
+ * 入队时校验请求节点的原子并发、保存时校验同一件事。分散定义必然出现「存得下、
+ * 一跑就超预算」。
+ */
+export const FLOW_PARALLELISM = Math.min(10, Math.max(1, Number(process.env.FLOW_PARALLELISM ?? 4)));
+/**
+ * 一次**套件**执行共享的令牌池容量（P2-4.2，计划 5.0.11「并发预算与原子领取」）。
+ *
+ * 套件是流程之上又一层容器：若每个流程成员各建一个池子，一个套件任务就能打出
+ * `成员并发 × FLOW_PARALLELISM` 的并发——正是 5.0.8 拒绝过的乘法换了一层。所以一次
+ * 套件执行只有这一个池子，传给它的每个流程成员。
+ *
+ * 下界取 `FLOW_PARALLELISM`：套件池永不小于流程池，于是「保存/入队时按流程预算校验
+ * 过的请求并发」在套件里必然也放得下，不需要第二套校验，也不会出现「单独跑得起来、
+ * 放进套件就超预算」。
+ */
+export const SUITE_LEAF_BUDGET = Math.max(FLOW_PARALLELISM, Math.min(20, Math.max(1, Number(process.env.SUITE_LEAF_BUDGET ?? 8))));
 /** 子流程/循环体的最大嵌套层数：主流程为 0，它引用的流程为 1。 */
 export const MAX_FLOW_DEPTH = 3;
 
@@ -181,11 +202,14 @@ export function validateNode(node: FlowNode | undefined, where: string): string 
     const request = validateRequest(node.request, where);
     if (request) return request;
     /* 请求并发：同一个请求跑 N 次并发，提取按迭代序收集成数组。1 是默认值（串行），
-       所以只校验显式给出的 N。 */
+       所以只校验显式给出的 N。
+       上限是**令牌预算**而不是 MAX_LOOP_CONCURRENCY：P2-4.2 起 N 枚令牌是原子领取的
+       （凑不齐整批等），声明超过池容量就永远凑不齐，只能在这里当场拒绝。循环并发不受
+       这条约束——迭代之间互相独立，先后跑不改变结论，池子紧张时自然分批。 */
     if (node.concurrency !== undefined) {
       const concurrency = Number(node.concurrency);
       if (!Number.isInteger(concurrency) || concurrency < 1) return `${where}: concurrency must be a whole number of at least 1`;
-      if (concurrency > MAX_LOOP_CONCURRENCY) return `${where}: a request can run at most ${MAX_LOOP_CONCURRENCY} times at once`;
+      if (concurrency > FLOW_PARALLELISM) return `${where}: a request can run at most ${FLOW_PARALLELISM} times at once (this platform's per-run concurrency budget)`;
     }
   } else if (node.type === "database") {
     if (!isUuid(node.dataSourceId ?? "")) return `${where}: node must reference a data source`;

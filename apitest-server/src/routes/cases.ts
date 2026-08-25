@@ -9,7 +9,7 @@ import { fail, success } from "../lib/response.js";
 import { BODY_TYPES, METHODS } from "../lib/run.js";
 import { isUuid } from "../lib/uuid.js";
 import { persistCaseLifecycleScripts } from "../lib/scripts.js";
-import { mapExecution, mapTestCase, type Assertion, type FlowExtract, type HookConfig, type RequestSnapshot, type ResponseScriptConfig, type TestCase } from "../models/types.js";
+import { mapExecution, mapTestCase, mapTestCaseSummary, type Assertion, type FlowExtract, type HookConfig, type RequestSnapshot, type ResponseScriptConfig, type TestCase } from "../models/types.js";
 
 type CaseInput = {
   name?: string;
@@ -94,23 +94,49 @@ export async function caseRoutes(app: FastifyInstance) {
   });
 
   /**
-   * Cross-endpoint case search, for the跨接口用例选择器 that测试套件/场景 use
+   * Cross-endpoint case search, for the跨接口用例选择器 that测试套件 uses
    * (交互文档 3.1.3). It is a project-level read, not a second navigation page.
+   *
+   * Paged and summary-only (P2-4): a project with hundreds of cases would
+   * otherwise ship every request body and assertion set to render a picker.
+   * Grouping is by endpoint, so the sort leads with the endpoint name — a
+   * `created_at DESC` order would scatter one endpoint's cases across pages.
    */
-  app.get<{ Params: { id: string }; Querystring: { keyword?: string; tag?: string; endpointId?: string } }>("/api/v1/projects/:id/cases", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { keyword?: string; tag?: string; endpointId?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/cases", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
-    const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
+    const page = Math.max(1, Number(request.query.page ?? 1));
+    const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
+    const params: unknown[] = [context.project.id]; const clauses = ["c.project_id = $1"];
     const keyword = request.query.keyword?.trim();
     /* Filtering in SQL so a keyword matches every case, not just a loaded page. */
-    if (keyword) { params.push(`%${keyword}%`); clauses.push(`(name ILIKE $${params.length} OR description ILIKE $${params.length})`); }
-    if (request.query.tag?.trim()) { params.push(request.query.tag.trim()); clauses.push(`$${params.length} = ANY(tags)`); }
+    if (keyword) { params.push(`%${keyword}%`); clauses.push(`(c.name ILIKE $${params.length} OR c.description ILIKE $${params.length})`); }
+    if (request.query.tag?.trim()) { params.push(request.query.tag.trim()); clauses.push(`$${params.length} = ANY(c.tags)`); }
     if (request.query.endpointId) {
       if (!isUuid(request.query.endpointId)) return fail(reply, 400, 1001, "endpointId must be a UUID");
-      params.push(request.query.endpointId); clauses.push(`endpoint_id = $${params.length}`);
+      params.push(request.query.endpointId); clauses.push(`c.endpoint_id = $${params.length}`);
     }
-    const result = await pool.query(`SELECT * FROM test_cases WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC`, params);
-    const data = await withLastRun(result.rows.map(mapTestCase));
-    return success(data, { total: data.length });
+    const where = clauses.join(" AND ");
+    /* INNER JOIN is safe: endpoint_id is NOT NULL and ON DELETE CASCADE, so a
+       case cannot outlive its endpoint. */
+    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM test_cases c WHERE ${where}`, params);
+    params.push(pageSize, (page - 1) * pageSize);
+    const result = await pool.query(
+      `SELECT c.id, c.project_id, c.endpoint_id, e.name AS endpoint_name, c.name, c.description,
+              c.environment_id, c.environment_name, c.tags, c.created_at, c.updated_at,
+              /* 脚本断言在 P2-2.1 已下线，mapTestCase 也把它们过滤掉；这里同样只数
+                 声明式校验，否则选择器上的条数会和编辑器里看到的不一致。 */
+              (SELECT COUNT(*)::int FROM jsonb_array_elements(c.assertions) item WHERE item->>'type' <> 'script') AS assertion_count
+         FROM test_cases c
+         JOIN endpoints e ON e.id = c.endpoint_id
+        WHERE ${where}
+        ORDER BY e.name, c.name, c.created_at DESC
+        LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
+    );
+    const summaries = result.rows.map(mapTestCaseSummary);
+    const runs = await latestRuns(summaries.map((item) => item.id));
+    const data = summaries.map((item) => ({ ...item, lastRun: runs.get(item.id) }));
+    return success(data, { page, pageSize, total: Number(count.rows[0].total) });
   });
 
   app.get<{ Params: { id: string; caseId: string } }>("/api/v1/projects/:id/cases/:caseId", async (request, reply) => {

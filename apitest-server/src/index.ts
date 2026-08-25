@@ -10,6 +10,7 @@ import { endpointRoutes } from "./routes/endpoints.js";
 import { caseRoutes } from "./routes/cases.js";
 import { scriptRoutes } from "./routes/scripts.js";
 import { flowRoutes } from "./routes/flows.js";
+import { suiteRoutes } from "./routes/suites.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { streamRoutes } from "./routes/stream.js";
 import { systemRoutes } from "./routes/system.js";
@@ -30,7 +31,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(cors, { origin: true, methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] });
   await app.register(jwt, { secret: process.env.JWT_SECRET ?? "change-this-in-production" });
   app.get("/health", async () => success({ status: "ok" }));
-  await app.register(authRoutes); await app.register(projectRoutes); await app.register(environmentRoutes); await app.register(dataSourceRoutes); await app.register(endpointRoutes); await app.register(caseRoutes); await app.register(scriptRoutes); await app.register(flowRoutes); await app.register(executionIndexRoutes); await app.register(dashboardRoutes); await app.register(streamRoutes); await app.register(systemRoutes);
+  await app.register(authRoutes); await app.register(projectRoutes); await app.register(environmentRoutes); await app.register(dataSourceRoutes); await app.register(endpointRoutes); await app.register(caseRoutes); await app.register(scriptRoutes); await app.register(flowRoutes); await app.register(suiteRoutes); await app.register(executionIndexRoutes); await app.register(dashboardRoutes); await app.register(streamRoutes); await app.register(systemRoutes);
   return app;
 }
 

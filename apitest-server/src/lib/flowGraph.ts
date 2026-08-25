@@ -17,11 +17,12 @@ import type { FlowEdgeCondition } from "../models/types.js";
  * 实现——两套语义的结果必然是「同一条链路在外层并行、抽成子流程后变串行」这种
  * 说不清的行为差异。
  *
- * 一个执行共享一个并发令牌池（`TokenPool`，大小 `FLOW_PARALLELISM`）：**叶子
- * 步骤**（请求/SQL/脚本/条件/等待）取令牌，loop/subflow **容器节点不取**。于是
- * 三层嵌套的真实并发仍被单次执行的预算封顶，而不是 4×4×4；容器不持令牌也就不会
- * 出现「容器占着槽等自己的身体要槽」的自锁。循环的 `concurrency` 是形状声明：运行
- * 前把令牌池临时抬到该值，循环结束还回去。
+ * 一个执行共享一个并发令牌池（`TokenPool`，大小 `FLOW_PARALLELISM`；套件执行时是
+ * 套件那一个池子，容量 `SUITE_LEAF_BUDGET`）：**叶子步骤**（请求/SQL/脚本/条件/等待）
+ * 取令牌，loop/subflow **容器节点不取**。于是三层嵌套的真实并发仍被单次执行的预算
+ * 封顶，而不是 4×4×4；容器不持令牌也就不会出现「容器占着槽等自己的身体要槽」的自锁。
+ * 循环的 `concurrency` 是形状声明，用一个**局部信号量**实现（不碰全局容量）；请求节点
+ * 的 `concurrency` 则是**原子领取**——N 枚令牌一次凑齐，凑不齐整批等。
  *
  * 嵌套步骤的证据（P2-6）写进同一张 execution_steps，用 `parent_step_id` 指回容器
  * 步骤行、`iteration` 记录第几次迭代——所以一次失败的循环可复盘到具体是哪个内层
@@ -72,7 +73,8 @@ export type GraphResult = {
 export class TokenPool {
   private readonly capacity: number;
   private free: number;
-  private waiters: (() => void)[] = [];
+  /** 一条队列，按到达顺序服务；`need` 是这个等待者要几枚。 */
+  private waiters: { need: number; resolve: () => void }[] = [];
 
   constructor(capacity: number) {
     this.capacity = Math.max(1, capacity);
@@ -83,16 +85,47 @@ export class TokenPool {
 
   /** 取一个令牌，没有就排队；释放函数幂等，重复调用不会多还令牌。 */
   async acquire(): Promise<() => void> {
-    if (this.free > 0) this.free -= 1;
-    else await new Promise<void>((resolve) => this.waiters.push(resolve));
+    return this.acquireMany(1);
+  }
+
+  /**
+   * 一次凑齐 `count` 枚令牌（P2-4.2）。
+   *
+   * 「同一接口并发 N」的用例本意是让服务端**真的同时**收到 N 个请求，所以 N 枚必须
+   * 一起拿到再一起发。逐枚领的老做法在池子紧张时会把 `concurrency=3` 静默拆成 2+1
+   * ——请求还是发了三次，但并发结论已经失真。
+   *
+   * 两个风险各自封死：
+   * - **真死锁**（要的比池子还大，永远凑不齐）：直接抛错。保存与入队两处已按同一个
+   *   预算校验过（lib/flow.ts `validateNode`、lib/enqueue.ts `insertFlowRun`），所以
+   *   这里是最后一道，不静默降级。
+   * - **饿死**（多枚请求永远排在单枚后面）：队列严格 FIFO 且**禁止插队**——队头凑不齐
+   *   时，即使有空闲令牌也不发给后面的单枚请求。代价是攒令牌期间短暂空置几枚，空置
+   *   窗口上限 = 最长在飞叶子寿命（请求 30s）。
+   */
+  async acquireMany(count: number): Promise<() => void> {
+    const need = Math.max(1, Math.trunc(count));
+    if (need > this.capacity) throw new Error(`cannot gather ${need} concurrency tokens: this run's budget is ${this.capacity}`);
+    /* 队列非空时一律排队：能插队就等于没做禁插队，队头的多枚请求会被后面源源不断的
+       单枚请求挤到永远。 */
+    if (!this.waiters.length && this.free >= need) this.free -= need;
+    else await new Promise<void>((resolve) => this.waiters.push({ need, resolve }));
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      const next = this.waiters.shift();
-      /* 直接把额度交给排队者，不经过 free，避免中间态被别人抢走。 */
-      if (next) next(); else this.free += 1;
+      this.free += need;
+      this.drain();
     };
+  }
+
+  /** 只看队头：队头凑不齐就整队等着，宁可短暂空置也不越过它服务后面的人。 */
+  private drain() {
+    while (this.waiters.length && this.free >= this.waiters[0].need) {
+      const next = this.waiters.shift()!;
+      this.free -= next.need;
+      next.resolve();
+    }
   }
 }
 
@@ -296,62 +329,62 @@ export async function runGraph(
         if (concurrency === 1) {
           result = await executeRequestStep(ctx, node, inputBag, stepRecordId, st.stage, st.position);
         } else {
-          /* 请求并发：同一个请求跑 N 次，提取按迭代序收集成数组。容器行输出摘要，
-             每次请求是子步骤行，证据与循环同构。 */
+          /* 请求并发（P2-4.2 起**原子领取**）：一次凑齐 N 枚令牌，N 个请求一起发。
+             容器行输出摘要，每次请求是子步骤行，证据与循环同构。 */
           const mask = masker(ctx.environment);
-          const iterations: { index: number; status: string; durationMs: number; error?: string; extractResults: unknown[] }[] = [];
-          const collected = new Map<string, { index: number; value: string }[]>();
-          let firstError: string | undefined;
-          const worker = async () => {
-            /* 失败即停领新请求：并发跑 N 次通常为了看「几次成功几次失败」，继续
-               发没有意义；onFailure 语义由外层图对这个容器节点判定。 */
-            for (;;) {
-              if (firstError || ctx.signal.aborted || ctx.deadline.aborted) return;
-              const index = nextRequestIndex++;
-              /* 领完就收工。少了这一条，worker 会一直自增下标无休止地发请求，
-                 节点永远停在「执行中」直到流程超时。 */
-              if (index >= concurrency) return;
-              /* 每个在飞的子请求各占一个令牌：这才让「真实并发受整次执行预算封顶」
-                 成立。声明的并发是形状——预算不够时它自然分批发出，而不是无视预算。 */
-              const releaseToken = await ctx.tokens.acquire();
-              let one: NodeOutcome;
-              try {
-                one = await executeRequestStep(ctx, node, inputBag, stepRecordId, st.stage, st.position, index);
-              } finally {
-                releaseToken();
-              }
-              iterations[index] = {
-                index, status: one.status, durationMs: one.durationMs, error: one.error,
-                extractResults: (one.output.extractResults ?? []) as unknown[],
-              };
-              if (one.status !== "success") firstError ??= one.error ?? `request ${index + 1} failed`;
-              for (const [name, value] of Object.entries(one.produced)) {
-                const bucket = collected.get(name) ?? [];
-                bucket.push({ index, value });
-                collected.set(name, bucket);
-              }
+          let releaseTokens: (() => void) | undefined;
+          let budgetError: string | undefined;
+          /* 声明超过池容量时 acquireMany 抛错而不是永远等待。保存与入队都按同一个预算
+             校验过，所以走到这里的只剩自带池子的调用方（单步调试）；报成这一步失败比
+             让整次执行崩在 worker 的兜底分支里诚实。 */
+          try { releaseTokens = await ctx.tokens.acquireMany(concurrency); }
+          catch (error) { budgetError = error instanceof Error ? error.message : "concurrency budget exceeded"; }
+
+          if (!releaseTokens) {
+            result = { status: "failed", durationMs: 0, error: budgetError, output: { concurrency, total: concurrency, iterations: [] }, produced: {} };
+          } else {
+            const fanOutStartedAt = performance.now();
+            let outcomes: NodeOutcome[];
+            try {
+              /* 全部一起发：没有「首个失败即停领」这一步——N 个请求在同一瞬间就已经都
+                 在飞，停领无从谈起，而同时在飞正是并发要表达的形状。onFailure 语义仍由
+                 外层图对这个容器节点判定。 */
+              outcomes = await Promise.all(Array.from({ length: concurrency }, (_, index) =>
+                executeRequestStep(ctx, node, inputBag, stepRecordId, st.stage, st.position, index)));
+            } finally {
+              releaseTokens();
             }
-          };
-          let nextRequestIndex = 0;
-          await Promise.all(Array.from({ length: Math.min(concurrency, MAX_LOOP_CONCURRENCY) }, () => worker()));
-          const produced: Record<string, string> = {};
-          for (const [name, entries] of collected) {
-            entries.sort((left, right) => left.index - right.index);
-            produced[name] = JSON.stringify(entries.map((entry) => entry.value));
+
+            const iterations = outcomes.map((one, index) => ({
+              index, status: one.status, durationMs: one.durationMs, error: one.error,
+              extractResults: (one.output.extractResults ?? []) as unknown[],
+            }));
+            let firstError: string | undefined;
+            for (const item of iterations) {
+              if (item.status !== "success") firstError ??= item.error ?? `request ${item.index + 1} failed`;
+            }
+            const produced: Record<string, string> = {};
+            /* 迭代序而非完成序：并发下完成顺序不确定，而结果必须可复现。 */
+            const collected = new Map<string, string[]>();
+            outcomes.forEach((one) => {
+              for (const [name, value] of Object.entries(one.produced)) collected.set(name, [...(collected.get(name) ?? []), value]);
+            });
+            for (const [name, values] of collected) produced[name] = JSON.stringify(values);
+            result = {
+              status: firstError ? "failed" : "success",
+              /* 墙上时钟而不是各次耗时相加：N 个请求真的同时在飞，相加会把 3 个 1 秒的
+                 并发请求报成 3 秒。 */
+              durationMs: Math.round(performance.now() - fanOutStartedAt),
+              error: firstError,
+              output: mask({
+                concurrency, total: concurrency,
+                iterations,
+                successCount: iterations.filter((item) => item.status === "success").length,
+                failedCount: iterations.filter((item) => item.status !== "success").length,
+              }) as Record<string, unknown>,
+              produced,
+            };
           }
-          const settled = iterations.filter(Boolean);
-          result = {
-            status: firstError ? "failed" : "success",
-            durationMs: settled.reduce((sum, item) => sum + item.durationMs, 0),
-            error: firstError,
-            output: mask({
-              concurrency, total: concurrency,
-              iterations: settled,
-              successCount: settled.filter((item) => item.status === "success").length,
-              failedCount: settled.filter((item) => item.status !== "success").length,
-            }) as Record<string, unknown>,
-            produced,
-          };
         }
       } else if (node.type === "database") {
         const outcome = await executeDatabaseNode(ctx.projectId, node, inputBag, ctx.environment);
@@ -501,9 +534,9 @@ export async function runGraph(
          * 容器节点不取令牌：它不做工作，只等自己的内层图，而内层叶子要向同一个池子
          * 申请。让容器占额度会在容器数达到 capacity 时把内层饿死。
          *
-         * **并发请求节点同理**：它自己不发请求，而是扇出 N 个子请求，每个子请求各取
-         * 一个令牌（见下面的扇出实现）。若让它作为一个节点只占一个令牌，那么
-         * 「循环并发 2 × 请求并发 10」会有 20 个请求在飞而池子只记了 2 个——所谓
+         * **并发请求节点同理**：它自己不发请求，而是扇出 N 个子请求，这 N 枚令牌由
+         * 节点内部**一次性凑齐**（见上面的扇出实现）。若让它作为一个节点只占一个令牌，
+         * 那么「循环并发 2 × 请求并发 10」会有 20 个请求在飞而池子只记了 2 个——所谓
          * 「真实并发受整次执行预算封顶」就成了空话。
          */
         const fansOut = next.node.type === "request" && (next.node.concurrency ?? 1) > 1;

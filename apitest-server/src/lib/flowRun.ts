@@ -6,7 +6,7 @@ import { runGraph, TokenPool, type GraphContext } from "./flowGraph.js";
 import { executeConditionNode, executeDatabaseNode, executeScriptNode, type PreparedFlowNode } from "./flowNodes.js";
 import { loadEnvironment, type LoadedEnvironment } from "./run.js";
 import { sanitizeValue } from "./sanitize.js";
-import { topologicalOrder } from "./flow.js";
+import { FLOW_PARALLELISM, topologicalOrder } from "./flow.js";
 import { loadSqlDefinition } from "./dataSources.js";
 import type { FlowEdge, FlowNode, FlowPlanStep, SqlParameterDefinition } from "../models/types.js";
 
@@ -19,13 +19,12 @@ export type FlowRunSpec = {
 
 const FLOW_TIMEOUT_MS = 10 * 60_000;
 /**
- * 流程内并行上限（计划 5.0.2：默认 4、最大 10）。
+ * 流程内并行上限：见 lib/flow.ts `FLOW_PARALLELISM`。
  *
- * 这是整次执行的**全局令牌池**容量：叶子步骤（请求/SQL/脚本/条件/等待）取令牌，
- * loop/subflow 容器不取。所以嵌套三层不会把并发乘起来（4×4×4），容器也不会占着
- * 槽等自己的身体要槽。父任务仍占一个 BullMQ worker 槽。
+ * 常量本身移到了 flow.ts，因为保存校验（请求节点的原子并发）与入队校验都要读同一个
+ * 数；这里只是把它建成整次执行的**全局令牌池**：叶子步骤（请求/SQL/脚本/条件/等待）
+ * 取令牌，loop/subflow 容器不取。父任务仍占一个 BullMQ worker 槽。
  */
-const FLOW_PARALLELISM = Math.min(10, Math.max(1, Number(process.env.FLOW_PARALLELISM ?? 4)));
 
 /**
  * 在入队时把整张图冻成自包含的 run_spec。
@@ -112,7 +111,15 @@ export function planSteps(spec: FlowRunSpec): FlowPlanStep[] {
   return order.map((node) => ({ nodeId: node.id, name: node.name, type: node.type, endpointId: node.type === "request" ? node.endpointId : undefined }));
 }
 
-export async function performFlowRun(flowExecutionId: string, signal: AbortSignal, workerId?: string): Promise<boolean> {
+/**
+ * 跑完一次流程执行。
+ *
+ * `tokens` 是**调用方给的共享令牌池**：套件执行时所有流程成员共用套件那一个池子
+ * （P2-4.2）。不给就自己建一个，容量 `FLOW_PARALLELISM`——这是直接运行一条流程的情形。
+ * 每个成员各建一个池子会让并发变成乘法（成员并发 × 每个流程 4 个叶子），正是
+ * 5.0.11「并发预算」要封死的那件事。
+ */
+export async function performFlowRun(flowExecutionId: string, signal: AbortSignal, workerId?: string, tokens?: TokenPool): Promise<boolean> {
   const claimed = await pool.query(
     `UPDATE flow_executions SET status = 'running', started_at = now(), worker_id = $2
       WHERE id = $1 AND status = 'queued' RETURNING *`,
@@ -134,7 +141,7 @@ export async function performFlowRun(flowExecutionId: string, signal: AbortSigna
 
   const bag: Record<string, string> = { ...environment.variables, ...(spec.variables ?? {}) };
   const deadline = AbortSignal.timeout(FLOW_TIMEOUT_MS);
-  const tokens = new TokenPool(FLOW_PARALLELISM);
+  const leafTokens = tokens ?? new TokenPool(FLOW_PARALLELISM);
 
   const updateCounts = (counts: { success: number; failed: number; skipped: number }) => Promise.all([
     pool.query("UPDATE execution_index SET success_count = $2, failed_count = $3, skipped_count = $4 WHERE id = $1 AND status = 'running'", [indexId, counts.success, counts.failed, counts.skipped]),
@@ -144,7 +151,7 @@ export async function performFlowRun(flowExecutionId: string, signal: AbortSigna
   const ctx: GraphContext = {
     projectId, indexId, flowExecutionId,
     environment, environmentId: spec.environmentId, environmentName: row.environment_name ? String(row.environment_name) : undefined,
-    signal, deadline, workerId, tokens,
+    signal, deadline, workerId, tokens: leafTokens,
     onProgress: async (counts) => {
       await updateCounts(counts);
       await publishEvent({ kind: "flow", projectId, flowExecutionId, executionIndexId: indexId, status: "running", total: Number(row.total), successCount: counts.success, failedCount: counts.failed, skippedCount: counts.skipped });
