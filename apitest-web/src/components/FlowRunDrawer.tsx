@@ -29,29 +29,7 @@ export function FlowRunDrawer({ projectId, run, onClose }: {
 
   if (!run) return null;
 
-  const httpById = new Map(run.steps.map((execution) => [execution.id, execution]));
-  const generic = run.executionSteps.filter((step) => !step.parentStepId);
-  const rows = generic.length
-    ? generic.map((step) => ({
-        key: step.id,
-        name: step.stepName || step.stepType,
-        type: step.stepType,
-        status: step.status,
-        durationMs: step.durationMs,
-        error: step.error,
-        step,
-        execution: step.httpExecutionId ? httpById.get(step.httpExecutionId) : undefined,
-      }))
-    : run.steps.map((execution) => ({
-        key: execution.id,
-        name: execution.flowNodeName ?? execution.endpointName,
-        type: "request",
-        status: execution.status,
-        durationMs: execution.durationMs,
-        error: execution.error,
-        step: undefined,
-        execution,
-      }));
+  const rows = flowStepRows(run);
 
   return <Drawer
     title={run.flowName || t("flows.runDetail")}
@@ -84,7 +62,7 @@ export function FlowRunDrawer({ projectId, run, onClose }: {
   </Drawer>;
 }
 
-type StepRow = {
+export type StepRow = {
   key: string;
   name: string;
   type: string;
@@ -95,9 +73,44 @@ type StepRow = {
   execution?: Execution;
 };
 
-function StepEvidence({ projectId, row }: { projectId: string; row: StepRow }) {
-  const { t } = useTranslation();
+/**
+ * 一次流程执行的顶层步骤行。
+ *
+ * 抽出来是因为套件的流程成员要展开**同一份**步骤列表（P2-4.3）：两份「怎么把一次流程
+ * 执行摊成行」的实现迟早会在旧 run 的退路、容器行的过滤上分叉，而分叉出来的那一份
+ * 用户看不出是另一套代码，只会觉得同一次运行在两个地方长得不一样。
+ */
+export function flowStepRows(run: FlowExecutionDetail): StepRow[] {
+  const httpById = new Map(run.steps.map((execution) => [execution.id, execution]));
+  const generic = run.executionSteps.filter((step) => !step.parentStepId);
+  return generic.length
+    ? generic.map((step) => ({
+        key: step.id,
+        name: step.stepName || step.stepType,
+        type: step.stepType,
+        status: step.status,
+        durationMs: step.durationMs,
+        error: step.error,
+        step,
+        execution: step.httpExecutionId ? httpById.get(step.httpExecutionId) : undefined,
+      }))
+    : run.steps.map((execution) => ({
+        key: execution.id,
+        name: execution.flowNodeName ?? execution.endpointName,
+        type: "request",
+        status: execution.status,
+        durationMs: execution.durationMs,
+        error: execution.error,
+        step: undefined,
+        execution,
+      }));
+}
 
+/**
+ * 一个步骤展开后该看到什么。套件抽屉复用它，所以它必须自己判断行的种类，
+ * 而不是靠调用方先分好类。
+ */
+export function StepEvidence({ projectId, row }: { projectId: string; row: StepRow }) {
   /* HTTP step: the request/response snapshot is the whole story. */
   if (row.execution) return row.step
     ? <ExecutionStepDetail step={row.step} execution={row.execution} />

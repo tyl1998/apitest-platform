@@ -3,7 +3,7 @@ import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Copy, CopyPlus, Crosshair, Maximize2, Play, Plus, Save, SaveAll, Trash2 } from "lucide-react";
-import { api, type Assertion, type BodyType, type Endpoint, type EndpointAuth, type EndpointInput, type Execution, type ExecutionSourceFilter, type FlowExtract, type Paged, type PreRequestHook, type RequestSnapshot, type ResponseScript, type TestCase } from "../api";
+import { api, type Assertion, type BodyType, type CaseUsage, type Endpoint, type EndpointAuth, type EndpointInput, type Execution, type ExecutionSourceFilter, type FlowExtract, type Paged, type PreRequestHook, type RequestSnapshot, type ResponseScript, type TestCase } from "../api";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { variableOptions } from "../lib/flowVariables";
 import { useNavGuardStore } from "../stores/navGuardStore";
@@ -15,6 +15,7 @@ import { IconButton } from "./IconButton";
 import { RunStatusTag } from "./RunStatusTag";
 import { AssertionEditor, AssertionResults } from "./AssertionEditor";
 import { CaseBox, CaseDialog, type CaseDialogMode } from "./CaseBox";
+import { CaseFlowSync } from "./CaseFlowSync";
 import { SidebarPager, SIDEBAR_PAGE_SIZES } from "./SidebarPager";
 import { CopyButton } from "./CopyButton";
 import { VariableField } from "./VariableField";
@@ -29,7 +30,7 @@ const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 /** Mac reads ⌘S; everything else reads Ctrl+S. Shown, never parsed. */
 const SAVE_KEY = navigator.platform.toLowerCase().includes("mac") ? "⌘S" : "Ctrl+S";
 const BODY_TYPES: BodyType[] = ["none", "json", "form", "text"];
-type Tab = "params" | "headers" | "body" | "auth" | "pre" | "post" | "assertions";
+type Tab = "params" | "headers" | "body" | "auth" | "pre" | "post" | "assertions" | "sync";
 type ResponseTab = "body" | "headers" | "request";
 /** The sidebar shows one of these at a time (交互文档 3.1.3). */
 type SideTab = "cases" | "history";
@@ -538,8 +539,8 @@ export function EndpointWorkspace() {
     setActiveCase(undefined);
     setDebugDraft(undefined);
     setResult(undefined);
-    /* The 校验 tab only exists while a case is loaded. */
-    setTab((current) => (current === "assertions" ? "params" : current));
+    /* 前置/后置/校验/同步四个 tab 只在用例加载时存在：留在上面会让 tab 头看起来空一格。 */
+    setTab((current) => (current === "assertions" || current === "pre" || current === "post" || current === "sync" ? "params" : current));
     setSearchParams((current) => { current.delete("case"); return current; }, { replace: true });
   }
 
@@ -606,18 +607,41 @@ export function EndpointWorkspace() {
     setCaseDialog({ kind: "create", request, statusCode: result?.statusCode });
   }
 
-  function removeCase(testCase: TestCase) {
+  /**
+   * 删除前先扫描引用（P2-4.5）。
+   *
+   * 扫描失败就**不删**：一个「查不到有没有人引用」的答案不能当成「没人引用」。被套件引用
+   * 时列出清单并把主按钮换成「仍然删除」——force 是看过清单之后的决定，不是对 409 的重试。
+   */
+  async function removeCase(testCase: TestCase) {
+    if (!projectId) return;
+    let usage: CaseUsage;
+    try { usage = await api.caseUsage(projectId, testCase.id); }
+    catch { message.error(t("cases.usageFailed")); return; }
+
+    const references = usage.suites.map((suite) => t("cases.usageSuite", { name: suite.name }));
+    const history = usage.executionCount > 0 ? t("cases.deleteHistoryNote", { count: usage.executionCount }) : undefined;
+
     Modal.confirm({
-      title: t("cases.deleteTitle", { name: testCase.name }),
-      content: t("cases.deleteHint"),
-      okText: t("action.delete"), cancelText: t("action.cancel"), okButtonProps: { danger: true },
+      title: usage.blocked ? t("cases.deleteBlockedTitle", { name: testCase.name }) : t("cases.deleteTitle", { name: testCase.name }),
+      content: <div>
+        <p>{usage.blocked ? t("cases.deleteBlockedHint") : t("cases.deleteHint")}</p>
+        {references.length > 0 && <ul className="usage-list">{references.map((line, index) => <li key={`${line}:${index}`}>{line}</li>)}</ul>}
+        {history && <p className="form-note">{history}</p>}
+      </div>,
+      okText: usage.blocked ? t("action.deleteAnyway") : t("action.delete"),
+      cancelText: t("action.cancel"),
+      okButtonProps: { danger: true },
       onOk: async () => {
         try {
-          await api.deleteCase(projectId!, testCase.id);
+          const deleted = await api.deleteCase(projectId, testCase.id, usage.blocked);
           if (activeCase?.id === testCase.id) returnToDebug();
           await loadCases();
           await reloadEndpoints();
-          message.success(t("cases.deleted"));
+          /* 顺带摘掉的套件成员是这次删除的连带改动，说出来才不用等到下次打开套件才发现。 */
+          message.success(deleted.detachedSuites.length
+            ? t("cases.deletedDetached", { count: deleted.detachedSuites.length })
+            : t("cases.deleted"));
         } catch { message.error(t("cases.deleteFailed")); }
       },
     });
@@ -777,6 +801,9 @@ export function EndpointWorkspace() {
     assertions: caseAssertions.length,
     pre: caseHooks.length,
     post: caseExtracts.length + caseResponseScripts.length,
+    /* 绑定条数要发一次请求才知道，而 tab 头是同步渲染的：不给它一个数字，而不是让
+       这个 tab 的角标去驱动一次额外的列表请求。 */
+    sync: 0,
   };
   const tabs: [Tab, string][] = [
     ["params", t("editor.params")], ["headers", t("editor.headers")],
@@ -787,6 +814,9 @@ export function EndpointWorkspace() {
       ["pre", t("flows.tabHooks")] as [Tab, string],
       ["post", t("flows.tabPost")] as [Tab, string],
       ["assertions", t("editor.assertions")] as [Tab, string],
+      /* 同步排在校验之后：前面几个 tab 说「这条用例是什么」，这一个说「把它推到哪儿」，
+         是最后一步而不是编辑的一部分。 */
+      ["sync", t("caseSync.tab")] as [Tab, string],
     ] : []),
   ];
 
@@ -1024,6 +1054,16 @@ export function EndpointWorkspace() {
                  script try-run has to load the same one. */
               environmentId={activeCase.environmentId ?? draft.defaultEnvironmentId ?? undefined}
             />}
+
+            {/* 同步：快照隔离让「改用例」与「流程跑什么」分开，这里补上把改动推过去的
+                那一步。它是显式操作，不是自动传播。 */}
+            {tab === "sync" && activeCase && <CaseFlowSync
+              projectId={projectId!}
+              caseId={activeCase.id}
+              caseName={activeCase.name}
+              /* 服务端同步的是库里那份用例，所以草稿有改动时先要求保存。 */
+              caseDirty={caseDirty}
+            />}
           </div>
         </section>
 
@@ -1122,7 +1162,7 @@ export function EndpointWorkspace() {
           onOpen={(testCase) => void openCase(testCase)}
           onRun={(testCase) => void runCase(testCase)}
           onEdit={(testCase) => setCaseDialog({ kind: "edit", testCase })}
-          onDelete={removeCase}
+          onDelete={(testCase) => void removeCase(testCase)}
           onInspect={inspect}
         />}
         pager={sideTab === "history" ? <SidebarPager

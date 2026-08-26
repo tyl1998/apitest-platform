@@ -2,9 +2,10 @@ import { useEffect, useState } from "react";
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { api, type SuiteSelection, type SuiteSummary } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
+import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, toRunStatus } from "../ui";
 import { IconButton } from "./IconButton";
@@ -16,7 +17,8 @@ import { RunStatusTag } from "./RunStatusTag";
  * 一个套件回答两件事：它会跑哪些成员，上次跑得怎么样。成员**怎么选**是列表能显示
  * 的全部——真实成员数要解析（标签/全部是动态的），那属于配置页的预览。
  *
- * 运行入口随 P2-4.3 加上；本批只到定义为止。
+ * 列表里能直接运行，但**不在列表里看成员进度**：成员级证据属于配置页的运行抽屉，
+ * 这里只把最近一次结果换成实时状态。
  */
 
 /** 列表只显示选择方式本身，不为每一行去解析动态成员（那要两条查询换一个数字）。 */
@@ -41,6 +43,9 @@ export function SuiteList() {
   const [name, setName] = useState("");
   const [selectionType, setSelectionType] = useState<SuiteSelection["type"]>("manual");
   const [saving, setSaving] = useState(false);
+  /** 运行请求还在路上的那个套件。入队成功之后由 lastRun.status 接手。 */
+  const [running, setRunning] = useState<string>();
+  const stream = useExecutionStream(projectId);
 
   async function load() {
     if (!projectId || loadedProjectId !== projectId || projectLoading) return;
@@ -54,6 +59,39 @@ export function SuiteList() {
     setSearchParams(debouncedKeyword ? { keyword: debouncedKeyword } : {}, { replace: true });
     void load();
   }, [projectId, loadedProjectId, projectLoading, debouncedKeyword]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* 计数就地更新，终态再整表重取：一行的状态列不需要等一次列表请求才动起来。 */
+  useEffect(() => {
+    stream.onEvent((event) => {
+      if (event.kind !== "suite") return;
+      setSuites((current) => current.map((suite) => (suite.lastRun?.id === event.suiteExecutionId
+        ? { ...suite, lastRun: { ...suite.lastRun, status: event.status, successCount: event.successCount, failedCount: event.failedCount, skippedCount: event.skippedCount } }
+        : suite)));
+      if (event.status === "queued" || event.status === "running") return;
+      void load();
+    });
+    return () => stream.onEvent(undefined);
+  }, [stream, projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * 列表里直接运行的是**已保存的那份配置**。
+   *
+   * 成员数在这里是问不出来的（标签/全部要解析），所以「成员为空」这一类拒绝交给服务端，
+   * 界面只把它的话转述出来——本地再猜一次会与服务端的判断分叉。
+   */
+  async function run(suite: SuiteSummary) {
+    if (!projectId) return;
+    setRunning(suite.id);
+    try {
+      const queued = await api.executeSuite(projectId, suite.id);
+      /* 换成刚入队的那次执行：状态列从此由它的 status 说，`running` 只盖住请求在路上
+         这一小段——否则一次没能发出终态事件的运行会让按钮永远停在禁用上。 */
+      setSuites((current) => current.map((item) => (item.id === suite.id ? { ...item, lastRun: queued } : item)));
+    } catch (error) {
+      const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      message.error(detail?.includes("queue unavailable") ? t("run.queueUnavailable") : detail ?? t("suites.runFailed"));
+    } finally { setRunning(undefined); }
+  }
 
   async function create() {
     if (!projectId || !name.trim()) return;
@@ -120,7 +158,7 @@ export function SuiteList() {
       <tbody>
         {suites.map((suite) => {
           const last = suite.lastRun;
-          const busy = last?.status === "queued" || last?.status === "running";
+          const busy = running === suite.id || last?.status === "queued" || last?.status === "running";
           return <tr key={suite.id} data-clickable="" onClick={() => navigate(`/projects/${projectId}/suites/${suite.id}`)}>
             <td>
               <div className="cell-name">
@@ -135,12 +173,14 @@ export function SuiteList() {
                 : last
                   ? <span className="flow-result">
                       <RunStatusTag status={toRunStatus(last.status)} />
-                      <span className="mono muted">{t("flows.stepSummary", { success: last.successCount, total: last.total })}</span>
+                      <span className="mono muted">{t("suites.memberSummary", { success: last.successCount, total: last.total })}</span>
                     </span>
                   : <span className="muted">{t("status.notRun")}</span>}
             </td>
             <td className="col-actions" onClick={(event) => event.stopPropagation()}>
               <div className="row-actions">
+                {/* 运行的是已保存的配置：列表上没有草稿这个概念。 */}
+                <IconButton icon={<Play size={14} />} label={t("suites.run")} disabled={busy} onClick={() => void run(suite)} />
                 <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => navigate(`/projects/${projectId}/suites/${suite.id}`)} />
                 <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => remove(suite)} />
               </div>

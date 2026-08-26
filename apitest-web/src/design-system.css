@@ -1810,12 +1810,17 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .flow-grid .col-actions { width: 166px; }
 .flow-result { display: inline-flex; align-items: center; gap: var(--s2); }
 
-/* 套件列表：名称吃剩余宽度，选择方式与最近结果按内容定宽。只有编辑/删除两个动作，
-   所以 actions 比流程窄一半（两个 30px + 6px 间距 + 14px 侧边距）。 */
+/* 套件列表：名称吃剩余宽度，选择方式与最近结果按内容定宽。三个动作（运行 / 编辑 /
+   删除），所以 actions 比流程的四个窄一格（三个 30px + 两个 6px 间距 + 28px 侧边距）。 */
 .suite-grid { table-layout: fixed; }
 .suite-col-selection { width: 220px; }
 .suite-col-result { width: 210px; }
-.suite-grid .col-actions { width: 94px; }
+.suite-grid .col-actions { width: 130px; }
+
+/* 运行抽屉里的成员行：名称先于所属接口/环境让位。两者都会截断，但被挤掉的应该是
+   补充信息而不是成员本身叫什么。 */
+.suite-member-name { flex: 1 1 auto; min-width: 0; }
+.suite-member-meta { flex: 0 1 auto; }
 
 /* 成员选择器：弹窗里唯一可滚动的区域。`.content` 是页面级唯一滚动容器，Modal 自己
    是 portal 里的独立层，所以这里给一个受限高度，而不是让弹窗跟着成员数变高。 */
@@ -1871,7 +1876,10 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 /* Two 30px actions plus one 6px gap and the cell's 14px side padding */
 .env-grid .col-actions { width: 94px; }
 
-.flow-run-bar {
+/* 「现在跑到哪了」这一条：流程画布上方与套件配置页共用一款，两页的运行进度不该长成
+   两个样子。 */
+.flow-run-bar,
+.suite-run-bar {
   display: flex;
   align-items: center;
   gap: var(--s3);

@@ -3,7 +3,7 @@ import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { CopyPlus, Pencil, Play, Plus, Trash2 } from "lucide-react";
-import { api, type FlowSummary } from "../api";
+import { api, type FlowSummary, type FlowUsage } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useProjectStore } from "../stores/projectStore";
@@ -120,13 +120,45 @@ export function FlowList() {
     } catch { message.error(t("flows.duplicateFailed")); }
   }
 
-  function remove(flow: FlowSummary) {
+  /**
+   * 删除前先扫描引用（P2-4.5）。
+   *
+   * 扫描失败就**不删**：一个「查不到有没有人引用」的答案不能当成「没人引用」。有引用时
+   * 对话框列出清单并把主按钮换成「仍然删除」——引用清单先给人看过，force 才是一个有依据
+   * 的决定，而不是把 409 当成需要重试一次的错误。
+   */
+  async function remove(flow: FlowSummary) {
+    if (!projectId) return;
+    let usage: FlowUsage;
+    try { usage = await api.flowUsage(projectId, flow.id); }
+    catch { message.error(t("flows.usageFailed")); return; }
+
+    const references = [
+      ...usage.suites.map((suite) => t("flows.usageSuite", { name: suite.name })),
+      ...usage.flows.map((parent) => t("flows.usageFlow", { name: parent.name })),
+    ];
+    const history = usage.executionCount > 0 ? t("flows.deleteHistoryNote", { count: usage.executionCount }) : undefined;
+
     Modal.confirm({
-      title: t("flows.deleteTitle", { name: flow.name }),
-      content: t("flows.deleteHint"),
-      okText: t("action.delete"), okButtonProps: { danger: true }, cancelText: t("action.cancel"),
+      title: usage.blocked ? t("flows.deleteBlockedTitle", { name: flow.name }) : t("flows.deleteTitle", { name: flow.name }),
+      content: <div>
+        <p>{usage.blocked ? t("flows.deleteBlockedHint") : t("flows.deleteHint")}</p>
+        {references.length > 0 && <ul className="usage-list">{references.map((line, index) => <li key={`${line}:${index}`}>{line}</li>)}</ul>}
+        {history && <p className="form-note">{history}</p>}
+      </div>,
+      okText: usage.blocked ? t("action.deleteAnyway") : t("action.delete"),
+      okButtonProps: { danger: true },
+      cancelText: t("action.cancel"),
       onOk: async () => {
-        try { await api.deleteFlow(projectId!, flow.id); await load(); message.success(t("flows.deleted")); }
+        try {
+          const deleted = await api.deleteFlow(projectId, flow.id, usage.blocked);
+          await load();
+          /* 摘掉的套件成员要说出来：它是这次删除的连带改动，不写出来用户下次打开套件
+             才会发现成员少了一个。 */
+          message.success(deleted.detachedSuites.length
+            ? t("flows.deletedDetached", { count: deleted.detachedSuites.length })
+            : t("flows.deleted"));
+        }
         catch { message.error(t("flows.deleteFailed")); }
       },
     });
@@ -191,7 +223,7 @@ export function FlowList() {
                 <IconButton icon={<Play size={14} />} label={t("action.run")} disabled={busy} onClick={() => void run(flow)} />
                 <IconButton icon={<CopyPlus size={14} />} label={t("action.duplicate")} onClick={() => void duplicate(flow)} />
                 <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => navigate(`/projects/${projectId}/flows/${flow.id}`)} />
-                <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => remove(flow)} />
+                <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => void remove(flow)} />
               </div>
             </td>
           </tr>;

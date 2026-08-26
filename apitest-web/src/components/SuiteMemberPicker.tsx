@@ -126,7 +126,7 @@ export function SuiteMemberPicker({ projectId, open, existing, onClose, onAdd }:
 
     {loading && <p className="muted">{t("filter.searching")}</p>}
 
-    {empty ? !loading && <Empty title={t("suites.pickerEmpty")} /> : <div className="picker-scroll">
+    {empty ? !loading && <Empty title={t("suites.pickerEmpty")} hint={t("suites.pickerEmptyHint")} /> : <div className="picker-scroll">
       <table className="grid picker-grid">
         <tbody>
           {tab === "case"

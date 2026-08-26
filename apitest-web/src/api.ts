@@ -397,6 +397,41 @@ export type TestCaseInput = {
   tags?: string[];
 };
 
+/**
+ * What breaks if a case is deleted, read before the confirm dialog (P2-4.5).
+ *
+ * 只有手动成员引用它的套件会拦。流程请求节点的 `sourceCaseId` 只是来源标记（节点自带
+ * 完整快照），所以不在这里；`executionCount` 只报数，历史带着 `caseName` 快照。
+ */
+export type CaseUsage = {
+  caseId: string;
+  suites: { id: string; name: string }[];
+  executionCount: number;
+  blocked: boolean;
+};
+
+/**
+ * 删除的结果：`detachedSuites` 是被顺带摘掉成员的手动套件。
+ *
+ * 服务端在同一个事务里把这条引用从套件成员里摘掉（P2-4.5 修订），所以删完不会留下
+ * 一行「已不存在」的成员。界面用这份清单说清「还改了哪儿」，而不是让用户下次打开套件
+ * 才发现成员少了一个。
+ */
+export type DeleteWithDetach = { id: string; detachedSuites: { id: string; name: string }[] };
+
+/**
+ * 一条引用了某用例的流程，以及引用它的那几个请求节点（P2-4.5 增补）。
+ *
+ * `inLoop` 说明这个节点躺在循环体里——它不是顶层步骤，同步时同样会被覆盖，但用户需要
+ * 知道自己改的是循环内部的一步。
+ */
+export type CaseFlowBinding = {
+  flowId: string;
+  flowName: string;
+  updatedAt: string;
+  nodes: { nodeId: string; nodeName: string; inLoop: boolean }[];
+};
+
 export type EndpointInput = {
   name: string;
   description?: string;
@@ -716,9 +751,11 @@ export type FlowPlanStep = { nodeId: string; name: string; endpointId?: string; 
 /**
  * A parent execution record (P2-0), matching `mapExecutionIndex` server-side.
  *
- * Flows write one of these per run; the project「执行记录」page uses the flow
- * kind as an aggregated category (5.0.9), so a flow run opens like a batch run
- * instead of appearing as scattered step rows.
+ * Flows and suites each write one of these per run, and the project「执行记录」
+ * page lists them as one「父执行记录」category with a kind filter (P2-4.4) — a
+ * run opens like a batch run instead of appearing as scattered step rows.
+ * `kind: "batch"` is allowed by the schema but nothing writes it: batch debug
+ * keeps its own table and its own category.
  */
 export type ExecutionIndex = {
   id: string;
@@ -769,12 +806,27 @@ export type ExecutionStep = {
   output: Record<string, unknown>;
   error?: string;
   httpExecutionId?: string;
+  /**
+   * Set when this step delegates to a **whole parent execution** — a suite
+   * member that is a flow (P2-4). `httpExecutionId` covers the one-request
+   * case; a flow member has its own index and step tree, so the evidence lives
+   * behind this id instead of being copied up.
+   */
+  childIndexId?: string;
   durationMs: number;
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
 };
 export type FlowStepResult = Execution | ExecutionStep;
+/**
+ * One parent execution plus its **top-level** step rows.
+ *
+ * Nested loop / subflow evidence is not included — it is fetched on demand via
+ * `executionStepChildren`, so a 100-iteration loop does not ship a thousand
+ * snapshots to a caller that only needs the parent row.
+ */
+export type ExecutionIndexDetail = ExecutionIndex & { steps: ExecutionStep[] };
 
 export type FlowExecution = {
   id: string;
@@ -799,6 +851,19 @@ export type FlowExecution = {
 
 /** The list view carries a count instead of every node's request body. */
 export type FlowSummary = Flow & { nodeCount: number; lastRun?: FlowExecution };
+/**
+ * What breaks if a flow is deleted, read before the confirm dialog (P2-4.5).
+ *
+ * `suites` are手动成员引用它的套件，`flows` 是有子流程节点指向它的流程（含循环体内的）。
+ * 两者都拦；`executionCount` 只报数——历史带着 `flowName` 快照，删完仍然读得通。
+ */
+export type FlowUsage = {
+  flowId: string;
+  suites: { id: string; name: string }[];
+  flows: { id: string; name: string }[];
+  executionCount: number;
+  blocked: boolean;
+};
 /** `steps` are the HTTP executions; `executionSteps` every node's step row. */
 export type FlowExecutionDetail = FlowExecution & { steps: Execution[]; executionSteps: ExecutionStep[] };
 export type FlowInput = {
@@ -870,6 +935,16 @@ export type SuiteExecution = {
   finishedAt?: string;
 };
 
+/**
+ * 一次套件执行的成员证据。
+ *
+ * `executionSteps` 每个成员一行（`stepType` 是 `case` 或 `flow`，`position` 就是报告的
+ * 阅读顺序）；用例成员的 HTTP 快照在 `runs` 里，按 `httpExecutionId` 取。流程成员的
+ * 内层步骤**不在这里**——它自己是一次完整的父执行，展开时才按 `childIndexId` 去拉，
+ * 不然一个装了十条流程的套件详情会把十棵步骤树一起搬过来。
+ */
+export type SuiteExecutionDetail = SuiteExecution & { executionSteps: ExecutionStep[]; runs: Execution[] };
+
 export type TestSuite = {
   id: string;
   name: string;
@@ -893,6 +968,14 @@ export type SuitePreview = {
   /** manual 引用了但已不存在的成员。 */
   missing: SuiteMemberRef[];
   memberLimit: number;
+  /**
+   * 声明的成员并发、峰值请求需求与平台预算。
+   *
+   * `peak` 是需求最大的那 C 个成员之和：超过 `budget` 不会报错，但请求会分批发出，
+   * 「同时并发 N」的结论因此不成立——所以必须在界面上写出来，而不是让用户把一份
+   * 被分批的报告当并发结论。
+   */
+  concurrency: { declared: number; peak: number; budget: number };
   /** 超上限、引用悬空之类要摊开说的问题；不静默截断。 */
   warnings: string[];
 };
@@ -957,7 +1040,12 @@ export type ExecutionEvent =
   /* Flow parent progress (P1-2). Per-node progress still arrives as `execution`
      or `step` events carrying a flowExecutionId, so the canvas and the执行记录
      page read the same stream. */
-  | { kind: "flow"; projectId: string; flowExecutionId: string; status: ExecutionStatus; total: number; successCount: number; failedCount: number; skippedCount: number };
+  | { kind: "flow"; projectId: string; flowExecutionId: string; executionIndexId?: string; status: ExecutionStatus; total: number; successCount: number; failedCount: number; skippedCount: number }
+  /* 套件父记录的进度（P2-4）。成员级进度不需要新事件：一个成员就是一次独立执行，
+     它自己已经在流上发 execution / flow 事件，这一条只描述父级计数与终态。
+     成员行因此靠一次详情重取来更新，而不是靠事件里的 id 对号——套件的 execution
+     事件不带 suiteExecutionId。 */
+  | { kind: "suite"; projectId: string; suiteExecutionId: string; executionIndexId?: string; status: ExecutionStatus; total: number; successCount: number; failedCount: number; skippedCount: number };
 
 export type ProjectMetric = Project & {
   endpointCount: number;
@@ -1183,6 +1271,18 @@ export const api = {
         page: filters?.page, pageSize: filters?.pageSize,
       },
     }).then(paged<ExecutionIndex>),
+  /**
+   * 一条父执行记录 + 它的全部步骤行，按 index id 取。
+   *
+   * 与 `flowExecution` / `suiteExecution` 的区别是它**不认识 kind**：套件成员里的流程
+   * 只留下一个 `childIndexId`，要顺着它找到那次流程执行就只能走这条。返回的 `detailId`
+   * 才是对应大类的明细 id。
+   */
+  executionIndexDetail: (projectId: string, indexId: string) =>
+    client.get(`/projects/${projectId}/execution-index/${indexId}`).then(data<ExecutionIndexDetail>),
+  /** 取消一条父执行；flow 与 suite 才可取消，batch 有自己的取消入口。 */
+  cancelExecutionIndex: (projectId: string, indexId: string) =>
+    client.post(`/projects/${projectId}/execution-index/${indexId}/cancel`).then(data<ExecutionIndex>),
   endpointExecutions: (projectId: string, endpointId: string, filters?: ExecutionFilters) =>
     client.get(`/projects/${projectId}/endpoints/${endpointId}/executions`, { params: executionParams(filters) }).then(paged<Execution>),
 
@@ -1200,7 +1300,30 @@ export const api = {
   case: (projectId: string, caseId: string) => client.get(`/projects/${projectId}/cases/${caseId}`).then(data<TestCase>),
   createCase: (projectId: string, endpointId: string, input: TestCaseInput) => client.post(`/projects/${projectId}/endpoints/${endpointId}/cases`, input).then(data<TestCase>),
   updateCase: (projectId: string, caseId: string, input: Partial<TestCaseInput>) => client.patch(`/projects/${projectId}/cases/${caseId}`, input).then(data<TestCase>),
-  deleteCase: (projectId: string, caseId: string) => client.delete(`/projects/${projectId}/cases/${caseId}`).then(data<{ id: string }>),
+  /** 引用清单，删除对话框先读它（P2-4.5）。 */
+  caseUsage: (projectId: string, caseId: string) => client.get(`/projects/${projectId}/cases/${caseId}/usage`).then(data<CaseUsage>),
+  /** `force` 只在用户看过引用清单之后才发。返回被顺带摘掉成员的套件清单。 */
+  deleteCase: (projectId: string, caseId: string, force = false) =>
+    client.delete(`/projects/${projectId}/cases/${caseId}`, { params: force ? { force: "true" } : undefined }).then(data<DeleteWithDetach>),
+  /**
+   * 这个用例被哪些流程的哪些请求节点引用（P2-4.5 增补）。
+   *
+   * 与 `caseUsage` 是两件事：usage 回答「删掉会坏什么」，绑定清单回答「改好之后还有哪儿
+   * 要跟着改」。来源标记不构成依赖，所以它不在 usage 的拦截清单里。
+   */
+  caseFlowBindings: (projectId: string, caseId: string) =>
+    client.get(`/projects/${projectId}/cases/${caseId}/flow-bindings`).then(data<CaseFlowBinding[]>),
+  /**
+   * 把用例的当前定义覆盖进若干条流程里绑定它的节点。
+   *
+   * 一次可以推多条：一处改动往往要给所有复用它的链路。服务端一个事务里全部写完——
+   * 部分成功会留下「三条已同步、两条还是旧的」这种说不清的中间态。`nodeIds` 缺省表示
+   * 每条流程里绑着这个用例的全部节点。节点名、坐标、失败策略、并发次数留在图上不动——
+   * 那些是编排决策，不属于用例。
+   */
+  syncCaseToFlows: (projectId: string, caseId: string, flowIds: string[], nodeIds?: string[]) =>
+    client.post(`/projects/${projectId}/cases/${caseId}/sync-to-flows`, { flowIds, ...(nodeIds?.length ? { nodeIds } : {}) })
+      .then(data<{ flows: { flowId: string; flowName: string; updatedNodeIds: string[] }[] }>),
   /**
    * Runs a case. Passing a request or assertions runs the edited version on
    * screen without persisting it — 交互文档 3.1.3: edits do not自动落盘.
@@ -1258,7 +1381,11 @@ export const api = {
   flow: (projectId: string, flowId: string) => client.get(`/projects/${projectId}/flows/${flowId}`).then(data<Flow>),
   createFlow: (projectId: string, input: FlowInput) => client.post(`/projects/${projectId}/flows`, input).then(data<Flow>),
   updateFlow: (projectId: string, flowId: string, input: FlowInput) => client.put(`/projects/${projectId}/flows/${flowId}`, input).then(data<Flow>),
-  deleteFlow: (projectId: string, flowId: string) => client.delete(`/projects/${projectId}/flows/${flowId}`).then(data<{ id: string }>),
+  /** 引用清单，删除对话框先读它（P2-4.5）。 */
+  flowUsage: (projectId: string, flowId: string) => client.get(`/projects/${projectId}/flows/${flowId}/usage`).then(data<FlowUsage>),
+  /** `force` 只在用户看过引用清单之后才发。返回被顺带摘掉成员的套件清单。 */
+  deleteFlow: (projectId: string, flowId: string, force = false) =>
+    client.delete(`/projects/${projectId}/flows/${flowId}`, { params: force ? { force: "true" } : undefined }).then(data<DeleteWithDetach>),
   /**
    * Runs a flow. Passing nodes/edges runs the canvas as it stands without
    * persisting it, the same edited-but-unsaved rule as a case run.
@@ -1308,7 +1435,7 @@ export const api = {
   flowNodeSource: (projectId: string, source: { endpointId?: string; caseId?: string }) =>
     client.get(`/projects/${projectId}/flows/node-source`, { params: source }).then(data<FlowNodeSource>),
 
-  /* 测试套件 (P2-4)。执行、运行记录与取消随 P2-4.2/4.3 接入。 */
+  /* 测试套件 (P2-4)。 */
   testSuites: (projectId: string, filters?: { keyword?: string; tag?: string }) =>
     client.get(`/projects/${projectId}/test-suites`, { params: { keyword: filters?.keyword?.trim() || undefined, tag: filters?.tag || undefined } }).then(data<SuiteSummary[]>),
   testSuite: (projectId: string, suiteId: string) => client.get(`/projects/${projectId}/test-suites/${suiteId}`).then(data<TestSuite>),
@@ -1319,10 +1446,31 @@ export const api = {
    * 「这个套件现在会跑哪些成员」。
    *
    * 传 selection 就预览**还没保存的那份配置**——标签/全部是动态选择，不这样用户只能
-   * 靠保存来试。不传就预览已存的那份。
+   * 靠保存来试。不传就预览已存的那份。`concurrency` 只用来算峰值需求，服务端不会
+   * 因此改动存下来的执行设置。
    */
-  previewSuite: (projectId: string, suiteId: string, selection?: SuiteSelection) =>
-    client.post(`/projects/${projectId}/test-suites/${suiteId}/preview`, selection ? { selection } : {}).then(data<SuitePreview>),
+  previewSuite: (projectId: string, suiteId: string, selection?: SuiteSelection, concurrency?: number) =>
+    client.post(`/projects/${projectId}/test-suites/${suiteId}/preview`, {
+      ...(selection ? { selection } : {}),
+      ...(concurrency === undefined ? {} : { execution: { concurrency } }),
+    }).then(data<SuitePreview>),
+  /**
+   * 运行套件。返回的是一次**已接受**的执行（202），不是结论——进度走事件流。
+   *
+   * `execution` 是「改了还没保存也能跑一次」，与用例、流程同一条规则；成员清单**不接受
+   * 覆盖**：随手指定一批成员是「批量执行」，不是「运行这个套件」。所以选择方式改了就
+   * 必须先保存，界面负责说清这一点。
+   */
+  executeSuite: (projectId: string, suiteId: string, execution?: Partial<SuiteExecutionConfig>) =>
+    client.post(`/projects/${projectId}/test-suites/${suiteId}/execute`, execution ? { execution } : {}).then(data<SuiteExecution>),
+  suiteExecutions: (projectId: string, suiteId: string, filters?: ExecutionFilters) =>
+    client.get(`/projects/${projectId}/test-suites/${suiteId}/executions`, { params: executionParams(filters) }).then(paged<SuiteExecution>),
+  /** 一次运行 + 每个成员一行证据。流程成员的内层步骤另行按需拉取。 */
+  suiteExecution: (projectId: string, suiteExecutionId: string) =>
+    client.get(`/projects/${projectId}/suite-executions/${suiteExecutionId}`).then(data<SuiteExecutionDetail>),
+  /** 不再开跑新成员，在途成员按取消处理；已经跑完的成员保留自己的结论。 */
+  cancelSuiteExecution: (projectId: string, suiteExecutionId: string) =>
+    client.post(`/projects/${projectId}/suite-executions/${suiteExecutionId}/cancel`).then(data<SuiteExecution>),
   /**
    * What ran *inside* a loop or subflow step (P2-6).
    *
