@@ -21,6 +21,9 @@ import { mapFlow, type Flow, type FlowEdge, type FlowNode } from "../models/type
  *
  * 注意冻结**不等于**快照隔离：请求节点复制 endpoint 是为了让流程独立于后续编辑，
  * 而子流程存在的意义恰恰是「一份定义、多处复用」，所以下一次运行会读到改好的定义。
+ *
+ * 第三个调用方是**删除前的反向扫描**（P2-4.5）：`flowsReferencing` 回答「谁引用了这个
+ * id」。它和上面两处共享同一条前提——循环体是内联子图，所以引用可能藏在任意嵌套深度。
  */
 
 /** One referenced flow, reduced to what running it needs. */
@@ -49,6 +52,65 @@ function collectFlowReferencingNodes(nodes: FlowNode[], into: FlowReferencingNod
     else if (node.type === "loop") collectFlowReferencingNodes(node.body?.nodes ?? [], into);
   }
   return into;
+}
+
+/** 节点上可以指向别处的那几个 id。写死成联合类型是因为它要拼进 jsonpath——值走参数，
+    键必须是代码自己写下的字面量（规范 4.4：请求里的值永远不能拼进语句）。 */
+export type FlowNodeRefKey = "flowId" | "dataSourceId" | "sqlDefinitionId" | "sourceCaseId";
+
+/**
+ * 「这张图里任意深度存在 `key == value`」的判定条件。
+ *
+ * 抽出来是因为两个调用方要用**同一条**谓词：`flowsReferencing` 只要 id/name，
+ * 同步用例到流程还要把 `nodes` 一起读回来。两处各写一遍 jsonpath，迟早会出现「扫描说
+ * 有引用、同步说没找到节点」这种自相矛盾。
+ */
+function referencePredicate(key: FlowNodeRefKey, valueParam: number, pathParam: number) {
+  return {
+    path: `$.** ? (@.${key} == $value)`,
+    clause: `jsonb_path_exists(nodes, $${pathParam}::jsonpath, jsonb_build_object('value', $${valueParam}::text))`,
+  };
+}
+
+/**
+ * 引用了某个 id 的流程（删除前的 usage 扫描用）。
+ *
+ * **必须递归**：循环体是内联子图（`LoopFlowNode.body.nodes`），所以一个子流程节点、
+ * 数据库节点完全可以躺在循环里。用 `nodes @> '[{"flowId": "…"}]'` 只看得见顶层数组的
+ * 元素——循环体里的引用会被漏掉，于是「没人引用」这个结论是错的，删完那条被引用的流程
+ * 之后，外层流程要到入队时才报「references a flow that does not exist」。
+ * `$.**` 是递归通配，一层查询覆盖任意嵌套深度；值经 `vars` 绑定，不进路径文本。
+ */
+export async function flowsReferencing(projectId: string, key: FlowNodeRefKey, value: string, excludeFlowId?: string) {
+  const predicate = referencePredicate(key, 3, 2);
+  const params: unknown[] = [projectId, predicate.path, value];
+  let exclude = "";
+  if (excludeFlowId) { params.push(excludeFlowId); exclude = ` AND id <> $${params.length}`; }
+  const result = await pool.query(
+    `SELECT id, name FROM flows
+      WHERE project_id = $1
+        AND ${predicate.clause}${exclude}
+      ORDER BY name`,
+    params,
+  );
+  return result.rows.map((row) => ({ id: String(row.id), name: String(row.name) }));
+}
+
+/**
+ * 同上，但把整张图读回来。
+ *
+ * 「这个用例绑到了哪些流程、绑在哪个节点上」需要节点本身（节点名、节点 id），而
+ * 「同步」还要把它们改写回去。走同一条谓词，所以清单与改写看到的是同一批流程。
+ */
+export async function flowGraphsReferencing(projectId: string, key: FlowNodeRefKey, value: string) {
+  const predicate = referencePredicate(key, 3, 2);
+  const result = await pool.query(
+    `SELECT * FROM flows
+      WHERE project_id = $1 AND ${predicate.clause}
+      ORDER BY name`,
+    [projectId, predicate.path, value],
+  );
+  return result.rows.map(mapFlow);
 }
 
 async function loadFlow(projectId: string, flowId: string): Promise<Flow | undefined> {

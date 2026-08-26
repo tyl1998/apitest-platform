@@ -11,9 +11,19 @@ export async function executionIndexRoutes(app: FastifyInstance) {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     const page = Math.max(1, Number(request.query.page ?? 1)); const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
     const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
+    /**
+     * 非 HTTP 单步调试写的是一次性父索引（`routes/flows.ts` 的 `executeGenericStep`，
+     * `detail_id = id` 自指），它存在的唯一理由是给那一行 `execution_steps` 一个归属，
+     * 不是一次「父执行」。它必须排除在这份清单之外：一是「调试了一下某个节点」不该和
+     * 一次完整流程/套件运行并列，二是它的 `detail_id` 不是 `flow_executions` 的 id，
+     * 点开会 404。自指是这类行唯一稳定的标记（两张表的 id 都是 randomUUID，真实父执行
+     * 不可能撞上）。
+     */
+    clauses.push("detail_id <> id");
     if (request.query.kind && request.query.kind !== "all") { params.push(request.query.kind); clauses.push(`kind = $${params.length}`); }
     if (request.query.status && request.query.status !== "all") { params.push(request.query.status); clauses.push(`status = $${params.length}`); }
-    /* 流程记录按流程名称搜索（5.0.9）。 */
+    /* 按对象名称搜索（5.0.9 起）。`target_name` 是入队时的快照，流程与套件共用这一列，
+       所以统一父执行列表（P2-4.4）的搜索框不需要按 kind 分两套。 */
     if (request.query.keyword?.trim()) { params.push(`%${request.query.keyword.trim()}%`); clauses.push(`target_name ILIKE $${params.length}`); }
     const where = clauses.join(" AND "); const count = await pool.query(`SELECT COUNT(*)::int AS total FROM execution_index WHERE ${where}`, params);
     params.push(pageSize, (page - 1) * pageSize);
@@ -26,7 +36,11 @@ export async function executionIndexRoutes(app: FastifyInstance) {
     if (!isUuid(request.params.indexId)) return fail(reply, 404, 2001, "execution index not found");
     const result = await pool.query("SELECT * FROM execution_index WHERE id = $1 AND project_id = $2", [request.params.indexId, context.project.id]);
     if (!result.rowCount) return fail(reply, 404, 2001, "execution index not found");
-    const steps = await pool.query("SELECT * FROM execution_steps WHERE index_id = $1 ORDER BY position, created_at", [request.params.indexId]);
+    /* 只回顶层步骤，与套件明细（`routes/suites.ts`）一致：循环/子流程的内层证据按需走
+       `GET /execution-steps/:stepId/children`。不过滤的话，一次 100 迭代的循环会把上千行
+       带完整快照的步骤塞进这个响应里，而两个调用方（套件里的流程成员、记录页的
+       `?parent=` 深链）都只读父行本身与顶层行。 */
+    const steps = await pool.query("SELECT * FROM execution_steps WHERE index_id = $1 AND parent_step_id IS NULL ORDER BY position, created_at", [request.params.indexId]);
     return success({ ...mapExecutionIndex(result.rows[0]), steps: steps.rows.map(mapExecutionStep) });
   });
 

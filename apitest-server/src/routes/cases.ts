@@ -2,14 +2,16 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
 import { evaluateAssertions, validateDeclarativeAssertions } from "../lib/assert.js";
+import { applyCaseToFlowNodes, caseFlowBindings, caseSyncPayload, writeFlowNodes } from "../lib/caseSync.js";
 import { enqueueRun } from "../lib/enqueue.js";
-import { validateExtracts, validateHooks, validateResponseScripts } from "../lib/flow.js";
+import { toFlowNode, validateExtracts, validateHooks, validateResponseScripts } from "../lib/flow.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { BODY_TYPES, METHODS } from "../lib/run.js";
+import { detachSuiteMember } from "../lib/suiteMembers.js";
 import { isUuid } from "../lib/uuid.js";
-import { persistCaseLifecycleScripts } from "../lib/scripts.js";
-import { mapExecution, mapTestCase, mapTestCaseSummary, type Assertion, type FlowExtract, type HookConfig, type RequestSnapshot, type ResponseScriptConfig, type TestCase } from "../models/types.js";
+import { persistCaseLifecycleScripts, persistFlowScripts } from "../lib/scripts.js";
+import { mapExecution, mapFlow, mapTestCase, mapTestCaseSummary, type Assertion, type FlowExtract, type HookConfig, type RequestSnapshot, type ResponseScriptConfig, type TestCase } from "../models/types.js";
 
 type CaseInput = {
   name?: string;
@@ -77,6 +79,39 @@ type CaseWithRun = TestCase & { lastRun?: ReturnType<typeof mapExecution> };
 async function withLastRun(cases: TestCase[]): Promise<CaseWithRun[]> {
   const runs = await latestRuns(cases.map((item) => item.id));
   return cases.map((item) => ({ ...item, lastRun: runs.get(item.id) }));
+}
+
+/**
+ * Everything that would break if this case disappeared (P2-4.5).
+ *
+ * 只有**套件的 manual 成员**算引用：套件只存 `{type,id}`，用例定义现读，所以用例没了那个
+ * 成员就是一条悬空引用。tag/all 按条件现算，不产生引用（边界决策 6）。
+ *
+ * 两类**不算**引用，所以既不拦也不列：
+ *
+ * - 流程请求节点的 `sourceCaseId` 只是**来源标记**。节点自己持有完整的请求/断言快照
+ *   （改用例不影响已存下的流程，见 `RequestFlowNode.sourceCaseId` 的注释），删掉用例
+ *   只让编辑器少显示一行「来自哪个用例」，运行结果一模一样。把它列进拦截清单会让人以为
+ *   流程会跑坏。
+ * - 执行历史：`executions.case_id` 是 ON DELETE SET NULL 且快照了 `case_name`（迁移 007），
+ *   删完历史仍然读得通。只报个数，供人判断这条用例跑过多少次。
+ */
+async function caseUsage(projectId: string, caseId: string) {
+  const found = await pool.query("SELECT id FROM test_cases WHERE id = $1 AND project_id = $2", [caseId, projectId]);
+  if (!found.rowCount) return undefined;
+  const suites = await pool.query(
+    `SELECT id, name FROM test_suites
+      WHERE project_id = $1 AND selection_type = 'manual' AND selection_config @> $2::jsonb
+      ORDER BY name`,
+    [projectId, JSON.stringify({ members: [{ type: "case", id: caseId }] })],
+  );
+  const executions = await pool.query("SELECT COUNT(*)::int AS total FROM executions WHERE case_id = $1", [caseId]);
+  return {
+    caseId,
+    suites: suites.rows.map((row) => ({ id: String(row.id), name: String(row.name) })),
+    executionCount: Number(executions.rows[0].total),
+    blocked: Boolean(suites.rowCount),
+  };
 }
 
 export async function caseRoutes(app: FastifyInstance) {
@@ -305,17 +340,149 @@ export async function caseRoutes(app: FastifyInstance) {
   });
 
   /**
+   * What breaks if this case is deleted, read before the confirm dialog
+   * (P2-4.5). Same twin-route shape as environments / data sources.
+   */
+  app.get<{ Params: { id: string; caseId: string } }>("/api/v1/projects/:id/cases/:caseId/usage", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply); if (!context) return;
+    if (!isUuid(request.params.caseId)) return fail(reply, 404, 2001, "case not found");
+    const usage = await caseUsage(context.project.id, request.params.caseId);
+    if (!usage) return fail(reply, 404, 2001, "case not found");
+    return success(usage);
+  });
+
+  /**
    * Deleting a case keeps its runs: `executions.case_id` is ON DELETE SET NULL
    * and `case_name` was snapshotted, so history still reads correctly
-   * (Spec 4.4 历史保留). Nothing references a case yet — 测试套件 (P2-4) will be
-   * the first, and its usage scan belongs to that slice.
+   * (Spec 4.4 历史保留).
+   *
+   * 测试套件是第一个引用方（P2-4.5）：手动成员引用了它就回 409 + 清单，`?force=true`
+   * 才真删。**force 之后引用不再允许悬空**：删除与「把它从每个引用它的手动套件里摘掉」
+   * 在同一个事务里完成（`detachSuiteMember`）。一个已经不存在的用例出现在套件成员列表里
+   * 除了解释自己为什么在那儿之外没有用途，唯一合理的操作就是删掉它——那件事这里做完。
    */
-  app.delete<{ Params: { id: string; caseId: string } }>("/api/v1/projects/:id/cases/:caseId", async (request, reply) => {
+  app.delete<{ Params: { id: string; caseId: string }; Querystring: { force?: string } }>("/api/v1/projects/:id/cases/:caseId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
     if (!isUuid(request.params.caseId)) return fail(reply, 404, 2001, "case not found");
-    const result = await pool.query("DELETE FROM test_cases WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.caseId, context.project.id]);
-    if (!result.rowCount) return fail(reply, 404, 2001, "case not found");
-    return success({ id: String(result.rows[0].id) });
+    const usage = await caseUsage(context.project.id, request.params.caseId);
+    if (!usage) return fail(reply, 404, 2001, "case not found");
+    if (usage.blocked && request.query.force !== "true") {
+      return reply.code(409).send({ code: 2003, message: "case is referenced", data: usage });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query("DELETE FROM test_cases WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.caseId, context.project.id]);
+      if (!result.rowCount) {
+        await client.query("ROLLBACK");
+        return fail(reply, 404, 2001, "case not found");
+      }
+      /* 摘成员必须与 DELETE 同一个事务：分两步会留下「用例已删、成员还在」的中间态，
+         而那正是悬空行的来源。 */
+      const detached = await detachSuiteMember(client, context.project.id, "case", request.params.caseId);
+      await client.query("COMMIT");
+      /* 回报改到了哪些套件：界面用它说「已从 N 个套件中移除」，而不是让用户下次打开
+         套件才发现成员少了一个。 */
+      return success({ id: String(result.rows[0].id), detachedSuites: detached });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      return fail(reply, 400, 1001, error instanceof Error ? error.message : "case could not be deleted");
+    } finally {
+      client.release();
+    }
+  });
+
+  /**
+   * 这个用例被哪些流程的哪些请求节点引用（P2-4.5 增补）。
+   *
+   * 与 `usage` 是两件不同的事，所以是两条路由：`usage` 回答「删掉它会坏什么」，绑定清单
+   * 回答「改好它之后还有哪儿要跟着改」。把来源标记塞进 usage 的拦截清单会让人以为流程会
+   * 跑坏——它不会，节点自带完整快照。
+   */
+  app.get<{ Params: { id: string; caseId: string } }>("/api/v1/projects/:id/cases/:caseId/flow-bindings", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply); if (!context) return;
+    if (!isUuid(request.params.caseId)) return fail(reply, 404, 2001, "case not found");
+    const found = await pool.query("SELECT id FROM test_cases WHERE id = $1 AND project_id = $2", [request.params.caseId, context.project.id]);
+    if (!found.rowCount) return fail(reply, 404, 2001, "case not found");
+    const bindings = await caseFlowBindings(context.project.id, request.params.caseId);
+    return success(bindings, { total: bindings.length });
+  });
+
+  /**
+   * 把这个用例的当前定义**覆盖**进若干条流程里绑定它的节点（P2-4.5 增补）。
+   *
+   * 这不违反快照隔离，而是补上它缺的那一半：请求节点从用例导入时复制了一份快照，所以
+   * 改用例永远不会自动改动已存的流程——那条规则保住了「流程跑的是它自己存下的东西」。
+   * 代价是用例修好之后，引用它的每条流程都要手工重新导入一次。这条路由把那件事变成一次
+   * **显式**操作：由人勾选流程、点一次同步，覆盖那些节点。自动传播仍然不做。
+   *
+   * **一次可以同步多条流程**：一处改动往往要推给所有复用它的链路，让人点五次同步
+   * 只是把同一个决定重复五遍。破坏性由「勾选 + 确认对话框列出会被覆盖的节点」承担，
+   * 而不是由「一次只能选一条」承担。
+   *
+   * **一个事务覆盖全部选中的流程**：部分成功会留下「三条已同步、两条还是旧的」这种
+   * 说不清的中间态，而用户看到的是一条失败提示。要么全推过去，要么一条都不动。
+   *
+   * `nodeIds` 可选：给出就只覆盖点名的节点（节点 id 在项目内由客户端生成、跨流程不重复，
+   * 所以一份清单足够），缺省表示每条流程里绑着这个用例的全部节点。
+   */
+  app.post<{ Params: { id: string; caseId: string }; Body: { flowIds?: string[]; nodeIds?: string[] } }>("/api/v1/projects/:id/cases/:caseId/sync-to-flows", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply, true); if (!context) return;
+    if (!isUuid(request.params.caseId)) return fail(reply, 404, 2001, "case not found");
+    const flowIds = request.body?.flowIds;
+    if (!Array.isArray(flowIds) || !flowIds.length) return fail(reply, 400, 1001, "flowIds must be a non-empty array");
+    if (flowIds.some((id) => !isUuid(id))) return fail(reply, 400, 1001, "each flowId must be a UUID");
+    if (request.body?.nodeIds !== undefined && !Array.isArray(request.body.nodeIds)) return fail(reply, 400, 1001, "nodeIds must be an array");
+    /* 同一条流程被勾两次不该被覆盖两遍（第二遍写的是刚写进去的那份，纯浪费一次往返）。
+       同时**排序**：多行加锁的顺序不一致就会在两次并发同步之间形成死锁。 */
+    const unique = [...new Set(flowIds)].sort();
+
+    const found = await pool.query("SELECT * FROM test_cases WHERE id = $1 AND project_id = $2", [request.params.caseId, context.project.id]);
+    if (!found.rowCount) return fail(reply, 404, 2001, "case not found");
+    const testCase = mapTestCase(found.rows[0]);
+    /* 脚本引用先接手（匿名脚本复制正文、公共脚本跟随），与 `flows/node-source` 的导入
+       走同一条规则——两条路径给出不同结果就会出现「导入能存、同步存不下」。
+       只接手一次：每条流程都重新接手一遍会为同一份匿名脚本正文复制出 N 个副本。 */
+    const payload = await caseSyncPayload(context.project.id, testCase);
+    const targets = request.body?.nodeIds?.length ? new Set(request.body.nodeIds) : undefined;
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const results: { flowId: string; flowName: string; updatedNodeIds: string[] }[] = [];
+      for (const flowId of unique) {
+        /* FOR UPDATE：同步是读图 → 改图 → 写回，中间被另一次保存插进来会让这次写回
+           把对方的改动整块盖掉。 */
+        const owner = await client.query("SELECT * FROM flows WHERE id = $1 AND project_id = $2 FOR UPDATE", [flowId, context.project.id]);
+        if (!owner.rowCount) {
+          await client.query("ROLLBACK");
+          return fail(reply, 404, 2001, "flow not found");
+        }
+        const flow = mapFlow(owner.rows[0]);
+        const applied = applyCaseToFlowNodes(flow.nodes, testCase.id, targets, payload);
+        /* 一条选中的流程里没有可覆盖的节点就整体拒绝，而不是静默跳过：清单是刚读来的，
+           出现这种情况说明用户看到的与库里的已经不是一回事，此时继续写别的流程等于
+           在一份过期的判断上执行破坏性操作。 */
+        if (!applied.updated.length) {
+          await client.query("ROLLBACK");
+          return fail(reply, 400, 1001, `flow "${flow.name}" has no request node bound to that case`);
+        }
+        /* 走保存路径同一套归一 + 脚本持久化：同步写进去的节点必须与用户手动保存出来的
+           形状一致，否则「同步过的流程」会变成第二种节点形状。 */
+        const normalized = applied.nodes.map(toFlowNode);
+        const persisted = await persistFlowScripts(client, context.project.id, flowId, normalized);
+        await writeFlowNodes(client, context.project.id, flowId, persisted);
+        results.push({ flowId, flowName: flow.name, updatedNodeIds: applied.updated });
+      }
+      await client.query("COMMIT");
+      /* 逐条回报改到了哪几个节点：界面据此说「3 条流程 / 5 个节点」，而不是一句成功。 */
+      return success({ flows: results });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      return fail(reply, 400, 1001, error instanceof Error ? error.message : "case could not be synced");
+    } finally {
+      client.release();
+    }
   });
 
   /**

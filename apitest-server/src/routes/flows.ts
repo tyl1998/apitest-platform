@@ -3,13 +3,14 @@ import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
 import { enqueueFlowRun, enqueueRun, cancelFlowRun } from "../lib/enqueue.js";
 import { MAX_FLOW_NODES, planStages, toFlowNode, topologicalOrder, validateFlowGraph, validateNode } from "../lib/flow.js";
-import { checkFlowReferences } from "../lib/flowRefs.js";
+import { checkFlowReferences, flowsReferencing } from "../lib/flowRefs.js";
 import { executeConditionNode, executeDatabaseNode, executeScriptNode, prepareFlowNodes } from "../lib/flowRun.js";
 import { executeWaitNode } from "../lib/flowNodes.js";
 import { runGraph, TokenPool, type GraphContext } from "../lib/flowGraph.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { adoptScriptRefs, inlineFlowNodeScripts, persistFlowScripts } from "../lib/scripts.js";
+import { detachSuiteMember } from "../lib/suiteMembers.js";
 import { isUuid } from "../lib/uuid.js";
 import { loadEnvironment } from "../lib/run.js";
 import { mapEndpoint, mapExecution, mapExecutionStep, mapFlow, mapFlowExecution, mapTestCase, type ExecutionStep, type Flow, type FlowEdge, type FlowNode } from "../models/types.js";
@@ -212,6 +213,43 @@ async function executeGenericStep(projectId: string, flow: Flow, node: Extract<F
   }
 }
 
+/**
+ * Everything that would break if this flow disappeared (P2-4.5).
+ *
+ * 两类引用都是**真依赖**，所以都拦：
+ *
+ * - **套件的 manual 成员**：套件只存 `{type,id}`，成员定义现读。引用的流程没了，那个成员
+ *   在下一次运行里就是一条悬空引用（`resolveMembers` 把它挑进 `missing`）。tag/all 是动态
+ *   选择，按条件现算，不产生引用——所以扫描只看 `selection_type = 'manual'`（边界决策 6）。
+ * - **别的流程的子流程节点**：子流程只存 `flowId`，内层图在入队时才读。目标流程没了，
+ *   外层流程要到运行时才报「references a flow that does not exist」——这正是 usage 拦截
+ *   要提前到删除前的理由。
+ *
+ * 执行历史只报数、从不拦：`flow_executions.flow_id` 是 ON DELETE SET NULL 且快照了
+ * `flow_name`（迁移 012），删掉流程之后历史仍然读得通。
+ */
+async function flowUsage(projectId: string, flowId: string) {
+  const flow = await pool.query("SELECT id FROM flows WHERE id = $1 AND project_id = $2", [flowId, projectId]);
+  if (!flow.rowCount) return undefined;
+  const suites = await pool.query(
+    `SELECT id, name FROM test_suites
+      WHERE project_id = $1 AND selection_type = 'manual' AND selection_config @> $2::jsonb
+      ORDER BY name`,
+    [projectId, JSON.stringify({ members: [{ type: "flow", id: flowId }] })],
+  );
+  /* 排除自己：一条引用自己的流程在保存时就被环检测拒了，但真要有这种历史数据，
+     把它列成「自己拦住自己」只会让人无从下手。 */
+  const flows = await flowsReferencing(projectId, "flowId", flowId, flowId);
+  const executions = await pool.query("SELECT COUNT(*)::int AS total FROM flow_executions WHERE flow_id = $1", [flowId]);
+  return {
+    flowId,
+    suites: suites.rows.map((row) => ({ id: String(row.id), name: String(row.name) })),
+    flows,
+    executionCount: Number(executions.rows[0].total),
+    blocked: Boolean(suites.rowCount || flows.length),
+  };
+}
+
 export async function flowRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string }; Querystring: { keyword?: string; tag?: string } }>("/api/v1/projects/:id/flows", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
@@ -348,17 +386,55 @@ export async function flowRoutes(app: FastifyInstance) {
   });
 
   /**
+   * What breaks if this flow is deleted, read before the confirm dialog
+   * (P2-4.5). Same twin-route shape as environments / data sources.
+   */
+  app.get<{ Params: { id: string; flowId: string } }>("/api/v1/projects/:id/flows/:flowId/usage", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply); if (!context) return;
+    if (!isUuid(request.params.flowId)) return fail(reply, 404, 2001, "flow not found");
+    const usage = await flowUsage(context.project.id, request.params.flowId);
+    if (!usage) return fail(reply, 404, 2001, "flow not found");
+    return success(usage);
+  });
+
+  /**
    * Deleting a flow keeps its runs: `flow_executions.flow_id` is ON DELETE SET
    * NULL and `flow_name` was snapshotted (Spec 4.4 历史保留). Its anonymous node
-   * scripts go with it via `owner_flow_id` ON DELETE CASCADE. Nothing references
-   * a flow yet — 场景 arrive in P2 — so there is no dependency scan here.
+   * scripts go with it via `owner_flow_id` ON DELETE CASCADE.
+   *
+   * 套件成员与别的流程的子流程节点都会引用它（P2-4.5），所以删除前先扫描：有引用就回
+   * 409 + 清单，`?force=true` 才真删——引用清单必须先给人看过。
+   *
+   * **force 之后套件成员不再悬空**：删除与「把它从每个引用它的手动套件里摘掉」在同一个
+   * 事务里完成（`detachSuiteMember`）。别的流程的子流程节点则**保持**悬空——那是一张图上
+   * 的一个节点，静默删掉它会改变流程的结构与连线，属于「删一个东西连带改一串东西」；
+   * 它在入队时报「references a flow that does not exist」，由人去改那张图。
    */
-  app.delete<{ Params: { id: string; flowId: string } }>("/api/v1/projects/:id/flows/:flowId", async (request, reply) => {
+  app.delete<{ Params: { id: string; flowId: string }; Querystring: { force?: string } }>("/api/v1/projects/:id/flows/:flowId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
     if (!isUuid(request.params.flowId)) return fail(reply, 404, 2001, "flow not found");
-    const result = await pool.query("DELETE FROM flows WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.flowId, context.project.id]);
-    if (!result.rowCount) return fail(reply, 404, 2001, "flow not found");
-    return success({ id: String(result.rows[0].id) });
+    const usage = await flowUsage(context.project.id, request.params.flowId);
+    if (!usage) return fail(reply, 404, 2001, "flow not found");
+    if (usage.blocked && request.query.force !== "true") {
+      return reply.code(409).send({ code: 2003, message: "flow is referenced", data: usage });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query("DELETE FROM flows WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.flowId, context.project.id]);
+      if (!result.rowCount) {
+        await client.query("ROLLBACK");
+        return fail(reply, 404, 2001, "flow not found");
+      }
+      const detached = await detachSuiteMember(client, context.project.id, "flow", request.params.flowId);
+      await client.query("COMMIT");
+      return success({ id: String(result.rows[0].id), detachedSuites: detached });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      return fail(reply, 400, 1001, error instanceof Error ? error.message : "flow could not be deleted");
+    } finally {
+      client.release();
+    }
   });
 
   /**

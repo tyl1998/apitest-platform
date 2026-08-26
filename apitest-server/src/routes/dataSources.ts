@@ -5,6 +5,7 @@ import { isSupportedDataSourceType } from "../lib/adapters/index.js";
 import { validateOperation } from "../lib/adapters/operations.js";
 import { encryptSecret } from "../lib/crypto.js";
 import { loadDataSource, loadSqlDefinition } from "../lib/dataSources.js";
+import { flowsReferencing } from "../lib/flowRefs.js";
 import { executeOperation } from "../lib/operationExecutor.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
@@ -94,28 +95,25 @@ async function dataSourceUsage(projectId: string, dataSourceId: string) {
   const source = await pool.query("SELECT id, name FROM data_sources WHERE id = $1 AND project_id = $2", [dataSourceId, projectId]);
   if (!source.rowCount) return undefined;
   const definitions = await pool.query("SELECT id, name FROM sql_definitions WHERE data_source_id = $1 ORDER BY name", [dataSourceId]);
-  const flows = await pool.query(
-    "SELECT id, name FROM flows WHERE project_id = $1 AND nodes @> $2::jsonb ORDER BY name",
-    [projectId, JSON.stringify([{ dataSourceId }])],
-  );
+  /* 递归扫描：循环体是内联子图，数据库节点完全可以躺在循环里。原先的
+     `nodes @> '[{"dataSourceId": …}]'` 只看顶层数组元素，会把这种引用漏成「没人用」。 */
+  const flows = await flowsReferencing(projectId, "dataSourceId", dataSourceId);
   return {
     dataSourceId, sqlDefinitions: definitions.rows.map((row) => ({ id: String(row.id), name: String(row.name) })),
-    flows: flows.rows.map((row) => ({ id: String(row.id), name: String(row.name) })),
-    blocked: Boolean(definitions.rowCount || flows.rowCount),
+    flows,
+    blocked: Boolean(definitions.rowCount || flows.length),
   };
 }
 
 async function sqlUsage(projectId: string, sqlId: string) {
   const definition = await pool.query("SELECT id, name FROM sql_definitions WHERE id = $1 AND project_id = $2", [sqlId, projectId]);
   if (!definition.rowCount) return undefined;
-  const flows = await pool.query(
-    "SELECT id, name FROM flows WHERE project_id = $1 AND nodes @> $2::jsonb ORDER BY name",
-    [projectId, JSON.stringify([{ sqlDefinitionId: sqlId }])],
-  );
+  /* 同上：命名定义也会被循环体内的数据库节点引用。 */
+  const flows = await flowsReferencing(projectId, "sqlDefinitionId", sqlId);
   return {
     sqlDefinitionId: sqlId,
-    flows: flows.rows.map((row) => ({ id: String(row.id), name: String(row.name) })),
-    blocked: Boolean(flows.rowCount),
+    flows,
+    blocked: Boolean(flows.length),
   };
 }
 
