@@ -1,0 +1,16 @@
+# 真实代码仓库不入此文档仓库：各自独立提交、推送到自己的远程（apitest-server / apitest-web）。
+# 后续新增的代码仓库一律加在这里。
+apitest-server/
+apitest-web/
+
+# 运行时产物
+.dev-logs/
+.dev-pids
+.playwright-mcp/
+
+# 根目录脚本不属于文档，也没有代码仓库可管理
+start.sh
+stop.sh
+
+# macOS 元数据
+.DS_Store
