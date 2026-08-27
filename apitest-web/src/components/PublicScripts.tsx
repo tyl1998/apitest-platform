@@ -222,7 +222,7 @@ export function PublicScripts({ create, onCreateHandled }: {
           </tr>
         </thead>
         <tbody>
-          {scripts.map((script) => <tr key={script.id}>
+           {scripts.map((script) => <tr key={script.id} data-clickable onClick={() => void openEdit(script)}>
             <td>
               <div className="cell-name">
                 <strong className="truncate">{script.name}</strong>
@@ -236,7 +236,7 @@ export function PublicScripts({ create, onCreateHandled }: {
             </td>
             <td className="mono muted">{new Date(script.updatedAt).toLocaleString()}</td>
             <td>
-              <div className="row-actions">
+               <div className="row-actions" onClick={(event) => event.stopPropagation()}>
                 <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => void openEdit(script)} />
                 <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => void confirmDelete(script)} />
               </div>

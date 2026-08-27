@@ -9,7 +9,7 @@ import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 import { IconButton } from "./IconButton";
 
-const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "reports"] as const;
+const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "reports"] as const;
 export type ProjectPage = typeof PAGES[number];
 
 /**
@@ -52,11 +52,11 @@ export function ProjectShell() {
   }
 
   const nav: { group: string; items: [ProjectPage, string][] }[] = [
-    { group: t("nav.interfaceAssets"), items: [["endpoints", t("nav.endpoints")], ["environments", t("nav.environments")], ["data-sources", t("nav.dataSources")]] },
+    { group: t("nav.interfaceAssets"), items: [["endpoints", t("nav.endpoints")], ["environments", t("nav.environments")], ["data-sources", t("nav.dataSources")], ["mocks", "Mock"]] },
     { group: t("nav.orchestration"), items: [["flows", t("nav.flows")], ["suites", t("nav.suites")]] },
     { group: t("nav.common"), items: [["reports", t("nav.reports")]] },
   ];
-  const pageTitle = active === "data-sources" ? t("dataSources.title") : t(`${active}.title`);
+  const pageTitle = active === "data-sources" ? t("dataSources.title") : active === "mocks" ? "Mock" : t(`${active}.title`);
 
   return <div className="console">
     <aside className="sidebar">

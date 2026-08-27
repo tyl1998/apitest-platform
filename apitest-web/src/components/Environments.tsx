@@ -406,7 +406,7 @@ export function Environments() {
         </tr>
       </thead>
       <tbody>
-        {environments.map((env) => <tr key={env.id}>
+        {environments.map((env) => <tr key={env.id} data-clickable onClick={() => openEdit(env)}>
           <td><strong>{env.name}</strong></td>
           {/* default 用 muted 显示而不是留空：空单元格读成「没配置这个字段」，而事实是
               「就在平台所在网段发」，那是一个确定的答案。 */}
@@ -414,7 +414,7 @@ export function Environments() {
           <td className="col-num mono">{Object.keys(env.variables).length}</td>
           <td className="col-num mono">{env.secretKeys.length}</td>
           <td className="col-actions">
-            <div className="row-actions">
+            <div className="row-actions" onClick={(event) => event.stopPropagation()}>
               <IconButton
                 icon={<CopyPlus size={14} />}
                 label={t("action.duplicate")}

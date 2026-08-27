@@ -101,6 +101,14 @@ export type SqlDefinitionInput = {
 export type SqlExecutionResult = { rows: Record<string, unknown>[]; rowCount: number; truncated: boolean; durationMs: number };
 export type SqlExecutionInput = { sql?: string; statementType?: SqlStatementType; kind?: "sql" | "mongo" | "redis"; operation?: DataSourceOperation; params?: SqlParameter[]; values: Record<string, unknown> };
 export type DataSourceTestResult = SqlExecutionResult;
+export type MockMode = "auto" | "fixed" | "template" | "proxy";
+export type MockResponse = { statusCode: number; headers: Record<string, string>; body?: unknown };
+export type MockProxyPathMode = "append" | "fixed" | "replace";
+export type MockProxyQueryMode = "forward" | "drop" | "append";
+export type MockProxyConfig = { targetUrl: string; allowedHosts: string[]; timeoutMs: number; maxResponseBytes: number; pathMode?: MockProxyPathMode; queryMode?: MockProxyQueryMode; fixedQuery?: Record<string, string> };
+export type Mock = { id: string; endpointId?: string; snapshotExecutionId?: string; name: string; publicId: string; mode: MockMode; enabled: boolean; priority: number; requestMatch: Record<string, unknown>; response: MockResponse; proxyConfig?: MockProxyConfig; delayMs: number; createdAt: string; updatedAt: string };
+export type MockInput = { endpointId?: string | null; executionId?: string | null; name: string; mode: MockMode; enabled: boolean; priority: number; requestMatch: Record<string, unknown>; response: MockResponse; proxyConfig?: MockProxyConfig; delayMs: number };
+export type MockRequestLog = { id: string; method: string; path: string; matched: boolean; statusCode: number; durationMs: number; requestSnapshot: Record<string, unknown>; responseSizeBytes: number; createdAt: string };
 /** MongoDB operations (P2-7.3). Filter/pipeline values may carry `{{name}}`. */
 export type MongoOperation =
   | { op: "find"; collection: string; filter?: Record<string, unknown>; projection?: Record<string, unknown>; sort?: Record<string, unknown>; limit?: number }
@@ -1304,6 +1312,12 @@ export const api = {
   updateSqlDefinition: (projectId: string, sqlId: string, input: Partial<SqlDefinitionInput>) => client.put(`/projects/${projectId}/sql-definitions/${sqlId}`, input).then(data<SqlDefinition>),
   deleteSqlDefinition: (projectId: string, sqlId: string) => client.delete(`/projects/${projectId}/sql-definitions/${sqlId}`).then(data<{ id: string }>),
   testSqlDefinition: (projectId: string, sqlId: string, values: Record<string, unknown>) => client.post(`/projects/${projectId}/sql-definitions/${sqlId}/test`, { values }).then(data<SqlExecutionResult>),
+
+  mocks: (projectId: string) => client.get(`/projects/${projectId}/mocks`).then(data<Mock[]>),
+  createMock: (projectId: string, input: MockInput) => client.post(`/projects/${projectId}/mocks`, input).then(data<Mock>),
+  updateMock: (projectId: string, mockId: string, input: Partial<MockInput>) => client.put(`/projects/${projectId}/mocks/${mockId}`, input).then(data<Mock>),
+  deleteMock: (projectId: string, mockId: string) => client.delete(`/projects/${projectId}/mocks/${mockId}`).then(data<{ id: string }>),
+  mockLogs: (projectId: string, mockId: string) => client.get(`/projects/${projectId}/mocks/${mockId}/logs`).then((response) => response.data.data as MockRequestLog[]),
 
   endpoints: (projectId: string, filters?: EndpointFilters) => client.get(`/projects/${projectId}/endpoints`, { params: { keyword: filters?.keyword?.trim() || undefined, method: filters?.method && filters.method !== "all" ? filters.method : undefined, environmentId: filters?.environmentId && filters.environmentId !== "all" ? filters.environmentId : undefined } }).then(data<Endpoint[]>),
   endpoint: (projectId: string, endpointId: string) => client.get(`/projects/${projectId}/endpoints/${endpointId}`).then(data<Endpoint>),

@@ -22,6 +22,7 @@ import { Environments } from "./components/Environments";
 import { ExecutionRecords } from "./components/ExecutionRecords";
 import { DataSourceList } from "./components/DataSourceList";
 import { DataSourceDetail } from "./components/DataSourceDetail";
+import { MockList } from "./components/MockList";
 import { antdTheme, useMode } from "./theme";
 import { useAuthStore } from "./stores/authStore";
 import { useLimitsStore } from "./stores/limitsStore";
@@ -79,6 +80,7 @@ function Root() {
         <Route path="environments" element={<Environments />} />
         <Route path="data-sources" element={<DataSourceList />} />
         <Route path="data-sources/:dataSourceId" element={<DataSourceDetail />} />
+        <Route path="mocks" element={<MockList />} />
         <Route path="reports" element={<ExecutionRecords />} />
       </Route>
 
