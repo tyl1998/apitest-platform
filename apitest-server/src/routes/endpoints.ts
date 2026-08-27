@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
-import { cancelBatch, cancelRun, enqueueRun } from "../lib/enqueue.js";
+import { NoRunnerError, cancelBatch, cancelRun, enqueueRun } from "../lib/enqueue.js";
 import { requireProjectAccess } from "../lib/rbac.js";
-import { fail, success } from "../lib/response.js";
+import { fail, failNoRunner, success } from "../lib/response.js";
 import { BODY_TYPES, METHODS } from "../lib/run.js";
 import { isUuid } from "../lib/uuid.js";
 import { mapBatchExecution, mapEndpoint, mapExecution, type BodyType, type Endpoint, type EndpointAuth, type RequestSnapshot } from "../models/types.js";
@@ -329,7 +329,12 @@ export async function endpointRoutes(app: FastifyInstance) {
     const explicitEnvironment = Object.prototype.hasOwnProperty.call(body, "environmentId");
     let executionId: string;
     try { executionId = await queueEndpointRun(context.project.id, request.params.endpointId, body.environmentId, explicitEnvironment); }
-    catch (error) { return fail(reply, 400, 2002, error instanceof Error ? error.message : "request could not be prepared"); }
+    catch (error) {
+      /* 分区没有执行器是基础设施问题，不是坏输入：2004 + label，让界面说清是哪个分区
+         没人服务，而不是笼统的「请求无法准备」。 */
+      if (error instanceof NoRunnerError) return failNoRunner(reply, error.label, error.message);
+      return fail(reply, 400, 2002, error instanceof Error ? error.message : "request could not be prepared");
+    }
     const result = await pool.query("SELECT * FROM executions WHERE id = $1", [executionId]);
     return reply.code(202).send(success(mapExecution(result.rows[0])));
   });
@@ -372,8 +377,10 @@ export async function endpointRoutes(app: FastifyInstance) {
         await queueEndpointRun(context.project.id, endpointId, strategy === "override" ? body.environmentId ?? null : undefined, strategy === "override", batchId);
       } catch (error) {
         /* Queue down mid-batch: stop rather than leave the rest unqueued and
-           the batch permanently short of its total. */
+           the batch permanently short of its total. 分区没有执行器同理——先把已经
+           入队的取消掉，再据实回报是哪个分区没人服务。 */
         await cancelBatch(context.project.id, batchId);
+        if (error instanceof NoRunnerError) return failNoRunner(reply, error.label, error.message);
         return fail(reply, 503, 5001, error instanceof Error ? error.message : "execution queue unavailable");
       }
     }

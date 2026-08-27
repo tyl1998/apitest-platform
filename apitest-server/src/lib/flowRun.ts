@@ -118,12 +118,16 @@ export function planSteps(spec: FlowRunSpec): FlowPlanStep[] {
  * （P2-4.2）。不给就自己建一个，容量 `FLOW_PARALLELISM`——这是直接运行一条流程的情形。
  * 每个成员各建一个池子会让并发变成乘法（成员并发 × 每个流程 4 个叶子），正是
  * 5.0.11「并发预算」要封死的那件事。
+ *
+ * `labels` 是调用方服务的执行分区（P2-8），与 `performRun` 同一条守卫：投错队列的 job
+ * 在发出任何请求之前就退出。
  */
-export async function performFlowRun(flowExecutionId: string, signal: AbortSignal, workerId?: string, tokens?: TokenPool): Promise<boolean> {
+export async function performFlowRun(flowExecutionId: string, signal: AbortSignal, workerId?: string, tokens?: TokenPool, labels?: string[]): Promise<boolean> {
   const claimed = await pool.query(
     `UPDATE flow_executions SET status = 'running', started_at = now(), worker_id = $2
-      WHERE id = $1 AND status = 'queued' RETURNING *`,
-    [flowExecutionId, workerId ?? null],
+      WHERE id = $1 AND status = 'queued' AND ($3::text[] IS NULL OR runner_label = ANY($3))
+      RETURNING *`,
+    [flowExecutionId, workerId ?? null, labels ?? null],
   );
   if (!claimed.rowCount) return false;
 

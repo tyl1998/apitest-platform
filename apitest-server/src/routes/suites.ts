@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
-import { cancelSuiteRun, enqueueSuiteRun } from "../lib/enqueue.js";
+import { NoRunnerError, cancelSuiteRun, enqueueSuiteRun } from "../lib/enqueue.js";
 import { SUITE_LEAF_BUDGET } from "../lib/flow.js";
 import { memberTokenDemand } from "../lib/suiteRun.js";
 import { requireProjectAccess } from "../lib/rbac.js";
-import { fail, success } from "../lib/response.js";
+import { fail, failNoRunner, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
 import {
   mapExecution, mapExecutionStep, mapSuiteExecution, mapTestSuite, normalizeSuiteSelection,
@@ -478,10 +478,14 @@ export async function suiteRoutes(app: FastifyInstance) {
       const queued = await pool.query("SELECT * FROM suite_executions WHERE id = $1", [suiteExecutionId]);
       return reply.code(202).send(success(mapSuiteExecution(queued.rows[0])));
     } catch (error) {
+      /* 分区没有在线执行器：2004 + label（P2-8 边界 5）。 */
+      if (error instanceof NoRunnerError) return failNoRunner(reply, error.label, error.message);
       const message = error instanceof Error ? error.message : "suite could not be started";
       /* 队列不可用是基础设施问题而不是坏输入——503 让客户端说「执行队列不可用」而不是
          去怪这个套件（与流程执行同款）。 */
       if (message.includes("queue unavailable")) return fail(reply, 503, 5001, message);
+      /* 「成员跨分区」是 400：套件是进程内扇出的，一次执行只能落在一个网段上，处置办法
+         是拆成两个套件或设一个套件级环境——这是配置问题，不是基础设施问题。 */
       return fail(reply, 400, 2002, message);
     }
   });

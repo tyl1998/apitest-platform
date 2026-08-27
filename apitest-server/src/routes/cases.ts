@@ -3,10 +3,10 @@ import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
 import { evaluateAssertions, validateDeclarativeAssertions } from "../lib/assert.js";
 import { applyCaseToFlowNodes, caseFlowBindings, caseSyncPayload, writeFlowNodes } from "../lib/caseSync.js";
-import { enqueueRun } from "../lib/enqueue.js";
+import { NoRunnerError, enqueueRun } from "../lib/enqueue.js";
 import { toFlowNode, validateExtracts, validateHooks, validateResponseScripts } from "../lib/flow.js";
 import { requireProjectAccess } from "../lib/rbac.js";
-import { fail, success } from "../lib/response.js";
+import { fail, failNoRunner, success } from "../lib/response.js";
 import { BODY_TYPES, METHODS } from "../lib/run.js";
 import { detachSuiteMember } from "../lib/suiteMembers.js";
 import { isUuid } from "../lib/uuid.js";
@@ -539,6 +539,9 @@ export async function caseRoutes(app: FastifyInstance) {
       const queued = await pool.query("SELECT * FROM executions WHERE id = $1", [executionId]);
       return reply.code(202).send(success(mapExecution(queued.rows[0])));
     } catch (error) {
+      /* 分区没有在线执行器是基础设施问题，不是坏输入：2004 + label 让界面说清是哪个
+         分区没人服务（P2-8 边界 5）。 */
+      if (error instanceof NoRunnerError) return failNoRunner(reply, error.label, error.message);
       return fail(reply, 400, 2002, error instanceof Error ? error.message : "request could not be prepared");
     }
   });

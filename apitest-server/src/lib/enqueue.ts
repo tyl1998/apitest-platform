@@ -2,13 +2,63 @@ import { randomUUID } from "node:crypto";
 import type { Redis } from "ioredis";
 import { pool } from "../db.js";
 import { publishEvent } from "./events.js";
-import { CANCEL_CHANNEL, createRedis, executionQueue } from "./queue.js";
+import { CANCEL_CHANNEL, DEFAULT_RUNNER_LABEL, createRedis, executionQueue } from "./queue.js";
 import { settleBatch, type RunSpec } from "./run.js";
 import { FLOW_PARALLELISM } from "./flow.js";
 import { planSteps, prepareFlowNodes, type FlowRunSpec } from "./flowRun.js";
 import { inlineFlowNodeScripts, inlineHookContent, inlineResponseScriptContent, inlineScriptContent } from "./scripts.js";
 import type { PreparedFlowNode } from "./flowNodes.js";
-import type { Assertion, Execution, FlowEdge, FlowExtract, FlowNode, HookConfig, RequestSnapshot, ResponseScriptConfig, SuiteExecutionConfig, SuiteMemberSnapshot } from "../models/types.js";
+import { WORKER_OFFLINE_AFTER_SECONDS, type Assertion, type Execution, type FlowEdge, type FlowExtract, type FlowNode, type HookConfig, type RequestSnapshot, type ResponseScriptConfig, type SuiteExecutionConfig, type SuiteMemberSnapshot } from "../models/types.js";
+
+/**
+ * 目标分区没有在线执行器（P2-8 边界 5）。
+ *
+ * 一个**真错误类型**而不是一句字符串：分区化之后「队列挂了」与「这个分区根本没人服务」
+ * 是两个完全不同的处置动作（去修 Redis / 去那个网段起一个 worker），调用方必须能分开。
+ * 路由把它映射成错误码 `2004`，`data` 带 `label`。
+ */
+export class NoRunnerError extends Error {
+  constructor(readonly label: string) {
+    super(`no online execution worker serves partition "${label}"`);
+    this.name = "NoRunnerError";
+  }
+}
+
+/**
+ * 这次执行该从哪个网段发出（P2-8）。
+ *
+ * 分区挂在**环境**上：环境选择链（用例绑定 → 接口默认 → 项目默认，计划 2.4）已经被
+ * 用例/接口/流程/套件/批量调试共用，所以环境定了分区就定了，这里只是把它读出来。
+ * 不使用环境的执行（`environmentId` 为空）走 `default`——它没有声明目标系统，只能由
+ * 平台所在网段发出。
+ */
+export async function resolveRunnerLabel(environmentId?: string): Promise<string> {
+  if (!environmentId) return DEFAULT_RUNNER_LABEL;
+  const result = await pool.query("SELECT runner_label FROM environments WHERE id = $1", [environmentId]);
+  /* 环境刚被删掉：按 default 走，让「队列里没有孤儿行」优先于精确路由。 */
+  return result.rows[0]?.runner_label ? String(result.rows[0].runner_label) : DEFAULT_RUNNER_LABEL;
+}
+
+/**
+ * 入队**之前**确认这个分区有在线执行器，没有就抛 `NoRunnerError`（P2-8 边界 4）。
+ *
+ * 这是本切片最容易漏、代价最高的一处。少了它，用户看到的是一条永远 `queued`、5 分钟后
+ * 被回收判成 `execution abandoned by worker` 的记录——排查方向会完全跑偏到 worker 崩溃
+ * 上，而事实是这个分区根本没有执行器。检查放在 `INSERT` **之前**，所以连补偿删除都不
+ * 需要。
+ *
+ * 已知行为（不是 bug，不要去"修"）：某分区 worker 在**入队之后**掉线，那批行仍会在
+ * 5 分钟后被 `reapStale` 判失败。这里的检查只挡新的，挡不住那种。
+ */
+async function requireOnlineRunner(label: string): Promise<void> {
+  const result = await pool.query(
+    `SELECT 1 FROM workers
+      WHERE $1 = ANY(labels) AND last_seen_at > now() - ($2 || ' seconds')::interval
+      LIMIT 1`,
+    [label, WORKER_OFFLINE_AFTER_SECONDS],
+  );
+  if (!result.rowCount) throw new NoRunnerError(label);
+}
 
 export type EnqueueInput = {
   projectId: string;
@@ -43,6 +93,14 @@ export type EnqueueInput = {
   hooks?: HookConfig[];
   /** Post-response scripts, frozen with the rest of the run definition. */
   responseScripts?: ResponseScriptConfig[];
+  /**
+   * 强制这一行落在某个执行分区（P2-8）。
+   *
+   * 只有套件成员用：一次套件执行整体落在一个分区（成员是进程内扇出的），成员必须继承
+   * 套件入队时冻结的那个标签。让成员重新按自己的环境解析会在「入队之后环境改了标签」
+   * 时写出一行本机 worker 认领不了的记录——而那台 worker 正拿着它准备就地跑。
+   */
+  runnerLabel?: string;
 };
 
 /**
@@ -54,8 +112,11 @@ export type EnqueueInput = {
  * 要快照」上分叉，所以只留这一份。
  *
  * 调用方要么随后 `queue.add`（`enqueueRun`），要么随后就地 `performRun`（套件成员）。
+ *
+ * 返回值带上解析出的分区标签（P2-8）：`enqueueRun` 要靠它选队列，套件成员要靠它判断
+ * 「这个成员该不该由我这台 worker 就地跑」。
  */
-export async function insertRun(input: EnqueueInput): Promise<string> {
+export async function insertRun(input: EnqueueInput): Promise<{ executionId: string; runnerLabel: string }> {
   const executionId = randomUUID();
   /**
    * Script bodies are inlined here, not read at execution time (计划 4.0.1).
@@ -70,12 +131,16 @@ export async function insertRun(input: EnqueueInput): Promise<string> {
   const hooks = await inlineHookContent(input.projectId, input.hooks);
   const responseScripts = await inlineResponseScriptContent(input.projectId, input.responseScripts);
   const spec: RunSpec = { request: input.request, environmentId: input.environmentId, assertions, variables: input.variables, extracts: input.extracts, hooks, responseScripts };
+  /* 标签在行上快照一份（P2-8 边界 1）：环境改标签或被删后，认领与取消仍要靠这一列
+     找到当初那条队列，历史也要说清这次执行从哪个网段跑的。套件成员显式继承套件的标签
+     （见 `EnqueueInput.runnerLabel`）。 */
+  const runnerLabel = input.runnerLabel ?? await resolveRunnerLabel(input.environmentId);
 
   await pool.query(
     `INSERT INTO executions (
        id, project_id, endpoint_id, endpoint_name, environment_id, environment_name, batch_id,
-       source, case_id, case_name, flow_node_id, flow_node_name, status, duration_ms, request_snapshot, run_spec
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'queued', 0, $13::jsonb, $14::jsonb)`,
+       source, case_id, case_name, flow_node_id, flow_node_name, status, duration_ms, request_snapshot, run_spec, runner_label
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'queued', 0, $13::jsonb, $14::jsonb, $15)`,
     [
       executionId, input.projectId, input.endpointId, input.endpointName,
       input.environmentId ?? null, input.environmentName ?? null, input.batchId ?? null,
@@ -88,9 +153,10 @@ export async function insertRun(input: EnqueueInput): Promise<string> {
        */
       JSON.stringify({ method: input.request.method, url: input.request.url, query: input.request.queryParams, headers: input.request.headers }),
       JSON.stringify(spec),
+      runnerLabel,
     ],
   );
-  return executionId;
+  return { executionId, runnerLabel };
 }
 
 /**
@@ -103,13 +169,17 @@ export async function insertRun(input: EnqueueInput): Promise<string> {
  * is arranged to fail safe: if `queue.add` throws, the row is deleted and the
  * caller sees an error. The opposite order would leave a job pointing at a row
  * that does not exist yet.
+ *
+ * 分区在线检查排在**最前面**（P2-8 边界 4）：目标分区没有在线执行器时一行都不写，
+ * 因此不需要补偿删除，用户也看不到一条 5 分钟后才被判死的假排队记录。
  */
 export async function enqueueRun(input: EnqueueInput): Promise<string> {
-  const executionId = await insertRun(input);
+  await requireOnlineRunner(await resolveRunnerLabel(input.environmentId));
+  const { executionId, runnerLabel } = await insertRun(input);
 
   try {
     /* jobId = executionId so a cancel can find the job without a second lookup. */
-    await executionQueue().add("run", { executionId }, { jobId: executionId });
+    await executionQueue(runnerLabel).add("run", { executionId }, { jobId: executionId });
   } catch (error) {
     /* No worker will ever claim it, so the row would sit at 'queued' forever. */
     await pool.query("DELETE FROM executions WHERE id = $1", [executionId]);
@@ -147,16 +217,18 @@ export async function cancelRun(projectId: string, executionId: string): Promise
   const result = await pool.query(
     `UPDATE executions SET status = 'canceled', error = 'canceled by user', finished_at = now(), run_spec = NULL
       WHERE id = $1 AND project_id = $2 AND status IN ('queued', 'running')
-      RETURNING batch_id, endpoint_id, case_id`,
+      RETURNING batch_id, endpoint_id, case_id, runner_label`,
     [executionId, projectId],
   );
   if (!result.rowCount) return false;
 
-  /* Dropping the job frees the slot a canceled-while-queued run would occupy. */
-  try { await executionQueue().remove(executionId); } catch { /* already claimed — the signal below stops it */ }
+  /* Dropping the job frees the slot a canceled-while-queued run would occupy.
+     队列按分区分裂后必须用**行上的**标签找队列（P2-8 边界 1）：回查 environment 会在
+     标签被改之后找错队列，而这个 job 还躺在老队列里。 */
+  const row = result.rows[0];
+  try { await executionQueue(String(row.runner_label)).remove(executionId); } catch { /* already claimed — the signal below stops it */ }
   await signalCancel([executionId]);
 
-  const row = result.rows[0];
   await publishEvent({
     kind: "execution", projectId, executionId, status: "canceled",
     endpointId: String(row.endpoint_id),
@@ -178,11 +250,13 @@ export async function cancelBatch(projectId: string, batchId: string): Promise<n
   const result = await pool.query(
     `UPDATE executions SET status = 'canceled', error = 'canceled by user', finished_at = now(), run_spec = NULL
       WHERE batch_id = $1 AND project_id = $2 AND status IN ('queued', 'running')
-      RETURNING id`,
+      RETURNING id, runner_label`,
     [batchId, projectId],
   );
   const ids = result.rows.map((row) => String(row.id));
-  await Promise.all(ids.map(async (id) => { try { await executionQueue().remove(id); } catch { /* already claimed */ } }));
+  /* 一批里的行可以分属不同分区（批量调试按各接口的默认环境解析），所以逐行按它自己的
+     标签找队列，不能假定整批同一条。 */
+  await Promise.all(result.rows.map(async (row) => { try { await executionQueue(String(row.runner_label)).remove(String(row.id)); } catch { /* already claimed */ } }));
   await signalCancel(ids);
   await settleBatch(batchId, projectId);
   return ids.length;
@@ -197,6 +271,8 @@ export type EnqueueFlowInput = {
   nodes: FlowNode[];
   edges: FlowEdge[];
   variables: Record<string, string>;
+  /** 同 `EnqueueInput.runnerLabel`：套件的流程成员继承套件冻结的分区。 */
+  runnerLabel?: string;
 };
 
 /**
@@ -229,7 +305,7 @@ function overLeafBudget(nodes: PreparedFlowNode[]): string | undefined {
  * 但它必须是**该流程的一次正式运行**（计划 5.0.11 边界 6）——同一份 run_spec 冻结、
  * 同一行 execution_index、出现在流程自己的运行记录里。
  */
-export async function insertFlowRun(input: EnqueueFlowInput): Promise<{ flowExecutionId: string; executionIndexId: string; total: number }> {
+export async function insertFlowRun(input: EnqueueFlowInput): Promise<{ flowExecutionId: string; executionIndexId: string; total: number; runnerLabel: string }> {
   const flowExecutionId = randomUUID();
   /* 节点断言可以引用公共脚本，与用例同理必须在入队时内联：入队后被改的公共
      脚本不能改变已经排队的这一次执行。钩子脚本同一条原则——签名脚本入队后被
@@ -242,6 +318,9 @@ export async function insertFlowRun(input: EnqueueFlowInput): Promise<{ flowExec
   const spec: FlowRunSpec = { nodes, edges: input.edges, environmentId: input.environmentId, variables: input.variables };
   const plan = planSteps(spec);
   const executionIndexId = randomUUID();
+  /* 分区标签快照（P2-8 边界 1）：流程的每一步 HTTP 证据都由持有这次流程执行的那个
+     worker 就地发出，所以整条流程共用流程自己这一个分区，步骤不再单独路由。 */
+  const runnerLabel = input.runnerLabel ?? await resolveRunnerLabel(input.environmentId);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -253,13 +332,13 @@ export async function insertFlowRun(input: EnqueueFlowInput): Promise<{ flowExec
     await client.query(
       `INSERT INTO flow_executions (
          id, project_id, flow_id, flow_name, environment_id, environment_name,
-         status, total, plan, run_spec, execution_index_id
-       ) VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8::jsonb, $9::jsonb, $10)`,
-      [flowExecutionId, input.projectId, input.flowId ?? null, input.flowName, input.environmentId ?? null, input.environmentName ?? null, plan.length, JSON.stringify(plan), JSON.stringify(spec), executionIndexId],
+         status, total, plan, run_spec, execution_index_id, runner_label
+       ) VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8::jsonb, $9::jsonb, $10, $11)`,
+      [flowExecutionId, input.projectId, input.flowId ?? null, input.flowName, input.environmentId ?? null, input.environmentName ?? null, plan.length, JSON.stringify(plan), JSON.stringify(spec), executionIndexId, runnerLabel],
     );
     await client.query("COMMIT");
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
-  return { flowExecutionId, executionIndexId, total: plan.length };
+  return { flowExecutionId, executionIndexId, total: plan.length, runnerLabel };
 }
 
 /**
@@ -270,10 +349,12 @@ export async function insertFlowRun(input: EnqueueFlowInput): Promise<{ flowExec
  * at-most-once claiming without a second mechanism.
  */
 export async function enqueueFlowRun(input: EnqueueFlowInput): Promise<string> {
-  const { flowExecutionId, executionIndexId, total } = await insertFlowRun(input);
+  /* 同 `enqueueRun`：分区没有在线执行器就一行都不写（P2-8 边界 4）。 */
+  await requireOnlineRunner(await resolveRunnerLabel(input.environmentId));
+  const { flowExecutionId, executionIndexId, total, runnerLabel } = await insertFlowRun(input);
 
   try {
-    await executionQueue().add("flow", { flowExecutionId }, { jobId: flowExecutionId });
+    await executionQueue(runnerLabel).add("flow", { flowExecutionId }, { jobId: flowExecutionId });
   } catch (error) {
     /* 同 enqueueRun：没有 worker 会来认领，留着就是一行永远排队的记录。 */
     await pool.query("DELETE FROM execution_index WHERE id = $1", [executionIndexId]);
@@ -301,7 +382,7 @@ export async function cancelFlowRun(projectId: string, flowExecutionId: string):
     const result = await client.query(
       `UPDATE flow_executions SET status = 'canceled', error = 'canceled by user', finished_at = now(), run_spec = NULL
         WHERE id = $1 AND project_id = $2 AND status IN ('queued', 'running')
-        RETURNING total, success_count, failed_count, execution_index_id`,
+        RETURNING total, success_count, failed_count, execution_index_id, runner_label`,
       [flowExecutionId, projectId],
     );
     if (!result.rowCount) { await client.query("ROLLBACK"); return false; }
@@ -330,7 +411,7 @@ export async function cancelFlowRun(projectId: string, flowExecutionId: string):
     await client.query("COMMIT");
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 
-  try { await executionQueue().remove(flowExecutionId); } catch { /* already claimed — the signal below stops it */ }
+  try { await executionQueue(String(parent!.runner_label)).remove(flowExecutionId); } catch { /* already claimed — the signal below stops it */ }
   await signalCancel([flowExecutionId, ...stepIds]);
 
   const row = parent!;
@@ -357,6 +438,28 @@ export type EnqueueSuiteInput = {
 };
 
 /**
+ * 一次套件执行落在哪个分区（P2-8）。
+ *
+ * 套件的成员是**进程内扇出**的（计划 5.0.11 边界 2）：它们由持有这一个 job 的那台
+ * worker 就地发请求。而 worker 只能从自己所在网段出站，所以一次套件执行必然整体落在
+ * 同一个分区上——这不是可以放宽的实现细节。
+ *
+ * - `override`：套件级环境说了算，成员环境不参与。
+ * - `member_default`：取成员环境的标签集合。**跨分区直接拒绝**，而不是挑一个跑：挑一个
+ *   就意味着另一半成员从错误的网段发出，得到的失败会被读成「被测服务挂了」。让用户改成
+ *   两个套件，比给一份混着两个网段结论的报告诚实。
+ */
+async function resolveSuiteRunnerLabel(input: EnqueueSuiteInput): Promise<string> {
+  if (input.execution.environmentStrategy === "override") return resolveRunnerLabel(input.environmentId);
+  const labels = new Set<string>();
+  for (const member of input.members) labels.add(await resolveRunnerLabel(member.environmentId));
+  if (labels.size > 1) {
+    throw new Error(`this suite spans execution partitions (${[...labels].sort().join(", ")}); a suite runs inside one worker, so split it or set a suite-level environment`);
+  }
+  return labels.values().next().value ?? DEFAULT_RUNNER_LABEL;
+}
+
+/**
  * Records a suite run as queued and hands it to a worker (P2-4.2).
  *
  * 与 `enqueueFlowRun` 同形同序：父索引 + 明细行一个事务写下，再入队，`queue.add` 抛错
@@ -364,6 +467,9 @@ export type EnqueueSuiteInput = {
  * （计划 5.0.11 边界 2）。
  */
 export async function enqueueSuiteRun(input: EnqueueSuiteInput): Promise<string> {
+  const runnerLabel = await resolveSuiteRunnerLabel(input);
+  /* 同 `enqueueRun`：分区没有在线执行器就一行都不写（P2-8 边界 4）。 */
+  await requireOnlineRunner(runnerLabel);
   const suiteExecutionId = randomUUID();
   const executionIndexId = randomUUID();
   const total = input.members.length;
@@ -378,19 +484,19 @@ export async function enqueueSuiteRun(input: EnqueueSuiteInput): Promise<string>
     await client.query(
       `INSERT INTO suite_executions (
          id, project_id, suite_id, suite_name, environment_id, environment_name,
-         status, total, member_snapshot, run_spec, execution_index_id
-       ) VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8::jsonb, $9::jsonb, $10)`,
+         status, total, member_snapshot, run_spec, execution_index_id, runner_label
+       ) VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8::jsonb, $9::jsonb, $10, $11)`,
       [
         suiteExecutionId, input.projectId, input.suiteId ?? null, input.suiteName,
         input.environmentId ?? null, input.environmentName ?? null,
-        total, JSON.stringify(input.members), JSON.stringify(input.execution), executionIndexId,
+        total, JSON.stringify(input.members), JSON.stringify(input.execution), executionIndexId, runnerLabel,
       ],
     );
     await client.query("COMMIT");
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 
   try {
-    await executionQueue().add("suite", { suiteExecutionId }, { jobId: suiteExecutionId });
+    await executionQueue(runnerLabel).add("suite", { suiteExecutionId }, { jobId: suiteExecutionId });
   } catch (error) {
     /* 同 enqueueRun：没有 worker 会来认领，留着就是一行永远排队的记录。 */
     await pool.query("DELETE FROM execution_index WHERE id = $1", [executionIndexId]);
@@ -429,7 +535,7 @@ export async function cancelSuiteRun(projectId: string, suiteExecutionId: string
     const result = await client.query(
       `UPDATE suite_executions SET status = 'canceled', error = 'canceled by user', finished_at = now(), run_spec = NULL
         WHERE id = $1 AND project_id = $2 AND status IN ('queued', 'running')
-        RETURNING total, success_count, failed_count, execution_index_id`,
+        RETURNING total, success_count, failed_count, execution_index_id, runner_label`,
       [suiteExecutionId, projectId],
     );
     if (!result.rowCount) { await client.query("ROLLBACK"); return false; }
@@ -461,7 +567,7 @@ export async function cancelSuiteRun(projectId: string, suiteExecutionId: string
     await client.query("COMMIT");
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 
-  try { await executionQueue().remove(suiteExecutionId); } catch { /* already claimed — the signal below stops it */ }
+  try { await executionQueue(String(parent!.runner_label)).remove(suiteExecutionId); } catch { /* already claimed — the signal below stops it */ }
   /* 先广播套件自己的 id：`performSuiteRun` 由此立刻停止启动新成员，下面逐个取消在途
      成员的过程中就不会有人再往里加。 */
   await signalCancel([suiteExecutionId]);

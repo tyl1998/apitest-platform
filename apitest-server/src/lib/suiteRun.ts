@@ -56,14 +56,19 @@ type MemberEnvironment = { id?: string; name?: string };
  *
  * 返回 false 表示这一行认领不到——排队期间被取消的执行就是这个结果，与
  * `performRun` / `performFlowRun` 一致。
+ *
+ * `labels` 是这台 worker 服务的执行分区（P2-8）。成员是**进程内扇出**的，所以整次套件
+ * 执行必然落在同一个分区上；成员行的标签由套件行上的那一个继承，而不是各自重新解析。
  */
-export async function performSuiteRun(suiteExecutionId: string, signal: AbortSignal, workerId?: string): Promise<boolean> {
+export async function performSuiteRun(suiteExecutionId: string, signal: AbortSignal, workerId?: string, labels?: string[]): Promise<boolean> {
   /* 认领与开跑一条语句：`status = 'queued'` 让先到的取消生效（那行已经是 canceled，
-     这条 UPDATE 匹配不到任何行，一个成员都不会开跑），同时挡住重复投递。 */
+     这条 UPDATE 匹配不到任何行，一个成员都不会开跑），同时挡住重复投递。
+     `runner_label = ANY($3)` 是 P2-8 的分区防御，与 `performRun` 同款。 */
   const claimed = await pool.query(
     `UPDATE suite_executions SET status = 'running', started_at = now(), worker_id = $2
-      WHERE id = $1 AND status = 'queued' RETURNING *`,
-    [suiteExecutionId, workerId ?? null],
+      WHERE id = $1 AND status = 'queued' AND ($3::text[] IS NULL OR runner_label = ANY($3))
+      RETURNING *`,
+    [suiteExecutionId, workerId ?? null, labels ?? null],
   );
   if (!claimed.rowCount) return false;
 
@@ -76,6 +81,9 @@ export async function performSuiteRun(suiteExecutionId: string, signal: AbortSig
   const failFast = Boolean(spec.failFast);
   const override = spec.environmentStrategy === "override";
   const suiteEnvironment: MemberEnvironment = { id: row.environment_id ? String(row.environment_id) : undefined, name: row.environment_name ? String(row.environment_name) : undefined };
+  /* 成员继承套件行上的分区（P2-8）：入队时已确认整批成员同属一个分区，成员行再各自
+     解析一次只会在「入队后环境改了标签」时写出本机认领不了的记录。 */
+  const runnerLabel = String(row.runner_label ?? "default");
 
   await pool.query("UPDATE execution_index SET status = 'running', started_at = now() WHERE id = $1 AND status = 'queued'", [indexId]);
   await publishEvent({ kind: "suite", projectId, suiteExecutionId, executionIndexId: indexId, status: "running", total, successCount: 0, failedCount: 0, skippedCount: 0 });
@@ -147,16 +155,17 @@ export async function performSuiteRun(suiteExecutionId: string, signal: AbortSig
      */
     const release = await tokens.acquire();
     try {
-      const executionId = await insertRun({
+      const { executionId } = await insertRun({
         projectId, endpointId: testCase.endpointId, endpointName: String(found.rows[0].endpoint_name),
         request: testCase.request, environmentId: environment.id, environmentName: environment.name,
         source: "test_case", caseId: testCase.id, caseName: testCase.name,
         assertions: testCase.assertions, hooks: testCase.preRequestHooks,
         extracts: testCase.extracts, responseScripts: testCase.responseScripts,
+        runnerLabel,
       });
       /* 证据指针先落库再开跑：中途取消要能顺着它找到这次请求。 */
       await pool.query("UPDATE execution_steps SET http_execution_id = $2 WHERE id = $1", [stepId, executionId]);
-      await performRun(executionId, memberSignal, workerId);
+      await performRun(executionId, memberSignal, workerId, labels);
       /**
        * 结论从库里读，不从 `performRun` 的返回值推。
        *
@@ -194,11 +203,12 @@ export async function performSuiteRun(suiteExecutionId: string, signal: AbortSig
       projectId, flowId: flow.id, flowName: flow.name,
       environmentId: environment.id, environmentName: environment.name,
       nodes: flow.nodes, edges: flow.edges, variables: flow.variables,
+      runnerLabel,
     });
     await pool.query("UPDATE execution_steps SET child_index_id = $2 WHERE id = $1", [stepId, inserted.executionIndexId]);
     /* 流程成员是**容器**：它不拿令牌，它内部的叶子向套件这个共享池子领。容器持令牌
        就会攥着额度等自己的身体要额度（5.0.8 已经付过一次代价的死锁）。 */
-    await performFlowRun(inserted.flowExecutionId, memberSignal, workerId, tokens);
+    await performFlowRun(inserted.flowExecutionId, memberSignal, workerId, tokens, labels);
     const settled = await pool.query("SELECT status, error, success_count, failed_count, skipped_count FROM flow_executions WHERE id = $1", [inserted.flowExecutionId]);
     const result = settled.rows[0];
     return {

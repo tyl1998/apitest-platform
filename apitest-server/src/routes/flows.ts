@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
-import { enqueueFlowRun, enqueueRun, cancelFlowRun } from "../lib/enqueue.js";
+import { NoRunnerError, enqueueFlowRun, enqueueRun, cancelFlowRun } from "../lib/enqueue.js";
 import { MAX_FLOW_NODES, planStages, toFlowNode, topologicalOrder, validateFlowGraph, validateNode } from "../lib/flow.js";
 import { checkFlowReferences, flowsReferencing } from "../lib/flowRefs.js";
 import { executeConditionNode, executeDatabaseNode, executeScriptNode, prepareFlowNodes } from "../lib/flowRun.js";
 import { executeWaitNode } from "../lib/flowNodes.js";
 import { runGraph, TokenPool, type GraphContext } from "../lib/flowGraph.js";
 import { requireProjectAccess } from "../lib/rbac.js";
-import { fail, success } from "../lib/response.js";
+import { fail, failNoRunner, success } from "../lib/response.js";
 import { adoptScriptRefs, inlineFlowNodeScripts, persistFlowScripts } from "../lib/scripts.js";
 import { detachSuiteMember } from "../lib/suiteMembers.js";
 import { isUuid } from "../lib/uuid.js";
@@ -481,6 +481,9 @@ export async function flowRoutes(app: FastifyInstance) {
       const queued = await pool.query("SELECT * FROM flow_executions WHERE id = $1", [flowExecutionId]);
       return reply.code(202).send(success(mapFlowExecution(queued.rows[0])));
     } catch (error) {
+      /* 分区没有在线执行器：2004 + label（P2-8 边界 5）。与「队列不可用」分开报，
+         因为处置动作不同——一个去修 Redis，一个去那个网段起一台 worker。 */
+      if (error instanceof NoRunnerError) return failNoRunner(reply, error.label, error.message);
       const message = error instanceof Error ? error.message : "flow could not be started";
       /* Queue down is infrastructure, not bad input — 503 so the client can say
          「执行队列不可用」rather than blaming the flow. */
@@ -552,6 +555,8 @@ export async function flowRoutes(app: FastifyInstance) {
       const queued = await pool.query("SELECT * FROM executions WHERE id = $1", [executionId]);
       return reply.code(202).send(success(mapExecution(queued.rows[0])));
     } catch (error) {
+      /* 单步调试同款（P2-8 边界 5）：节点没问题，是这个分区没有执行器。 */
+      if (error instanceof NoRunnerError) return failNoRunner(reply, error.label, error.message);
       const message = error instanceof Error ? error.message : "request could not be prepared";
       if (message.includes("queue unavailable")) return fail(reply, 503, 5001, message);
       return fail(reply, 400, 2002, message);

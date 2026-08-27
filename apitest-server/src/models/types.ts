@@ -5,7 +5,7 @@ export type Project = { id: string; name: string; description: string; ownerId: 
  * Secret values never leave the server (Spec 4.6 默认掩码). Only the key names
  * travel, so the UI can show "configured" without ever holding the plaintext.
  */
-export type Environment = { id: string; projectId: string; name: string; variables: Record<string, string>; secretKeys: string[] };
+export type Environment = { id: string; projectId: string; name: string; variables: Record<string, string>; secretKeys: string[]; runnerLabel: string };
 export type BodyType = "none" | "json" | "form" | "text";
 export type EndpointAuth =
   | { type: "none" }
@@ -821,6 +821,13 @@ export type Worker = {
    * `repository` is reserved so the registry can tell them apart from the start.
    */
   mode: "endpoint" | "repository";
+  /**
+   * 执行分区标签，即这个 worker 服务哪些网段（P2-8）。
+   *
+   * 与 `mode` 是两个正交轴：只有 `labels` 参与队列路由。一个只服务 `prod-dmz` 的
+   * worker 领不到 `default` 的任务，反之亦然。
+   */
+  labels: string[];
   /** Capacity this worker was given, i.e. its max simultaneous requests. */
   concurrency: number;
   /** Requests in flight at the last heartbeat. */
@@ -830,6 +837,18 @@ export type Worker = {
   startedAt: string;
   lastSeenAt: string;
 };
+
+/**
+ * How long a worker may go unheard from before it reads as offline.
+ *
+ * Three heartbeats, so one dropped beat or a brief GC pause does not make a
+ * healthy worker flicker between states in the UI.
+ *
+ * 单一来源：执行器面板（`routes/system.ts`）与入队前的分区在线检查
+ * （`lib/enqueue.ts`，P2-8 边界 4）必须用同一个阈值——两个数会让「面板显示在线、
+ * 入队却说没有执行器」成立。
+ */
+export const WORKER_OFFLINE_AFTER_SECONDS = 30;
 
 export type BatchExecution = {
   id: string;
@@ -956,6 +975,8 @@ export function mapEnvironment(row: Record<string, unknown>): Environment {
     variables: (row.variables ?? {}) as Record<string, string>,
     /* Keys only: the values stay server-side. */
     secretKeys: Object.keys((row.secrets ?? {}) as Record<string, string>).sort(),
+    /* 执行分区（P2-8）：这个环境指向的系统该从哪个网段发请求。 */
+    runnerLabel: String(row.runner_label ?? "default"),
   };
 }
 
@@ -1247,6 +1268,9 @@ export function mapWorker(row: Record<string, unknown>): Worker {
   return {
     id: String(row.id), hostname: String(row.hostname), pid: Number(row.pid),
     mode: (row.mode ?? "endpoint") as Worker["mode"],
+    /* TEXT[] 已经是数组，`pg` 直接给回 string[]；空数组读成「只服务 default」以匹配
+       迁移 027 的列默认值。 */
+    labels: Array.isArray(row.labels) && row.labels.length ? (row.labels as unknown[]).map(String) : ["default"],
     concurrency: Number(row.concurrency), inflight: Number(row.inflight),
     version: row.version ? String(row.version) : undefined,
     /* Computed by the query from heartbeat freshness, never stored. */

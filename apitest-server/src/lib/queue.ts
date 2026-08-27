@@ -8,9 +8,49 @@ import { Redis } from "ioredis";
  * `executions` 回读。这样 Redis 里不存在任何请求体与凭据，且队列不会成为
  * 第二真相来源——一行 execution 就是一次执行的全部事实。
  */
-export const EXECUTION_QUEUE = "executions";
+const EXECUTION_QUEUE_PREFIX = "executions";
 
-/** 取消广播频道。BullMQ 只能移除尚未开始的 job，中断在途请求得靠它。 */
+/**
+ * 默认执行分区（P2-8）。
+ *
+ * 迁移 027 的三张执行表与 `environments.runner_label` 都以它为 DEFAULT，所以「没配过
+ * 分区」与「配了 default」在路由上是同一件事，不需要区分 NULL。
+ */
+export const DEFAULT_RUNNER_LABEL = "default";
+
+/**
+ * 分区标签格式（P2-8 边界 3）。
+ *
+ * 它**会进 Redis key**（`executions-<label>`），不约束就会写出奇怪的键。校验放在路由层
+ * 而不是 CHECK 约束：错误信息要能回给用户。
+ */
+export const RUNNER_LABEL_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/**
+ * 一个分区的队列名（P2-8）。
+ *
+ * 队列名从常量 `executions` 变成 `executions-<label>`：worker 只能从自己所在网段出站，
+ * 所以「谁能领这个 job」必须由队列本身表达，而不是靠 worker 自觉。
+ *
+ * 分隔符是 `-` 而**不是** `:`：BullMQ 6 明确拒绝名字里带 `:` 的队列
+ * （`QueueBase` 构造函数直接抛 `Queue name cannot contain :`），因为它自己用 `:` 拼
+ * Redis key 的层级。`-` 不产生歧义——前缀固定，其后整段就是标签，而标签自身唯一。
+ * （`CANCEL_CHANNEL` 仍可以带 `:`：那是 pub/sub 频道，不经 BullMQ 的队列名校验。）
+ *
+ * 一次性代价（计划 5.0.12「一次性代价」）：改名后 Redis 里现存的 job 会成为孤儿。按
+ * AGENTS.md 数据兼容条款不写兼容代码，清一次开发 Redis 即可——库里 `queued` 的行由
+ * worker 启动时的 `requeueOrphans` 自己捡回来。
+ */
+export function executionQueueName(label: string = DEFAULT_RUNNER_LABEL) {
+  return `${EXECUTION_QUEUE_PREFIX}-${label}`;
+}
+
+/**
+ * 取消广播频道。BullMQ 只能移除尚未开始的 job，中断在途请求得靠它。
+ *
+ * **保持单条全局频道**（P2-8 边界 9）：取消是广播 + 持有者对号入座，按标签分频道只会让
+ * 每个 worker 多订阅几条，没有收益。
+ */
 export const CANCEL_CHANNEL = "executions:cancel";
 
 /**
@@ -36,11 +76,19 @@ export function createRedis(): Redis {
   return new Redis(REDIS_URL, { maxRetriesPerRequest: null });
 }
 
-let queue: Queue<ExecutionJob> | undefined;
+/**
+ * 每个分区一条队列，按标签缓存（P2-8）。
+ *
+ * `Map<label, Queue>` 而不是单例：一个 API 进程要能同时往 `default` 与 `prod-dmz` 投递，
+ * 而 BullMQ 的 Queue 绑定单个队列名。延迟建连保持不变，这样单跑 migrate 之类的脚本
+ * 不会连 Redis；每条队列各自持一个连接，只在真的用到那个分区时才建。
+ */
+const queues = new Map<string, Queue<ExecutionJob>>();
 
-/** 延迟建连，这样单跑 migrate 之类的脚本不会连 Redis。 */
-export function executionQueue() {
-  queue ??= new Queue<ExecutionJob>(EXECUTION_QUEUE, {
+export function executionQueue(label: string = DEFAULT_RUNNER_LABEL) {
+  let queue = queues.get(label);
+  if (queue) return queue;
+  queue = new Queue<ExecutionJob>(executionQueueName(label), {
     connection: createRedis(),
     defaultJobOptions: {
       /*
@@ -53,5 +101,6 @@ export function executionQueue() {
       removeOnFail: { count: 100 },
     },
   });
+  queues.set(label, queue);
   return queue;
 }

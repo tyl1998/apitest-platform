@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { DEFAULT_RUNNER_LABEL, RUNNER_LABEL_PATTERN } from "../lib/queue.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { collectReferences } from "../lib/resolve.js";
@@ -17,7 +18,22 @@ type VariableInput = Record<string, string>;
  */
 type SecretPatch = Record<string, string | null>;
 
-type EnvironmentBody = { name?: string; variables?: VariableInput; secrets?: SecretPatch };
+type EnvironmentBody = { name?: string; variables?: VariableInput; secrets?: SecretPatch; runnerLabel?: string };
+
+/**
+ * 执行分区标签的校验（P2-8）。
+ *
+ * 校验放在这里而不是 CHECK 约束：标签会进 Redis key（`executions-<label>`），必须约束，
+ * 但格式说明要能作为错误信息回给用户。返回 `undefined` 表示「本次没改这一列」。
+ */
+function normalizeRunnerLabel(input: string | undefined): { label?: string; error?: string } {
+  if (input === undefined) return {};
+  const label = input.trim() || DEFAULT_RUNNER_LABEL;
+  if (!RUNNER_LABEL_PATTERN.test(label)) {
+    return { error: "runnerLabel must be 1–32 characters of lowercase letters, digits or hyphens, starting with a letter or digit" };
+  }
+  return { label };
+}
 
 function cleanVariables(input: VariableInput | undefined): VariableInput | undefined {
   if (!input) return undefined;
@@ -100,9 +116,11 @@ export async function environmentRoutes(app: FastifyInstance) {
     if (!name) return fail(reply, 400, 1001, "environment name is required");
     const duplicate = await pool.query("SELECT 1 FROM environments WHERE project_id = $1 AND lower(name) = lower($2)", [context.project.id, name]);
     if (duplicate.rowCount) return fail(reply, 409, 1002, "an environment with this name already exists");
+    const runner = normalizeRunnerLabel(request.body.runnerLabel);
+    if (runner.error) return fail(reply, 400, 1001, runner.error);
     const result = await pool.query(
-      "INSERT INTO environments (id, project_id, name, variables, secrets) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb) RETURNING *",
-      [randomUUID(), context.project.id, name, JSON.stringify(cleanVariables(request.body.variables) ?? {}), JSON.stringify(applySecretPatch({}, request.body.secrets))],
+      "INSERT INTO environments (id, project_id, name, variables, secrets, runner_label) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6) RETURNING *",
+      [randomUUID(), context.project.id, name, JSON.stringify(cleanVariables(request.body.variables) ?? {}), JSON.stringify(applySecretPatch({}, request.body.secrets)), runner.label ?? DEFAULT_RUNNER_LABEL],
     );
     return reply.code(201).send(success(mapEnvironment(result.rows[0])));
   });
@@ -125,12 +143,49 @@ export async function environmentRoutes(app: FastifyInstance) {
     /* Secrets are merged server-side so an update never has to echo plaintext. */
     const secrets = applySecretPatch((existing.rows[0].secrets ?? {}) as Record<string, string>, request.body.secrets);
     const variables = cleanVariables(request.body.variables);
+    const runner = normalizeRunnerLabel(request.body.runnerLabel);
+    if (runner.error) return fail(reply, 400, 1001, runner.error);
 
+    /* 分区标签改了不影响已经排队/在跑的执行：那些行上有自己的快照（迁移 027），
+       它们的 job 也已经在原来那条队列里。这正是快照存在的理由。 */
     const result = await pool.query(
-      "UPDATE environments SET name = COALESCE($1, name), variables = COALESCE($2::jsonb, variables), secrets = $3::jsonb WHERE id = $4 AND project_id = $5 RETURNING *",
-      [name || null, variables ? JSON.stringify(variables) : null, JSON.stringify(secrets), request.params.environmentId, context.project.id],
+      "UPDATE environments SET name = COALESCE($1, name), variables = COALESCE($2::jsonb, variables), secrets = $3::jsonb, runner_label = COALESCE($6, runner_label) WHERE id = $4 AND project_id = $5 RETURNING *",
+      [name || null, variables ? JSON.stringify(variables) : null, JSON.stringify(secrets), request.params.environmentId, context.project.id, runner.label ?? null],
     );
     return success(mapEnvironment(result.rows[0]));
+  });
+
+  /**
+   * Copies an environment inside its project.
+   *
+   * 服务端 `INSERT … SELECT`（与接口复制同一条决策），且这里别无选择：secret 明文只在
+   * 服务端存在（Spec 4.6），客户端读到的只有 `secretKeys`，read-then-create 会产出一个
+   * secret 全空的副本。分区标签一起带走——「这个环境指向的系统从哪个网段访问」与变量
+   * 是同一份拷贝语义，拆开只会让副本指向错误的网段。
+   */
+  app.post<{ Params: { id: string; environmentId: string }; Body: { name?: string } }>("/api/v1/projects/:id/environments/:environmentId/duplicate", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply, true); if (!context) return;
+    if (!isUuid(request.params.environmentId)) return fail(reply, 404, 2001, "environment not found");
+
+    const source = await pool.query("SELECT name FROM environments WHERE id = $1 AND project_id = $2", [request.params.environmentId, context.project.id]);
+    if (!source.rowCount) return fail(reply, 404, 2001, "environment not found");
+
+    /* 环境名有 UNIQUE(project_id, name)，路由层还按 lower(name) 判重，所以找空位的循环
+       必须同样大小写不敏感——否则 INSERT 会撞唯一索引（500）而不是走到 409。 */
+    const requested = request.body?.name?.trim() || `${String(source.rows[0].name)} copy`;
+    const taken = await pool.query("SELECT name FROM environments WHERE project_id = $1 AND lower(name) LIKE lower($2)", [context.project.id, `${requested}%`]);
+    const names = new Set(taken.rows.map((row) => String(row.name).toLowerCase()));
+    let name = requested;
+    for (let index = 2; names.has(name.toLowerCase()); index += 1) name = `${requested} ${index}`;
+
+    const result = await pool.query(
+      `INSERT INTO environments (id, project_id, name, variables, secrets, runner_label)
+       SELECT $1, project_id, $2, variables, secrets, runner_label
+       FROM environments WHERE id = $3 AND project_id = $4 RETURNING *`,
+      [randomUUID(), name, request.params.environmentId, context.project.id],
+    );
+    if (!result.rowCount) return fail(reply, 404, 2001, "environment not found");
+    return reply.code(201).send(success(mapEnvironment(result.rows[0])));
   });
 
   /* Dependency scan, read before the confirm dialog so the user sees what breaks. */

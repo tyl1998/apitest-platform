@@ -4,7 +4,7 @@ import { pool } from "./db.js";
 import { performFlowRun } from "./lib/flowRun.js";
 import { performSuiteRun } from "./lib/suiteRun.js";
 import { inflightCount, listenForCancels, registerInflight, releaseInflight } from "./lib/inflight.js";
-import { EXECUTION_QUEUE, createRedis, executionQueue, type ExecutionJob } from "./lib/queue.js";
+import { DEFAULT_RUNNER_LABEL, RUNNER_LABEL_PATTERN, createRedis, executionQueue, executionQueueName, type ExecutionJob } from "./lib/queue.js";
 import { performRun, settleBatch } from "./lib/run.js";
 
 /**
@@ -28,6 +28,40 @@ const WORKER_ID = `${hostname()}:${process.pid}`;
 const WORKER_MODE = process.env.WORKER_MODE ?? "endpoint";
 
 /**
+ * 这个 worker 服务哪些执行分区（P2-8）。
+ *
+ * 公司内网存在互不连通的网段，而 worker 只能从**自己所在网段**出站。分区标签就是
+ * 「我这台机器能打到哪套系统」，队列按标签分裂（`executions-<label>`），所以一个只服务
+ * `prod-dmz` 的 worker 领不到 `default` 的任务，反之亦然。
+ *
+ * **推荐一个进程只服务一个标签**：BullMQ 的 Worker 绑定单队列，多标签就是多个 Worker
+ * 实例，容量必须拆分（见 `PER_LABEL_CONCURRENCY`）。多标签只作为单机开发的便利。
+ *
+ * 非法标签直接退出而不是静默丢掉：它会进 Redis key，写错一个字母的后果是「任务全部
+ * 排队没人领」，而进程看起来一切正常——那是最难查的一类故障。
+ */
+const WORKER_LABELS = (process.env.WORKER_LABELS ?? DEFAULT_RUNNER_LABEL)
+  .split(",").map((label) => label.trim()).filter(Boolean);
+const uniqueLabels = [...new Set(WORKER_LABELS.length ? WORKER_LABELS : [DEFAULT_RUNNER_LABEL])];
+for (const label of uniqueLabels) {
+  if (!RUNNER_LABEL_PATTERN.test(label)) {
+    console.error(`[worker] invalid WORKER_LABELS entry "${label}": expected ${RUNNER_LABEL_PATTERN}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * 多标签进程必须**拆分**并发（P2-8 边界 7）。
+ *
+ * 一个标签一个 BullMQ Worker 实例，各给一份 `WORKER_CONCURRENCY` 会让这台机器的真实
+ * 容量凭空翻倍，而心跳上报的数字与执行器面板上的「总容量」就都是假的——按它做的容量
+ * 规划会直接把被测服务打挂。
+ */
+const PER_LABEL_CONCURRENCY = Math.max(1, Math.floor(CONCURRENCY / uniqueLabels.length));
+/** 心跳上报的是**实际**容量（拆分后的总和），不是环境变量里那个数。 */
+const REPORTED_CONCURRENCY = PER_LABEL_CONCURRENCY * uniqueLabels.length;
+
+/**
  * 在途请求的中断句柄。
  *
  * BullMQ 只能移除尚未开始的 job，已经在 `await fetch` 里的 job 必须靠
@@ -37,6 +71,9 @@ const WORKER_MODE = process.env.WORKER_MODE ?? "endpoint";
 /**
  * 在途请求的中断句柄，见 lib/inflight.ts：流程内的每一步也要能被单独取消，
  * 所以登记表是共享的而不是本文件私有。
+ *
+ * 取消频道保持**单条全局**（P2-8 边界 9）：取消是广播 + 持有者对号入座，按标签分频道
+ * 只会让每个 worker 多订阅几条，没有收益。
  */
 listenForCancels();
 
@@ -49,24 +86,30 @@ listenForCancels();
  *
  * 套件的成员**不入队**：它们在这一个槽内进程内扇出（计划 5.0.11 边界 2）。给成员入队
  * 会让「等子任务的父槽」把并发吃光——与容器持令牌的死锁同一类错误。
+ *
+ * P2-8 起**每个分区一个 Worker 实例**：BullMQ 的 Worker 绑定单个队列名，而分区正是靠
+ * 队列名分裂的。认领语句里还带 `runner_label` 防御（`performRun` 等），万一有 job 被投
+ * 进错的队列，进程在 `fetch` 之前就退出，而不是从错误的网段发出一个真实请求。
  */
-const worker = new Worker<ExecutionJob>(
-  EXECUTION_QUEUE,
+const workers = uniqueLabels.map((label) => new Worker<ExecutionJob>(
+  executionQueueName(label),
   async (job) => {
     const id = "suiteExecutionId" in job.data ? job.data.suiteExecutionId
       : "flowExecutionId" in job.data ? job.data.flowExecutionId
         : job.data.executionId;
     const controller = registerInflight(id);
     try {
-      if ("suiteExecutionId" in job.data) await performSuiteRun(id, controller.signal, WORKER_ID);
-      else if ("flowExecutionId" in job.data) await performFlowRun(id, controller.signal, WORKER_ID);
-      else await performRun(id, controller.signal, WORKER_ID);
+      /* 只传自己这一个标签，不是 `uniqueLabels`：这个 job 是从 `label` 那条队列来的，
+         用全集去认领会让「投错队列」这道防御失效。 */
+      if ("suiteExecutionId" in job.data) await performSuiteRun(id, controller.signal, WORKER_ID, [label]);
+      else if ("flowExecutionId" in job.data) await performFlowRun(id, controller.signal, WORKER_ID, undefined, [label]);
+      else await performRun(id, controller.signal, WORKER_ID, [label]);
     } finally {
       releaseInflight(id);
     }
   },
-  { connection: createRedis(), concurrency: CONCURRENCY },
-);
+  { connection: createRedis(), concurrency: PER_LABEL_CONCURRENCY },
+));
 
 /**
  * 心跳。
@@ -79,10 +122,11 @@ const WORKER_VERSION = process.env.APP_VERSION ?? null;
 
 async function heartbeat() {
   await pool.query(
-    `INSERT INTO workers (id, hostname, pid, concurrency, inflight, version, mode)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (id) DO UPDATE SET inflight = EXCLUDED.inflight, concurrency = EXCLUDED.concurrency, mode = EXCLUDED.mode, last_seen_at = now()`,
-    [WORKER_ID, hostname(), process.pid, CONCURRENCY, inflightCount(), WORKER_VERSION, WORKER_MODE],
+    `INSERT INTO workers (id, hostname, pid, concurrency, inflight, version, mode, labels)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (id) DO UPDATE SET inflight = EXCLUDED.inflight, concurrency = EXCLUDED.concurrency, mode = EXCLUDED.mode, labels = EXCLUDED.labels, last_seen_at = now()`,
+    /* 上报**拆分后**的实际容量：多标签进程各给一份 CONCURRENCY 会让面板上的总容量翻倍。 */
+    [WORKER_ID, hostname(), process.pid, REPORTED_CONCURRENCY, inflightCount(), WORKER_VERSION, WORKER_MODE, uniqueLabels],
   );
 }
 
@@ -92,8 +136,11 @@ async function heartbeat() {
  * `performRun` 自己把请求异常写成 failed，所以走到这里说明是它之外的事故
  * （取行失败、进程被杀等）。此时行还停在 running，没有人会再来收尾，必须在
  * 这里落终态，否则「运行中」会永远转圈。
+ *
+ * 分区化之后每个标签一个 Worker 实例，但处理逻辑完全一样，所以注册同一个回调而不是
+ * 复制 N 份：终态是按 job 里的 id 写的，与它来自哪条队列无关。
  */
-worker.on("failed", async (job, error) => {
+async function onJobFailed(job: { data?: ExecutionJob } | undefined, error: Error) {
   if (!job) return;
   const message = error.message || "worker failed";
 
@@ -183,9 +230,12 @@ worker.on("failed", async (job, error) => {
   if (!result.rowCount) return;
   const row = result.rows[0];
   if (row.batch_id) await settleBatch(String(row.batch_id), String(row.project_id));
-});
+}
 
-worker.on("error", (error) => { console.error("[worker] queue error", error); });
+for (const worker of workers) {
+  worker.on("failed", (job, error) => { void onJobFailed(job, error); });
+  worker.on("error", (error) => { console.error("[worker] queue error", error); });
+}
 
 /**
  * 卡死回收。
@@ -216,6 +266,16 @@ const REAP_SUITE_AFTER = "45 minutes";
  */
 const REAP_LOCK_KEY = 8_013_301;
 
+/**
+ * 回收**保持全局**，不按分区过滤（P2-8 边界 8）。
+ *
+ * 它管的是 DB 状态而不是队列：一条超时未终态的行必须被判死，不管它属于哪个网段——而
+ * 那个网段的 worker 可能恰好整个都下线了，等它来收就永远不会有人收。并发由 advisory
+ * lock 解决，与 `requeueOrphans` 那条「只碰自己看得见的分区」是两件不同的事。
+ *
+ * 已知行为（P2-8「已知行为」，**不是 bug**）：某分区 worker 在**入队之后**掉线，那批行
+ * 仍会在 5 分钟后被这里判失败。`enqueue.ts` 的入队前在线检查只挡新的，挡不住这种。
+ */
 async function reapStale() {
   const client = await pool.connect();
   try {
@@ -356,18 +416,25 @@ async function pruneLocalDead() {
  *
  * 即便真的重复投了，认领语句里的 `status = 'queued'` 也保证只有一个能真正跑起来，
  * 所以这里不需要额外加锁。
+ *
+ * **只补投自己服务的分区**（P2-8 边界 8）：一个 worker 不该对它看不见的分区采取行动。
+ * 少了这层过滤，测试网段的 worker 会把生产分区的行投进 `executions:prod-dmz`——那条队列
+ * 它自己也领不到，看起来无害，但真正的问题是它凭什么替另一个网段做决定；反过来若忘了按
+ * 行标签选队列，就会把生产的活投进 `default`，由本网段 worker 发出去。
+ * （`reapStale` 保持全局：它管的是 DB 状态而不是队列，advisory lock 已经解决并发。）
  */
 async function requeueOrphans() {
-  const queue = executionQueue();
   /* 先老的后新的：真要排队，也让等得最久的先跑。 */
   const [runs, flows, suites] = await Promise.all([
-    pool.query("SELECT id FROM executions WHERE status = 'queued' ORDER BY created_at"),
-    pool.query("SELECT id FROM flow_executions WHERE status = 'queued' ORDER BY created_at"),
-    pool.query("SELECT id FROM suite_executions WHERE status = 'queued' ORDER BY created_at"),
+    pool.query("SELECT id, runner_label FROM executions WHERE status = 'queued' AND runner_label = ANY($1) ORDER BY created_at", [uniqueLabels]),
+    pool.query("SELECT id, runner_label FROM flow_executions WHERE status = 'queued' AND runner_label = ANY($1) ORDER BY created_at", [uniqueLabels]),
+    pool.query("SELECT id, runner_label FROM suite_executions WHERE status = 'queued' AND runner_label = ANY($1) ORDER BY created_at", [uniqueLabels]),
   ]);
 
   let requeued = 0;
-  const submit = async (id: string, name: "run" | "flow" | "suite", data: ExecutionJob) => {
+  const submit = async (id: string, label: string, name: "run" | "flow" | "suite", data: ExecutionJob) => {
+    /* 队列按**行上的**标签选，不是按 `uniqueLabels[0]`：多标签进程补投时必须逐行对号。 */
+    const queue = executionQueue(label);
     const existing = await queue.getJob(id);
     if (existing) {
       /* 还在队列里（等待 / 在途 / 延迟）：本来就会被跑到，不要碰它。 */
@@ -378,9 +445,9 @@ async function requeueOrphans() {
     requeued += 1;
   };
 
-  for (const row of runs.rows) await submit(String(row.id), "run", { executionId: String(row.id) });
-  for (const row of flows.rows) await submit(String(row.id), "flow", { flowExecutionId: String(row.id) });
-  for (const row of suites.rows) await submit(String(row.id), "suite", { suiteExecutionId: String(row.id) });
+  for (const row of runs.rows) await submit(String(row.id), String(row.runner_label), "run", { executionId: String(row.id) });
+  for (const row of flows.rows) await submit(String(row.id), String(row.runner_label), "flow", { flowExecutionId: String(row.id) });
+  for (const row of suites.rows) await submit(String(row.id), String(row.runner_label), "suite", { suiteExecutionId: String(row.id) });
   if (requeued) console.warn(`[worker] requeued ${requeued} orphaned queued job(s)`);
 }
 
@@ -404,7 +471,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, async () => {
     clearInterval(reaper);
     clearInterval(pulse);
-    await worker.close();
+    await Promise.all(workers.map((worker) => worker.close()));
     /* 正常退出就把自己摘掉，不必等注册表过期。 */
     await pool.query("DELETE FROM workers WHERE id = $1", [WORKER_ID]).catch(() => {});
     await pool.end();
@@ -412,4 +479,6 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   });
 }
 
-console.log(`[worker] ${WORKER_ID} consuming "${EXECUTION_QUEUE}" as ${WORKER_MODE} with concurrency ${CONCURRENCY}`);
+/* 打印**实际**队列名而不是一个常量：分区配错时「这台机器在听哪条队列」是第一个要看的
+   事实，而错配的表现是「任务一直排队没人领」，从进程日志上看不出任何异常。 */
+console.log(`[worker] ${WORKER_ID} consuming ${uniqueLabels.map((label) => `"${executionQueueName(label)}"`).join(", ")} as ${WORKER_MODE} with concurrency ${PER_LABEL_CONCURRENCY} per partition (${REPORTED_CONCURRENCY} total)`);

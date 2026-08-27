@@ -363,8 +363,11 @@ export async function executeRequest(options: {
  *
  * Returns `false` when the row was not claimable, which is the normal outcome
  * for a run canceled while it sat in the queue.
+ *
+ * `labels` 是调用方服务的执行分区（P2-8）。worker 传自己的那一组；套件成员就地执行时
+ * 传持有它的那台 worker 的同一组。不传等于不设防，只有单步/内联调用才该这样。
  */
-export async function performRun(executionId: string, signal: AbortSignal, workerId?: string): Promise<boolean> {
+export async function performRun(executionId: string, signal: AbortSignal, workerId?: string, labels?: string[]): Promise<boolean> {
   /**
    * Claim and start in one statement. `status = 'queued'` in the WHERE clause
    * is what makes a cancel that landed first stick: it turns the row to
@@ -376,10 +379,16 @@ export async function performRun(executionId: string, signal: AbortSignal, worke
    * `fetch`. At-most-once is the right trade for a tool that fires POSTs and
    * DELETEs at real services — a run that vanished is recoverable, one that
    * silently fired twice is not.
+   *
+   * `runner_label = ANY($3)` 是 P2-8 加的第三道守卫，也是这个切片唯一的安全性增量：
+   * 万一有 job 被投进了错的队列，worker 在 `fetch` **之前**退出，而不是从错误的网段
+   * 对着生产发出一个真实请求。跨网段的场合「少跑一次」永远比「跑错地方」便宜。
    */
   const claimed = await pool.query(
-    "UPDATE executions SET status = 'running', started_at = now(), worker_id = $2 WHERE id = $1 AND status = 'queued' RETURNING *",
-    [executionId, workerId ?? null],
+    `UPDATE executions SET status = 'running', started_at = now(), worker_id = $2
+      WHERE id = $1 AND status = 'queued' AND ($3::text[] IS NULL OR runner_label = ANY($3))
+      RETURNING *`,
+    [executionId, workerId ?? null, labels ?? null],
   );
   if (!claimed.rowCount) return false;
 
