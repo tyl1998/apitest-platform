@@ -675,6 +675,34 @@ export type SqlDefinition = {
   updatedAt: string;
 };
 
+/** P2-5 external integration stub. The public id is a random capability, not a project id. */
+export type MockMode = "auto" | "fixed" | "template" | "proxy";
+export type MockResponse = { statusCode: number; headers: Record<string, string>; body?: unknown };
+export type MockProxyPathMode = "append" | "fixed" | "replace";
+export type MockProxyQueryMode = "forward" | "drop" | "append";
+export type MockProxyConfig = {
+  targetUrl: string;
+  allowedHosts: string[];
+  timeoutMs: number;
+  maxResponseBytes: number;
+  /** append keeps the target's own path and appends the mock path; fixed ignores
+      the mock path; replace uses the mock path verbatim. Default append. */
+  pathMode?: MockProxyPathMode;
+  /** forward passes the mock request query, drop strips it, append forwards and
+      adds fixedQuery. Default forward. */
+  queryMode?: MockProxyQueryMode;
+  /** Added on top of the request query when queryMode is 'append'. */
+  fixedQuery?: Record<string, string>;
+};
+export type Mock = {
+  id: string; projectId: string; endpointId?: string; snapshotExecutionId?: string; name: string; publicId: string; mode: MockMode; enabled: boolean; priority: number;
+  requestMatch: Record<string, unknown>; response: MockResponse; proxyConfig?: MockProxyConfig; delayMs: number; createdAt: string; updatedAt: string;
+};
+export type MockRequestLog = {
+  id: string; mockId?: string; method: string; path: string; matched: boolean; statusCode: number; durationMs: number;
+  requestSnapshot: Record<string, unknown>; responseSizeBytes: number; createdAt: string;
+};
+
 export type ExecutionIndex = {
   id: string;
   projectId: string;
@@ -1191,6 +1219,25 @@ export function mapSqlDefinition(row: Record<string, unknown>): SqlDefinition {
     statementType: row.statement_type ? String(row.statement_type) as SqlStatementType : undefined,
     sql: row.sql ? String(row.sql) : undefined, operation: row.operation ?? undefined, params: (row.params ?? []) as SqlParameterDefinition[],
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
+  };
+}
+
+export function mapMock(row: Record<string, unknown>): Mock {
+  return {
+    id: String(row.id), projectId: String(row.project_id), endpointId: row.endpoint_id ? String(row.endpoint_id) : undefined, snapshotExecutionId: row.snapshot_execution_id ? String(row.snapshot_execution_id) : undefined,
+    name: String(row.name), publicId: String(row.public_id), mode: String(row.mode) as MockMode, enabled: Boolean(row.enabled), priority: Number(row.priority),
+    requestMatch: (row.request_match ?? {}) as Record<string, unknown>, response: row.response as MockResponse,
+    proxyConfig: row.proxy_config ? row.proxy_config as MockProxyConfig : undefined, delayMs: Number(row.delay_ms),
+    createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
+  };
+}
+
+export function mapMockRequestLog(row: Record<string, unknown>): MockRequestLog {
+  return {
+    id: String(row.id), mockId: row.mock_id ? String(row.mock_id) : undefined, method: String(row.method), path: String(row.path),
+    matched: Boolean(row.matched), statusCode: Number(row.status_code), durationMs: Number(row.duration_ms),
+    requestSnapshot: (row.request_snapshot ?? {}) as Record<string, unknown>, responseSizeBytes: Number(row.response_size_bytes),
+    createdAt: new Date(String(row.created_at)).toISOString(),
   };
 }
 
