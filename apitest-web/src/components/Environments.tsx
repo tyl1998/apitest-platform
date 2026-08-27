@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
-import { Drawer, Modal, Select, message } from "antd";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AutoComplete, Drawer, Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams, useSearchParams } from "react-router-dom";
-import { Eye, EyeOff, Plus, Pencil, Trash2 } from "lucide-react";
-import { api, type Environment, type EnvironmentUsage } from "../api";
+import { CopyPlus, Eye, EyeOff, Pencil, Trash2 } from "lucide-react";
+import { api, type Environment, type EnvironmentUsage, type RunnerLabelStatus } from "../api";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty } from "../ui";
+import { CopyButton } from "./CopyButton";
 import { IconButton } from "./IconButton";
 import { PublicScripts } from "./PublicScripts";
 
@@ -25,6 +26,14 @@ const BUILTIN_EXAMPLES: [string, string][] = [
 ];
 
 /* ── Variable row types ─────────────────────────────────────────── */
+
+/**
+ * 分区标签格式，与服务端 `RUNNER_LABEL_PATTERN` 逐字一致（P2-8）。
+ *
+ * 前端也校验只是为了当场给提示；服务端那道才是权威的——标签会进 Redis key，绕过界面的
+ * 请求同样必须被拒。
+ */
+const RUNNER_LABEL_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 type VarRow = {
   key: string;
@@ -77,8 +86,20 @@ export function Environments() {
   const [drawerEnv, setDrawerEnv] = useState<Environment | "new">();
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<string>();
+  const [duplicating, setDuplicating] = useState<string>();
   const [savingDefault, setSavingDefault] = useState(false);
   const [savingPlaintext, setSavingPlaintext] = useState(false);
+
+  /* 分区目录（worker 上报的 ∪ 环境配置的）。拉取失败时静默降级成「只用本项目标签做
+     建议」——建议列表缺席不该挡住编辑环境这件事本身。 */
+  const [runnerLabels, setRunnerLabels] = useState<RunnerLabelStatus[]>();
+  const refreshRunnerLabels = useCallback(() => {
+    api.runnerLabels().then(setRunnerLabels).catch(() => setRunnerLabels(undefined));
+  }, []);
+
+  /* 进入环境页时拉一次分区目录；抽屉每次打开再补一次——「在线台数」是提示文案的
+     依据，拿旧的心跳快照说「没有执行器」会误导刚起完 worker 的用户。 */
+  useEffect(() => { if (tab === "envs") refreshRunnerLabels(); }, [tab, refreshRunnerLabels]);
 
   /* Create is triggered from the shared page head above the tabs, so the
      request has to be handed down to the panel that owns the drawer. */
@@ -88,19 +109,59 @@ export function Environments() {
   const [name, setName] = useState("");
   const [rows, setRows] = useState<VarRow[]>([emptyRow()]);
   const [nameError, setNameError] = useState<string>();
+  /* 执行分区（P2-8）。空串在保存时归一成 default，与服务端同一条规则。 */
+  const [runnerLabel, setRunnerLabel] = useState("");
+  const [runnerLabelError, setRunnerLabelError] = useState<string>();
+
+  /* 分区标签的候选：worker 上报的分区 ∪ 本项目已用过的标签，只作提示、不作约束。
+     标签是「这个系统在哪个网段」的声明，可以先于 worker 存在，所以这里不限制只能从
+     候选里选——AutoComplete 单击即列出全部候选，同时仍允许自由输入。候选右侧带上
+     在线台数：「无执行器」那一行正是用户选标签前最需要看到的信息。
+     `default` 必须在列：它不是「没有分区」而是「平台所在网段」这一个真实选项，藏起来
+     会让只有 default 的项目（初装的常态）打开一个空下拉。 */
+  const runnerLabelChoices = useMemo(() => {
+    const labels = [...new Set([...(runnerLabels ?? []).map((each) => each.label), ...environments.map((env) => env.runnerLabel)])]
+      .filter((label) => label)
+      .sort();
+    const statusOf = (label: string) => runnerLabels?.find((each) => each.label === label);
+    return labels.map((label) => {
+      const status = statusOf(label);
+      const suffix = !status ? "" : status.online > 0
+        ? t("environments.partitionOnlineCount", { count: status.online, total: status.total })
+        : t("workers.partitionNone");
+      return { value: label, label: <span className="mono">{label}{suffix && <span className="muted"> · {suffix}</span>}</span> };
+    });
+  }, [runnerLabels, environments, t]);
+
+  /* 当前输入的分区有没有在线执行器。目录没拉到（undefined）时一律不提示：提示比缺席
+     更糟的场景是分区是新的、worker 正在启动。default 除外——它暗示「回平台网段」，
+     而平台网段的 worker 由部署保证，不在环境编辑器的职责里。 */
+  const noRunnerForLabel = (label: string) => {
+    if (!label || label === "default" || !runnerLabels) return false;
+    return runnerLabels.some((each) => each.label === label && each.online === 0);
+  };
 
   function openCreate() {
+    refreshRunnerLabels();
     setDrawerEnv("new");
     setName("");
     setRows([emptyRow()]);
     setNameError(undefined);
+    setRunnerLabel("");
+    setRunnerLabelError(undefined);
   }
 
   function openEdit(env: Environment) {
+    refreshRunnerLabels();
     setDrawerEnv(env);
     setName(env.name);
     setRows([...envToRows(env), emptyRow()]);
     setNameError(undefined);
+    /* datalist 时代 default 显示为空；现在是下拉里的显式选项，如实显示——「选了
+       default 但框是空的」在 AutoComplete 里读起来像没选。保存仍按「空归一成
+       default」的规则，两种输入等价。 */
+    setRunnerLabel(env.runnerLabel);
+    setRunnerLabelError(undefined);
   }
 
   function closeDrawer() { setDrawerEnv(undefined); }
@@ -129,6 +190,8 @@ export function Environments() {
 
   function validate(): boolean {
     if (!name.trim()) { setNameError(t("environments.nameRequired")); return false; }
+    const label = runnerLabel.trim();
+    if (label && !RUNNER_LABEL_PATTERN.test(label)) { setRunnerLabelError(t("environments.runnerLabelInvalid")); return false; }
     const filled = rows.filter((row) => row.key.trim());
     const keys = filled.map((row) => row.key.trim());
     const dup = keys.find((key, i) => keys.indexOf(key) !== i);
@@ -147,10 +210,12 @@ export function Environments() {
   async function save() {
     if (!projectId || !validate()) return;
     const { variables, secrets } = rowsToInput(rows.filter((row) => row.key.trim()));
+    /* 空串归一成 default：服务端也这么做，两边一致才让「清空输入 = 回到平台网段」成立。 */
+    const label = runnerLabel.trim() || "default";
     setSaving(true);
     try {
       if (drawerEnv === "new") {
-        await api.createEnvironment(projectId, { name: name.trim(), variables, secrets });
+        await api.createEnvironment(projectId, { name: name.trim(), variables, secrets, runnerLabel: label });
         message.success(t("environments.created"));
       } else if (drawerEnv) {
         /* Keys removed from the editor must be explicitly nulled out. */
@@ -164,6 +229,7 @@ export function Environments() {
           name: name.trim(),
           variables,
           secrets: { ...removedSecrets, ...secrets },
+          runnerLabel: label,
         });
         message.success(t("environments.updated"));
       }
@@ -245,6 +311,24 @@ export function Environments() {
     });
   }
 
+  /* ── Duplicate ───────────────────────────────────────────────── */
+
+  async function duplicateEnv(env: Environment) {
+    if (!projectId) return;
+    setDuplicating(env.id);
+    try {
+      /* 名字由客户端带后缀传入（与服务端英文 "copy" 兜底一致）；secret 明文全程不出
+         服务端，副本在服务端一次 INSERT…SELECT 里成型。 */
+      const copy = await api.duplicateEnvironment(projectId, env.id, `${env.name} ${t("environments.copySuffix")}`);
+      await reloadEnvironments();
+      message.success(t("environments.duplicated", { name: copy.name }));
+    } catch {
+      message.error(t("environments.duplicateFailed"));
+    } finally {
+      setDuplicating(undefined);
+    }
+  }
+
   /* ── Render ───────────────────────────────────────────────────── */
 
   return <main className="content">
@@ -315,6 +399,7 @@ export function Environments() {
       <thead>
         <tr>
           <th>{t("environments.name")}</th>
+          <th>{t("environments.runnerLabel")}</th>
           <th className="col-num">{t("environments.variables")}</th>
           <th className="col-num">Secrets</th>
           <th className="col-actions" />
@@ -323,10 +408,19 @@ export function Environments() {
       <tbody>
         {environments.map((env) => <tr key={env.id}>
           <td><strong>{env.name}</strong></td>
+          {/* default 用 muted 显示而不是留空：空单元格读成「没配置这个字段」，而事实是
+              「就在平台所在网段发」，那是一个确定的答案。 */}
+          <td className={`mono${env.runnerLabel === "default" ? " muted" : ""}`}>{env.runnerLabel}</td>
           <td className="col-num mono">{Object.keys(env.variables).length}</td>
           <td className="col-num mono">{env.secretKeys.length}</td>
           <td className="col-actions">
             <div className="row-actions">
+              <IconButton
+                icon={<CopyPlus size={14} />}
+                label={t("action.duplicate")}
+                disabled={duplicating === env.id}
+                onClick={() => void duplicateEnv(env)}
+              />
               <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => openEdit(env)} />
               <IconButton
                 icon={<Trash2 size={14} />}
@@ -367,6 +461,29 @@ export function Environments() {
         {nameError && <p className="form-error">{nameError}</p>}
       </div>
 
+      {/* 执行分区（P2-8）。放在名称之后、变量之前：它与变量无关，是「这个环境指向的系统
+          该从哪个网段访问」这一条环境级属性，读的顺序也该在变量清单之前。 */}
+      <div className="field runner-label-field" style={{ marginTop: 16 }}>
+        <span>{t("environments.runnerLabel")}</span>
+        {/* AutoComplete 而不是原生 datalist：datalist 只在输入字符后才弹建议，单击看不到
+            候选，用户无从知道有哪些分区可选。AutoComplete 单击即列出全部候选，同时保留
+            自由输入——分区可以先于 worker 存在，输入框不能只允许选已有标签。 */}
+        <AutoComplete
+          value={runnerLabel}
+          onChange={(value) => { setRunnerLabel(value); setRunnerLabelError(undefined); }}
+          options={runnerLabelChoices}
+          placeholder={t("environments.runnerLabelPlaceholder")}
+          style={{ width: "100%" }}
+        />
+        {runnerLabelError
+          ? <p className="form-error">{runnerLabelError}</p>
+          : noRunnerForLabel(runnerLabel.trim())
+            /* 提前到配置时说运行时才会遇到的 2004：保存不受阻（分区可以先于 worker 存在），
+                但用户该知道下一次执行会失败、去哪里补。失败用红是设计系统的保留语义。 */
+            ? <p className="form-error">{t("environments.runnerLabelNoRunner", { label: runnerLabel.trim() })}</p>
+            : <p className="form-note">{t("environments.runnerLabelHint")}</p>}
+      </div>
+
       <h3 className="subhead" style={{ marginTop: 20 }}>{t("environments.variables")}</h3>
       <p className="form-note">{t("editor.variableHint")}</p>
       {/* 内置动态变量: 求值发生在执行时, 每个 {{$...}} 引用独立求值, 不落盘 (Spec 2.1.2)。
@@ -385,10 +502,11 @@ export function Environments() {
 
       <div className="kv" style={{ marginTop: 12 }}>
         {/* Header */}
-        <div className="kv-row" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1.4fr) 60px 30px" }}>
+        <div className="kv-row" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1.4fr) 60px 28px 28px" }}>
           <span style={{ fontSize: 11, color: "var(--ink-3)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em" }}>{t("environments.variableName")}</span>
           <span style={{ fontSize: 11, color: "var(--ink-3)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em" }}>{t("environments.variableValue")}</span>
           <span style={{ fontSize: 11, color: "var(--ink-3)", fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em" }}>{t("environments.variableType")}</span>
+          <span />
           <span />
         </div>
 
@@ -418,7 +536,7 @@ function VarRowEditor({ row, onChange, onRemove }: {
   const { t } = useTranslation();
   const [revealed, setRevealed] = useState(false);
 
-  return <div className="kv-row" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1.4fr) 60px 30px" }}>
+  return <div className="kv-row" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1.4fr) 60px 28px 28px" }}>
     <input
       className="input mono"
       value={row.key}
@@ -464,6 +582,9 @@ function VarRowEditor({ row, onChange, onRemove }: {
     >
       {row.secret ? "Secret" : "Text"}
     </button>
+    {row.key.trim()
+      ? <CopyButton value={() => `{{${row.key.trim()}}}`} />
+      : <span />}
     {onRemove
       ? <IconButton icon={<Trash2 size={13} />} label={t("action.delete")} tone="danger" onClick={onRemove} />
       : <span />}

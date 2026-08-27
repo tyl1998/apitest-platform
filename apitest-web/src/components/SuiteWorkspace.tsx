@@ -5,6 +5,7 @@ import { useParams, useSearchParams } from "react-router-dom";
 import { Play, Plus, Square, Trash2 } from "lucide-react";
 import {
   api,
+  noRunnerLabel,
   type Paged,
   type SuiteExecution,
   type SuiteExecutionConfig,
@@ -394,8 +395,11 @@ export function SuiteWorkspace() {
       setSearchParams({ run: queued.id }, { replace: true });
       loadHistory();
     } catch (error) {
+      /* 2004 = 这个分区没有在线执行器（P2-8 边界 5）；「成员跨分区」是 400，走 detail。 */
+      const label = noRunnerLabel(error);
       const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      message.error(detail?.includes("queue unavailable") ? t("run.queueUnavailable") : detail ?? t("suites.runFailed"));
+      message.error(label !== undefined ? t("run.noRunner", { label })
+        : detail?.includes("queue unavailable") ? t("run.queueUnavailable") : detail ?? t("suites.runFailed"));
     } finally {
       /* 只覆盖「请求还在路上」这一小段：入队成功之后 busy 由 run.status 自己说。 */
       setStarting(false);

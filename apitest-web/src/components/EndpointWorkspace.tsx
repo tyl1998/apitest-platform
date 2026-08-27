@@ -3,7 +3,7 @@ import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Copy, CopyPlus, Crosshair, Maximize2, Play, Plus, Save, SaveAll, Trash2 } from "lucide-react";
-import { api, type Assertion, type BodyType, type CaseUsage, type Endpoint, type EndpointAuth, type EndpointInput, type Execution, type ExecutionSourceFilter, type FlowExtract, type Paged, type PreRequestHook, type RequestSnapshot, type ResponseScript, type TestCase } from "../api";
+import { api, noRunnerLabel, type Assertion, type BodyType, type CaseUsage, type Endpoint, type EndpointAuth, type EndpointInput, type Execution, type ExecutionSourceFilter, type FlowExtract, type Paged, type PreRequestHook, type RequestSnapshot, type ResponseScript, type TestCase } from "../api";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { variableOptions } from "../lib/flowVariables";
 import { useNavGuardStore } from "../stores/navGuardStore";
@@ -460,8 +460,11 @@ export function EndpointWorkspace() {
 
   /** Reports a queue that refused the run, which is not the same as a failed request. */
   function reportRunFailure(error: unknown) {
+    /* 2004 = 这个分区没有在线执行器（P2-8 边界 5），与队列不可用分开报。 */
+    const label = noRunnerLabel(error);
     const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-    message.error(detail?.includes("queue unavailable") ? t("run.queueUnavailable") : t("endpoints.runFailed"));
+    message.error(label !== undefined ? t("run.noRunner", { label })
+      : detail?.includes("queue unavailable") ? t("run.queueUnavailable") : t("endpoints.runFailed"));
   }
 
   /* Send always runs what is on screen, so unsaved edits are persisted first. */
@@ -593,8 +596,11 @@ export function EndpointWorkspace() {
       else await stream.awaitRun(queued.id);
       await loadCases();
     } catch (error) {
+      /* 用例执行同款：2004 单独报（P2-8 边界 5）。 */
+      const label = noRunnerLabel(error);
       const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      message.error(detail?.includes("queue unavailable") ? t("run.queueUnavailable") : t("cases.runFailed"));
+      message.error(label !== undefined ? t("run.noRunner", { label })
+        : detail?.includes("queue unavailable") ? t("run.queueUnavailable") : t("cases.runFailed"));
     }
     finally { setRunningCase(undefined); if (fromWorkbench) setRunning(false); }
   }

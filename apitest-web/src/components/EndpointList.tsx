@@ -3,7 +3,7 @@ import { Drawer, Form, Input, Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Download, CopyPlus, ListChecks, Pencil, Play, Plus, Trash2, X } from "lucide-react";
-import { api, type BatchDebugResult, type Endpoint, type Execution } from "../api";
+import { api, noRunnerLabel, type BatchDebugResult, type Endpoint, type Execution } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useProjectStore } from "../stores/projectStore";
@@ -99,8 +99,11 @@ export function EndpointList() {
       await load();
     }
     catch (error) {
+      /* 2004 = 这个分区没有在线执行器（P2-8 边界 5）。 */
+      const label = noRunnerLabel(error);
       const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      message.error(detail?.includes("queue unavailable") ? t("run.queueUnavailable") : t("endpoints.runFailed"));
+      message.error(label !== undefined ? t("run.noRunner", { label })
+        : detail?.includes("queue unavailable") ? t("run.queueUnavailable") : t("endpoints.runFailed"));
     }
     finally { setRunning(undefined); }
   }
@@ -136,8 +139,11 @@ export function EndpointList() {
       setBatchOpen(false);
       setSelected(new Set());
     } catch (error) {
+      /* 批量调试遇到 2004 时后端已经把先入队的那些取消掉了，所以这里只报原因。 */
+      const label = noRunnerLabel(error);
       const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      message.error(detail?.includes("queue unavailable") ? t("run.queueUnavailable") : t("endpoints.batchFailed"));
+      message.error(label !== undefined ? t("run.noRunner", { label })
+        : detail?.includes("queue unavailable") ? t("run.queueUnavailable") : t("endpoints.batchFailed"));
     }
     finally { setBatchRunning(false); }
   }

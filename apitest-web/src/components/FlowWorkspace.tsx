@@ -5,7 +5,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Background, Controls, Handle, NodeResizer, Position, ReactFlow, ReactFlowProvider, SelectionMode, addEdge, useEdgesState, useNodesState, type Connection, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Braces, Database, GitBranch, Globe2, Hand, MousePointer2, Play, Plus, Redo2, Repeat, Save, Square, Timer, Undo2, Workflow, X } from "lucide-react";
-import { api, type DataSource, type Flow, type FlowEdge, type FlowExecution, type FlowExecutionDetail, type FlowNode, type FlowStepResult, type FlowSummary, type Paged } from "../api";
+import { api, noRunnerLabel, type DataSource, type Flow, type FlowEdge, type FlowExecution, type FlowExecutionDetail, type FlowNode, type FlowStepResult, type FlowSummary, type Paged } from "../api";
 import { addStep as addStepToTree, clampInsideLoop, collectEdges, findStep as findStepIn, flattenSteps, foldPositions, loopAt, loopSize, removeStep as removeStepDeep, reparentStep, splitEdges, updateStep as updateStepDeep, LOOP_MIN_SIZE } from "../lib/flowCanvas";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { variableOptions } from "../lib/flowVariables";
@@ -788,8 +788,12 @@ function FlowCanvas() {
       setSearchParams({ run: queued.id }, { replace: true });
       loadHistory();
     } catch (error) {
+      /* 分区没有执行器（2004）与队列不可用是两个不同的处置动作：一个去那个网段起 worker，
+         一个去修 Redis。按错误码判而不是嗅探文案（P2-8 边界 5）。 */
+      const label = noRunnerLabel(error);
       const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      message.error(detail?.includes("queue unavailable") ? t("run.queueUnavailable") : t("flows.runFailed"));
+      message.error(label !== undefined ? t("run.noRunner", { label })
+        : detail?.includes("queue unavailable") ? t("run.queueUnavailable") : t("flows.runFailed"));
       setRunning(false);
     }
   }

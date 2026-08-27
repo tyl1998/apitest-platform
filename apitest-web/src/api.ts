@@ -3,14 +3,26 @@ import axios from "axios";
 export type Project = { id: string; name: string; description: string };
 export type User = { id: string; email: string; name: string; isSystemAdmin: boolean };
 /** Secret values stay on the server; only their key names are sent (Spec 4.6). */
-export type Environment = { id: string; name: string; variables: Record<string, string>; secretKeys: string[] };
+export type Environment = {
+  id: string;
+  name: string;
+  variables: Record<string, string>;
+  secretKeys: string[];
+  /**
+   * 执行分区：这个环境指向的系统该从哪个网段发请求（P2-8）。
+   *
+   * 内网的测试/生产网段互不连通，worker 只能从自己所在网段出站，所以「从哪发」必须由
+   * 环境说出来。默认 `default`（平台所在网段）。
+   */
+  runnerLabel: string;
+};
 export type ProjectSettings = { defaultEnvironmentId?: string; storePlaintext: boolean };
 
 /**
  * Secrets are patched, never replaced: `null` removes a key, a string sets it,
  * and an omitted key keeps whatever the server already holds.
  */
-export type EnvironmentInput = { name?: string; variables?: Record<string, string>; secrets?: Record<string, string | null> };
+export type EnvironmentInput = { name?: string; variables?: Record<string, string>; secrets?: Record<string, string | null>; runnerLabel?: string };
 
 /** What breaks if an environment is deleted, read before the confirm dialog. */
 export type EnvironmentUsage = {
@@ -1001,6 +1013,13 @@ export type Worker = {
   pid: number;
   /** Only `endpoint` exists today; `repository` is reserved for future workers. */
   mode: WorkerMode;
+  /**
+   * 这台 worker 服务哪些执行分区（P2-8）。
+   *
+   * 与 `mode` 正交：只有分区参与队列路由。推荐一个进程只服务一个分区，多标签只是单机
+   * 开发的便利（那时 `concurrency` 已经按标签数拆分过）。
+   */
+  labels: string[];
   /** Capacity this worker was given, i.e. its max simultaneous requests. */
   concurrency: number;
   /** Requests in flight at its last heartbeat. */
@@ -1013,17 +1032,48 @@ export type Worker = {
 
 export type QueueDepth = { waiting: number; active: number; delayed: number; failed: number };
 
+/**
+ * 一个执行分区标签的注册概况（`/system/runner-labels`）。
+ *
+ * 比执行器面板少得多：没有 hostname/pid/version，所以任何登录用户可读——环境编辑器
+ * 的分区建议与「没有在线执行器」提示需要它，而机器信息仍然只给系统管理员。
+ */
+export type RunnerLabelStatus = { label: string; online: number; total: number };
+
+/**
+ * 一个执行分区的当下状态（P2-8）。
+ *
+ * 标签全集取的是并集（有 worker 的 ∪ 有环境配置的 ∪ `default`），所以一个「配了但没人
+ * 服务」的分区会**显式出现且 online=0**——那正是「为什么这个环境的执行全都报 2004」的
+ * 答案所在的那一行。
+ */
+export type ExecutionPartition = {
+  label: string;
+  /** 服务这个分区的在线台数 / 注册台数。多分区 worker 在每个分区里各算一次。 */
+  online: number;
+  total: number;
+  capacity: number;
+  inflight: number;
+  waiting: number;
+  failed: number;
+};
+
 export type WorkerFleet = {
   workers: Worker[];
   /**
    * Keyed by mode, because each mode has its own queue. Only `endpoint` is
    * populated today — a repository queue does not exist yet, and reporting the
    * endpoint queue against it would be wrong rather than merely empty.
+   *
+   * P2-8 起这条队列按分区分裂，所以这里的数字是**全部分区的合计**；按分区拆开的那份
+   * 在 `partitions` 里。
    */
   queues: Partial<Record<WorkerMode, QueueDepth>>;
   /** Live workers only, summed per mode — modes cannot do each other's work. */
   capacity: Record<WorkerMode, number>;
   inflight: Record<WorkerMode, number>;
+  /** 执行分区轴（P2-8）。与 mode 正交，不是嵌套的两层。 */
+  partitions: ExecutionPartition[];
 };
 
 /**
@@ -1118,6 +1168,21 @@ client.interceptors.request.use((config) => {
 
 function data<T>(response: { data: { data: T } }) { return response.data.data; }
 
+/**
+ * 「这个执行分区没有在线执行器」的判定（P2-8，错误码 2004）。
+ *
+ * 单一实现，六处执行入口共用：分区化之后「队列挂了」与「这个网段没人服务」是两个完全
+ * 不同的处置动作，靠 `detail.includes("queue unavailable")` 那种字符串嗅探分不开——文案
+ * 一改判断就失效，而失效的表现是把「去起一台 worker」错报成「去修 Redis」。
+ *
+ * 返回分区标签（可能是空串，服务端总会带上），不是分区错误则返回 `undefined`。
+ */
+export function noRunnerLabel(error: unknown): string | undefined {
+  const body = (error as { response?: { data?: { code?: number; data?: { label?: string } } } })?.response?.data;
+  if (body?.code !== 2004) return undefined;
+  return body.data?.label ?? "";
+}
+
 function paged<T>(response: { data: { data: T[]; meta?: { page?: number; pageSize?: number; total?: number } } }): Paged<T> {
   const items = response.data.data;
   const meta = response.data.meta ?? {};
@@ -1204,6 +1269,8 @@ export const api = {
   workers: () => client.get("/system/workers").then(data<WorkerFleet>),
   /** 执行预算与上限。任何能编辑流程或套件的人都要读它，所以不限系统管理员。 */
   systemLimits: () => client.get("/system/limits").then(data<PlatformLimits>),
+  /** 分区标签目录：环境编辑器的分区建议与「无在线执行器」提示用。任何登录用户可读。 */
+  runnerLabels: () => client.get("/system/runner-labels").then(data<RunnerLabelStatus[]>),
 
   projects: (filters?: ProjectFilters) => client.get("/projects", { params: projectParams(filters) }).then(data<ProjectMetric[]>),
   project: (id: string) => client.get(`/projects/${id}`).then(data<Project>),
@@ -1216,6 +1283,8 @@ export const api = {
   updateProjectSettings: (projectId: string, input: { defaultEnvironmentId: string | null; storePlaintext: boolean }) => client.put(`/projects/${projectId}/settings`, input).then(data<ProjectSettings>),
   createEnvironment: (projectId: string, input: EnvironmentInput) => client.post(`/projects/${projectId}/environments`, input).then(data<Environment>),
   updateEnvironment: (projectId: string, id: string, input: EnvironmentInput) => client.patch(`/projects/${projectId}/environments/${id}`, input).then(data<Environment>),
+  /* Server-side duplicate: the client never holds secret plaintext, so a client-side copy would lose every secret. */
+  duplicateEnvironment: (projectId: string, id: string, name?: string) => client.post(`/projects/${projectId}/environments/${id}/duplicate`, { name }).then(data<Environment>),
   environmentUsage: (projectId: string, id: string) => client.get(`/projects/${projectId}/environments/${id}/usage`).then(data<EnvironmentUsage>),
   /* force is only sent after the user has seen the references the scan found. */
   deleteEnvironment: (projectId: string, id: string, force = false) =>

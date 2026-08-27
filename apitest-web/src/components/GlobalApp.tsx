@@ -257,10 +257,40 @@ function WorkerFleetPanel() {
       {queue && <Readout label={t("workers.failedJobs")} value={queue.failed} tone={queue.failed ? "fail" : undefined} />}
     </div>
 
+    {/* 执行分区（P2-8）。放在 worker 表格**上方**，且刻意**不是**第二排 segmented：
+        mode segmented 已经占了那个位置，4.5 明确否决过「同页两排下划线 tab」。分区是同一份
+        数据的另一个切片，不是导航层级，所以用一张小表呈现。 */}
+    <h3 className="subhead" style={{ marginTop: "var(--s5)" }}>{t("workers.partitionTitle")}</h3>
+    <p className="form-note">{t("workers.partitionHint")}</p>
+    <table className="grid" style={{ marginBottom: "var(--s5)" }}>
+      <thead><tr>
+        <th>{t("workers.partitionLabel")}</th>
+        <th className="col-num">{t("workers.partitionOnline")}</th>
+        <th className="col-num">{t("workers.capacity")}</th>
+        <th className="col-num">{t("workers.inflight")}</th>
+        <th className="col-num">{t("workers.waiting")}</th>
+        <th className="col-num">{t("workers.failedJobs")}</th>
+      </tr></thead>
+      <tbody>{fleet.partitions.map((partition) => <tr key={partition.label}>
+        <td className="mono">
+          {partition.label}
+          {/* online=0 的那一行是这张表存在的理由：指向它的执行会被直接拒绝（错误码
+              2004），而不是排队等一个永远不来的执行器。 */}
+          {!partition.online && <span className="muted"> · {t("workers.partitionNone")}</span>}
+        </td>
+        <td className="col-num mono">{partition.online}/{partition.total}</td>
+        <td className="col-num mono">{partition.capacity}</td>
+        <td className="col-num mono">{partition.inflight}</td>
+        <td className="col-num mono">{partition.waiting}</td>
+        <td className="col-num mono">{partition.failed}</td>
+      </tr>)}</tbody>
+    </table>
+
     {shown.length
       ? <table className="grid">
           <thead><tr>
             <th>{t("workers.worker")}</th>
+            <th>{t("workers.partitionColumn")}</th>
             <th className="col-num">{t("workers.load")}</th>
             <th className="col-num">{t("workers.uptime")}</th>
             <th>{t("workers.lastSeen")}</th>
@@ -270,6 +300,9 @@ function WorkerFleetPanel() {
               <Status status={worker.online ? "running" : "canceled"} label={worker.online ? t("workers.statusOnline") : t("workers.statusOffline")} />
               <div className="mono muted">{worker.hostname} · pid {worker.pid}{worker.version ? ` · ${worker.version}` : ""}</div>
             </td>
+            {/* 一台 worker 可以服务多个分区（单机开发的便利），所以这里是一组标签而不是
+                一个值——它的容量已经在服务端按标签数拆分过。 */}
+            <td className="mono">{worker.labels.join(", ")}</td>
             {/* 在途/容量 together, because either number alone says nothing
                 about whether this worker is the busy one. */}
             <td className="col-num mono">{worker.inflight}/{worker.concurrency}</td>

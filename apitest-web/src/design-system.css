@@ -1869,12 +1869,12 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .flow-body .history-rail { flex: 0 0 auto; align-self: flex-start; position: static; top: auto; }
 .flow-body .history-card { margin-top: 0; }
 
-/* Environment list: two actions (edit/delete) need a consistent, explicit
-   width. The header already carries .col-actions, but the body cell did not,
-   so the column was sized by content and drifted wider than intended. */
+/* Environment list: three actions (duplicate/edit/delete) need a consistent,
+   explicit width. The header already carries .col-actions, but the body cell
+   did not, so the column was sized by content and drifted wider than intended. */
 .env-grid { table-layout: fixed; }
-/* Two 30px actions plus one 6px gap and the cell's 14px side padding */
-.env-grid .col-actions { width: 94px; }
+/* Three 30px actions plus two 6px gaps and the cell's 14px side padding (same arithmetic as .suite-grid .col-actions) */
+.env-grid .col-actions { width: 130px; }
 
 /* 「现在跑到哪了」这一条：流程画布上方与套件配置页共用一款，两页的运行进度不该长成
    两个样子。 */
@@ -2348,4 +2348,12 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
   .sql-param-row > *:not(.icon-btn) { grid-column: 1; }
   .sql-param-row > .icon-btn { grid-column: 2; grid-row: 1; }
   .definition-row { grid-template-columns: 1fr; gap: 2px; }
+}
+
+/* 执行分区 AutoComplete（环境抽屉）。antd 的输入框不经过 .input 类，分区标签是机器
+   数据（小写字母/数字/连字符，还会进 Redis key），必须 mono——这是外观桥接，行为仍归
+   antd。选项里的标签由组件侧用 .mono 渲染，这里只管输入框本身。 */
+.runner-label-field .ant-select-selection-search-input {
+  font-family: var(--mono);
+  font-size: 12px;
 }

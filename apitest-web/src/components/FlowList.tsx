@@ -3,7 +3,7 @@ import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { CopyPlus, Pencil, Play, Plus, Trash2 } from "lucide-react";
-import { api, type FlowSummary, type FlowUsage } from "../api";
+import { api, noRunnerLabel, type FlowSummary, type FlowUsage } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useProjectStore } from "../stores/projectStore";
@@ -96,8 +96,11 @@ export function FlowList() {
       const queued = await api.executeFlow(projectId, flow.id);
       setFlows((current) => current.map((item) => (item.id === flow.id ? { ...item, lastRun: queued } : item)));
     } catch (error) {
+      /* 2004 = 这个分区没有在线执行器（P2-8 边界 5），与「队列挂了」分开报。 */
+      const label = noRunnerLabel(error);
       const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      message.error(detail?.includes("queue unavailable") ? t("run.queueUnavailable") : t("flows.runFailed"));
+      message.error(label !== undefined ? t("run.noRunner", { label })
+        : detail?.includes("queue unavailable") ? t("run.queueUnavailable") : t("flows.runFailed"));
       setRunning(undefined);
     }
   }

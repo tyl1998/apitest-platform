@@ -3,7 +3,7 @@ import { Drawer, Modal, Select, message } from "antd";
 import Editor from "@monaco-editor/react";
 import { useTranslation } from "react-i18next";
 import { Braces, Crosshair, GitBranch, Play, Plus, Trash2 } from "lucide-react";
-import { api, type Assertion, type AssertionResult, type ConditionFlowNode, type DatabaseFlowNode, type DataSource, type DataSourceType, type Execution, type ExecutionStep, type FlowEdge, type FlowExtract, type FlowExtractResult, type FlowNode, type FlowStepResult, type RequestFlowNode, type Script, type ScriptFlowNode, type SqlDefinition, type TestCaseSummary } from "../api";
+import { api, noRunnerLabel, type Assertion, type AssertionResult, type ConditionFlowNode, type DatabaseFlowNode, type DataSource, type DataSourceType, type Execution, type ExecutionStep, type FlowEdge, type FlowExtract, type FlowExtractResult, type FlowNode, type FlowStepResult, type RequestFlowNode, type Script, type ScriptFlowNode, type SqlDefinition, type TestCaseSummary } from "../api";
 import { defaultOperationText, formatOperation, operationLabelFromText, operationTemplates } from "../operationTemplates";
 import { variableOptions } from "../lib/flowVariables";
 import { useDebounced } from "../hooks/useDebounced";
@@ -263,10 +263,13 @@ function RequestNodeDrawer({ projectId, flowId, node, nodes, edges, variables, e
       }
       setConcurrent(undefined);
       setResult(settled);
-     } catch (error) {
-       const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-       const local = error instanceof Error ? error.message : undefined;
-       message.error(detail?.includes("queue unavailable") ? t("run.queueUnavailable") : detail ?? local ?? t("flows.nodeRunFailed"));
+      } catch (error) {
+        /* 2004 = 这个分区没有在线执行器（P2-8 边界 5）；节点本身没问题。 */
+        const label = noRunnerLabel(error);
+        const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+        const local = error instanceof Error ? error.message : undefined;
+        message.error(label !== undefined ? t("run.noRunner", { label })
+          : detail?.includes("queue unavailable") ? t("run.queueUnavailable") : detail ?? local ?? t("flows.nodeRunFailed"));
     } finally { setRunning(false); }
   }
 

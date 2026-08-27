@@ -3,7 +3,7 @@ import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Pencil, Play, Plus, Trash2 } from "lucide-react";
-import { api, type SuiteSelection, type SuiteSummary } from "../api";
+import { api, noRunnerLabel, type SuiteSelection, type SuiteSummary } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useProjectStore } from "../stores/projectStore";
@@ -88,8 +88,12 @@ export function SuiteList() {
          这一小段——否则一次没能发出终态事件的运行会让按钮永远停在禁用上。 */
       setSuites((current) => current.map((item) => (item.id === suite.id ? { ...item, lastRun: queued } : item)));
     } catch (error) {
+      /* 2004 = 这个分区没有在线执行器（P2-8 边界 5）。「成员跨分区」是 400 并带具体文案，
+         走 detail 分支——那是配置问题，用户要改的是套件而不是去起 worker。 */
+      const label = noRunnerLabel(error);
       const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      message.error(detail?.includes("queue unavailable") ? t("run.queueUnavailable") : detail ?? t("suites.runFailed"));
+      message.error(label !== undefined ? t("run.noRunner", { label })
+        : detail?.includes("queue unavailable") ? t("run.queueUnavailable") : detail ?? t("suites.runFailed"));
     } finally { setRunning(undefined); }
   }
 
