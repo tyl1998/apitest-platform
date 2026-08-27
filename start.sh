@@ -80,8 +80,19 @@ start_one() {
 
 echo "[2/3] 应用进程"
 start_one api    "$SERVER" pnpm dev
-start_one worker "$SERVER" pnpm worker
+start_one worker "$SERVER" env WORKER_LABELS=default pnpm worker
 start_one web    "$WEB" pnpm dev -- --host 0.0.0.0 --port 5173
+
+# 执行分区（P2-8）：上面这个 worker 只服务 default 分区（本机所在网段）。指向别的网段的
+# 环境需要在**那个网段的机器上**另起一个 worker，本脚本不自动拉起 —— 那台机器不在本地：
+#
+#   # 在生产网段的机器上（需能出站到本平台的 Redis 6379 与 Postgres 5432）
+#   cd apitest-server
+#   WORKER_LABELS=prod-dmz pnpm worker
+#
+# 本机想临时同时服务两个分区（仅开发便利，容量会按标签数均分）：
+#
+#   WORKER_LABELS=default,prod-dmz pnpm worker
 
 wait_port() {
   local name="$1" port="$2" log="$3" waited=0
