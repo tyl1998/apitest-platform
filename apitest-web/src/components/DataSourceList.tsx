@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Drawer, Modal, Select, message } from "antd";
+import { Drawer, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router-dom";
 import { Cable, Pencil, Plus, Trash2 } from "lucide-react";
@@ -25,11 +25,16 @@ const DEFAULT_CONFIGS: Record<DataSourceType, DataSourceConfig> = {
   redis: { host: "localhost", port: 6379, database: "0", username: "", ssl: false, sslRejectUnauthorized: true, connectTimeoutMs: 5000, queryTimeoutMs: 30000, maxRows: 1000, maxResultBytes: 1048576 },
 };
 
+const PAGE_SIZES = [20, 50, 100];
+
 export function DataSourceList() {
   const { t } = useTranslation();
   const { projectId } = useParams();
   const navigate = useNavigate();
   const [items, setItems] = useState<DataSource[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<DataSource | "new">();
   const [testing, setTesting] = useState<string>();
@@ -37,12 +42,19 @@ export function DataSourceList() {
   async function load() {
     if (!projectId) return;
     setLoading(true);
-    try { setItems(await api.dataSources(projectId)); }
+    try {
+      /* 列表页走服务端分页；流程节点的选择器仍用全量接口，两者互不影响。 */
+      const result = await api.dataSourcesPaged(projectId, { page, pageSize });
+      /* 删掉本页最后一行后自动退一页，而不是停在一张空表上。 */
+      if (!result.items.length && result.total > 0 && page > 1) { setPage(page - 1); return; }
+      setItems(result.items);
+      setTotal(result.total);
+    }
     catch { message.error(t("dataSources.loadFailed")); }
     finally { setLoading(false); }
   }
 
-  useEffect(() => { void load(); }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); }, [projectId, page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function test(item: DataSource) {
     if (!projectId) return;
@@ -94,6 +106,19 @@ export function DataSourceList() {
         </div></td>
       </tr>)}</tbody>
     </table></div> : <Empty title={t("dataSources.emptyTitle")} hint={t("dataSources.emptyHint")} action={<button className="btn btn-primary" onClick={() => setEditing("new")}>{t("dataSources.create")}</button>} />}
+
+    {items.length > 0 && <div className="pager">
+      <Pagination
+        current={page}
+        pageSize={pageSize}
+        total={total}
+        pageSizeOptions={PAGE_SIZES}
+        showSizeChanger
+        showQuickJumper={total > pageSize * 5}
+        onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }}
+      />
+    </div>}
+
     <DataSourceDrawer projectId={projectId!} source={editing} onClose={() => setEditing(undefined)} onSaved={async (saved) => { setEditing(undefined); await load(); if (editing === "new") navigate(`/projects/${projectId}/data-sources/${saved.id}`); }} />
   </main>;
 }

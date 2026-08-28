@@ -82,7 +82,8 @@ function DashboardPage() {
       <div className="readouts">
         <Readout label={t("dashboard.testCases")} value={data.testCaseCount ?? t("dashboard.notEnabled")} />
         <Readout label={t("dashboard.ciTasks")} value={t("dashboard.notEnabled")} />
-        <Readout label={t("dashboard.schedules")} value={t("dashboard.notEnabled")} />
+        {/* P3-6 起为真值：定时任务数在 dashboard 聚合里由服务端给出。CI 任务仍是 P4.5。 */}
+        <Readout label={t("dashboard.schedules")} value={data.scheduleCount} />
       </div>
       <section className="panel"><div className="panel-head"><strong>{t("dashboard.projectTable")}</strong></div><div className="panel-body"><ProjectMetricsTable projects={data.projects} onEnter={(id) => navigate(`/projects/${id}/endpoints`)} /></div></section>
     </>}

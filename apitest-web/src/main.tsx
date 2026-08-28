@@ -17,6 +17,9 @@ import { EndpointWorkspace } from "./components/EndpointWorkspace";
 import { FlowList } from "./components/FlowList";
 import { FlowWorkspace } from "./components/FlowWorkspace";
 import { SuiteList } from "./components/SuiteList";
+import { Alerts } from "./components/Alerts";
+import { SuiteReports, SuiteReportPage } from "./components/SuiteReports";
+import { Trends } from "./components/Trends";
 import { SuiteWorkspace } from "./components/SuiteWorkspace";
 import { Environments } from "./components/Environments";
 import { ExecutionRecords } from "./components/ExecutionRecords";
@@ -82,6 +85,13 @@ function Root() {
         <Route path="data-sources/:dataSourceId" element={<DataSourceDetail />} />
         <Route path="mocks" element={<MockList />} />
         <Route path="reports" element={<ExecutionRecords />} />
+        {/* P3：报告 / 趋势 / 告警。报告详情是只读派生物，独立路由而不是抽屉——
+            它要能被分享、被收藏（执行记录页的父执行抽屉仍是另一个入口）。
+            定时调度没有独立页：配置入口在套件详情页（P3-11）。 */}
+        <Route path="suite-reports" element={<SuiteReports />} />
+        <Route path="suite-reports/:executionId" element={<SuiteReportPage />} />
+        <Route path="trends" element={<Trends />} />
+        <Route path="alerts" element={<Alerts />} />
       </Route>
 
       <Route path="/" element={<Navigate to="/dashboard" replace />} />

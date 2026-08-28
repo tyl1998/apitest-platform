@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Select } from "antd";
 import { useTranslation } from "react-i18next";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
@@ -9,8 +9,11 @@ import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 import { IconButton } from "./IconButton";
 
-const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "reports"] as const;
+const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "reports", "suite-reports", "trends", "alerts"] as const;
 export type ProjectPage = typeof PAGES[number];
+
+/** What a detail page hands up so the crumb can show its real name. */
+export type DetailCrumbContext = { setDetailTitle: (title?: string) => void };
 
 /**
  * Layout route for everything inside a project.
@@ -40,7 +43,11 @@ export function ProjectShell() {
   const flowOpen = active === "flows" && Boolean(segments[3]);
   const suiteOpen = active === "suites" && Boolean(segments[3]);
   const dataSourceOpen = active === "data-sources" && Boolean(segments[3]);
-  const detailOpen = endpointOpen || flowOpen || suiteOpen || dataSourceOpen;
+  const suiteReportOpen = active === "suite-reports" && Boolean(segments[3]);
+  const detailOpen = endpointOpen || flowOpen || suiteOpen || dataSourceOpen || suiteReportOpen;
+  /* The report detail pushes its real name up through the outlet context so the
+     crumb reads 项目/报告列表/{报告名称} rather than a generic「当前报告」. */
+  const [detailTitle, setDetailTitle] = useState<string>();
 
   useEffect(() => { void refresh(); }, [refresh]);
   /* The URL owns which project is open, never leftover store state. */
@@ -53,10 +60,16 @@ export function ProjectShell() {
 
   const nav: { group: string; items: [ProjectPage, string][] }[] = [
     { group: t("nav.interfaceAssets"), items: [["endpoints", t("nav.endpoints")], ["environments", t("nav.environments")], ["data-sources", t("nav.dataSources")], ["mocks", "Mock"]] },
+    /* 定时调度没有独立页（P3-11）：配置入口在套件详情页的「定时调度」面板。 */
     { group: t("nav.orchestration"), items: [["flows", t("nav.flows")], ["suites", t("nav.suites")]] },
-    { group: t("nav.common"), items: [["reports", t("nav.reports")]] },
+    { group: t("nav.common"), items: [["reports", t("nav.reports")], ["suite-reports", t("nav.suiteReports")], ["trends", t("nav.trends")], ["alerts", t("nav.alerts")]] },
   ];
-  const pageTitle = active === "data-sources" ? t("dataSources.title") : active === "mocks" ? "Mock" : t(`${active}.title`);
+  /* kebab 路由段与 i18n 的 camelCase 键对不上（suite-reports ≠ suiteReports），与
+     data-sources 同款在这里折中。 */
+  const pageTitle = active === "data-sources" ? t("dataSources.title")
+    : active === "suite-reports" ? t("suiteReports.title")
+    : active === "mocks" ? "Mock"
+    : t(`${active}.title`);
 
   return <div className="console">
     <aside className="sidebar">
@@ -98,7 +111,7 @@ export function ProjectShell() {
           {detailOpen ? <>
              <button className="crumb-link" onClick={() => void go(`/projects/${projectId}/${active}`)}>{pageTitle}</button>
              <span className="crumb-sep">/</span>
-             <strong>{flowOpen ? t("flows.current") : suiteOpen ? t("suites.current") : dataSourceOpen ? t("dataSources.current") : t("editor.current")}</strong>
+             <strong className="truncate">{flowOpen ? t("flows.current") : suiteOpen ? t("suites.current") : dataSourceOpen ? t("dataSources.current") : suiteReportOpen ? (detailTitle ?? t("suiteReports.current")) : t("editor.current")}</strong>
            </> : <strong>{pageTitle}</strong>}
         </nav>
         <div className="topbar-actions">
@@ -111,7 +124,7 @@ export function ProjectShell() {
           />
         </div>
       </header>
-      <Outlet />
+        <Outlet context={{ setDetailTitle } satisfies DetailCrumbContext} />
     </div>
   </div>;
 }

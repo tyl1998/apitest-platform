@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Drawer } from "antd";
+import { Drawer, Pagination } from "antd";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { api, type Execution, type ExecutionStep, type FlowExecutionDetail, type SuiteExecutionDetail } from "../api";
@@ -7,6 +7,7 @@ import { toRunStatus } from "../ui";
 import { ExecutionDetail } from "./ExecutionSnapshot";
 import { StepEvidence, flowStepRows } from "./FlowRunDrawer";
 import { RunStatusTag } from "./RunStatusTag";
+import { triggerLabel } from "./SuiteReports";
 
 /**
  * 一次套件运行的成员证据（P2-4.3）。
@@ -19,6 +20,7 @@ import { RunStatusTag } from "./RunStatusTag";
  * 行，只按步骤行渲染的话，一个 10 成员的套件在跑第 3 个时抽屉里只有 3 行，看起来像
  * 「这个套件只有 3 个成员」。快照是那次运行的完整计划，它才是清单。
  */
+/** 成员行的最小形状：报告页从 ExecutionStep 组出同款行，证据渲染只认这几个键。 */
 type MemberRow = {
   key: string;
   /** `case` 或 `flow`：决定展开后拉哪一种证据。 */
@@ -34,6 +36,12 @@ type MemberRow = {
   /** 流程成员那次流程执行的 index id，只有开跑之后才有。 */
   childIndexId?: string;
 };
+
+export type { MemberRow };
+
+/** 成员行就地分页的页大小：成员快照已整份在抽屉里，分页只为了别把 200 个成员
+    一次铺成一条拉不到底的列表（与配置页的成员清单同一个页大小）。 */
+const MEMBER_PAGE_SIZE = 20;
 
 function memberRows(run: SuiteExecutionDetail): MemberRow[] {
   const httpById = new Map(run.runs.map((execution) => [execution.id, execution]));
@@ -88,10 +96,17 @@ export function SuiteRunDrawer({ projectId, run, onClose, onCancel, canceling }:
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState<string>();
+  const [page, setPage] = useState(1);
+  /* 换一次运行回到第一页：新运行的成员清单与旧页码无关。 */
+  useEffect(() => { setPage(1); setExpanded(undefined); }, [run?.id]);
 
   if (!run) return null;
 
   const rows = memberRows(run);
+  /* 删行不会发生（快照固定），但页大小边界上钳一下更稳。 */
+  const pageCount = Math.max(1, Math.ceil(rows.length / MEMBER_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const visibleRows = rows.slice((currentPage - 1) * MEMBER_PAGE_SIZE, currentPage * MEMBER_PAGE_SIZE);
   const busy = run.status === "queued" || run.status === "running";
   const settled = run.successCount + run.failedCount + run.skippedCount;
 
@@ -104,6 +119,18 @@ export function SuiteRunDrawer({ projectId, run, onClose, onCancel, canceling }:
       {run.failedCount > 0 ? ` · ${t("suites.memberFailed", { count: run.failedCount })}` : ""}
       {run.skippedCount > 0 ? ` · ${t("suites.memberSkipped", { count: run.skippedCount })}` : ""}</span>}
   >
+    {/* 报告标识（P3-9，边界 13）：报告名与触发者。运行抽屉是报告的三个入口之一
+        （配置页/报告列表/执行记录页），三处读的是同一份数据，不在这里做第二种拼法。
+        变量覆盖跟在后面——两份跑同一个套件的报告长得一模一样而结论不同时，它是唯一的
+        区分线索。 */}
+    <div className="report-identity">
+      {run.reportName && <span className="mono truncate">{run.reportName}</span>}
+      <span className="muted">{triggerLabel(t, run.triggerSource, run.triggerRefName)}</span>
+      {Object.keys(run.variableOverrides).length > 0 && (
+        <span className="mono muted truncate">{Object.entries(run.variableOverrides).map(([key, value]) => `${key}=${value}`).join(" ")}</span>
+      )}
+    </div>
+
     {/* 还在跑的时候，「跑到第几个了」和「停下来」是同一件事的两半，放在一起。 */}
     {busy && <div className="batch-progress">
       <RunStatusTag status={run.status === "queued" ? "queued" : "running"} />
@@ -113,7 +140,7 @@ export function SuiteRunDrawer({ projectId, run, onClose, onCancel, canceling }:
 
     <div className="batch-items">
       {run.error && <p className="form-note text-fail mono">{run.error}</p>}
-      {rows.map((row) => {
+      {visibleRows.map((row) => {
         const open = expanded === row.key;
         return <div className="batch-row" key={row.key}>
           <button className="batch-item batch-item-button" aria-expanded={open} onClick={() => setExpanded(open ? undefined : row.key)}>
@@ -132,10 +159,18 @@ export function SuiteRunDrawer({ projectId, run, onClose, onCancel, canceling }:
       })}
       {!rows.length && <p className="form-note">{t("suites.runMembersEmpty")}</p>}
     </div>
+
+    {rows.length > MEMBER_PAGE_SIZE && <div className="pager">
+      <Pagination simple current={currentPage} pageSize={MEMBER_PAGE_SIZE} total={rows.length} onChange={setPage} />
+    </div>}
   </Drawer>;
 }
 
-function MemberEvidence({ projectId, row }: { projectId: string; row: MemberRow }) {
+/**
+ * 一个成员的证据（用例快照 / 流程步骤树 / 失败原因），导出给套件报告页复用：
+ * 报告的成员明细与运行抽屉的成员行是同一份数据，展开逻辑不该有第二种实现。
+ */
+export function MemberEvidence({ projectId, row }: { projectId: string; row: MemberRow }) {
   const { t } = useTranslation();
 
   /* 用例成员：一次请求，快照就是全部。 */

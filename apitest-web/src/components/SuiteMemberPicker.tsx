@@ -34,6 +34,8 @@ export function SuiteMemberPicker({ projectId, open, existing, onClose, onAdd }:
   const [caseTotal, setCaseTotal] = useState(0);
   const [casePage, setCasePage] = useState(1);
   const [flows, setFlows] = useState<FlowSummary[]>([]);
+  /* 流程 tab 的页码：接口已整份返回（流程列表本身不分页），这里做的是就地分页。 */
+  const [flowPage, setFlowPage] = useState(1);
   const [loading, setLoading] = useState(false);
   /** 勾选中的成员，带快照：加进套件后要能直接显示名字，不再回查一次。 */
   const [picked, setPicked] = useState<Map<string, SuiteMemberSnapshot>>(new Map());
@@ -49,7 +51,7 @@ export function SuiteMemberPicker({ projectId, open, existing, onClose, onAdd }:
     setTab("case");
   }, [open]);
 
-  useEffect(() => { setCasePage(1); }, [debouncedKeyword, tab]);
+  useEffect(() => { setCasePage(1); setFlowPage(1); }, [debouncedKeyword, tab]);
 
   useEffect(() => {
     if (!open || !projectId) return;
@@ -98,6 +100,10 @@ export function SuiteMemberPicker({ projectId, open, existing, onClose, onAdd }:
   }
 
   const empty = tab === "case" ? !cases.length : !flows.length;
+  /* 流程 tab 就地分页：与用例 tab 同一个页大小，两个 tab 的翻页手感一致。 */
+  const flowPageCount = Math.max(1, Math.ceil(flows.length / PAGE_SIZE));
+  const currentFlowPage = Math.min(flowPage, flowPageCount);
+  const visibleFlows = flows.slice((currentFlowPage - 1) * PAGE_SIZE, currentFlowPage * PAGE_SIZE);
 
   return <Modal
     title={t("suites.pickerTitle")}
@@ -137,7 +143,7 @@ export function SuiteMemberPicker({ projectId, open, existing, onClose, onAdd }:
                   t("suites.assertionCount", { count: item.assertionCount }),
                 ))}
               </Fragment>)
-            : flows.map((flow) => row(
+            : visibleFlows.map((flow) => row(
                 { type: "flow", id: flow.id, name: flow.name, environmentId: flow.environmentId, environmentName: flow.environmentName },
                 t("flows.stepCount", { count: flow.nodeCount }),
               ))}
@@ -147,6 +153,9 @@ export function SuiteMemberPicker({ projectId, open, existing, onClose, onAdd }:
 
     {tab === "case" && caseTotal > PAGE_SIZE && <div className="pager">
       <Pagination current={casePage} pageSize={PAGE_SIZE} total={caseTotal} showSizeChanger={false} onChange={setCasePage} />
+    </div>}
+    {tab === "flow" && flows.length > PAGE_SIZE && <div className="pager">
+      <Pagination current={currentFlowPage} pageSize={PAGE_SIZE} total={flows.length} showSizeChanger={false} onChange={setFlowPage} />
     </div>}
   </Modal>;
 }

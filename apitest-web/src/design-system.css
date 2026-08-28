@@ -476,6 +476,49 @@ body {
 .readout strong[data-tone="pass"] { color: var(--pass); }
 .readout strong[data-tone="fail"] { color: var(--fail); }
 
+/* 手写 SVG 图表（P3-9 趋势页，边界 12：不引入图表库）。图例与轴标签是 HTML——
+   SVG 文本在 viewBox 拉伸下会发虚，线与柱才留在 SVG 里。 */
+.chart { position: relative; min-width: 0; }
+
+.chart-x {
+  position: absolute;
+  bottom: 0;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.chart-y {
+  position: absolute;
+  left: 0;
+  font-size: 10px;
+  line-height: 14px;
+  color: var(--ink-3);
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3) var(--s4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.chart-legend li { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.chart-legend li .mono { margin-left: auto; }
+
+.chart-key {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.chart-key-line { width: 14px; height: 2px; border-radius: 1px; }
+
 /* ── Grid (data table) ─────────────────────────────────────────── */
 
 .grid {
@@ -943,6 +986,7 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
   .sidebar-who { display: none; }
   .split { grid-template-columns: 1fr; gap: var(--s5); }
   .col-path, .col-history { display: none; }
+  .definition-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* 画布 + 运行记录侧栏回到纵向堆叠，侧栏落在画布下方。 */
   .flow-body { flex-direction: column; }
   .flow-body .workbench-side { flex: 0 0 auto; width: 100%; }
@@ -950,6 +994,7 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 
 @media (max-width: 700px) {
   .lockup-name, .chip { display: none; }
+  .definition-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 560px) {
@@ -1104,7 +1149,18 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 
 /* ── Definition summary ────────────────────────────────────────── */
 
-.definition-grid { display: flex; flex-direction: column; gap: var(--s3); margin: 0; }
+/* Key-value summaries lay out as a compact multi-column grid on desktop: a
+   single column of label-above-value pairs stretches the panel vertically and
+   pushes the content below it out of the first screen. Cells collapse to two
+   columns at the sidebar-wrap breakpoint and one on phones. The
+   DataSourceDetail variant keeps its inline label:value rows
+   (`.definition-row`) — they are just grid cells here. */
+.definition-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s4) var(--s6); margin: 0; }
+.definition-grid > div { min-width: 0; }
+.definition-grid dt { font-size: 12px; color: var(--ink-3); }
+/* Browsers indent `dd` by default; without this reset the values in the
+   label-above-value cells sit off-grid. */
+.definition-grid dd { margin: 0; min-width: 0; word-break: break-word; }
 
 .definition-row {
   display: grid;
@@ -1816,6 +1872,49 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .suite-col-selection { width: 220px; }
 .suite-col-result { width: 210px; }
 .suite-grid .col-actions { width: 130px; }
+
+/* 调度列表（P3-9）：cron/下次/上次都是机器数据，等宽 + 固定宽；名称和目标弹性。 */
+.schedule-grid { table-layout: fixed; }
+.schedule-col-cron { width: 110px; }
+.schedule-col-clock { width: 168px; }
+.schedule-grid .col-status { width: 76px; }
+.schedule-grid .col-actions { width: 160px; }
+
+/* cron 预览（P3-9）：下 5 次执行时间是答案本身，等宽字体、逐行可读。 */
+.cron-preview-list {
+  margin: 4px 0 0;
+  padding: 8px 12px;
+  list-style: none;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+/* 报告列表（P3-9）：报告名/触发/时刻都是机器数据，等宽；触发列是「定时『名字』」
+   一句话，固定宽让它不挤压报告名。 */
+.report-grid { table-layout: fixed; }
+.report-col-trigger { width: 190px; }
+.report-col-clock { width: 168px; }
+.report-variables {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+}
+
+/* 运行抽屉顶部的报告标识行（P3-9，边界 13）：报告名、触发者、变量覆盖一行排开，
+   与下方成员证据之间留一条分隔——它是「这次是谁、带什么跑的」，不是成员之一。 */
+.report-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px var(--s3);
+  padding-bottom: var(--s3);
+  margin-bottom: var(--s4);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
 
 /* 运行抽屉里的成员行：名称先于所属接口/环境让位。两者都会截断，但被挤掉的应该是
    补充信息而不是成员本身叫什么。 */

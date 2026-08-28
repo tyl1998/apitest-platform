@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Modal, Select, message } from "antd";
+import { Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { CopyPlus, Pencil, Play, Plus, Trash2 } from "lucide-react";
@@ -18,6 +18,10 @@ import { RunStatusTag } from "./RunStatusTag";
  * list answers two questions: how many steps it has, and how its last run went.
  * Everything else — what those steps are — belongs on the canvas.
  */
+
+/** 与执行记录页同一套分页档位（边界 14）。 */
+const PAGE_SIZES = [20, 50, 100];
+
 export function FlowList() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -28,6 +32,9 @@ export function FlowList() {
   const [keyword, setKeyword] = useState(searchParams.get("keyword") ?? "");
   const debouncedKeyword = useDebounced(keyword);
   const [flows, setFlows] = useState<FlowSummary[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState<string>();
   const [creating, setCreating] = useState(false);
@@ -41,7 +48,14 @@ export function FlowList() {
   async function load() {
     if (!projectId || loadedProjectId !== projectId || projectLoading) return;
     setLoading(true);
-    try { setFlows(await api.flows(projectId, { keyword: debouncedKeyword })); }
+    try {
+      /* 列表页走服务端分页（成员选择器仍用全量 `flows`，两者互不影响）。 */
+      const result = await api.flowsPaged(projectId, { keyword: debouncedKeyword, page, pageSize });
+      /* 删掉本页最后一行后自动退一页，而不是停在一张空表上。 */
+      if (!result.items.length && result.total > 0 && page > 1) { setPage(page - 1); return; }
+      setFlows(result.items);
+      setTotal(result.total);
+    }
     catch { message.error(t("flows.loadFailed")); }
     finally { setLoading(false); }
   }
@@ -49,7 +63,10 @@ export function FlowList() {
   useEffect(() => {
     setSearchParams(debouncedKeyword ? { keyword: debouncedKeyword } : {}, { replace: true });
     void load();
-  }, [projectId, loadedProjectId, projectLoading, debouncedKeyword]);
+  }, [projectId, loadedProjectId, projectLoading, debouncedKeyword, page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* 筛选变化回到第一页：旧页码对新结果集来说多半是越界的（与接口列表同一模式）。 */
+  useEffect(() => { if (page !== 1) setPage(1); }, [debouncedKeyword]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * Live progress for a run started from this list.
@@ -237,6 +254,18 @@ export function FlowList() {
       hint={debouncedKeyword ? t("flows.emptySearchHint") : t("flows.emptyHint")}
       action={debouncedKeyword ? undefined : <button className="btn btn-primary" onClick={() => setCreating(true)}>{t("action.createFlow")}</button>}
     />}
+
+    {flows.length > 0 && <div className="pager">
+      <Pagination
+        current={page}
+        pageSize={pageSize}
+        total={total}
+        pageSizeOptions={PAGE_SIZES}
+        showSizeChanger
+        showQuickJumper={total > pageSize * 5}
+        onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }}
+      />
+    </div>}
 
     <Modal
       title={t("flows.createTitle")}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Drawer, Modal, Select, message } from "antd";
+import { Drawer, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 import { Pencil, Trash2 } from "lucide-react";
@@ -53,6 +53,8 @@ type Draft = { script: Script | "new"; name: string; content: string; kind: Scri
 
 const KINDS: ScriptKind[] = ["response", "hook", "library", "node"];
 
+const PAGE_SIZES = [20, 50, 100];
+
 export function PublicScripts({ create, onCreateHandled }: {
   /** Parent (Environments) owns the page head; it tells us to open the drawer. */
   create?: boolean;
@@ -63,9 +65,17 @@ export function PublicScripts({ create, onCreateHandled }: {
   const mode = useThemeMode();
 
   const [scripts, setScripts] = useState<Script[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [loading, setLoading] = useState(true);
   /** Follower counts per script, so the list can show what an edit would touch. */
   const [refCounts, setRefCounts] = useState<Record<string, number>>({});
+  /**
+   * 依赖库下拉的候选。表格分页后不能再从 `scripts`（当前页）里筛：第 2 页的库
+   * 不出现在下拉里，会让人以为「依赖不了它」。选择器与各编辑器同用全量接口。
+   */
+  const [libraries, setLibraries] = useState<Script[]>([]);
   const [draft, setDraft] = useState<Draft>();
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState<string>();
@@ -84,28 +94,32 @@ export function PublicScripts({ create, onCreateHandled }: {
     if (!projectId) return;
     setLoading(true);
     try {
-      const list = await api.scripts(projectId);
-      setScripts(list);
+      /* 管理页走服务端分页；删掉本页最后一行后自动退一页，而不是停在一张空表上。 */
+      const result = await api.scriptsPaged(projectId, { page, pageSize });
+      if (!result.items.length && result.total > 0 && page > 1) { setPage(page - 1); return; }
+      setScripts(result.items);
+      setTotal(result.total);
       /* Counts are fetched per script because usage is a containment query over
          another table; the list endpoint deliberately does not join it. */
       const counts = await Promise.all(
-        list.map(async (script) => {
+        result.items.map(async (script) => {
           const usage = await api.scriptUsage(projectId, script.id).catch(() => undefined);
           return [script.id, usage?.total ?? 0] as const;
         }),
       );
       setRefCounts(Object.fromEntries(counts));
+      /* 新建/删除可能增减一个 library，候选下拉跟着表格一起刷新。失败不静默清空
+         （P2-2 #2 的教训）：下拉空了会被读成「项目里没有库」。 */
+      setLibraries(await api.scripts(projectId, undefined, "library"));
     } catch {
       message.error(t("scripts.loadRefsFailed"));
     } finally {
       setLoading(false);
     }
-  }, [projectId, t]);
+  }, [projectId, page, pageSize, t]);
 
   useEffect(() => { void load(); }, [load]);
 
-  /* Only libraries can be depended on, so the picker offers exactly those. */
-  const libraries = useMemo(() => scripts.filter((script) => script.kind === "library"), [scripts]);
   const selectedLibraries = useMemo(() => (draft?.dependencies ?? []).map((id) => libraries.find((library) => library.id === id)).filter((item): item is Script => Boolean(item)), [draft?.dependencies, libraries]);
 
   function openCreate() {
@@ -244,6 +258,19 @@ export function PublicScripts({ create, onCreateHandled }: {
           </tr>)}
         </tbody>
       </table> : <Empty title={t("scripts.emptyTitle")} hint={t("scripts.emptyHint")} />}
+
+    {/* 有内容才放分页器：空态下它只是另一个「这里什么都没有」的提示。 */}
+    {scripts.length > 0 && <div className="pager">
+      <Pagination
+        current={page}
+        pageSize={pageSize}
+        total={total}
+        pageSizeOptions={PAGE_SIZES}
+        showSizeChanger
+        showQuickJumper={total > pageSize * 5}
+        onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }}
+      />
+    </div>}
 
     <Drawer
       title={draft ? (draft.script === "new" ? t("scripts.createPublic") : t("scripts.editPublicTitle", { name: draft.script.name ?? "" })) : ""}

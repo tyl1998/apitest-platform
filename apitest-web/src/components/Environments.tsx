@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AutoComplete, Drawer, Modal, Select, message } from "antd";
+import { AutoComplete, Drawer, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams, useSearchParams } from "react-router-dom";
 import { CopyPlus, Eye, EyeOff, Pencil, Trash2 } from "lucide-react";
 import { api, type Environment, type EnvironmentUsage, type RunnerLabelStatus } from "../api";
+import { useDebounced } from "../hooks/useDebounced";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty } from "../ui";
 import { CopyButton } from "./CopyButton";
 import { IconButton } from "./IconButton";
+import { fromPairs, toPairs } from "./KeyValueEditor";
 import { PublicScripts } from "./PublicScripts";
+import { VariableRowsEditor } from "./VariableRowsEditor";
 
 /** Built-in dynamic variable examples (Spec 2.1.2). Displayed as help, not enforced. */
 const BUILTIN_EXAMPLES: [string, string][] = [
@@ -74,6 +77,8 @@ function rowsToInput(rows: VarRow[]) {
   return { variables, secrets };
 }
 
+const PAGE_SIZES = [20, 50, 100];
+
 /* ── Main component ─────────────────────────────────────────────── */
 
 export function Environments() {
@@ -82,6 +87,37 @@ export function Environments() {
   const { environments, defaultEnvironmentId, storePlaintext, reloadEnvironments, updateDefaultEnvironment, updateStorePlaintext } = useProjectStore();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get("tab") === "scripts" ? "scripts" : "envs";
+
+  /**
+   * 管理页自己的分页数据源（服务端分页 + keyword 过滤，与套件列表同款）。
+   * store 里的全量列表继续喂各处选择器与「默认环境」下拉——两份数据一个来源，
+   * 增删改后两边都刷新。
+   */
+  const [keyword, setKeyword] = useState("");
+  const debouncedKeyword = useDebounced(keyword);
+  const [list, setList] = useState<Environment[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!projectId || tab !== "envs") return;
+    setLoading(true);
+    try {
+      const result = await api.environmentList(projectId, { keyword: debouncedKeyword, page, pageSize });
+      setList(result.items);
+      setTotal(result.total);
+    } catch {
+      message.error(t("environments.loadFailed"));
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId, tab, debouncedKeyword, page, pageSize, t]);
+
+  useEffect(() => { void load(); }, [load]);
+  /** 关键字变了从第一页看起：命中项可能在前面的页里。 */
+  const filtered = Boolean(debouncedKeyword.trim());
 
   const [drawerEnv, setDrawerEnv] = useState<Environment | "new">();
   const [saving, setSaving] = useState(false);
@@ -109,6 +145,9 @@ export function Environments() {
   const [name, setName] = useState("");
   const [rows, setRows] = useState<VarRow[]>([emptyRow()]);
   const [nameError, setNameError] = useState<string>();
+  /* 默认请求头（P3-2/6.5 泳道第一层）：与变量分两块编辑。头是「每个请求都加什么」，
+     变量是「{{}} 展开成什么」——混在一起用户会往变量里写 X-Env-Tag 然后奇怪它没生效。 */
+  const [headerPairs, setHeaderPairs] = useState(toPairs({}));
   /* 执行分区（P2-8）。空串在保存时归一成 default，与服务端同一条规则。 */
   const [runnerLabel, setRunnerLabel] = useState("");
   const [runnerLabelError, setRunnerLabelError] = useState<string>();
@@ -146,6 +185,7 @@ export function Environments() {
     setDrawerEnv("new");
     setName("");
     setRows([emptyRow()]);
+    setHeaderPairs(toPairs({}));
     setNameError(undefined);
     setRunnerLabel("");
     setRunnerLabelError(undefined);
@@ -156,6 +196,7 @@ export function Environments() {
     setDrawerEnv(env);
     setName(env.name);
     setRows([...envToRows(env), emptyRow()]);
+    setHeaderPairs(toPairs(env.defaultHeaders));
     setNameError(undefined);
     /* datalist 时代 default 显示为空；现在是下拉里的显式选项，如实显示——「选了
        default 但框是空的」在 AutoComplete 里读起来像没选。保存仍按「空归一成
@@ -215,7 +256,7 @@ export function Environments() {
     setSaving(true);
     try {
       if (drawerEnv === "new") {
-        await api.createEnvironment(projectId, { name: name.trim(), variables, secrets, runnerLabel: label });
+        await api.createEnvironment(projectId, { name: name.trim(), variables, secrets, runnerLabel: label, defaultHeaders: fromPairs(headerPairs) });
         message.success(t("environments.created"));
       } else if (drawerEnv) {
         /* Keys removed from the editor must be explicitly nulled out. */
@@ -230,10 +271,13 @@ export function Environments() {
           variables,
           secrets: { ...removedSecrets, ...secrets },
           runnerLabel: label,
+          /* 默认头整体替换：行由 env.defaultHeaders 初始化，原样不动就是原值；全删
+             就是清空——空对象在后端就是「清除全部默认头」。 */
+          defaultHeaders: fromPairs(headerPairs),
         });
         message.success(t("environments.updated"));
       }
-      await reloadEnvironments();
+      await Promise.all([reloadEnvironments(), load()]);
       closeDrawer();
     } catch (error: unknown) {
       const status = (error as { response?: { status?: number } })?.response?.status;
@@ -286,6 +330,8 @@ export function Environments() {
         onOk: async () => {
           await api.deleteEnvironment(projectId, env.id);
           await reloadEnvironments();
+          /* 删掉的是本页最后一行且不是第一页：先退一页再加载，否则停在一张空页上。 */
+          if (list.length === 1 && page > 1) setPage(page - 1); else await load();
           message.success(t("environments.deleted"));
         },
       });
@@ -306,6 +352,7 @@ export function Environments() {
       onOk: async () => {
         await api.deleteEnvironment(projectId, env.id, true);
         await reloadEnvironments();
+        if (list.length === 1 && page > 1) setPage(page - 1); else await load();
         message.success(t("environments.deleted"));
       },
     });
@@ -320,7 +367,7 @@ export function Environments() {
       /* 名字由客户端带后缀传入（与服务端英文 "copy" 兜底一致）；secret 明文全程不出
          服务端，副本在服务端一次 INSERT…SELECT 里成型。 */
       const copy = await api.duplicateEnvironment(projectId, env.id, `${env.name} ${t("environments.copySuffix")}`);
-      await reloadEnvironments();
+      await Promise.all([reloadEnvironments(), load()]);
       message.success(t("environments.duplicated", { name: copy.name }));
     } catch {
       message.error(t("environments.duplicateFailed"));
@@ -395,7 +442,19 @@ export function Environments() {
     {tab === "scripts"
       ? <PublicScripts create={createScript} onCreateHandled={() => setCreateScript(false)} />
       : <>
-    {environments.length ? <table className="grid env-grid">
+    {/* 搜索在 SQL 里命中全量：列表分页后，按当前页过滤会让人以为某个环境不存在。 */}
+    <div className="filter-bar">
+      <input
+        className="input"
+        value={keyword}
+        onChange={(event) => { setKeyword(event.target.value); setPage(1); }}
+        placeholder={t("environments.searchPlaceholder")}
+        style={{ width: 260 }}
+      />
+      {loading && <span className="muted">{t("filter.searching")}</span>}
+    </div>
+
+    {list.length ? <table className="grid env-grid">
       <thead>
         <tr>
           <th>{t("environments.name")}</th>
@@ -406,7 +465,7 @@ export function Environments() {
         </tr>
       </thead>
       <tbody>
-        {environments.map((env) => <tr key={env.id} data-clickable onClick={() => openEdit(env)}>
+        {list.map((env) => <tr key={env.id} data-clickable onClick={() => openEdit(env)}>
           <td><strong>{env.name}</strong></td>
           {/* default 用 muted 显示而不是留空：空单元格读成「没配置这个字段」，而事实是
               「就在平台所在网段发」，那是一个确定的答案。 */}
@@ -433,7 +492,23 @@ export function Environments() {
           </td>
         </tr>)}
       </tbody>
-    </table> : <Empty title={t("environments.emptyTitle")} hint={t("environments.emptyHint")} />}
+    </table> : !loading && <Empty
+      title={filtered ? t("environments.emptyFiltered") : t("environments.emptyTitle")}
+      hint={filtered ? t("suites.emptyFilteredHint") : t("environments.emptyHint")}
+    />}
+
+    {/* 有内容才放分页器：空态下它只是另一个「这里什么都没有」的提示。 */}
+    {list.length > 0 && <div className="pager">
+      <Pagination
+        current={page}
+        pageSize={pageSize}
+        total={total}
+        pageSizeOptions={PAGE_SIZES}
+        showSizeChanger
+        showQuickJumper={total > pageSize * 5}
+        onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }}
+      />
+    </div>}
 
     <Drawer
       title={drawerEnv === "new" ? t("action.createEnvironment") : t("environments.editTitle")}
@@ -518,6 +593,20 @@ export function Environments() {
             onRemove={rows.length > 1 ? () => removeRow(index) : undefined}
           />
         ))}
+      </div>
+
+      {/* 默认头是独立的第二块（见 state 注释）：值可引用上方变量表里的名字，
+          buildRequest 以最低优先级合并，接口自己写了同名头时以接口为准。
+          行样式与变量覆盖一致（VariableRowsEditor），复制按钮给头名本身。 */}
+      <div style={{ marginTop: 20 }}>
+        <VariableRowsEditor
+          title={t("environments.defaultHeaders")}
+          hint={t("environments.defaultHeadersHint")}
+          pairs={headerPairs}
+          onChange={setHeaderPairs}
+          keyPlaceholder="X-Env-Tag"
+          copyTemplate={false}
+        />
       </div>
 
       <p className="form-note" style={{ marginTop: 12 }}>{t("environments.secretMaskNote")}</p>

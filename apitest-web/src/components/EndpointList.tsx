@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Drawer, Form, Input, Modal, Select, message } from "antd";
+import { Drawer, Form, Input, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Download, CopyPlus, ListChecks, Pencil, Play, Plus, Trash2, X } from "lucide-react";
@@ -15,6 +15,7 @@ import { RunStatusTag } from "./RunStatusTag";
 import { hasUnsupportedShell, parseCurl, parseOpenApi } from "../lib/importers";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+const PAGE_SIZES = [20, 50, 100];
 
 export function EndpointList() {
   const { t } = useTranslation();
@@ -30,6 +31,9 @@ export function EndpointList() {
   const debouncedKeyword = useDebounced(keyword);
 
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [recent, setRecent] = useState<Execution[]>([]);
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState<string>();
@@ -55,25 +59,35 @@ export function EndpointList() {
       previousProjectId.current = projectId;
       setEnvironmentFilter("all");
       setSelected(new Set());
+      /* 换项目回到第一页：新项目的清单与旧页码无关。 */
+      setPage(1);
       /* The result belongs to the project that produced it. */
       setBatchResult(undefined);
       setBatchResultOpen(false);
     }
   }, [projectId]);
 
-  useEffect(() => { setSelected(new Set()); }, [debouncedKeyword, method, environmentFilter]);
+  useEffect(() => {
+    /* 筛选变化回到第一页：旧页码对新结果集来说多半是越界的。 */
+    setPage(1);
+    setSelected(new Set());
+  }, [debouncedKeyword, method, environmentFilter]);
 
   async function load() {
     if (!projectId || loadedProjectId !== projectId || projectLoading) return;
     setLoading(true);
     try {
+      /* 列表页走服务端分页（项目 store 仍拿全量给各处选择器，两者互不影响）。 */
       const [list, runs] = await Promise.all([
-        api.endpoints(projectId, { keyword: debouncedKeyword, method, environmentId: environmentFilter }),
+        api.endpointsPaged(projectId, { keyword: debouncedKeyword, method, environmentId: environmentFilter, page, pageSize }),
         /* Enough recent runs to draw the history strip, not the full archive. */
         api.executions(projectId, { pageSize: 200 }),
       ]);
-      setEndpoints(list);
       setRecent(runs.items);
+      /* 删掉本页最后一行（单删或批删）后自动退一页，而不是停在一张空表上。 */
+      if (!list.items.length && list.total > 0 && page > 1) { setPage(page - 1); return; }
+      setEndpoints(list.items);
+      setTotal(list.total);
     } catch { message.error(t("endpoints.loadFailed")); }
     finally { setLoading(false); }
   }
@@ -81,7 +95,7 @@ export function EndpointList() {
   useEffect(() => {
     setSearchParams({ ...(debouncedKeyword ? { keyword: debouncedKeyword } : {}), ...(method !== "all" ? { method } : {}), ...(environmentFilter !== "all" ? { environmentId: environmentFilter } : {}) }, { replace: true });
     void load();
-  }, [projectId, loadedProjectId, projectLoading, debouncedKeyword, method, environmentFilter]);
+  }, [projectId, loadedProjectId, projectLoading, debouncedKeyword, method, environmentFilter, page, pageSize]);
 
   const runsByEndpoint = useMemo(() => {
     const map = new Map<string, Execution[]>();
@@ -369,6 +383,18 @@ export function EndpointList() {
       hint={filtering ? t("endpoints.emptySearchHint") : t("endpoints.emptyHint")}
       action={filtering ? undefined : <button className="btn btn-primary" onClick={() => navigate(`/projects/${projectId}/endpoints/new`)}>{t("action.createEndpoint")}</button>}
     />}
+
+    {endpoints.length > 0 && <div className="pager">
+      <Pagination
+        current={page}
+        pageSize={pageSize}
+        total={total}
+        pageSizeOptions={PAGE_SIZES}
+        showSizeChanger
+        showQuickJumper={total > pageSize * 5}
+        onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }}
+      />
+    </div>}
 
     <Modal
       title={t("endpoints.batchDebugTitle", { count: selected.size })}

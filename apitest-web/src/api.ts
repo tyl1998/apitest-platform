@@ -15,6 +15,12 @@ export type Environment = {
    * 环境说出来。默认 `default`（平台所在网段）。
    */
   runnerLabel: string;
+  /**
+   * 环境默认头（P3-2，6.5 泳道第一层）：buildRequest 里以最低优先级合并进每一个
+   * 请求。值可引用 `{{变量}}`（如 `{"X-Env-Tag": "{{lane}}"}`），泳道值由触发时的
+   * 变量覆盖决定。
+   */
+  defaultHeaders: Record<string, string>;
 };
 export type ProjectSettings = { defaultEnvironmentId?: string; storePlaintext: boolean };
 
@@ -22,7 +28,7 @@ export type ProjectSettings = { defaultEnvironmentId?: string; storePlaintext: b
  * Secrets are patched, never replaced: `null` removes a key, a string sets it,
  * and an omitted key keeps whatever the server already holds.
  */
-export type EnvironmentInput = { name?: string; variables?: Record<string, string>; secrets?: Record<string, string | null>; runnerLabel?: string };
+export type EnvironmentInput = { name?: string; variables?: Record<string, string>; secrets?: Record<string, string | null>; runnerLabel?: string; defaultHeaders?: Record<string, string> };
 
 /** What breaks if an environment is deleted, read before the confirm dialog. */
 export type EnvironmentUsage = {
@@ -784,6 +790,11 @@ export type ExecutionIndex = {
   targetId?: string;
   targetName: string;
   detailId: string;
+  /** 谁触发的（P3）：manual/scheduled/webhook/ci。报告列表与执行记录共用这一列。 */
+  triggerSource: TriggerSource;
+  triggerRefId?: string;
+  /** 触发者名字快照：调度被删后报告仍说得出「谁让它跑的」（边界 13）。 */
+  triggerRefName?: string;
   status: ExecutionStatus;
   total: number;
   successCount: number;
@@ -794,6 +805,9 @@ export type ExecutionIndex = {
   startedAt?: string;
   finishedAt?: string;
 };
+
+/** 触发源（P3，迁移 030 的 CHECK 值域）。 */
+export type TriggerSource = "manual" | "scheduled" | "webhook" | "ci";
 
 /**
  * A generic step record (P2-0), matching `mapExecutionStep` server-side.
@@ -950,6 +964,10 @@ export type SuiteExecution = {
   skippedCount: number;
   error?: string;
   members: SuiteMemberSnapshot[];
+  /** 报告名 `套件名_YYYYMMDD[_n]`（边界 13）：入队时一次定终身。历史行为空。 */
+  reportName?: string;
+  /** 触发时下发的变量覆盖（6.5 泳道第二层）：报告标识段展示它。 */
+  variableOverrides: Record<string, string>;
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
@@ -963,7 +981,26 @@ export type SuiteExecution = {
  * 内层步骤**不在这里**——它自己是一次完整的父执行，展开时才按 `childIndexId` 去拉，
  * 不然一个装了十条流程的套件详情会把十棵步骤树一起搬过来。
  */
-export type SuiteExecutionDetail = SuiteExecution & { executionSteps: ExecutionStep[]; runs: Execution[] };
+/** 运行抽屉的「谁触发的」一行来自这里（边界 15：与报告列表同一份 index 口径）。 */
+export type SuiteExecutionDetail = SuiteExecution & {
+  triggerSource: TriggerSource;
+  triggerRefId?: string;
+  triggerRefName?: string;
+  executionSteps: ExecutionStep[];
+  runs: Execution[];
+};
+
+/**
+ * 套件级通知设置（P3-11）：终态按开关投递到所选渠道，模版可覆盖默认。
+ * 占位符：{{suiteName}} {{status}} {{passRate}} {{successCount}} {{failedCount}}
+ * {{skippedCount}} {{total}} {{duration}} {{reportName}} {{trigger}} {{finishedAt}}。
+ */
+export type SuiteNotifyConfig = {
+  onSuccess: boolean;
+  onFailure: boolean;
+  channelIds: string[];
+  template?: { title?: string; body?: string };
+};
 
 export type TestSuite = {
   id: string;
@@ -971,6 +1008,7 @@ export type TestSuite = {
   description: string;
   selection: SuiteSelection;
   execution: SuiteExecutionConfig;
+  notify: SuiteNotifyConfig;
   tags: string[];
   createdAt: string;
   updatedAt: string;
@@ -1005,6 +1043,8 @@ export type TestSuiteInput = {
   description?: string;
   selection?: SuiteSelection;
   execution?: Partial<SuiteExecutionConfig>;
+  /** 整块替换（与 selection 同一种 PUT 语义）。 */
+  notify?: SuiteNotifyConfig;
   tags?: string[];
 };
 
@@ -1114,6 +1154,8 @@ export type ProjectMetric = Project & {
   caseCount: number;
   /** Endpoints with at least one case — 覆盖 means "has a case", not "was run". */
   coveredEndpointCount: number;
+  /** 调度数（P3-6）：含停用的——停用不是「不存在」。 */
+  scheduleCount: number;
   /** null means "never run" — distinct from 0%, which means "every run failed". */
   passRate: number | null;
   completionRate: number | null;
@@ -1133,11 +1175,255 @@ export type Dashboard = {
   testCaseCount: number | null;
   /** null means the capability is not built yet; render "未启用", never 0. */
   ciTaskCount: number | null;
-  scheduleCount: number | null;
+  /** Real numbers now that schedules exist (P3-6). */
+  scheduleCount: number;
   projects: ProjectMetric[];
 };
 
 export type Preferences = { theme: "light" | "dark" | "system"; language: "zh-CN" | "en"; restoreLastPage: boolean };
+
+/* ---------------------------------------------------------------------------
+ * P3：定时调度 / Webhook 触发 / 告警 / 报告（计划第六节）。
+ * 页面在 P3-9 落地；这里是它们要用的全部类型与调用。
+ * ------------------------------------------------------------------------- */
+
+/** 一条定时调度（边界 1：目标只有测试套件）。 */
+export type Schedule = {
+  id: string;
+  projectId: string;
+  name: string;
+  targetType: "suite";
+  targetId: string;
+  /** 列表/详情接口 join 出的套件名；套件被删后为空。 */
+  targetName?: string;
+  /** 为空 = 套件自己的环境配置；有值 = 触发时覆盖（边界 4）。 */
+  environmentId?: string;
+  cron: string;
+  /** 用户按墙上时钟写 cron，默认 Asia/Shanghai。 */
+  timezone: string;
+  enabled: boolean;
+  /** 每次触发都带的变量覆盖（6.5 泳道第二层），如 {"lane":"lane-b"}。 */
+  variables: Record<string, string>;
+  /** 禁用为空；调度器认领后快进。界面显示「下次执行」就靠它。 */
+  nextRunAt?: string;
+  lastRunAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ScheduleInput = {
+  name?: string;
+  targetId?: string;
+  cron?: string;
+  timezone?: string;
+  environmentId?: string | null;
+  enabled?: boolean;
+  variables?: Record<string, string>;
+};
+
+/** 一个到期时刻及其结果（边界 2/3）：skipped 是漏跑的证据，failed 是触发失败。 */
+export type ScheduleRun = {
+  id: string;
+  projectId: string;
+  scheduleId: string;
+  /** 到期时刻本身；skipped 行的 triggeredAt 为空。 */
+  plannedAt: string;
+  triggeredAt?: string;
+  status: "triggered" | "skipped" | "failed";
+  /** 触发成功才指向产生的父执行；skipped/failed 没有。 */
+  executionIndexId?: string;
+  error?: string;
+  createdAt: string;
+};
+
+/** cron 预览（`POST /schedules/preview`）：服务端算出的下几次执行时间。 */
+export type SchedulePreview = { cron: string; timezone: string; next: string[] };
+
+/** 外部触发器（边界 6）：公开路由凭 HMAC 准入，密钥只在创建/轮换时回一次。 */
+export type WebhookTrigger = {
+  id: string;
+  projectId: string;
+  name: string;
+  /** 流程仍可被 Webhook 触发（边界 1 末段）：业务事件天然是单链路且要带入参。 */
+  targetType: "flow" | "suite";
+  targetId: string;
+  targetName?: string;
+  environmentId?: string;
+  publicId: string;
+  hasSecret: boolean;
+  enabled: boolean;
+  lastTriggeredAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WebhookTriggerInput = {
+  name?: string;
+  targetType?: "flow" | "suite";
+  targetId?: string;
+  environmentId?: string | null;
+  enabled?: boolean;
+};
+
+/** 四种「POST 一段 JSON 到一个 URL」渠道（边界 8：Email 不做）。 */
+export type NotificationChannelType = "webhook" | "wecom" | "dingtalk" | "slack";
+
+export type NotificationChannel = {
+  id: string;
+  projectId: string;
+  name: string;
+  type: NotificationChannelType;
+  url: string;
+  /** 加签密钥是否已配置；明文永不回显。 */
+  secretConfigured: boolean;
+  /** 可选前缀文案，不是模板语言。 */
+  templatePrefix?: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type NotificationChannelInput = {
+  name?: string;
+  type?: NotificationChannelType;
+  url?: string;
+  /** 三态：null 清除、字符串设置、缺省不动（PUT）。 */
+  secret?: string | null;
+  templatePrefix?: string | null;
+  enabled?: boolean;
+};
+
+export type AlertMetric = "execution_failed" | "consecutive_failures" | "success_rate" | "avg_duration";
+export type AlertComparator = "gt" | "gte" | "lt" | "lte";
+
+export type AlertRule = {
+  id: string;
+  projectId: string;
+  name: string;
+  metric: AlertMetric;
+  comparator: AlertComparator;
+  /** 量纲按指标：success_rate 百分比、avg_duration 毫秒、连败次数。 */
+  threshold: number;
+  /** 事件型指标（execution_failed）为空。 */
+  windowMinutes?: number;
+  cooldownSeconds: number;
+  channelIds: string[];
+  enabled: boolean;
+  lastFiredAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AlertRuleInput = {
+  name?: string;
+  metric?: AlertMetric;
+  comparator?: AlertComparator;
+  threshold?: number;
+  windowMinutes?: number | null;
+  cooldownSeconds?: number;
+  channelIds?: string[];
+  enabled?: boolean;
+};
+
+/** 一次投递的证据（边界 10）。 */
+export type NotificationDelivery = {
+  id: string;
+  projectId: string;
+  channelId?: string;
+  ruleId?: string;
+  executionIndexId?: string;
+  status: "sent" | "failed";
+  statusCode?: number;
+  error?: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+};
+
+/** 列表接口 join 出的名字（渠道/规则被删后为 null，行本身仍是证据）。 */
+export type NotificationDeliveryRow = NotificationDelivery & { channelName: string | null; ruleName: string | null };
+
+/** 报告列表行（边界 13/14）：派生值（耗时/排队/通过率）由服务端算好。 */
+export type SuiteReportSummary = {
+  id: string;
+  executionIndexId?: string;
+  reportName: string | null;
+  suiteName: string;
+  environmentName: string | null;
+  runnerLabel: string;
+  triggerSource: TriggerSource;
+  triggerRefId: string | null;
+  triggerRefName: string | null;
+  variableOverrides: Record<string, string>;
+  status: ExecutionStatus;
+  total: number;
+  successCount: number;
+  failedCount: number;
+  skippedCount: number;
+  passRate: number | null;
+  durationMs: number | null;
+  queueMs: number | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+};
+
+/** 一份报告（6.4 的四段）：标识 / 触发 / 结论 / 成员明细（不分页）。 */
+export type SuiteReport = {
+  id: string;
+  executionIndexId: string;
+  reportName: string | null;
+  suiteName: string;
+  environmentName: string | null;
+  runnerLabel: string;
+  triggerSource: TriggerSource;
+  triggerRefId: string | null;
+  triggerRefName: string | null;
+  variableOverrides: Record<string, string>;
+  status: ExecutionStatus;
+  error: string | null;
+  total: number;
+  successCount: number;
+  failedCount: number;
+  skippedCount: number;
+  passRate: number | null;
+  durationMs: number | null;
+  queueMs: number | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  members: ExecutionStep[];
+};
+
+/** 趋势桶（边界 11）：空桶由服务端 generate_series 补齐，total=0 就是「没执行」。 */
+export type TrendBucket = {
+  bucket: string;
+  total: number;
+  successCount: number;
+  failedCount: number;
+  passRate: number | null;
+  p50: number | null;
+  p90: number | null;
+  p99: number | null;
+};
+
+export type TrendReport = { range: "24h" | "7d" | "30d"; buckets: TrendBucket[] };
+
+export type ReportRange = "24h" | "7d" | "30d";
+
+/** 汇总：总量 + 失败分布（按接口 Top20 / 按错误类型）。 */
+export type ReportSummary = {
+  range: ReportRange;
+  total: number;
+  successCount: number;
+  failedCount: number;
+  canceledCount: number;
+  passRate: number | null;
+  avgDurationMs: number | null;
+  failures: {
+    byEndpoint: { endpoint: string; failed: number }[];
+    byType: { assertion: number; script: number; timeout: number; request: number };
+  };
+};
 
 /**
  * 平台的执行预算与保护性上限（P2-4.2）。
@@ -1287,6 +1573,12 @@ export const api = {
   deleteProject: (id: string) => client.delete(`/projects/${id}`).then(data<{ id: string; deleted: boolean }>),
 
   environments: (projectId: string) => client.get(`/projects/${projectId}/environments`).then(data<Environment[]>),
+  /**
+   * 管理页的分页读法：keyword 过滤在 SQL 里，total 是全量命中数。选择器仍走
+   * `environments`（全量）——下拉里缺一个真实存在的环境比多列几个更糟。
+   */
+  environmentList: (projectId: string, filters?: { keyword?: string; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/environments`, { params: { keyword: filters?.keyword?.trim() || undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<Environment>),
   projectSettings: (projectId: string) => client.get(`/projects/${projectId}/settings`).then(data<ProjectSettings>),
   updateProjectSettings: (projectId: string, input: { defaultEnvironmentId: string | null; storePlaintext: boolean }) => client.put(`/projects/${projectId}/settings`, input).then(data<ProjectSettings>),
   createEnvironment: (projectId: string, input: EnvironmentInput) => client.post(`/projects/${projectId}/environments`, input).then(data<Environment>),
@@ -1299,6 +1591,12 @@ export const api = {
     client.delete(`/projects/${projectId}/environments/${id}`, { params: force ? { force: "true" } : undefined }).then(data<{ id: string }>),
 
   dataSources: (projectId: string) => client.get(`/projects/${projectId}/data-sources`).then(data<DataSource[]>),
+  /**
+   * 数据源列表的服务端分页读法（管理页用）。`dataSources` 仍返回全量：流程节点
+   * 选择器要的是完整清单，分页只属于列表页本身。
+   */
+  dataSourcesPaged: (projectId: string, filters?: { page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/data-sources`, { params: { page: filters?.page, pageSize: filters?.pageSize } }).then(paged<DataSource>),
   dataSource: (projectId: string, dataSourceId: string) => client.get(`/projects/${projectId}/data-sources/${dataSourceId}`).then(data<DataSource>),
   createDataSource: (projectId: string, input: DataSourceInput) => client.post(`/projects/${projectId}/data-sources`, input).then(data<DataSource>),
   updateDataSource: (projectId: string, dataSourceId: string, input: Partial<DataSourceInput>) => client.put(`/projects/${projectId}/data-sources/${dataSourceId}`, input).then(data<DataSource>),
@@ -1314,12 +1612,28 @@ export const api = {
   testSqlDefinition: (projectId: string, sqlId: string, values: Record<string, unknown>) => client.post(`/projects/${projectId}/sql-definitions/${sqlId}/test`, { values }).then(data<SqlExecutionResult>),
 
   mocks: (projectId: string) => client.get(`/projects/${projectId}/mocks`).then(data<Mock[]>),
+  /** Mock 列表的服务端分页读法（管理页用）；全量读法留给未来需要完整清单的调用方。 */
+  mocksPaged: (projectId: string, filters?: { page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/mocks`, { params: { page: filters?.page, pageSize: filters?.pageSize } }).then(paged<Mock>),
   createMock: (projectId: string, input: MockInput) => client.post(`/projects/${projectId}/mocks`, input).then(data<Mock>),
   updateMock: (projectId: string, mockId: string, input: Partial<MockInput>) => client.put(`/projects/${projectId}/mocks/${mockId}`, input).then(data<Mock>),
   deleteMock: (projectId: string, mockId: string) => client.delete(`/projects/${projectId}/mocks/${mockId}`).then(data<{ id: string }>),
   mockLogs: (projectId: string, mockId: string) => client.get(`/projects/${projectId}/mocks/${mockId}/logs`).then((response) => response.data.data as MockRequestLog[]),
 
   endpoints: (projectId: string, filters?: EndpointFilters) => client.get(`/projects/${projectId}/endpoints`, { params: { keyword: filters?.keyword?.trim() || undefined, method: filters?.method && filters.method !== "all" ? filters.method : undefined, environmentId: filters?.environmentId && filters.environmentId !== "all" ? filters.environmentId : undefined } }).then(data<Endpoint[]>),
+  /**
+   * 接口列表的服务端分页读法（管理页用）。`endpoints` 仍返回全量：项目 store、
+   * 流程节点选择器、mock 快照来源都需要完整清单，分页只属于列表页本身。
+   */
+  endpointsPaged: (projectId: string, filters?: EndpointFilters & { page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/endpoints`, {
+      params: {
+        keyword: filters?.keyword?.trim() || undefined,
+        method: filters?.method && filters.method !== "all" ? filters.method : undefined,
+        environmentId: filters?.environmentId && filters.environmentId !== "all" ? filters.environmentId : undefined,
+        page: filters?.page, pageSize: filters?.pageSize,
+      },
+    }).then(paged<Endpoint>),
   endpoint: (projectId: string, endpointId: string) => client.get(`/projects/${projectId}/endpoints/${endpointId}`).then(data<Endpoint>),
   createEndpoint: (projectId: string, endpoint: EndpointInput) => client.post(`/projects/${projectId}/endpoints`, endpoint).then(data<Endpoint>),
   updateEndpoint: (projectId: string, id: string, endpoint: Partial<EndpointInput>) => client.patch(`/projects/${projectId}/endpoints/${id}`, endpoint).then(data<Endpoint>),
@@ -1345,11 +1659,12 @@ export const api = {
   cancelBatch: (projectId: string, batchId: string) => client.post(`/projects/${projectId}/batch-executions/${batchId}/cancel`).then(data<BatchDebugSummary & { canceled: number }>),
   executions: (projectId: string, filters?: ExecutionFilters) => client.get(`/projects/${projectId}/executions`, { params: executionParams(filters) }).then(paged<Execution>),
   /** Project-wide parent executions, filtered by kind — flows are a category here (5.0.9). */
-  executionIndex: (projectId: string, filters?: { kind?: ExecutionIndex["kind"] | "all"; status?: string; keyword?: string; page?: number; pageSize?: number }) =>
+  executionIndex: (projectId: string, filters?: { kind?: ExecutionIndex["kind"] | "all"; status?: string; triggerSource?: TriggerSource | "all"; keyword?: string; page?: number; pageSize?: number }) =>
     client.get(`/projects/${projectId}/execution-index`, {
       params: {
         kind: filters?.kind === "all" ? undefined : filters?.kind,
         status: filters?.status === "all" ? undefined : filters?.status,
+        triggerSource: filters?.triggerSource === "all" || !filters?.triggerSource ? undefined : filters.triggerSource,
         keyword: filters?.keyword?.trim() || undefined,
         page: filters?.page, pageSize: filters?.pageSize,
       },
@@ -1434,6 +1749,11 @@ export const api = {
     client
       .get(`/projects/${projectId}/scripts`, { params: { keyword: keyword?.trim() || undefined, kind } })
       .then(data<Script[]>),
+  /** 公共脚本列表的服务端分页读法（管理页用）；各处脚本选择器仍用全量 `scripts`。 */
+  scriptsPaged: (projectId: string, filters?: { keyword?: string; page?: number; pageSize?: number }) =>
+    client
+      .get(`/projects/${projectId}/scripts`, { params: { keyword: filters?.keyword?.trim() || undefined, page: filters?.page, pageSize: filters?.pageSize } })
+      .then(paged<Script>),
   scriptContract: (projectId: string) => client.get(`/projects/${projectId}/scripts/contract`).then(data<ScriptContract>),
   script: (projectId: string, scriptId: string) => client.get(`/projects/${projectId}/scripts/${scriptId}`).then(data<Script>),
   /** Followers of a public script, so a confirm dialog can state the blast radius. */
@@ -1461,6 +1781,9 @@ export const api = {
   /** 流程编排 (P1-2). The list omits node bodies and carries a count instead. */
   flows: (projectId: string, filters?: { keyword?: string; tag?: string }) =>
     client.get(`/projects/${projectId}/flows`, { params: { keyword: filters?.keyword?.trim() || undefined, tag: filters?.tag || undefined } }).then(data<FlowSummary[]>),
+  /** 流程列表的服务端分页读法（列表页用）；成员选择器等仍用全量 `flows`。 */
+  flowsPaged: (projectId: string, filters?: { keyword?: string; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/flows`, { params: { keyword: filters?.keyword?.trim() || undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<FlowSummary>),
   flow: (projectId: string, flowId: string) => client.get(`/projects/${projectId}/flows/${flowId}`).then(data<Flow>),
   createFlow: (projectId: string, input: FlowInput) => client.post(`/projects/${projectId}/flows`, input).then(data<Flow>),
   updateFlow: (projectId: string, flowId: string, input: FlowInput) => client.put(`/projects/${projectId}/flows/${flowId}`, input).then(data<Flow>),
@@ -1519,8 +1842,9 @@ export const api = {
     client.get(`/projects/${projectId}/flows/node-source`, { params: source }).then(data<FlowNodeSource>),
 
   /* 测试套件 (P2-4)。 */
-  testSuites: (projectId: string, filters?: { keyword?: string; tag?: string }) =>
-    client.get(`/projects/${projectId}/test-suites`, { params: { keyword: filters?.keyword?.trim() || undefined, tag: filters?.tag || undefined } }).then(data<SuiteSummary[]>),
+  /* 测试套件 (P2-4)。P3-7 起服务端分页（边界 14）：keyword/tag 命中全量而不止当前页。 */
+  testSuites: (projectId: string, filters?: { keyword?: string; tag?: string; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/test-suites`, { params: { keyword: filters?.keyword?.trim() || undefined, tag: filters?.tag || undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<SuiteSummary>),
   testSuite: (projectId: string, suiteId: string) => client.get(`/projects/${projectId}/test-suites/${suiteId}`).then(data<TestSuite>),
   createTestSuite: (projectId: string, input: TestSuiteInput) => client.post(`/projects/${projectId}/test-suites`, input).then(data<TestSuite>),
   updateTestSuite: (projectId: string, suiteId: string, input: TestSuiteInput) => client.put(`/projects/${projectId}/test-suites/${suiteId}`, input).then(data<TestSuite>),
@@ -1544,8 +1868,12 @@ export const api = {
    * 覆盖**：随手指定一批成员是「批量执行」，不是「运行这个套件」。所以选择方式改了就
    * 必须先保存，界面负责说清这一点。
    */
-  executeSuite: (projectId: string, suiteId: string, execution?: Partial<SuiteExecutionConfig>) =>
-    client.post(`/projects/${projectId}/test-suites/${suiteId}/execute`, execution ? { execution } : {}).then(data<SuiteExecution>),
+  /**
+   * `variables` 是触发时的变量覆盖（P3-2，6.5 泳道第二层）：冻进 run_spec、下发给每个
+   * 成员、压过环境变量。键约束 ^[A-Za-z_][A-Za-z0-9_]*$，值只能是字符串；不要放密钥。
+   */
+  executeSuite: (projectId: string, suiteId: string, execution?: Partial<SuiteExecutionConfig>, variables?: Record<string, string>) =>
+    client.post(`/projects/${projectId}/test-suites/${suiteId}/execute`, { execution, variables }).then(data<SuiteExecution>),
   suiteExecutions: (projectId: string, suiteId: string, filters?: ExecutionFilters) =>
     client.get(`/projects/${projectId}/test-suites/${suiteId}/executions`, { params: executionParams(filters) }).then(paged<SuiteExecution>),
   /** 一次运行 + 每个成员一行证据。流程成员的内层步骤另行按需拉取。 */
@@ -1564,4 +1892,80 @@ export const api = {
    */
   executionStepChildren: (projectId: string, stepId: string) =>
     client.get(`/projects/${projectId}/execution-steps/${stepId}/children`).then(data<{ steps: ExecutionStep[]; executions: Execution[] }>),
+
+  /* ---------------- P3：调度 / Webhook 触发 / 告警 / 报告（计划 6.2） ---------------- */
+
+  /**
+   * 调度。`scheduler.overdue`（超宽限期未认领的启用调度数）是调度器活性提示——不建
+   * 心跳表，用事实回答（P3-4）；>0 才在界面提示「调度器可能没在运行」。
+   */
+  schedules: (projectId: string, filters?: { keyword?: string; enabled?: boolean; targetId?: string; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/schedules`, { params: { keyword: filters?.keyword?.trim() || undefined, enabled: filters?.enabled === undefined ? undefined : filters.enabled, targetId: filters?.targetId || undefined, page: filters?.page, pageSize: filters?.pageSize } }).then((response) => {
+      const result = paged<Schedule>(response);
+      const scheduler = (response.data.meta as { scheduler?: { overdue?: number } } | undefined)?.scheduler;
+      return { ...result, scheduler: { overdue: scheduler?.overdue ?? 0 } };
+    }),
+  schedule: (projectId: string, scheduleId: string) => client.get(`/projects/${projectId}/schedules/${scheduleId}`).then(data<Schedule>),
+  createSchedule: (projectId: string, input: ScheduleInput) => client.post(`/projects/${projectId}/schedules`, input).then(data<Schedule>),
+  updateSchedule: (projectId: string, scheduleId: string, input: ScheduleInput) => client.put(`/projects/${projectId}/schedules/${scheduleId}`, input).then(data<Schedule>),
+  deleteSchedule: (projectId: string, scheduleId: string) => client.delete(`/projects/${projectId}/schedules/${scheduleId}`).then(data<{ id: string }>),
+  /** cron 校验 + 下 5 次执行时间。与调度器认领同一个解析，预览说几点跑就几点跑。 */
+  schedulePreview: (projectId: string, cron: string, timezone?: string) =>
+    client.post(`/projects/${projectId}/schedules/preview`, { cron, timezone }).then(data<SchedulePreview>),
+  /** 触发历史（含漏跑 skipped / 触发失败 failed——那两种没有执行，边界 15）。 */
+  scheduleRuns: (projectId: string, scheduleId: string, filters?: { status?: string; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/schedules/${scheduleId}/runs`, { params: { status: filters?.status && filters.status !== "all" ? filters.status : undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<ScheduleRun>),
+  /** 立即跑一次：用调度的配置现在触发，trigger_source=manual（不写 schedule_runs）。 */
+  runScheduleNow: (projectId: string, scheduleId: string) =>
+    client.post(`/projects/${projectId}/schedules/${scheduleId}/run`).then(data<SuiteExecution>),
+
+  /** Webhook 触发器。创建/轮换的响应额外带一次性 `secret`（此处类型上收窄掉了）。 */
+  webhookTriggers: (projectId: string) => client.get(`/projects/${projectId}/webhook-triggers`).then(data<WebhookTrigger[]>),
+  createWebhookTrigger: (projectId: string, input: WebhookTriggerInput) =>
+    client.post(`/projects/${projectId}/webhook-triggers`, input).then(data<WebhookTrigger & { secret: string }>),
+  updateWebhookTrigger: (projectId: string, triggerId: string, input: WebhookTriggerInput) =>
+    client.put(`/projects/${projectId}/webhook-triggers/${triggerId}`, input).then(data<WebhookTrigger>),
+  deleteWebhookTrigger: (projectId: string, triggerId: string) =>
+    client.delete(`/projects/${projectId}/webhook-triggers/${triggerId}`).then(data<{ id: string }>),
+  rotateWebhookSecret: (projectId: string, triggerId: string) =>
+    client.post(`/projects/${projectId}/webhook-triggers/${triggerId}/rotate-secret`).then(data<{ id: string; secret: string }>),
+
+  notificationChannels: (projectId: string) => client.get(`/projects/${projectId}/notification-channels`).then(data<NotificationChannel[]>),
+  createNotificationChannel: (projectId: string, input: NotificationChannelInput) =>
+    client.post(`/projects/${projectId}/notification-channels`, input).then(data<NotificationChannel>),
+  updateNotificationChannel: (projectId: string, channelId: string, input: NotificationChannelInput) =>
+    client.put(`/projects/${projectId}/notification-channels/${channelId}`, input).then(data<NotificationChannel>),
+  /**
+   * 删除被规则引用的渠道返回 409，`data.rules` 是引用清单；force 后服务端顺带把规则
+   * 里的悬空 id 摘掉。错误处理见 Environments 的同款 usage 流程。
+   */
+  deleteNotificationChannel: (projectId: string, channelId: string, force?: boolean) =>
+    client.delete(`/projects/${projectId}/notification-channels/${channelId}`, { params: force ? { force: "true" } : undefined }).then(data<{ id: string }>),
+  /** 测试投递：同步等结果，「测试」的意义就是现在告诉你通不通。 */
+  testNotificationChannel: (projectId: string, channelId: string) =>
+    client.post(`/projects/${projectId}/notification-channels/${channelId}/test`).then(data<{ sent: number; failed: number }>),
+
+  alertRules: (projectId: string) => client.get(`/projects/${projectId}/alert-rules`).then(data<AlertRule[]>),
+  createAlertRule: (projectId: string, input: AlertRuleInput) =>
+    client.post(`/projects/${projectId}/alert-rules`, input).then(data<AlertRule>),
+  updateAlertRule: (projectId: string, ruleId: string, input: AlertRuleInput) =>
+    client.put(`/projects/${projectId}/alert-rules/${ruleId}`, input).then(data<AlertRule>),
+  deleteAlertRule: (projectId: string, ruleId: string) =>
+    client.delete(`/projects/${projectId}/alert-rules/${ruleId}`).then(data<{ id: string }>),
+
+  notificationDeliveries: (projectId: string, filters?: { ruleId?: string; channelId?: string; executionIndexId?: string; status?: string; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/notification-deliveries`, { params: { ruleId: filters?.ruleId, channelId: filters?.channelId, executionIndexId: filters?.executionIndexId, status: filters?.status && filters.status !== "all" ? filters.status : undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<NotificationDeliveryRow>),
+
+  /** 报告列表（边界 14 分页 + 触发源/状态筛选）。 */
+  suiteReports: (projectId: string, filters?: { keyword?: string; triggerSource?: string; status?: string; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/suite-reports`, { params: { keyword: filters?.keyword?.trim() || undefined, triggerSource: filters?.triggerSource && filters.triggerSource !== "all" ? filters.triggerSource : undefined, status: filters?.status && filters.status !== "all" ? filters.status : undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<SuiteReportSummary>),
+  /** 一份报告：标识 / 触发 / 结论 / 成员明细（不分页）。 */
+  suiteReport: (projectId: string, executionId: string) =>
+    client.get(`/projects/${projectId}/suite-reports/${executionId}`).then(data<SuiteReport>),
+  /** 趋势（边界 11）：空桶由服务端补齐，分位数 percentile_cont 在 SQL 里算。 */
+  trendReport: (projectId: string, range: ReportRange) =>
+    client.get(`/projects/${projectId}/reports/trend`, { params: { range } }).then(data<TrendReport>),
+  /** 汇总：总量 + 失败分布（按接口 Top20 / 按错误类型）。 */
+  reportSummary: (projectId: string, range: ReportRange) =>
+    client.get(`/projects/${projectId}/reports/summary`, { params: { range } }).then(data<ReportSummary>),
 };

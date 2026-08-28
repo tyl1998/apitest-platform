@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Modal, Select, message } from "antd";
+import { Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams, useSearchParams } from "react-router-dom";
 import { Play, Plus, Square, Trash2 } from "lucide-react";
 import {
   api,
   noRunnerLabel,
+  type NotificationChannel,
   type Paged,
   type SuiteExecution,
   type SuiteExecutionConfig,
   type SuiteExecutionDetail,
   type SuiteMemberSnapshot,
+  type SuiteNotifyConfig,
   type SuitePreview,
   type SuiteSelection,
   type TestSuite,
@@ -27,6 +29,8 @@ import { RunStatusTag } from "./RunStatusTag";
 import { SIDEBAR_PAGE_SIZES, SidebarPager } from "./SidebarPager";
 import { SuiteMemberPicker } from "./SuiteMemberPicker";
 import { SuiteRunDrawer } from "./SuiteRunDrawer";
+import { SuiteRunModal } from "./SuiteRunModal";
+import { SuiteSchedules } from "./SuiteSchedules";
 
 /**
  * 套件配置页 (P2-4)。
@@ -50,12 +54,20 @@ import { SuiteRunDrawer } from "./SuiteRunDrawer";
  */
 type DraftMember = SuiteMemberSnapshot;
 
+/** 成员清单（手动列表 / 解析预览）就地分页的页大小：数据已整份在手，只是展示分页。 */
+const MEMBER_PAGE_SIZE = 20;
+
+/** 平台对应的保存快捷键文案，与流程工作台同一份判断。 */
+const SAVE_KEY = navigator.platform.toLowerCase().includes("mac") ? "⌘S" : "Ctrl+S";
+
 type Draft = {
   name: string;
   description: string;
   tags: string[];
   selection: SuiteSelection;
   execution: SuiteExecutionConfig;
+  /** 套件级通知设置（P3-11）：随整份草稿保存，脏检测与其它字段同一口径。 */
+  notify: SuiteNotifyConfig;
   /** manual 选择时的成员快照，与 selection.members 严格一一对应、同序。 */
   members: DraftMember[];
 };
@@ -76,6 +88,18 @@ function canonical(value: unknown): unknown {
       .map(([key, item]) => [key, canonical(item)]));
   }
   return typeof value === "string" ? value.trim() : value;
+}
+
+/**
+ * 模版输入的合并器：两个输入框都清空时把 template 整个置空（undefined），否则
+ * 「填过再删掉」会留下 `{title:"", body:""}`——它与「从没填过」渲染结果相同，
+ * 脏检测却会一直亮着。
+ */
+function templateOf(notify: SuiteNotifyConfig, next: { title?: string; body?: string }): SuiteNotifyConfig["template"] {
+  const title = next.title ?? notify.template?.title ?? "";
+  const body = next.body ?? notify.template?.body ?? "";
+  if (!title.trim() && !body.trim()) return undefined;
+  return { ...(title ? { title } : {}), ...(body ? { body } : {}) };
 }
 
 export function SuiteWorkspace() {
@@ -100,15 +124,22 @@ export function SuiteWorkspace() {
   const [staleDropped, setStaleDropped] = useState(0);
   const [preview, setPreview] = useState<SuitePreview>();
   const [previewing, setPreviewing] = useState(false);
+  /* 成员清单的分页（数据已整份在手）：预览与手动列表各自记一页。 */
+  const [previewPage, setPreviewPage] = useState(1);
+  const [memberPage, setMemberPage] = useState(1);
   /** 项目里已用过的标签，给两处标签框做建议。服务端 DISTINCT，不从分页数据里凑。 */
   const [memberTags, setMemberTags] = useState<string[]>([]);
   const [suiteTags, setSuiteTags] = useState<string[]>([]);
+  /** 通知渠道（P3-11）：通知设置面板的选项；加载失败按空处理，面板提示先建渠道。 */
+  const [channels, setChannels] = useState<NotificationChannel[]>([]);
 
   /* 运行：一次执行 + 它的成员证据，加上这个套件的运行记录侧栏。 */
   const [starting, setStarting] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [run, setRun] = useState<SuiteExecutionDetail>();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  /* 运行确认弹窗（变量覆盖在弹窗组件里持有）。 */
+  const [runOpen, setRunOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(localStorage.getItem("apitest.suiteHistoryOpen") !== "false");
   const [runs, setRuns] = useState<Paged<SuiteExecution>>({ items: [], page: 1, pageSize: SIDEBAR_PAGE_SIZES[1], total: 0 });
   const [historyStatus, setHistoryStatus] = useState("all");
@@ -118,6 +149,8 @@ export function SuiteWorkspace() {
   useEffect(() => {
     if (!projectId) return;
     void api.projectTags(projectId, "members").then(setMemberTags).catch(() => setMemberTags([]));
+    void api.projectTags(projectId, "suites").then(setSuiteTags).catch(() => setSuiteTags([]));
+    void api.notificationChannels(projectId).then(setChannels).catch(() => setChannels([]));
     void api.projectTags(projectId, "suites").then(setSuiteTags).catch(() => setSuiteTags([]));
   }, [projectId]);
 
@@ -159,7 +192,7 @@ export function SuiteWorkspace() {
         setStaleDropped(dropped);
         setDraft({
           name: loaded.name, description: loaded.description, tags: loaded.tags,
-          selection, execution: loaded.execution, members,
+          selection, execution: loaded.execution, notify: loaded.notify, members,
         });
       })
       .catch(() => message.error(t("suites.loadFailed")));
@@ -167,8 +200,8 @@ export function SuiteWorkspace() {
 
   const dirty = useMemo(() => {
     if (!suite || !draft) return false;
-    const compare = (source: { name: string; description: string; tags: string[]; selection: SuiteSelection; execution: SuiteExecutionConfig }) =>
-      JSON.stringify(canonical({ name: source.name, description: source.description, tags: source.tags, selection: source.selection, execution: source.execution }));
+    const compare = (source: { name: string; description: string; tags: string[]; selection: SuiteSelection; execution: SuiteExecutionConfig; notify: SuiteNotifyConfig }) =>
+      JSON.stringify(canonical({ name: source.name, description: source.description, tags: source.tags, selection: source.selection, execution: source.execution, notify: source.notify }));
     return compare(suite) !== compare(draft);
   }, [suite, draft]);
 
@@ -288,6 +321,28 @@ export function SuiteWorkspace() {
     return () => { alive = false; };
   }, [projectId, suiteId, debouncedAutoPreview]);
 
+  /* 新一份解析结果从第一页看起：条件变了，旧页码对应的那批成员已经没有意义。 */
+  useEffect(() => { setPreviewPage(1); }, [preview]);
+
+  /**
+   * Cmd+S / Ctrl+S 保存当前草稿，与接口/流程工作台同一条约定：绑在 window 上，无论
+   * 焦点在哪个输入框都生效；拦掉浏览器自己的「保存网页」对话框。没改动时按键是空操作
+   * ——不弹「已保存」的假反馈。
+   *
+   * 必须挂在「草稿还没加载」的早退之前：条件返回之后再声明 Hook，draft 一到位就会
+   * 「比上一次渲染多一个 Hook」而整页崩掉（Rules of Hooks）。`save` 是函数声明，有
+   * 提升，这里先引用是安全的。
+   */
+  useEffect(() => {
+    function handleSaveKey(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
+      event.preventDefault();
+      if (dirty && !saving) void save();
+    }
+    window.addEventListener("keydown", handleSaveKey);
+    return () => window.removeEventListener("keydown", handleSaveKey);
+  }, [dirty, saving, draft, suiteId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!draft) return <main className="content"><p className="muted">{t("filter.searching")}</p></main>;
 
   function patch(next: Partial<Draft>) { setDraft((current) => (current ? { ...current, ...next } : current)); }
@@ -307,6 +362,8 @@ export function SuiteWorkspace() {
 
   function addMembers(added: SuiteMemberSnapshot[]) {
     const members = [...draft!.members, ...added];
+    /* 新成员追加在清单末尾：翻到最后一页，「刚加进来的」立即可见。 */
+    setMemberPage(Math.max(1, Math.ceil(members.length / MEMBER_PAGE_SIZE)));
     patch({ members, selection: { type: "manual", members: members.map((member) => ({ type: member.type, id: member.id })) } });
   }
 
@@ -341,18 +398,18 @@ export function SuiteWorkspace() {
     try {
       const saved = await api.updateTestSuite(projectId, suiteId, {
         name: draft!.name.trim(), description: draft!.description, tags: draft!.tags,
-        selection: draft!.selection, execution: draft!.execution,
+        selection: draft!.selection, execution: draft!.execution, notify: draft!.notify,
       });
       setSuite(saved);
       /* 悬空引用的清理随这次保存落库，提示不再需要。 */
       setStaleDropped(0);
       /* 用服务端存下来的那份回填草稿：它才是「现在库里是什么」。少了这一步，任何一处
-         规范化（trim、标签去空、environmentId 被清掉）都会让页面继续显示「未保存」，
-         而用户明明刚看到保存成功。 */
+          规范化（trim、标签去空、environmentId 被清掉）都会让页面继续显示「未保存」，
+          而用户明明刚看到保存成功。 */
       setDraft((current) => (current ? {
         ...current,
         name: saved.name, description: saved.description, tags: saved.tags,
-        selection: saved.selection, execution: saved.execution,
+        selection: saved.selection, execution: saved.execution, notify: saved.notify,
       } : current));
       message.success(t("suites.saved"));
     } catch (error) {
@@ -376,23 +433,33 @@ export function SuiteWorkspace() {
   const selectionDirty = Boolean(suite) && JSON.stringify(canonical(suite!.selection)) !== JSON.stringify(canonical(selection));
   const busy = starting || run?.status === "queued" || run?.status === "running";
 
+  /* 成员清单（手动 / 解析预览）就地分页：删掉本页最后一行时钳回最后一页，
+     避免停在一张空表上。 */
+  const currentMemberPage = Math.min(memberPage, Math.max(1, Math.ceil(draft.members.length / MEMBER_PAGE_SIZE)));
+  const visibleMembers = draft.members.slice((currentMemberPage - 1) * MEMBER_PAGE_SIZE, currentMemberPage * MEMBER_PAGE_SIZE);
+  const currentPreviewPage = Math.min(previewPage, Math.max(1, Math.ceil((preview?.members.length ?? 0) / MEMBER_PAGE_SIZE)));
+  const visiblePreviewMembers = preview ? preview.members.slice((currentPreviewPage - 1) * MEMBER_PAGE_SIZE, currentPreviewPage * MEMBER_PAGE_SIZE) : [];
+
   /**
-   * 运行这个套件。
+   * 运行这个套件（从运行弹窗确认，变量覆盖随行——校验在弹窗里，键约束同一条正则）。
    *
    * `execution` 跟着草稿走（改了并发/失败即停不必先保存就能跑一次，与用例、流程同一条
    * 规则），但**成员清单不跟**：服务端只按已保存的选择方式解析成员。所以选择方式没保存
    * 时先说清楚这一点，而不是让用户以为刚加的成员会跑到。
    */
-  async function start() {
+  async function start(variables: Record<string, string>) {
     if (!projectId || !suiteId) return;
     if (selectionDirty) { message.warning(t("suites.runNeedsSave")); return; }
     setStarting(true);
     try {
-      const queued = await api.executeSuite(projectId, suiteId, draft!.execution);
-      /* 入队返回的成员快照就是那次运行的完整清单，抽屉靠它先把所有成员行画出来。 */
-      setRun({ ...queued, executionSteps: [], runs: [] });
+      const queued = await api.executeSuite(projectId, suiteId, draft!.execution, variables);
+      /* 入队返回的成员快照就是那次运行的完整清单，抽屉靠它先把所有成员行画出来。
+         手动运行的触发三列由这里补上：202 响应是 suite_executions 的形状，不带
+         execution_index 上的触发列（详情路由才 join），缺了它运行抽屉的标识段会崩。 */
+      setRun({ ...queued, triggerSource: "manual", executionSteps: [], runs: [] });
       setDrawerOpen(true);
       setSearchParams({ run: queued.id }, { replace: true });
+      setRunOpen(false);
       loadHistory();
     } catch (error) {
       /* 2004 = 这个分区没有在线执行器（P2-8 边界 5）；「成员跨分区」是 400，走 detail。 */
@@ -419,17 +486,21 @@ export function SuiteWorkspace() {
 
   return <main className="content">
     <div className="page-head">
-      <div>
-        <h1>{draft.name || t("suites.title")}</h1>
+      <div className="page-head-main">
+        <div className="title-row">
+          <h1>{draft.name || t("suites.title")}</h1>
+          {/* 与流程工作台同款提示：警告色 chip 并带上保存快捷键——本页也有 Cmd+S，
+              「按什么能存」应该出现在「有改动」的同一眼位置。 */}
+          {dirty && <span className="chip chip-warn">{t("editor.unsavedShortcut", { key: SAVE_KEY })}</span>}
+        </div>
         <p>{selection.type === "manual" ? t("suites.selectionHintManual") : selection.type === "tag" ? t("suites.selectionHintTag") : t("suites.selectionHintAll")}</p>
       </div>
       <div className="topbar-actions">
-        {dirty && <span className="mono muted">{t("editor.unsaved")}</span>}
         {/* 「解析成员」放在选择条件旁边，不放这里：它回答的是那几个条件命中了谁，
             离开条件就没有语境。手动选择根本不需要它——成员清单就在下面。 */}
         {busy
           ? <button className="btn btn-with-icon" disabled={canceling} onClick={() => void stop()}><Square size={14} />{t("run.cancel")}</button>
-          : <button className="btn btn-with-icon" disabled={includeInvalid} onClick={() => void start()}><Play size={14} />{t("suites.run")}</button>}
+          : <button className="btn btn-with-icon" disabled={includeInvalid} onClick={() => setRunOpen(true)}><Play size={14} />{t("suites.run")}</button>}
         <button className="btn btn-primary" onClick={() => void save()} disabled={saving || !draft.name.trim() || includeInvalid}>{t("action.save")}</button>
       </div>
     </div>
@@ -496,16 +567,19 @@ export function SuiteWorkspace() {
               </div>
               {draft.members.length ? <table className="grid picker-grid">
                 <tbody>
-                  {draft.members.map((member, index) => <tr key={`${member.type}:${member.id}`}>
+                  {visibleMembers.map((member, index) => <tr key={`${member.type}:${member.id}`}>
                     <td className="suite-col-kind mono muted">{member.type === "case" ? t("suites.memberTypeCase") : t("suites.memberTypeFlow")}</td>
                     <td><span className="truncate">{member.name}</span></td>
                     <td className="mono muted truncate">{member.endpointName ?? member.environmentName ?? ""}</td>
                     <td className="col-actions">
-                      <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => removeMember(index)} />
+                      <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => removeMember((currentMemberPage - 1) * MEMBER_PAGE_SIZE + index)} />
                     </td>
                   </tr>)}
                 </tbody>
               </table> : <p className="muted">{t("suites.membersEmpty")}</p>}
+              {draft.members.length > MEMBER_PAGE_SIZE && <div className="pager">
+                <Pagination current={currentMemberPage} pageSize={MEMBER_PAGE_SIZE} total={draft.members.length} showSizeChanger={false} onChange={setMemberPage} />
+              </div>}
             </> : <>
               {selection.type === "tag" && <>
                 <label className="field">
@@ -560,13 +634,16 @@ export function SuiteWorkspace() {
                 {preview.total > preview.memberLimit && <p className="form-error">{t("suites.overLimit", { total: preview.total, limit: preview.memberLimit })}</p>}
                 {preview.members.length ? <table className="grid picker-grid">
                   <tbody>
-                    {preview.members.map((member) => <tr key={`${member.type}:${member.id}`}>
+                    {visiblePreviewMembers.map((member) => <tr key={`${member.type}:${member.id}`}>
                       <td className="suite-col-kind mono muted">{member.type === "case" ? t("suites.memberTypeCase") : t("suites.memberTypeFlow")}</td>
                       <td><span className="truncate">{member.name}</span></td>
                       <td className="mono muted truncate">{member.endpointName ?? member.environmentName ?? ""}</td>
                     </tr>)}
                   </tbody>
                 </table> : <p className="muted">{t("suites.previewEmpty")}</p>}
+                {preview.members.length > MEMBER_PAGE_SIZE && <div className="pager">
+                  <Pagination current={currentPreviewPage} pageSize={MEMBER_PAGE_SIZE} total={preview.members.length} showSizeChanger={false} onChange={setPreviewPage} />
+                </div>}
               </>}
             </>}
           </div>
@@ -620,6 +697,58 @@ export function SuiteWorkspace() {
             </label>}
           </div>
         </section>
+
+        {/* 定时调度（P3-11）：独立调度页已删除，配置入口收进它唯一的目标。
+            排在通知设置之前（验收反馈）：调度是「怎么跑」，通知是「跑完之后」，
+            阅读顺序与执行顺序一致。 */}
+        <SuiteSchedules projectId={projectId!} suiteId={suiteId!} />
+
+        {/* 通知设置（P3-11）：终态按开关投递。配置跟套件走——「这个套件跑完了告诉我」
+            与「项目的质量指标怎么了」（告警规则页）是两个问题，两处配置互不替代。 */}
+        <section className="panel">
+          <div className="panel-head"><strong>{t("suites.notify.title")}</strong></div>
+          <div className="panel-body">
+            <div className="check-row">
+              <label className="check-field">
+                <input type="checkbox" checked={draft.notify.onSuccess} onChange={(event) => patch({ notify: { ...draft.notify, onSuccess: event.target.checked } })} />
+                {t("suites.notify.onSuccess")}
+              </label>
+              <label className="check-field">
+                <input type="checkbox" checked={draft.notify.onFailure} onChange={(event) => patch({ notify: { ...draft.notify, onFailure: event.target.checked } })} />
+                {t("suites.notify.onFailure")}
+              </label>
+            </div>
+            <p className="form-note">{t("suites.notify.hint")}</p>
+            <label className="field">
+              <span>{t("suites.notify.channels")}</span>
+              <Select
+                mode="multiple"
+                value={draft.notify.channelIds}
+                onChange={(channelIds: string[]) => patch({ notify: { ...draft.notify, channelIds } })}
+                options={channels.map((channel) => ({ value: channel.id, label: channel.name }))}
+                placeholder={t("suites.notify.channelsPlaceholder")}
+                style={{ width: "100%" }}
+              />
+              {!channels.length && <p className="form-note">{t("suites.notify.noChannels")}</p>}
+            </label>
+            <label className="field">
+              <span>{t("suites.notify.templateTitle")}</span>
+              <input className="input" value={draft.notify.template?.title ?? ""} onChange={(event) => patch({ notify: { ...draft.notify, template: templateOf(draft.notify, { title: event.target.value }) } })} placeholder={t("suites.notify.templateTitlePlaceholder")} spellCheck={false} />
+            </label>
+            <label className="field">
+              <span>{t("suites.notify.templateBody")}</span>
+              <textarea
+                className="input mono"
+                rows={5}
+                value={draft.notify.template?.body ?? ""}
+                onChange={(event) => patch({ notify: { ...draft.notify, template: templateOf(draft.notify, { body: event.target.value }) } })}
+                placeholder={t("suites.notify.templateBodyPlaceholder")}
+                spellCheck={false}
+              />
+              <p className="form-note">{t("suites.notify.templateHint")}</p>
+            </label>
+          </div>
+        </section>
       </div>
 
       <HistorySidebar
@@ -670,6 +799,14 @@ export function SuiteWorkspace() {
       existing={draft.members.map((member) => ({ type: member.type, id: member.id }))}
       onClose={() => setPicking(false)}
       onAdd={addMembers}
+    />
+
+    {/* 运行确认弹窗（变量覆盖）：与套件列表行共用同一个组件，值在本页会话内保留。 */}
+    <SuiteRunModal
+      open={runOpen}
+      running={starting}
+      onClose={() => setRunOpen(false)}
+      onRun={(variables) => { setRunOpen(false); void start(variables); }}
     />
 
     <SuiteRunDrawer
