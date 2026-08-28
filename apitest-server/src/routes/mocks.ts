@@ -139,8 +139,10 @@ export async function mockRoutes(app: FastifyInstance) {
     const started = Date.now(); const path = `/${request.params["*"] ?? ""}`; const method = request.method.toUpperCase();
     const query = request.query as Record<string, unknown>; const body = request.body;
     /* Buffers serialise into {"type":"Buffer","data":[...]} if left to JSON, so
-       the snapshot stores a readable string instead. */
-    const snapshot = { query, headers: request.headers, body: body instanceof Uint8Array ? body.toString("utf8") : body };
+       the snapshot stores a readable string instead. `Buffer.isBuffer` rather
+       than `instanceof Uint8Array`: the '*' parser hands back a Node Buffer,
+       whose toString(encoding) signature the DOM lib's Uint8Array lacks. */
+    const snapshot = { query, headers: request.headers, body: Buffer.isBuffer(body) ? body.toString("utf8") : body };
     const candidates = await pool.query("SELECT * FROM mocks WHERE public_id = $1 AND enabled = true ORDER BY priority DESC, created_at DESC", [request.params.publicId]);
     const row = candidates.rows.find((candidate) => matches((candidate.request_match ?? {}) as Record<string, unknown>, method, path));
     if (!row) { await recordLog(undefined, method, path, false, 404, started, snapshot, 0); return reply.code(404).send({ message: "mock rule not found" }); }
@@ -150,10 +152,20 @@ export async function mockRoutes(app: FastifyInstance) {
     const size = responseBytes(response); await recordLog(mock.id, method, path, true, response.statusCode, started, snapshot, size);
     return reply.code(response.statusCode).headers(response.headers).send(response.body);
   });
-  app.get<{ Params: { id: string } }>("/api/v1/projects/:id/mocks", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { page?: string; pageSize?: string } }>("/api/v1/projects/:id/mocks", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
-    const result = await pool.query("SELECT * FROM mocks WHERE project_id = $1 ORDER BY priority DESC, created_at DESC", [context.project.id]);
-    return success(result.rows.map(mapMock));
+    /* Pagination is opt-in: no other caller needs the whole list today, but the
+       unpaged shape stays so the contract remains "give me everything" unless
+       the client explicitly asks for a page. */
+    if (request.query.pageSize === undefined) {
+      const result = await pool.query("SELECT * FROM mocks WHERE project_id = $1 ORDER BY priority DESC, created_at DESC", [context.project.id]);
+      return success(result.rows.map(mapMock));
+    }
+    const page = Math.max(1, Number(request.query.page ?? 1));
+    const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
+    const count = await pool.query("SELECT COUNT(*)::int AS total FROM mocks WHERE project_id = $1", [context.project.id]);
+    const result = await pool.query("SELECT * FROM mocks WHERE project_id = $1 ORDER BY priority DESC, created_at DESC LIMIT $2 OFFSET $3", [context.project.id, pageSize, (page - 1) * pageSize]);
+    return success(result.rows.map(mapMock), { page, pageSize, total: Number(count.rows[0].total) });
   });
 
   app.post<{ Params: { id: string }; Body: MockBody }>("/api/v1/projects/:id/mocks", async (request, reply) => {

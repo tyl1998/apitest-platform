@@ -175,6 +175,27 @@ export function resolveDeep(value: unknown, variables: VariableBag): unknown {
   return value;
 }
 
+/**
+ * 触发时变量覆盖的键形约束（P3-2，计划 6.5）。
+ *
+ * 只接受 `Record<string, string>`，键匹配 `^[A-Za-z_][A-Za-z0-9_]*$`：键会变成变量袋
+ * 里的名字，宽松的键（带点、带空格、`__proto__`）要么解析不了要么会撞坏袋的语义。
+ * 套件执行、调度配置（P3-6）与 Webhook 请求体（P3-3）共用这一个校验，两份实现
+ * 必然在「哪些键放行」上分叉。
+ */
+export const VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** 校验一份变量覆盖；返回 undefined 表示合法（或未提供）。 */
+export function validateVariableOverrides(input: unknown): string | undefined {
+  if (input === undefined || input === null) return undefined;
+  if (typeof input !== "object" || Array.isArray(input)) return "variables must be an object of string values";
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (!VARIABLE_NAME_PATTERN.test(key)) return `variable name "${key}" must start with a letter or underscore and contain only letters, digits and underscores`;
+    if (typeof value !== "string") return `variable "${key}" must be a string`;
+  }
+  return undefined;
+}
+
 /** Every `{{name}}` referenced by a string, excluding built-ins. */
 export function collectReferences(value: unknown, into = new Set<string>()): Set<string> {
   if (typeof value === "string") {

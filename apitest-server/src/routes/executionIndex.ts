@@ -7,7 +7,7 @@ import { isUuid } from "../lib/uuid.js";
 import { mapExecutionIndex, mapExecutionStep } from "../models/types.js";
 
 export async function executionIndexRoutes(app: FastifyInstance) {
-  app.get<{ Params: { id: string }; Querystring: { kind?: string; status?: string; keyword?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/execution-index", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { kind?: string; status?: string; triggerSource?: string; keyword?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/execution-index", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     const page = Math.max(1, Number(request.query.page ?? 1)); const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
     const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
@@ -22,6 +22,9 @@ export async function executionIndexRoutes(app: FastifyInstance) {
     clauses.push("detail_id <> id");
     if (request.query.kind && request.query.kind !== "all") { params.push(request.query.kind); clauses.push(`kind = $${params.length}`); }
     if (request.query.status && request.query.status !== "all") { params.push(request.query.status); clauses.push(`status = $${params.length}`); }
+    /* 触发源筛选（P3-6，报告页/趋势页共用这份口径）：manual|scheduled|webhook|ci，
+       迁移 030 的 CHECK 值域。 */
+    if (request.query.triggerSource && request.query.triggerSource !== "all") { params.push(request.query.triggerSource); clauses.push(`trigger_source = $${params.length}`); }
     /* 按对象名称搜索（5.0.9 起）。`target_name` 是入队时的快照，流程与套件共用这一列，
        所以统一父执行列表（P2-4.4）的搜索框不需要按 kind 分两套。 */
     if (request.query.keyword?.trim()) { params.push(`%${request.query.keyword.trim()}%`); clauses.push(`target_name ILIKE $${params.length}`); }

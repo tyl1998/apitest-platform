@@ -1,16 +1,18 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
-import { NoRunnerError, cancelSuiteRun, enqueueSuiteRun } from "../lib/enqueue.js";
-import { SUITE_LEAF_BUDGET } from "../lib/flow.js";
-import { memberTokenDemand } from "../lib/suiteRun.js";
+import { cancelSuiteRun } from "../lib/enqueue.js";
 import { requireProjectAccess } from "../lib/rbac.js";
-import { fail, failNoRunner, success } from "../lib/response.js";
+import { fail, success } from "../lib/response.js";
+import {
+  concurrencyBudget, environmentBelongs, environmentSnapshot, failTrigger, loadSuite,
+  resolveMembers, toExecutionConfig, triggerSuiteRun, validateExecution,
+} from "../lib/trigger.js";
 import { isUuid } from "../lib/uuid.js";
 import {
-  mapExecution, mapExecutionStep, mapSuiteExecution, mapTestSuite, normalizeSuiteSelection,
-  SUITE_DEFAULT_CONCURRENCY, SUITE_MAX_CONCURRENCY, SUITE_MAX_MEMBERS,
-  type FlowNode, type SuiteExecutionConfig, type SuiteMemberRef, type SuiteMemberSnapshot, type SuiteSelection, type TestSuite,
+  mapExecution, mapExecutionStep, mapSuiteExecution, mapTestSuite, normalizeSuiteNotify, normalizeSuiteSelection,
+  SUITE_MAX_MEMBERS,
+  type SuiteExecutionConfig, type SuiteMemberRef, type SuiteSelection,
 } from "../models/types.js";
 
 /**
@@ -38,6 +40,8 @@ type SuiteInput = {
   description?: string;
   selection?: SelectionInput;
   execution?: Partial<SuiteExecutionConfig>;
+  /** 套件级通知设置（P3-11）：整块替换，与 selection 同一种 PUT 语义。 */
+  notify?: unknown;
   tags?: string[];
 };
 
@@ -78,25 +82,6 @@ function validateSelection(selection: SelectionInput | undefined): string | unde
   return undefined;
 }
 
-function validateExecution(execution: Partial<SuiteExecutionConfig> | undefined): string | undefined {
-  if (!execution) return undefined;
-  if (execution.concurrency !== undefined) {
-    const value = Number(execution.concurrency);
-    if (!Number.isInteger(value) || value < 1 || value > SUITE_MAX_CONCURRENCY) return `execution.concurrency must be an integer between 1 and ${SUITE_MAX_CONCURRENCY}`;
-    /* 成员并发不能超过平台的叶子令牌预算：`C ≤ 池容量` 是「每个在跑的成员至少能拿到
-       一枚令牌、一定有进展」的依据（计划 5.0.11 并发预算）。上限是可配置的，所以这条
-       与 SUITE_MAX_CONCURRENCY 是两回事，不能只留一个。 */
-    if (value > SUITE_LEAF_BUDGET) return `execution.concurrency must be at most ${SUITE_LEAF_BUDGET} on this platform (the shared leaf-token budget)`;
-  }
-  if (execution.failFast !== undefined && typeof execution.failFast !== "boolean") return "execution.failFast must be a boolean";
-  if (execution.environmentStrategy !== undefined && execution.environmentStrategy !== "member_default" && execution.environmentStrategy !== "override") {
-    return "execution.environmentStrategy must be member_default or override";
-  }
-  if (execution.environmentStrategy === "override" && !execution.environmentId) return "execution.environmentId is required when the strategy is override";
-  if (execution.environmentId !== undefined && execution.environmentId !== null && !isUuid(String(execution.environmentId))) return "execution.environmentId must be a UUID";
-  return undefined;
-}
-
 function validate(input: SuiteInput, partial = false): string | undefined {
   if (!partial || input.name !== undefined) if (!input.name?.trim()) return "name is required";
   if (!partial || input.selection !== undefined) {
@@ -104,6 +89,41 @@ function validate(input: SuiteInput, partial = false): string | undefined {
     if (invalid) return invalid;
   }
   return validateExecution(input.execution);
+}
+
+/**
+ * 通知配置校验（P3-11）：形状 + 渠道属于本项目 + 模版字段是短字符串。
+ * 渠道存在性必须查库：悬空 id 会让「开关开了」的套件在终态静默少发一封通知，
+ * 那比保存被拒绝难发现得多。
+ */
+async function validateNotify(projectId: string, notify: unknown): Promise<string | undefined> {
+  if (notify === undefined || notify === null) return undefined;
+  if (typeof notify !== "object" || Array.isArray(notify)) return "notify must be an object";
+  const raw = notify as Record<string, unknown>;
+  if (raw.onSuccess !== undefined && typeof raw.onSuccess !== "boolean") return "notify.onSuccess must be a boolean";
+  if (raw.onFailure !== undefined && typeof raw.onFailure !== "boolean") return "notify.onFailure must be a boolean";
+  if (raw.channelIds !== undefined) {
+    if (!Array.isArray(raw.channelIds)) return "notify.channelIds must be an array";
+    const ids = raw.channelIds.map(String);
+    for (const id of ids) if (!isUuid(id)) return "notify.channelIds must contain UUIDs";
+    if (ids.length) {
+      const found = await pool.query(
+        "SELECT COUNT(*)::int AS total FROM notification_channels WHERE project_id = $1 AND id = ANY($2::uuid[])",
+        [projectId, ids],
+      );
+      if (Number(found.rows[0].total) !== ids.length) return "notify.channelIds must reference channels in this project";
+    }
+  }
+  if (raw.template !== undefined && raw.template !== null) {
+    if (typeof raw.template !== "object" || Array.isArray(raw.template)) return "notify.template must be an object";
+    for (const key of ["title", "body"] as const) {
+      const value = (raw.template as Record<string, unknown>)[key];
+      if (value === undefined || value === null) continue;
+      if (typeof value !== "string") return `notify.template.${key} must be a string`;
+      if (value.length > 2000) return `notify.template.${key} is too long (max 2000 characters)`;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -120,159 +140,6 @@ function toSelectionConfig(selection: SelectionInput): Record<string, unknown> {
   return include;
 }
 
-type StoredExecutionConfig = {
-  concurrency: number;
-  failFast: boolean;
-  environmentStrategy: "member_default" | "override";
-  environmentId: string | null;
-};
-
-function toExecutionConfig(execution: Partial<SuiteExecutionConfig> | undefined): StoredExecutionConfig {
-  const strategy = execution?.environmentStrategy === "override" ? "override" : "member_default";
-  return {
-    concurrency: execution?.concurrency === undefined ? SUITE_DEFAULT_CONCURRENCY : Number(execution.concurrency),
-    failFast: Boolean(execution?.failFast ?? false),
-    environmentStrategy: strategy,
-    /* 只有 override 才存 environmentId：留着一个用不到的环境 id，下次切回 override
-       会静默复活一个用户以为早就取消了的选择。 */
-    environmentId: strategy === "override" ? execution?.environmentId ?? null : null,
-  };
-}
-
-async function environmentBelongs(projectId: string, environmentId: string | null | undefined): Promise<boolean> {
-  if (!environmentId) return true;
-  const result = await pool.query("SELECT 1 FROM environments WHERE id = $1 AND project_id = $2", [environmentId, projectId]);
-  return Boolean(result.rowCount);
-}
-
-/** 覆盖环境的名称，用于执行行上的快照（环境改名/删除后报告仍读得通，Spec 4.4）。 */
-async function environmentSnapshot(projectId: string, environmentId: string | null | undefined): Promise<string | undefined> {
-  if (!environmentId) return undefined;
-  const result = await pool.query("SELECT name FROM environments WHERE id = $1 AND project_id = $2", [environmentId, projectId]);
-  return result.rowCount ? String(result.rows[0].name) : undefined;
-}
-
-/** 一次套件解析的结果。missing 与 warnings 都要给到界面上，不静默丢弃。 */
-type ResolvedMembers = {
-  members: SuiteMemberSnapshot[];
-  /** manual 引用了但已不存在的成员（用例/流程被删掉后仍留在配置里）。 */
-  missing: SuiteMemberRef[];
-};
-
-/**
- * 把选择方式解析成有序成员清单。
- *
- * 顺序必须确定：它就是执行证据里的 `position`，也是报告的阅读顺序。
- * manual 保持用户声明的顺序；tag / all 按「用例（按接口分组）→ 流程」排，
- * 同组内按创建时间。成员之间不传变量，所以顺序只影响可读性，不影响结论。
- */
-async function resolveMembers(projectId: string, selection: SuiteSelection): Promise<ResolvedMembers> {
-  /* 环境用用例/流程自己的 `environment_name` 快照，不 join environments：
-     两处都是 ON DELETE SET NULL + 名称快照（Spec 4.4 历史保留），join 反而会在环境被
-     删掉后把名字抹成空，与列表页、编辑页显示的不是同一个答案。
-     endpoints 用 INNER JOIN 安全：test_cases.endpoint_id 是 NOT NULL + ON DELETE CASCADE，
-     用例活不过它的接口。 */
-  const caseRows = async (clause: string, params: unknown[]) => (await pool.query(
-    `SELECT c.id, c.name, c.endpoint_id, e.name AS endpoint_name, c.environment_id, c.environment_name
-       FROM test_cases c
-       JOIN endpoints e ON e.id = c.endpoint_id
-      WHERE c.project_id = $1 AND ${clause}
-      ORDER BY e.name, c.created_at`,
-    [projectId, ...params],
-  )).rows;
-
-  const flowRows = async (clause: string, params: unknown[]) => (await pool.query(
-    `SELECT f.id, f.name, f.environment_id, f.environment_name
-       FROM flows f
-      WHERE f.project_id = $1 AND ${clause}
-      ORDER BY f.created_at`,
-    [projectId, ...params],
-  )).rows;
-
-  const toCase = (row: Record<string, unknown>): SuiteMemberSnapshot => ({
-    type: "case", id: String(row.id), name: String(row.name),
-    endpointId: String(row.endpoint_id), endpointName: String(row.endpoint_name),
-    environmentId: row.environment_id ? String(row.environment_id) : undefined,
-    environmentName: row.environment_name ? String(row.environment_name) : undefined,
-  });
-  const toFlow = (row: Record<string, unknown>): SuiteMemberSnapshot => ({
-    type: "flow", id: String(row.id), name: String(row.name),
-    environmentId: row.environment_id ? String(row.environment_id) : undefined,
-    environmentName: row.environment_name ? String(row.environment_name) : undefined,
-  });
-
-  if (selection.type === "manual") {
-    const caseIds = selection.members.filter((member) => member.type === "case").map((member) => member.id);
-    const flowIds = selection.members.filter((member) => member.type === "flow").map((member) => member.id);
-    const cases = caseIds.length ? await caseRows("c.id = ANY($2::uuid[])", [caseIds]) : [];
-    const flows = flowIds.length ? await flowRows("f.id = ANY($2::uuid[])", [flowIds]) : [];
-    const byKey = new Map<string, SuiteMemberSnapshot>();
-    for (const row of cases) byKey.set(`case:${String(row.id)}`, toCase(row));
-    for (const row of flows) byKey.set(`flow:${String(row.id)}`, toFlow(row));
-    /* 声明顺序优先，同时把已消失的引用挑出来：删除用例/流程时的 usage 拦截在 P2-4.5
-       才落地，而 ?force=true 之后引用本来就允许悬空，界面必须能说清少了什么。 */
-    const members: SuiteMemberSnapshot[] = []; const missing: SuiteMemberRef[] = [];
-    for (const member of selection.members) {
-      const found = byKey.get(`${member.type}:${member.id}`);
-      if (found) members.push(found); else missing.push({ type: member.type, id: member.id });
-    }
-    return { members, missing };
-  }
-
-  /* 标签条件只有一个额外参数（标签数组），所以占位符固定是 $2。判别在闭包外先落成
-     普通常量：TS 不会把参数的类型收窄带进回调，写在里面会变成到处 as。 */
-  const tagged = selection.type === "tag";
-  const tags = tagged ? selection.tags.map((tag) => tag.trim()).filter(Boolean) : [];
-  const matchAll = tagged && selection.match === "all";
-  /*
-   * 还没填标签的 tag 套件解析成**零个成员**，而不是交给 SQL。
-   * `tags @> '{}'` 在 Postgres 里对每一行都为真（任何数组都包含空数组），所以
-   * 「满足全部标签」配上空标签会静默把整个项目选进来——一个刚建好还没填条件的套件
-   * 绝不该是「跑全部」的意思。
-   */
-  if (tagged && !tags.length) return { members: [], missing: [] };
-
-  const tagFilter = (column: string): { clause: string; params: unknown[] } =>
-    tagged ? { clause: matchAll ? `${column} @> $2` : `${column} && $2`, params: [tags] } : { clause: "TRUE", params: [] };
-
-  const members: SuiteMemberSnapshot[] = [];
-  if (selection.includeCases) {
-    const built = tagFilter("c.tags");
-    members.push(...(await caseRows(built.clause, built.params)).map(toCase));
-  }
-  if (selection.includeFlows) {
-    const built = tagFilter("f.tags");
-    members.push(...(await flowRows(built.clause, built.params)).map(toFlow));
-  }
-  return { members, missing: [] };
-}
-
-/**
- * 这次执行会向共享令牌池要多少令牌。
- *
- * 预览的提示与入队的硬校验共用这一份算法（`memberTokenDemand`）：提前在别处算一遍就会
- * 出现两个答案，而用户看到的那个会被当成结论。
- *
- * `peak` = 最多同时在跑的 C 个成员里需求最大的那 C 个之和，也就是同一刻可能被要走的
- * 令牌上限。超过池容量不是错误——只是这些请求会分批发出，用户看得见才不会把一份被
- * 分批的报告当成并发结论。`over` 才是错误：单个成员一次要的比整个池子还多，原子领取
- * 永远凑不齐。
- */
-async function concurrencyBudget(projectId: string, members: SuiteMemberSnapshot[], concurrency: number) {
-  const flowIds = members.filter((member) => member.type === "flow").map((member) => member.id);
-  const graphs = flowIds.length
-    ? await pool.query("SELECT id, nodes FROM flows WHERE id = ANY($1::uuid[]) AND project_id = $2", [flowIds, projectId])
-    : { rows: [] as Record<string, unknown>[] };
-  const nodesById = new Map(graphs.rows.map((row) => [String(row.id), (row.nodes ?? []) as FlowNode[]]));
-  const demands = members.map((member) => ({ member, demand: memberTokenDemand(member, nodesById.get(member.id)) }));
-  const peak = demands
-    .map((item) => item.demand)
-    .sort((left, right) => right - left)
-    .slice(0, Math.max(1, concurrency))
-    .reduce((sum, value) => sum + value, 0);
-  return { peak, budget: SUITE_LEAF_BUDGET, over: demands.find((item) => item.demand > SUITE_LEAF_BUDGET) };
-}
-
 /** 最近一次运行，供套件列表显示「最近结果」（与流程列表同款）。 */
 async function latestRuns(suiteIds: string[]) {
   if (!suiteIds.length) return new Map<string, ReturnType<typeof mapSuiteExecution>>();
@@ -284,27 +151,28 @@ async function latestRuns(suiteIds: string[]) {
   return new Map(result.rows.map((row) => [String(row.suite_id), mapSuiteExecution(row)]));
 }
 
-async function loadSuite(projectId: string, suiteId: string): Promise<TestSuite | undefined> {
-  if (!isUuid(suiteId)) return undefined;
-  const result = await pool.query("SELECT * FROM test_suites WHERE id = $1 AND project_id = $2", [suiteId, projectId]);
-  return result.rowCount ? mapTestSuite(result.rows[0]) : undefined;
-}
-
 export async function suiteRoutes(app: FastifyInstance) {
-  app.get<{ Params: { id: string }; Querystring: { keyword?: string; tag?: string } }>("/api/v1/projects/:id/test-suites", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { keyword?: string; tag?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/test-suites", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
+    /* 服务端分页（边界 14，与执行记录同一套约定）：套件多起来后一次全表扫描 + 一屏
+       读不完的表没有任何好处。keyword/tag 过滤留在 SQL 里，命中覆盖全量而不止本页。 */
+    const page = Math.max(1, Number(request.query.page ?? 1));
+    const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
     const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
     const keyword = request.query.keyword?.trim();
     /* Filtering in SQL so a keyword matches every suite, not just a loaded page. */
     if (keyword) { params.push(`%${keyword}%`); clauses.push(`(name ILIKE $${params.length} OR description ILIKE $${params.length})`); }
     if (request.query.tag?.trim()) { params.push(request.query.tag.trim()); clauses.push(`$${params.length} = ANY(tags)`); }
-    const result = await pool.query(`SELECT * FROM test_suites WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC`, params);
+    const where = clauses.join(" AND ");
+    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM test_suites WHERE ${where}`, params);
+    params.push(pageSize, (page - 1) * pageSize);
+    const result = await pool.query(`SELECT * FROM test_suites WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
     const suites = result.rows.map(mapTestSuite);
     const runs = await latestRuns(suites.map((suite) => suite.id));
     /* 刻意不在列表里解析 tag/all 的成员数：那要为每一行跑两条查询，而列表能显示的
        只是「标签: x, y」这类条件本身。真实成员数由 preview 给出。 */
     const data = suites.map((suite) => ({ ...suite, lastRun: runs.get(suite.id) }));
-    return success(data, { total: data.length });
+    return success(data, { page, pageSize, total: Number(count.rows[0].total) });
   });
 
   app.get<{ Params: { id: string; suiteId: string } }>("/api/v1/projects/:id/test-suites/:suiteId", async (request, reply) => {
@@ -320,15 +188,17 @@ export async function suiteRoutes(app: FastifyInstance) {
     if (invalid) return fail(reply, 400, 1001, invalid);
     const execution = toExecutionConfig(request.body.execution);
     if (!await environmentBelongs(context.project.id, execution.environmentId)) return fail(reply, 400, 1001, "environment must belong to the project");
+    const invalidNotify = await validateNotify(context.project.id, request.body?.notify);
+    if (invalidNotify) return fail(reply, 400, 1001, invalidNotify);
 
     const suiteId = randomUUID();
     const result = await pool.query(
-      `INSERT INTO test_suites (id, project_id, name, description, selection_type, selection_config, execution_config, tags)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8) RETURNING *`,
+      `INSERT INTO test_suites (id, project_id, name, description, selection_type, selection_config, execution_config, notify_config, tags)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9) RETURNING *`,
       [
         suiteId, context.project.id, request.body.name!.trim(), request.body.description?.trim() ?? "",
         request.body.selection!.type, JSON.stringify(toSelectionConfig(request.body.selection!)),
-        JSON.stringify(execution), request.body.tags ?? [],
+        JSON.stringify(execution), JSON.stringify(normalizeSuiteNotify(request.body?.notify ?? {})), request.body.tags ?? [],
       ],
     );
     return reply.code(201).send(success(mapTestSuite(result.rows[0])));
@@ -339,9 +209,12 @@ export async function suiteRoutes(app: FastifyInstance) {
     if (!isUuid(request.params.suiteId)) return fail(reply, 404, 2001, "test suite not found");
     const invalid = validate(request.body, true);
     if (invalid) return fail(reply, 400, 1001, invalid);
+    const invalidNotify = await validateNotify(context.project.id, request.body?.notify);
+    if (invalidNotify) return fail(reply, 400, 1001, invalidNotify);
 
     /* selection 与 execution 都是整块替换而不是深合并：一个「把标签选择改成手动选择」
-       的保存必须能丢掉旧的 tags，深合并会把它们留在库里，下次读出来形状对不上。 */
+       的保存必须能丢掉旧的 tags，深合并会把它们留在库里，下次读出来形状对不上。
+       notify 同理（P3-11）：归一后整块写，缺省键落默认值。 */
     const selection = request.body.selection ? JSON.stringify(toSelectionConfig(request.body.selection)) : null;
     let execution: string | null = null;
     if (request.body.execution) {
@@ -349,6 +222,7 @@ export async function suiteRoutes(app: FastifyInstance) {
       if (!await environmentBelongs(context.project.id, config.environmentId)) return fail(reply, 400, 1001, "environment must belong to the project");
       execution = JSON.stringify(config);
     }
+    const notify = request.body.notify === undefined ? null : JSON.stringify(normalizeSuiteNotify(request.body.notify));
     const result = await pool.query(
       `UPDATE test_suites SET
          name = COALESCE($1, name),
@@ -356,13 +230,14 @@ export async function suiteRoutes(app: FastifyInstance) {
          selection_type = COALESCE($3, selection_type),
          selection_config = COALESCE($4::jsonb, selection_config),
          execution_config = COALESCE($5::jsonb, execution_config),
-         tags = COALESCE($6, tags),
+         notify_config = COALESCE($6::jsonb, notify_config),
+         tags = COALESCE($7, tags),
          updated_at = now()
-       WHERE id = $7 AND project_id = $8 RETURNING *`,
+       WHERE id = $8 AND project_id = $9 RETURNING *`,
       [
         request.body.name?.trim() ?? null,
         request.body.description?.trim() ?? null,
-        request.body.selection?.type ?? null, selection, execution,
+        request.body.selection?.type ?? null, selection, execution, notify,
         request.body.tags ?? null,
         request.params.suiteId, context.project.id,
       ],
@@ -373,15 +248,53 @@ export async function suiteRoutes(app: FastifyInstance) {
 
   /**
    * 删除套件保留它跑过的历史：`suite_executions.suite_id` 是 ON DELETE SET NULL，
-   * `suite_name` 已快照（Spec 4.4 历史保留）。套件本身没有被任何资源引用，所以
-   * 这里不需要 usage 扫描——反向的「用例/流程被套件引用」在 P2-4.5 落地。
+   * `suite_name` 已快照（Spec 4.4 历史保留）。引用它的用例/流程成员在 P2-4.5 由
+   * 删除方反向摘除。
+   *
+   * P3 起套件多了两类引用者：调度与 Webhook 触发（它们的 `target_id` 无外键——
+   * 按 target_type 多态，P3-1 的决定）。悬空的调度会每拍到点就记一行 failed、悬空
+   * 的 Webhook 会对外返回触发失败，所以这里与 environments 的 usage 扫描同款：
+   * 先 409 给清单，`?force=true` 才连带删掉引用者。
    */
-  app.delete<{ Params: { id: string; suiteId: string } }>("/api/v1/projects/:id/test-suites/:suiteId", async (request, reply) => {
+  app.delete<{ Params: { id: string; suiteId: string }; Querystring: { force?: string } }>("/api/v1/projects/:id/test-suites/:suiteId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
     if (!isUuid(request.params.suiteId)) return fail(reply, 404, 2001, "test suite not found");
-    const result = await pool.query("DELETE FROM test_suites WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.suiteId, context.project.id]);
-    if (!result.rowCount) return fail(reply, 404, 2001, "test suite not found");
-    return success({ id: request.params.suiteId });
+    const referencingSchedules = await pool.query(
+      "SELECT id, name FROM schedules WHERE project_id = $1 AND target_type = 'suite' AND target_id = $2",
+      [context.project.id, request.params.suiteId],
+    );
+    const referencingTriggers = await pool.query(
+      "SELECT id, name FROM webhook_triggers WHERE project_id = $1 AND target_type = 'suite' AND target_id = $2",
+      [context.project.id, request.params.suiteId],
+    );
+    if ((referencingSchedules.rowCount || referencingTriggers.rowCount) && request.query.force !== "true") {
+      return reply.code(409).send({
+        code: 2003,
+        message: "test suite is referenced by schedules or webhook triggers",
+        data: {
+          schedules: referencingSchedules.rows.map((row) => ({ id: String(row.id), name: String(row.name) })),
+          webhookTriggers: referencingTriggers.rows.map((row) => ({ id: String(row.id), name: String(row.name) })),
+        },
+      });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      /* 连带删除是 force 语义的一部分：留着就是每分钟报错的僵尸。报告历史不受影响
+         ——execution_index.trigger_ref_* 无外键且带名字快照（边界 13）。 */
+      if (request.query.force === "true") {
+        await client.query("DELETE FROM schedules WHERE project_id = $1 AND target_type = 'suite' AND target_id = $2", [context.project.id, request.params.suiteId]);
+        await client.query("DELETE FROM webhook_triggers WHERE project_id = $1 AND target_type = 'suite' AND target_id = $2", [context.project.id, request.params.suiteId]);
+      }
+      const result = await client.query("DELETE FROM test_suites WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.suiteId, context.project.id]);
+      await client.query("COMMIT");
+      if (!result.rowCount) return fail(reply, 404, 2001, "test suite not found");
+      return success({ id: result.rows[0].id });
+    } catch (error) {
+      await client.query("ROLLBACK"); throw error;
+    } finally {
+      client.release();
+    }
   });
 
   /**
@@ -438,55 +351,28 @@ export async function suiteRoutes(app: FastifyInstance) {
    * 定义上。成员清单不接受覆盖：选谁由定义说，随手指定一批成员是「批量执行」而不是
    * 「运行这个套件」。
    *
-   * 成员在这一刻解析并冻进 `member_snapshot`：tag/all 是动态选择，报告要可复现就必须
-   * 在入队时定下来。
+   * `variables` 是触发时的变量覆盖（P3-2，计划 6.5 泳道第二层）：冻进 run_spec、按下发给
+   * 每个成员，压过环境变量。只接受字符串值、键匹配 ^[A-Za-z_][A-Za-z0-9_]*$（共享
+   * 校验，调度配置 P3-6 与 Webhook 同一个入口）。触发参数里不要放密钥（边界 17）：
+   * 它按明文冻进 run_spec 并出现在执行快照里。
+   *
+   * 校验与入队在 `lib/trigger.ts`（P3-3 边界 5）：手动、调度（P3-4）、Webhook（P3-6）
+   * 共用同一条路径，错误码与 P2 完全一致（验收 6.7.1）。
    */
-  app.post<{ Params: { id: string; suiteId: string }; Body: { execution?: Partial<SuiteExecutionConfig> } }>("/api/v1/projects/:id/test-suites/:suiteId/execute", async (request, reply) => {
+  app.post<{ Params: { id: string; suiteId: string }; Body: { execution?: Partial<SuiteExecutionConfig>; variables?: Record<string, string> } }>("/api/v1/projects/:id/test-suites/:suiteId/execute", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
-    const suite = await loadSuite(context.project.id, request.params.suiteId);
-    if (!suite) return fail(reply, 404, 2001, "test suite not found");
-
-    /* 覆盖是**部分**覆盖，所以先与已存的那份合并再归一：只传 failFast 的一次运行不该
-       把并发与环境策略一起重置回默认值。 */
-    const merged = { ...suite.execution, ...(request.body?.execution ?? {}) };
-    const invalid = validateExecution(merged);
-    if (invalid) return fail(reply, 400, 1001, invalid);
-    const execution = toExecutionConfig(merged);
-    if (!await environmentBelongs(context.project.id, execution.environmentId)) return fail(reply, 400, 1001, "environment must belong to the project");
-
-    const resolved = await resolveMembers(context.project.id, suite.selection);
-    /* 「套件里没有成员不能运行」是执行时的检查（保存时允许空——新建套件必然从零成员
-       开始，见 issue_fix/P2-4_ISSUE_LOG.md）。 */
-    if (!resolved.members.length) return fail(reply, 400, 1001, "this suite resolves to no members; add members before running it");
-    if (resolved.members.length > SUITE_MAX_MEMBERS) return fail(reply, 400, 1001, `this suite resolves ${resolved.members.length} members, over the limit of ${SUITE_MAX_MEMBERS}`);
-    /* 单个成员一次要的令牌比整个池子还多：原子领取永远凑不齐，拒绝而不是让它跑到那一步
-       才失败（与「循环迭代 >100 硬失败」同一原则）。 */
-    const budget = await concurrencyBudget(context.project.id, resolved.members, execution.concurrency);
-    if (budget.over) return fail(reply, 400, 1001, `member "${budget.over.member.name}" needs ${budget.over.demand} concurrent requests at once, over this platform's budget of ${budget.budget}`);
-
     try {
-      const suiteExecutionId = await enqueueSuiteRun({
+      const suiteExecutionId = await triggerSuiteRun({
         projectId: context.project.id,
-        suiteId: suite.id,
-        suiteName: suite.name,
-        environmentId: execution.environmentId ?? undefined,
-        environmentName: await environmentSnapshot(context.project.id, execution.environmentId),
-        members: resolved.members,
-        execution: { ...execution, environmentId: execution.environmentId ?? undefined },
+        suiteId: request.params.suiteId,
+        execution: request.body?.execution,
+        variables: request.body?.variables,
       });
       /* 202: an accepted run, not a verdict. The client follows it on the stream. */
       const queued = await pool.query("SELECT * FROM suite_executions WHERE id = $1", [suiteExecutionId]);
       return reply.code(202).send(success(mapSuiteExecution(queued.rows[0])));
     } catch (error) {
-      /* 分区没有在线执行器：2004 + label（P2-8 边界 5）。 */
-      if (error instanceof NoRunnerError) return failNoRunner(reply, error.label, error.message);
-      const message = error instanceof Error ? error.message : "suite could not be started";
-      /* 队列不可用是基础设施问题而不是坏输入——503 让客户端说「执行队列不可用」而不是
-         去怪这个套件（与流程执行同款）。 */
-      if (message.includes("queue unavailable")) return fail(reply, 503, 5001, message);
-      /* 「成员跨分区」是 400：套件是进程内扇出的，一次执行只能落在一个网段上，处置办法
-         是拆成两个套件或设一个套件级环境——这是配置问题，不是基础设施问题。 */
-      return fail(reply, 400, 2002, message);
+      return failTrigger(reply, error, "suite could not be started");
     }
   });
 
@@ -516,18 +402,30 @@ export async function suiteRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string; executionId: string } }>("/api/v1/projects/:id/suite-executions/:executionId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     if (!isUuid(request.params.executionId)) return fail(reply, 404, 2001, "suite execution not found");
-    const result = await pool.query("SELECT * FROM suite_executions WHERE id = $1 AND project_id = $2", [request.params.executionId, context.project.id]);
+    /* 触发三列来自父索引（边界 15：报告/列表/告警三处都读 execution_index，不各自
+       join schedule_runs）。运行抽屉的「谁触发的」那一行也要同一份口径。 */
+    const result = await pool.query(
+      `SELECT se.*, ei.trigger_source, ei.trigger_ref_id, ei.trigger_ref_name
+         FROM suite_executions se
+         JOIN execution_index ei ON ei.id = se.execution_index_id
+        WHERE se.id = $1 AND se.project_id = $2`,
+      [request.params.executionId, context.project.id],
+    );
     if (!result.rowCount) return fail(reply, 404, 2001, "suite execution not found");
-    const indexId = result.rows[0].execution_index_id;
+    const row = result.rows[0];
+    const indexId = row.execution_index_id;
     const steps = indexId
       ? await pool.query("SELECT * FROM execution_steps WHERE index_id = $1 AND parent_step_id IS NULL ORDER BY position, created_at", [indexId])
       : { rows: [] as Record<string, unknown>[] };
-    const httpIds = steps.rows.map((row) => row.http_execution_id).filter(Boolean);
+    const httpIds = steps.rows.map((step) => step.http_execution_id).filter(Boolean);
     const runs = httpIds.length
       ? await pool.query("SELECT * FROM executions WHERE id = ANY($1::uuid[])", [httpIds])
       : { rows: [] as Record<string, unknown>[] };
     return success({
-      ...mapSuiteExecution(result.rows[0]),
+      ...mapSuiteExecution(row),
+      triggerSource: row.trigger_source ? String(row.trigger_source) : "manual",
+      triggerRefId: row.trigger_ref_id ? String(row.trigger_ref_id) : undefined,
+      triggerRefName: row.trigger_ref_name ? String(row.trigger_ref_name) : undefined,
       executionSteps: steps.rows.map(mapExecutionStep),
       runs: runs.rows.map(mapExecution),
     });

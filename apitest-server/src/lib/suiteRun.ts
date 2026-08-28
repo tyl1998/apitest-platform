@@ -6,7 +6,7 @@ import { SUITE_LEAF_BUDGET } from "./flow.js";
 import { TokenPool } from "./flowGraph.js";
 import { performFlowRun } from "./flowRun.js";
 import { performRun } from "./run.js";
-import { mapFlow, mapTestCase, type FlowNode, type SuiteExecutionConfig, type SuiteMemberSnapshot } from "../models/types.js";
+import { mapFlow, mapTestCase, type FlowNode, type SuiteExecutionConfig, type SuiteMemberSnapshot, type TriggerContext } from "../models/types.js";
 
 /**
  * 一次套件执行（P2-4.2）。范围与边界见 DEVELOPMENT_PLAN.md 5.0.11。
@@ -77,9 +77,19 @@ export async function performSuiteRun(suiteExecutionId: string, signal: AbortSig
   const indexId = String(row.execution_index_id);
   const total = Number(row.total);
   const members = (row.member_snapshot ?? []) as SuiteMemberSnapshot[];
-  const spec = (row.run_spec ?? {}) as SuiteExecutionConfig;
+  /* run_spec 冻的是「怎么跑」：execution 配置 + 变量覆盖（P3-2）+ 触发者（P3-3）。
+     三个键都不是 SuiteExecutionConfig 的字段，但都在这一份 JSON 里。 */
+  const spec = (row.run_spec ?? {}) as SuiteExecutionConfig & { variables?: Record<string, string>; trigger?: TriggerContext };
   const failFast = Boolean(spec.failFast);
   const override = spec.environmentStrategy === "override";
+  /* 触发时的变量覆盖（P3-2/6.5）：入队时与 run_spec 同一事务冻结在 variable_overrides
+     列上，逐一下发给每个成员。这是套件唯一一处「成员共享一个值」——它是整次执行的
+     入参，不随执行改变，与「成员之间不传变量」（5.0.11）不冲突。 */
+  const overrides = (row.variable_overrides ?? {}) as Record<string, string>;
+  /* 触发者（P3-3）：流程成员是独立父执行，有自己的 index 行；不继承的话，一次定时
+     套件跑出来的流程成员会在触发源筛选里读成「手动」，趋势也就分不开回归与调试。
+     用例成员不建 index（叶子由套件那行回答），无需传递。 */
+  const trigger = spec.trigger;
   const suiteEnvironment: MemberEnvironment = { id: row.environment_id ? String(row.environment_id) : undefined, name: row.environment_name ? String(row.environment_name) : undefined };
   /* 成员继承套件行上的分区（P2-8）：入队时已确认整批成员同属一个分区，成员行再各自
      解析一次只会在「入队后环境改了标签」时写出本机认领不了的记录。 */
@@ -161,6 +171,8 @@ export async function performSuiteRun(suiteExecutionId: string, signal: AbortSig
         source: "test_case", caseId: testCase.id, caseName: testCase.name,
         assertions: testCase.assertions, hooks: testCase.preRequestHooks,
         extracts: testCase.extracts, responseScripts: testCase.responseScripts,
+        /* 覆盖层压过环境变量（performRun 里合并），泳道默认头 {{lane}} 在这里生效。 */
+        variables: overrides,
         runnerLabel,
       });
       /* 证据指针先落库再开跑：中途取消要能顺着它找到这次请求。 */
@@ -198,12 +210,14 @@ export async function performSuiteRun(suiteExecutionId: string, signal: AbortSig
     if (!flow.nodes.length) throw new Error(`flow "${flow.name}" has no steps to run`);
     const environment = environmentOf(member);
     /* insertFlowRun 会冻结整张图（内联脚本、解析命名 SQL、展开子流程），跨流程递归与
-       超预算的请求并发都在那里抛错——它们是这个成员的失败，不是整个套件的失败。 */
+        超预算的请求并发都在那里抛错——它们是这个成员的失败，不是整个套件的失败。
+        变量袋 = 流程种子变量 + 套件下发的覆盖（后者胜，FlowRunSpec.variables 是
+        既有通道，不新造第二条变量层）。 */
     const inserted = await insertFlowRun({
       projectId, flowId: flow.id, flowName: flow.name,
       environmentId: environment.id, environmentName: environment.name,
-      nodes: flow.nodes, edges: flow.edges, variables: flow.variables,
-      runnerLabel,
+      nodes: flow.nodes, edges: flow.edges, variables: { ...flow.variables, ...overrides },
+      runnerLabel, trigger,
     });
     await pool.query("UPDATE execution_steps SET child_index_id = $2 WHERE id = $1", [stepId, inserted.executionIndexId]);
     /* 流程成员是**容器**：它不拿令牌，它内部的叶子向套件这个共享池子领。容器持令牌

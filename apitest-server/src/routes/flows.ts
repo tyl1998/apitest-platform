@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
-import { NoRunnerError, enqueueFlowRun, enqueueRun, cancelFlowRun } from "../lib/enqueue.js";
+import { NoRunnerError, enqueueRun, cancelFlowRun } from "../lib/enqueue.js";
 import { MAX_FLOW_NODES, planStages, toFlowNode, topologicalOrder, validateFlowGraph, validateNode } from "../lib/flow.js";
 import { checkFlowReferences, flowsReferencing } from "../lib/flowRefs.js";
 import { executeConditionNode, executeDatabaseNode, executeScriptNode, prepareFlowNodes } from "../lib/flowRun.js";
@@ -11,6 +11,7 @@ import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, failNoRunner, success } from "../lib/response.js";
 import { adoptScriptRefs, inlineFlowNodeScripts, persistFlowScripts } from "../lib/scripts.js";
 import { detachSuiteMember } from "../lib/suiteMembers.js";
+import { failTrigger, resourcesBelong, triggerFlowRun } from "../lib/trigger.js";
 import { isUuid } from "../lib/uuid.js";
 import { loadEnvironment } from "../lib/run.js";
 import { mapEndpoint, mapExecution, mapExecutionStep, mapFlow, mapFlowExecution, mapTestCase, type ExecutionStep, type Flow, type FlowEdge, type FlowNode } from "../models/types.js";
@@ -50,53 +51,6 @@ async function environmentName(projectId: string, environmentId: string | null |
   if (!environmentId) return null;
   const result = await pool.query("SELECT name FROM environments WHERE id = $1 AND project_id = $2", [environmentId, projectId]);
   return result.rowCount ? String(result.rows[0].name) : undefined;
-}
-
-/**
- * Every node must point at an endpoint in this project.
- *
- * The FK on `executions.endpoint_id` only proves the endpoint exists, not that
- * it belongs here, so without this a node could attribute its runs to another
- * project's endpoint history.
- */
-/** 展平所有节点（含循环体里的内联步骤），供资源归属与脚本用量检查。 */
-function flattenNodes(nodes: FlowNode[], into: FlowNode[] = []): FlowNode[] {
-  for (const node of nodes) {
-    into.push(node);
-    if (node.type === "loop") flattenNodes(node.body?.nodes ?? [], into);
-  }
-  return into;
-}
-
-async function endpointsBelong(projectId: string, nodes: FlowNode[]): Promise<string | undefined> {
-  const flat = flattenNodes(nodes);
-  const ids = [...new Set(flat.filter((node) => node.type === "request").map((node) => node.endpointId))];
-  if (!ids.length) return undefined;
-  const result = await pool.query("SELECT id FROM endpoints WHERE id = ANY($1::uuid[]) AND project_id = $2", [ids, projectId]);
-  if (result.rowCount === ids.length) return undefined;
-  return "a node references an endpoint that does not exist in this project";
-}
-
-async function databaseResourcesBelong(projectId: string, nodes: FlowNode[]): Promise<string | undefined> {
-  const flat = flattenNodes(nodes);
-  const databaseNodes = flat.filter((node) => node.type === "database");
-  const sourceIds = [...new Set(databaseNodes.map((node) => node.dataSourceId))];
-  if (sourceIds.length) {
-    const sources = await pool.query("SELECT id FROM data_sources WHERE id = ANY($1::uuid[]) AND project_id = $2", [sourceIds, projectId]);
-    if (sources.rowCount !== sourceIds.length) return "a database node references a data source that does not exist in this project";
-  }
-  const definitionIds = [...new Set(databaseNodes.flatMap((node) => node.sqlDefinitionId ? [node.sqlDefinitionId] : []))];
-  if (definitionIds.length) {
-    const definitions = await pool.query("SELECT id, data_source_id FROM sql_definitions WHERE id = ANY($1::uuid[]) AND project_id = $2", [definitionIds, projectId]);
-    if (definitions.rowCount !== definitionIds.length) return "a database node references an SQL definition that does not exist in this project";
-    const expected = new Map(databaseNodes.filter((node) => node.sqlDefinitionId).map((node) => [node.sqlDefinitionId!, node.dataSourceId]));
-    if (definitions.rows.some((row) => String(row.data_source_id) !== expected.get(String(row.id)))) return "a database node SQL definition must belong to its selected data source";
-  }
-  return undefined;
-}
-
-async function resourcesBelong(projectId: string, nodes: FlowNode[]) {
-  return await endpointsBelong(projectId, nodes) ?? await databaseResourcesBelong(projectId, nodes);
 }
 
 /** The most recent run of each of these flows, for the list's「最近结果」. */
@@ -251,14 +205,29 @@ async function flowUsage(projectId: string, flowId: string) {
 }
 
 export async function flowRoutes(app: FastifyInstance) {
-  app.get<{ Params: { id: string }; Querystring: { keyword?: string; tag?: string } }>("/api/v1/projects/:id/flows", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { keyword?: string; tag?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/flows", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
     const keyword = request.query.keyword?.trim();
     /* Filtering in SQL so a keyword matches every flow, not just a loaded page. */
     if (keyword) { params.push(`%${keyword}%`); clauses.push(`(name ILIKE $${params.length} OR description ILIKE $${params.length})`); }
     if (request.query.tag?.trim()) { params.push(request.query.tag.trim()); clauses.push(`$${params.length} = ANY(tags)`); }
-    const result = await pool.query(`SELECT * FROM flows WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC`, params);
+    const where = clauses.join(" AND ");
+    /* Pagination is opt-in: the member picker and flow selectors fetch the whole
+       list, so the absence of `pageSize` keeps the unpaginated contract they rely
+       on (same convention as endpoints / data-sources / mocks). */
+    if (request.query.pageSize !== undefined) {
+      const page = Math.max(1, Number(request.query.page ?? 1));
+      const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
+      const count = await pool.query(`SELECT COUNT(*)::int AS total FROM flows WHERE ${where}`, params);
+      params.push(pageSize, (page - 1) * pageSize);
+      const result = await pool.query(`SELECT * FROM flows WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+      const flows = result.rows.map(mapFlow);
+      const runs = await latestRuns(flows.map((flow) => flow.id));
+      const data = flows.map((flow) => ({ ...flow, nodeCount: flow.nodes.length, lastRun: runs.get(flow.id) }));
+      return success(data, { page, pageSize, total: Number(count.rows[0].total) });
+    }
+    const result = await pool.query(`SELECT * FROM flows WHERE ${where} ORDER BY created_at DESC`, params);
     const flows = result.rows.map(mapFlow);
     const runs = await latestRuns(flows.map((flow) => flow.id));
     /* nodeCount travels alongside rather than inside Flow: the list only needs
@@ -444,51 +413,27 @@ export async function flowRoutes(app: FastifyInstance) {
    * when the user runs an edited-but-unsaved flow: those run and are recorded,
    * without touching the stored flow — the same rule as a case run
    * (交互文档 3.1.3).
+   *
+   * 校验与入队在 `lib/trigger.ts`（P3-3 边界 5）：手动、调度（P3-4）、Webhook（P3-6）
+   * 共用同一条路径，错误码与 P2 完全一致（验收 6.7.1）。
    */
   app.post<{ Params: { id: string; flowId: string }; Body: { nodes?: FlowNode[]; edges?: FlowEdge[]; variables?: Record<string, string> } }>("/api/v1/projects/:id/flows/:flowId/execute", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
     if (!isUuid(request.params.flowId)) return fail(reply, 404, 2001, "flow not found");
-    const found = await pool.query("SELECT * FROM flows WHERE id = $1 AND project_id = $2", [request.params.flowId, context.project.id]);
-    if (!found.rowCount) return fail(reply, 404, 2001, "flow not found");
-    const flow: Flow = mapFlow(found.rows[0]);
-
-    const override = request.body?.nodes !== undefined || request.body?.edges !== undefined;
-    const nodes = override ? (request.body.nodes ?? []).map(toFlowNode) : flow.nodes;
-    const edges = override ? request.body.edges ?? [] : flow.edges;
-    if (override) {
-      const invalid = validateFlowGraph(nodes, edges);
-      if (invalid) return fail(reply, 400, 1001, invalid);
-    }
-    const owned = await resourcesBelong(context.project.id, nodes);
-    if (owned) return fail(reply, 400, 1001, owned);
-    if (!nodes.length) return fail(reply, 400, 1001, "a flow needs at least one node to run");
-    /* 执行同样做跨流程递归检测：被引用的流程可能在上次保存后被改坏。 */
-    const recursive = await checkFlowReferences(context.project.id, nodes, [{ id: flow.id, name: flow.name }]);
-    if (recursive) return fail(reply, 400, 1001, recursive);
-
     try {
-      const flowExecutionId = await enqueueFlowRun({
+      const flowExecutionId = await triggerFlowRun({
         projectId: context.project.id,
-        flowId: flow.id,
-        flowName: flow.name,
-        environmentId: flow.environmentId,
-        environmentName: flow.environmentName,
-        nodes, edges,
-        variables: request.body?.variables ?? flow.variables,
+        flowId: request.params.flowId,
+        nodes: request.body?.nodes,
+        edges: request.body?.edges,
+        variables: request.body?.variables,
       });
       /* 202: an accepted run, not a verdict. The client follows it on the
          stream, exactly as it does for a debug send. */
       const queued = await pool.query("SELECT * FROM flow_executions WHERE id = $1", [flowExecutionId]);
       return reply.code(202).send(success(mapFlowExecution(queued.rows[0])));
     } catch (error) {
-      /* 分区没有在线执行器：2004 + label（P2-8 边界 5）。与「队列不可用」分开报，
-         因为处置动作不同——一个去修 Redis，一个去那个网段起一台 worker。 */
-      if (error instanceof NoRunnerError) return failNoRunner(reply, error.label, error.message);
-      const message = error instanceof Error ? error.message : "flow could not be started";
-      /* Queue down is infrastructure, not bad input — 503 so the client can say
-         「执行队列不可用」rather than blaming the flow. */
-      if (message.includes("queue unavailable")) return fail(reply, 503, 5001, message);
-      return fail(reply, 400, 2002, message);
+      return failTrigger(reply, error, "flow could not be started");
     }
   });
 

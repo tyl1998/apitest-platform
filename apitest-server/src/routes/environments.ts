@@ -18,7 +18,7 @@ type VariableInput = Record<string, string>;
  */
 type SecretPatch = Record<string, string | null>;
 
-type EnvironmentBody = { name?: string; variables?: VariableInput; secrets?: SecretPatch; runnerLabel?: string };
+type EnvironmentBody = { name?: string; variables?: VariableInput; secrets?: SecretPatch; runnerLabel?: string; defaultHeaders?: Record<string, string> };
 
 /**
  * 执行分区标签的校验（P2-8）。
@@ -38,6 +38,29 @@ function normalizeRunnerLabel(input: string | undefined): { label?: string; erro
 function cleanVariables(input: VariableInput | undefined): VariableInput | undefined {
   if (!input) return undefined;
   return Object.fromEntries(Object.entries(input).filter(([key]) => key.trim()).map(([key, value]) => [key.trim(), String(value ?? "")]));
+}
+
+/**
+ * 环境默认头的校验与归一（P3-2，计划 6.5 泳道第一层）。
+ *
+ * 与 `normalizeRunnerLabel` 同一个 `{ value?, error? }` 形状：空名字段丢弃（与
+ * `cleanVariables` 一致），非字符串值**拒绝而不是静默强转**——这是新字段，没有历史
+ * 包袱，一个 400 比猜出来的值诚实。值可引用 `{{变量}}`（如
+ * `{"X-Env-Tag": "{{lane}}"}`），在 `buildRequest` 里解析。大小写异体的同名键不在
+ * 这里拒绝：合并发生在 `buildRequest`（大小写不敏感、后者胜），这里重复一套规则
+ * 只会和它分叉。
+ */
+function normalizeDefaultHeaders(input: Record<string, string> | undefined): { headers?: Record<string, string>; error?: string } {
+  if (input === undefined || input === null) return {};
+  if (typeof input !== "object" || Array.isArray(input)) return { error: "defaultHeaders must be an object of string values" };
+  const headers: Record<string, string> = {};
+  for (const [rawKey, value] of Object.entries(input)) {
+    const key = rawKey.trim();
+    if (!key) continue;
+    if (typeof value !== "string") return { error: `default header "${key}" must be a string` };
+    headers[key] = value;
+  }
+  return { headers };
 }
 
 function applySecretPatch(stored: Record<string, string>, patch: SecretPatch | undefined) {
@@ -102,9 +125,26 @@ async function scanUsage(projectId: string, environmentId: string) {
 }
 
 export async function environmentRoutes(app: FastifyInstance) {
-  app.get<{ Params: { id: string } }>("/api/v1/projects/:id/environments", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { keyword?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/environments", async (request, reply) => {
     const context = await requireProjectAccess(request, reply);
     if (!context) return;
+    /**
+     * 同一个数据源，两种读法：不带 `page` 的调用（各处环境选择器、projectStore）拿
+     * 全量列表——选择器要的是「全部可选环境」，按关键字截断会让下拉里缺一个真实
+     * 存在的环境；管理页带 `page`/`pageSize` 走服务端分页 + `keyword` 过滤（与
+     * test-suites 同款：过滤在 SQL 里，命中覆盖全量而不是当前页）。
+     */
+    if (request.query.page !== undefined || request.query.pageSize !== undefined) {
+      const page = Math.max(1, Number(request.query.page ?? 1));
+      const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
+      const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
+      if (request.query.keyword?.trim()) { params.push(`%${request.query.keyword.trim()}%`); clauses.push(`name ILIKE $${params.length}`); }
+      const where = clauses.join(" AND ");
+      const count = await pool.query(`SELECT COUNT(*)::int AS total FROM environments WHERE ${where}`, params);
+      params.push(pageSize, (page - 1) * pageSize);
+      const result = await pool.query(`SELECT * FROM environments WHERE ${where} ORDER BY name LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+      return success(result.rows.map(mapEnvironment), { page, pageSize, total: Number(count.rows[0].total) });
+    }
     const result = await pool.query("SELECT * FROM environments WHERE project_id = $1 ORDER BY name", [context.project.id]);
     return success(result.rows.map(mapEnvironment));
   });
@@ -118,9 +158,11 @@ export async function environmentRoutes(app: FastifyInstance) {
     if (duplicate.rowCount) return fail(reply, 409, 1002, "an environment with this name already exists");
     const runner = normalizeRunnerLabel(request.body.runnerLabel);
     if (runner.error) return fail(reply, 400, 1001, runner.error);
+    const defaults = normalizeDefaultHeaders(request.body.defaultHeaders);
+    if (defaults.error) return fail(reply, 400, 1001, defaults.error);
     const result = await pool.query(
-      "INSERT INTO environments (id, project_id, name, variables, secrets, runner_label) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6) RETURNING *",
-      [randomUUID(), context.project.id, name, JSON.stringify(cleanVariables(request.body.variables) ?? {}), JSON.stringify(applySecretPatch({}, request.body.secrets)), runner.label ?? DEFAULT_RUNNER_LABEL],
+      "INSERT INTO environments (id, project_id, name, variables, secrets, runner_label, default_headers) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7::jsonb) RETURNING *",
+      [randomUUID(), context.project.id, name, JSON.stringify(cleanVariables(request.body.variables) ?? {}), JSON.stringify(applySecretPatch({}, request.body.secrets)), runner.label ?? DEFAULT_RUNNER_LABEL, JSON.stringify(defaults.headers ?? {})],
     );
     return reply.code(201).send(success(mapEnvironment(result.rows[0])));
   });
@@ -145,12 +187,15 @@ export async function environmentRoutes(app: FastifyInstance) {
     const variables = cleanVariables(request.body.variables);
     const runner = normalizeRunnerLabel(request.body.runnerLabel);
     if (runner.error) return fail(reply, 400, 1001, runner.error);
+    const defaults = normalizeDefaultHeaders(request.body.defaultHeaders);
+    if (defaults.error) return fail(reply, 400, 1001, defaults.error);
 
     /* 分区标签改了不影响已经排队/在跑的执行：那些行上有自己的快照（迁移 027），
-       它们的 job 也已经在原来那条队列里。这正是快照存在的理由。 */
+       它们的 job 也已经在原来那条队列里。这正是快照存在的理由。默认头同理——
+       它在每次请求组装时读取（loadEnvironment），改了只影响之后的执行。 */
     const result = await pool.query(
-      "UPDATE environments SET name = COALESCE($1, name), variables = COALESCE($2::jsonb, variables), secrets = $3::jsonb, runner_label = COALESCE($6, runner_label) WHERE id = $4 AND project_id = $5 RETURNING *",
-      [name || null, variables ? JSON.stringify(variables) : null, JSON.stringify(secrets), request.params.environmentId, context.project.id, runner.label ?? null],
+      "UPDATE environments SET name = COALESCE($1, name), variables = COALESCE($2::jsonb, variables), secrets = $3::jsonb, runner_label = COALESCE($6, runner_label), default_headers = COALESCE($7::jsonb, default_headers) WHERE id = $4 AND project_id = $5 RETURNING *",
+      [name || null, variables ? JSON.stringify(variables) : null, JSON.stringify(secrets), request.params.environmentId, context.project.id, runner.label ?? null, defaults.headers ? JSON.stringify(defaults.headers) : null],
     );
     return success(mapEnvironment(result.rows[0]));
   });
@@ -160,8 +205,9 @@ export async function environmentRoutes(app: FastifyInstance) {
    *
    * 服务端 `INSERT … SELECT`（与接口复制同一条决策），且这里别无选择：secret 明文只在
    * 服务端存在（Spec 4.6），客户端读到的只有 `secretKeys`，read-then-create 会产出一个
-   * secret 全空的副本。分区标签一起带走——「这个环境指向的系统从哪个网段访问」与变量
-   * 是同一份拷贝语义，拆开只会让副本指向错误的网段。
+   * secret 全空的副本。分区标签与默认头一起带走——「这个环境指向的系统从哪个网段
+   * 访问」「这套环境的请求都带什么头」与变量是同一份拷贝语义，拆开只会让副本指向
+   * 错误的网段或悄悄丢掉泳道头（P3-2）。
    */
   app.post<{ Params: { id: string; environmentId: string }; Body: { name?: string } }>("/api/v1/projects/:id/environments/:environmentId/duplicate", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
@@ -179,8 +225,8 @@ export async function environmentRoutes(app: FastifyInstance) {
     for (let index = 2; names.has(name.toLowerCase()); index += 1) name = `${requested} ${index}`;
 
     const result = await pool.query(
-      `INSERT INTO environments (id, project_id, name, variables, secrets, runner_label)
-       SELECT $1, project_id, $2, variables, secrets, runner_label
+      `INSERT INTO environments (id, project_id, name, variables, secrets, runner_label, default_headers)
+       SELECT $1, project_id, $2, variables, secrets, runner_label, default_headers
        FROM environments WHERE id = $3 AND project_id = $4 RETURNING *`,
       [randomUUID(), name, request.params.environmentId, context.project.id],
     );

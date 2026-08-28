@@ -172,10 +172,19 @@ function sendUsageConflict(reply: FastifyReply, message: string, usage: unknown)
 }
 
 export async function dataSourceRoutes(app: FastifyInstance) {
-  app.get<{ Params: { id: string } }>("/api/v1/projects/:id/data-sources", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { page?: string; pageSize?: string } }>("/api/v1/projects/:id/data-sources", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
-    const result = await pool.query("SELECT * FROM data_sources WHERE project_id = $1 ORDER BY name", [context.project.id]);
-    return success(result.rows.map(mapDataSource));
+    /* Pagination is opt-in: flow node pickers still fetch the whole list, so the
+       absence of `pageSize` keeps the unpaginated contract they rely on. */
+    if (request.query.pageSize === undefined) {
+      const result = await pool.query("SELECT * FROM data_sources WHERE project_id = $1 ORDER BY name", [context.project.id]);
+      return success(result.rows.map(mapDataSource));
+    }
+    const page = Math.max(1, Number(request.query.page ?? 1));
+    const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
+    const count = await pool.query("SELECT COUNT(*)::int AS total FROM data_sources WHERE project_id = $1", [context.project.id]);
+    const result = await pool.query("SELECT * FROM data_sources WHERE project_id = $1 ORDER BY name LIMIT $2 OFFSET $3", [context.project.id, pageSize, (page - 1) * pageSize]);
+    return success(result.rows.map(mapDataSource), { page, pageSize, total: Number(count.rows[0].total) });
   });
 
   app.post<{ Params: { id: string }; Body: DataSourceBody }>("/api/v1/projects/:id/data-sources", async (request, reply) => {

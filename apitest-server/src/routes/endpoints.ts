@@ -131,7 +131,7 @@ async function queueEndpointRun(projectId: string, endpointId: string, requested
 }
 
 export async function endpointRoutes(app: FastifyInstance) {
-  app.get<{ Params: { id: string }; Querystring: { keyword?: string; method?: string; environmentId?: string } }>("/api/v1/projects/:id/endpoints", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { keyword?: string; method?: string; environmentId?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/endpoints", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
     /* Server-side filtering, so a keyword matches every endpoint, not just the loaded page. */
@@ -144,21 +144,32 @@ export async function endpointRoutes(app: FastifyInstance) {
       if (!await validEnvironment(context.project.id, request.query.environmentId)) return fail(reply, 400, 1001, "environment must belong to the project");
       params.push(request.query.environmentId); clauses.push(`default_environment_id = $${params.length}`);
     }
-    const result = await pool.query(
-      `SELECT endpoints.*, COALESCE(cases.total, 0) AS case_count
+    /* Pagination is opt-in: the project store still fetches the whole list for
+       endpoint pickers (flow nodes, mock 快照来源), so the absence of `pageSize`
+       keeps the unpaginated contract those callers rely on. */
+    const select = `SELECT endpoints.*, COALESCE(cases.total, 0) AS case_count
          FROM endpoints
          /* Sub-select, not a join onto test_cases: joining would multiply the
             endpoint row per case and inflate anything else aggregated here. */
          LEFT JOIN (SELECT endpoint_id, COUNT(*)::int AS total FROM test_cases GROUP BY endpoint_id) AS cases
            ON cases.endpoint_id = endpoints.id
         WHERE ${clauses.join(" AND ")}
-        ORDER BY endpoints.created_at DESC`,
-      params,
-    );
+        ORDER BY endpoints.created_at DESC`;
     /* caseCount is a real number now that用例 exist (P1); 0 truthfully means
        "this endpoint has no cases yet". */
-    const data = result.rows.map((row) => ({ ...mapEndpoint(row), caseCount: Number(row.case_count) }));
-    return success(data, { total: data.length });
+    const rows = (result: { rows: Record<string, unknown>[] }) => result.rows.map((row) => ({ ...mapEndpoint(row), caseCount: Number(row.case_count) }));
+    if (request.query.pageSize === undefined) {
+      const result = await pool.query(select, params);
+      return success(rows(result), { total: result.rowCount ?? 0 });
+    }
+    const page = Math.max(1, Number(request.query.page ?? 1));
+    const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
+    /* The cases sub-select cannot multiply endpoint rows, so counting the base
+       table under the same WHERE is the page total. */
+    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM endpoints WHERE ${clauses.join(" AND ")}`, params);
+    params.push(pageSize, (page - 1) * pageSize);
+    const result = await pool.query(`${select} LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+    return success(rows(result), { page, pageSize, total: Number(count.rows[0].total) });
   });
 
   app.get<{ Params: { id: string; endpointId: string } }>("/api/v1/projects/:id/endpoints/:endpointId", async (request, reply) => {

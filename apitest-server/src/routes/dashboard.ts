@@ -48,6 +48,7 @@ export async function queryProjectMetrics(user: User, filters: ProjectFilters) {
       COALESCE(ex.passed_count, 0)::int        AS passed_count,
       COALESCE(tc.case_count, 0)::int          AS case_count,
       COALESCE(tc.covered_endpoint_count, 0)::int AS covered_endpoint_count,
+      COALESCE(sc.schedule_count, 0)::int      AS schedule_count,
       ex.last_execution_at
     FROM projects p
     LEFT JOIN (SELECT project_id, COUNT(*) AS endpoint_count FROM endpoints GROUP BY project_id) ep ON ep.project_id = p.id
@@ -76,6 +77,11 @@ export async function queryProjectMetrics(user: User, filters: ProjectFilters) {
       SELECT project_id, COUNT(*) AS case_count, COUNT(DISTINCT endpoint_id) AS covered_endpoint_count
       FROM test_cases GROUP BY project_id
     ) tc ON tc.project_id = p.id
+    LEFT JOIN (
+      /* 调度数（P3-6）：建了多少条就是多少条——含停用的。停用的调度不是「不存在」，
+         面板上把它藏掉只会让人以为少建了一条。 */
+      SELECT project_id, COUNT(*) AS schedule_count FROM schedules GROUP BY project_id
+    ) sc ON sc.project_id = p.id
     ${where}
     ORDER BY p.created_at DESC`, params);
 
@@ -99,6 +105,7 @@ export async function queryProjectMetrics(user: User, filters: ProjectFilters) {
       passedCount,
       caseCount: Number(row.case_count),
       coveredEndpointCount,
+      scheduleCount: Number(row.schedule_count),
       /* null, not 0: "no runs yet" and "everything failed" are different facts. */
       passRate: judgedCount ? (passedCount / judgedCount) * 100 : null,
       completionRate: endpointCount ? (executedEndpointCount / endpointCount) * 100 : null,
@@ -134,7 +141,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
       testCaseCount: projects.reduce((sum, item) => sum + item.caseCount, 0),
       /* Not yet built. null renders as "未启用" rather than a misleading 0. */
       ciTaskCount: null,
-      scheduleCount: null,
+      /* Real numbers now that schedules exist (P3-6). */
+      scheduleCount: projects.reduce((sum, item) => sum + item.scheduleCount, 0),
       projects,
     });
   });

@@ -111,7 +111,7 @@ export async function scriptRoutes(app: FastifyInstance) {
     return success({ ctx: SCRIPT_CTX_SCHEMAS });
   });
 
-  app.get<{ Params: { id: string }; Querystring: { keyword?: string; kind?: string } }>("/api/v1/projects/:id/scripts", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { keyword?: string; kind?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/scripts", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     const params: unknown[] = [context.project.id];
     /* name IS NOT NULL: anonymous scripts are an implementation detail of a case. */
@@ -126,21 +126,37 @@ export async function scriptRoutes(app: FastifyInstance) {
       if (!SCRIPT_KINDS.includes(kind)) return fail(reply, 400, 1001, `kind must be one of ${SCRIPT_KINDS.join(", ")}`);
       params.push(kind); clauses.push(`s.kind = $${params.length}`);
     }
-    const result = await pool.query(
-      `SELECT s.*, COALESCE(d.ids, '{}') AS dependencies
-         FROM scripts s
-         LEFT JOIN (
-           SELECT script_id, array_agg(depends_on_id ORDER BY position) AS ids
-             FROM script_deps GROUP BY script_id
-         ) d ON d.script_id = s.id
-        WHERE ${clauses.join(" AND ")}
-        ORDER BY s.kind, s.name`,
-      params,
-    );
-    const data = result.rows.map((row) => {
+    const where = clauses.join(" AND ");
+    /* Shared by both reads: the list renders the dependency order and the editor
+       preselects from it. */
+    const body = `
+      FROM scripts s
+      LEFT JOIN (
+        SELECT script_id, array_agg(depends_on_id ORDER BY position) AS ids
+          FROM script_deps GROUP BY script_id
+      ) d ON d.script_id = s.id
+      WHERE ${where}
+      ORDER BY s.kind, s.name`;
+    /* Libraries carry a parsed symbol list for the picker; other kinds do not. */
+    const mapRows = (rows: Record<string, unknown>[]) => rows.map((row) => {
       const mapped = mapScript(row);
       return mapped.kind === "library" ? { ...mapped, symbols: inspectLibrarySource(mapped.content).symbols } : mapped;
     });
+    /**
+     * 同一个数据源，两种读法（与 environments / flows 同款）：不带 `page` 的调用
+     * （脚本选择器、依赖库下拉）拿全量列表；管理页带 `page`/`pageSize` 走服务端
+     * 分页——分页后只过滤当前页会让人以为某个脚本不存在。
+     */
+    if (request.query.page !== undefined || request.query.pageSize !== undefined) {
+      const page = Math.max(1, Number(request.query.page ?? 1));
+      const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
+      const count = await pool.query(`SELECT COUNT(*)::int AS total FROM scripts s WHERE ${where}`, params);
+      params.push(pageSize, (page - 1) * pageSize);
+      const result = await pool.query(`SELECT s.*, COALESCE(d.ids, '{}') AS dependencies${body} LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+      return success(mapRows(result.rows), { page, pageSize, total: Number(count.rows[0].total) });
+    }
+    const result = await pool.query(`SELECT s.*, COALESCE(d.ids, '{}') AS dependencies${body}`, params);
+    const data = mapRows(result.rows);
     return success(data, { total: data.length });
   });
 

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Redis } from "ioredis";
+import type { PoolClient } from "pg";
 import { pool } from "../db.js";
 import { publishEvent } from "./events.js";
 import { CANCEL_CHANNEL, DEFAULT_RUNNER_LABEL, createRedis, executionQueue } from "./queue.js";
@@ -8,7 +9,7 @@ import { FLOW_PARALLELISM } from "./flow.js";
 import { planSteps, prepareFlowNodes, type FlowRunSpec } from "./flowRun.js";
 import { inlineFlowNodeScripts, inlineHookContent, inlineResponseScriptContent, inlineScriptContent } from "./scripts.js";
 import type { PreparedFlowNode } from "./flowNodes.js";
-import { WORKER_OFFLINE_AFTER_SECONDS, type Assertion, type Execution, type FlowEdge, type FlowExtract, type FlowNode, type HookConfig, type RequestSnapshot, type ResponseScriptConfig, type SuiteExecutionConfig, type SuiteMemberSnapshot } from "../models/types.js";
+import { WORKER_OFFLINE_AFTER_SECONDS, type Assertion, type Execution, type FlowEdge, type FlowExtract, type FlowNode, type HookConfig, type RequestSnapshot, type ResponseScriptConfig, type SuiteExecutionConfig, type SuiteMemberSnapshot, type TriggerContext } from "../models/types.js";
 
 /**
  * 目标分区没有在线执行器（P2-8 边界 5）。
@@ -80,9 +81,9 @@ export type EnqueueInput = {
   /**
    * Extra variables layered over the environment, highest priority.
    *
-   * Only单步调试 uses this today: a node normally reads values an upstream step
-   * extracted, and run in isolation it has no upstream, so the caller supplies
-   * the bag instead of the node being untestable on its own.
+   * 单步调试与套件的用例成员用这一层：前者由调用方补上「上游本该产出的值」，
+   * 后者是套件触发时下发的变量覆盖（P3-2/6.5 泳道）——对每个成员相同、不随执行
+   * 改变，与「成员之间不传变量」不冲突。
    */
   variables?: Record<string, string>;
   /**
@@ -273,6 +274,13 @@ export type EnqueueFlowInput = {
   variables: Record<string, string>;
   /** 同 `EnqueueInput.runnerLabel`：套件的流程成员继承套件冻结的分区。 */
   runnerLabel?: string;
+  /**
+   * 触发者（P3-3）：写进父索引的 trigger_* 三列。缺省 manual。
+   *
+   * 套件的流程成员由 `performSuiteRun` 传入套件自己的那份——「这次流程执行是被那次
+   * 定时套件带出来的」，趋势与执行记录页的触发源筛选才不会把回归成员算成手动调试。
+   */
+  trigger?: TriggerContext;
 };
 
 /**
@@ -321,13 +329,15 @@ export async function insertFlowRun(input: EnqueueFlowInput): Promise<{ flowExec
   /* 分区标签快照（P2-8 边界 1）：流程的每一步 HTTP 证据都由持有这次流程执行的那个
      worker 就地发出，所以整条流程共用流程自己这一个分区，步骤不再单独路由。 */
   const runnerLabel = input.runnerLabel ?? await resolveRunnerLabel(input.environmentId);
+  /* 触发者（P3-3）：manual 不传 trigger，列 DEFAULT 兜底。 */
+  const trigger = input.trigger ?? { source: "manual" as const };
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query(
-      `INSERT INTO execution_index (id, project_id, kind, target_id, target_name, detail_id, status, total)
-       VALUES ($1, $2, 'flow', $3, $4, $5, 'queued', $6)`,
-      [executionIndexId, input.projectId, input.flowId ?? null, input.flowName, flowExecutionId, plan.length],
+      `INSERT INTO execution_index (id, project_id, kind, target_id, target_name, detail_id, status, total, trigger_source, trigger_ref_id, trigger_ref_name)
+       VALUES ($1, $2, 'flow', $3, $4, $5, 'queued', $6, $7, $8, $9)`,
+      [executionIndexId, input.projectId, input.flowId ?? null, input.flowName, flowExecutionId, plan.length, trigger.source, trigger.refId ?? null, trigger.refName ?? null],
     );
     await client.query(
       `INSERT INTO flow_executions (
@@ -435,7 +445,52 @@ export type EnqueueSuiteInput = {
   /** 入队这一刻解析并冻结的成员清单：tag/all 是动态选择，报告要可复现就必须冻结。 */
   members: SuiteMemberSnapshot[];
   execution: SuiteExecutionConfig;
+  /**
+   * 触发时的变量覆盖（P3-2，计划 6.5 泳道第二层）：冻进 run_spec 下发给每个成员，
+   * 另在 `variable_overrides` 列留一份终态后可读的快照（迁移 032，报告标识段用）。
+   * 手动、调度（P3-4）、Webhook 套件触发共用这一个入口。
+   */
+  variables?: Record<string, string>;
+  /** 触发者（P3-3）：写进父索引的 trigger_* 三列。缺省 manual。 */
+  trigger?: TriggerContext;
 };
+
+/**
+ * 报告名的日期段：本地时间 `YYYYMMDD`。
+ *
+ * 与 `{{$date}}` 内置变量同一条「用户钟上的日期」语义（lib/resolve.ts）。「今天」的
+ * 边界也必须用同一个钟算——序号统计把 JS 算出的本地零点作为参数传给 SQL，而不是让
+ * Postgres 按它自己的会话时区截断，两个时钟差一小时就会在临界时段数错桶。
+ */
+function reportDateStamp(date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`;
+}
+
+/**
+ * 报告名（边界 13）：`套件名_YYYYMMDD[_n]`，在入队事务里一次定终身。
+ *
+ * - 用套件**改名前**的名字（input.suiteName 快照），与 suite_name 同一条事实快照理由。
+ * - 序号 =「这个套件今天已有几行」+ 1：入队时定下、之后不再改，删掉某次运行不会让
+ *   别人的名字位移（名字是一次性事实，不是位置）。
+ * - 锁套件行让同一套件的并发入队串行化：否则两个同时入队都数到 n、都拿 `_n+1`。
+ *   手动双击有前端挡，Webhook 突发没有。
+ */
+function suiteReportName(client: PoolClient, suiteId: string | undefined, suiteName: string): Promise<string> {
+  const base = `${suiteName}_${reportDateStamp()}`;
+  if (!suiteId) return Promise.resolve(base);
+  return (async () => {
+    await client.query("SELECT 1 FROM test_suites WHERE id = $1 FOR UPDATE", [suiteId]);
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+    const counted = await client.query(
+      "SELECT COUNT(*)::int AS total FROM suite_executions WHERE suite_id = $1 AND created_at >= $2",
+      [suiteId, dayStart],
+    );
+    const already = Number(counted.rows[0].total);
+    return already > 0 ? `${base}_${already + 1}` : base;
+  })();
+}
 
 /**
  * 一次套件执行落在哪个分区（P2-8）。
@@ -473,23 +528,33 @@ export async function enqueueSuiteRun(input: EnqueueSuiteInput): Promise<string>
   const suiteExecutionId = randomUUID();
   const executionIndexId = randomUUID();
   const total = input.members.length;
+  /* 触发者（P3-3）：manual 不传 trigger，列 DEFAULT 兜底。 */
+  const trigger = input.trigger ?? { source: "manual" as const };
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    /* 报告名在事务里定（先算后插，序号含本行之前今天的全部行）；run_spec 里同时
+       冻一份 trigger，让 worker 里的流程成员能继承触发者（performSuiteRun）。 */
+    const reportName = await suiteReportName(client, input.suiteId, input.suiteName);
     await client.query(
-      `INSERT INTO execution_index (id, project_id, kind, target_id, target_name, detail_id, status, total)
-       VALUES ($1, $2, 'suite', $3, $4, $5, 'queued', $6)`,
-      [executionIndexId, input.projectId, input.suiteId ?? null, input.suiteName, suiteExecutionId, total],
+      `INSERT INTO execution_index (id, project_id, kind, target_id, target_name, detail_id, status, total, trigger_source, trigger_ref_id, trigger_ref_name)
+       VALUES ($1, $2, 'suite', $3, $4, $5, 'queued', $6, $7, $8, $9)`,
+      [executionIndexId, input.projectId, input.suiteId ?? null, input.suiteName, suiteExecutionId, total, trigger.source, trigger.refId ?? null, trigger.refName ?? null],
     );
     await client.query(
       `INSERT INTO suite_executions (
          id, project_id, suite_id, suite_name, environment_id, environment_name,
-         status, total, member_snapshot, run_spec, execution_index_id, runner_label
-       ) VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8::jsonb, $9::jsonb, $10, $11)`,
+         status, total, member_snapshot, run_spec, execution_index_id, runner_label, variable_overrides, report_name
+       ) VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8::jsonb, $9::jsonb, $10, $11, $12::jsonb, $13)`,
       [
         suiteExecutionId, input.projectId, input.suiteId ?? null, input.suiteName,
         input.environmentId ?? null, input.environmentName ?? null,
-        total, JSON.stringify(input.members), JSON.stringify(input.execution), executionIndexId, runnerLabel,
+        total, JSON.stringify(input.members),
+        /* run_spec 冻的是「怎么跑」（执行配置 + 变量覆盖 + 触发者，成员在 worker 里
+           进程内扇出时从这一份领取）；variable_overrides 列是终态后报告标识段仍可读
+           的那一份。 */
+        JSON.stringify({ ...input.execution, variables: input.variables ?? {}, trigger }),
+        executionIndexId, runnerLabel, JSON.stringify(input.variables ?? {}), reportName,
       ],
     );
     await client.query("COMMIT");

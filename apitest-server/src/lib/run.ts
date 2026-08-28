@@ -17,8 +17,31 @@ const REQUEST_TIMEOUT_MS = 30_000;
 /** Responses are kept for reading, not archiving, so the tail is dropped. */
 const RESPONSE_LIMIT = 10_000;
 
-/** Applies path params, query params and auth on top of the stored URL. */
-export function buildRequest(request: RequestSnapshot, variables: Record<string, string>) {
+/**
+ * 写一个头，同名（大小写不敏感）只留一份。
+ *
+ * 已存在异体大小写的同名键时删旧建新：胜出者的拼写就是出现在快照里的拼写。
+ */
+function setHeader(headers: Record<string, string>, name: string, value: string) {
+  const previous = Object.keys(headers).find((key) => key.toLowerCase() === name.toLowerCase());
+  if (previous !== undefined && previous !== name) delete headers[previous];
+  headers[name] = value;
+}
+
+/** 头名不区分大小写地查一次（Content-Type 默认值的注入用它判断）。 */
+function hasHeader(headers: Record<string, string>, name: string) {
+  return Object.keys(headers).some((key) => key.toLowerCase() === name.toLowerCase());
+}
+
+/**
+ * Applies path params, query params and auth on top of the stored URL.
+ *
+ * `defaultHeaders`（P3-2，计划 6.5 流量泳道第一层）是环境默认头，垫在**最低优先级**：
+ * 接口/用例自己写了同名头就以接口为准（大小写不敏感比对——两份 content-type 同时
+ * 出现在快照里比被覆盖更糟），auth 注入在其上，前置钩子仍在最后改写。值可引用
+ * `{{变量}}`（如 `{"X-Env-Tag": "{{lane}}"}`），泳道值由触发时的变量覆盖决定。
+ */
+export function buildRequest(request: RequestSnapshot, variables: Record<string, string>, defaultHeaders?: Record<string, string>) {
   let rawUrl = resolveVariables(request.url, variables);
 
   /* :name and {name} placeholders both appear in imported definitions. */
@@ -32,14 +55,22 @@ export function buildRequest(request: RequestSnapshot, variables: Record<string,
     url.searchParams.set(key, resolveVariables(value, variables));
   }
 
-  const headers = Object.fromEntries(Object.entries(request.headers).map(([key, value]) => [key, resolveVariables(value, variables)]));
+  const headers: Record<string, string> = {};
+  /* 默认头先垫底（值走同一套变量解析，覆盖层在这里生效），再用接口定义的头盖上去。 */
+  for (const [key, value] of Object.entries(defaultHeaders ?? {})) {
+    if (!key.trim()) continue;
+    setHeader(headers, key, resolveVariables(value, variables));
+  }
+  for (const [key, value] of Object.entries(request.headers)) {
+    setHeader(headers, key, resolveVariables(value, variables));
+  }
 
   const auth = request.auth;
-  if (auth.type === "bearer") headers.Authorization = `Bearer ${resolveVariables(auth.token, variables)}`;
-  else if (auth.type === "basic") headers.Authorization = `Basic ${Buffer.from(`${resolveVariables(auth.username, variables)}:${resolveVariables(auth.password, variables)}`).toString("base64")}`;
+  if (auth.type === "bearer") setHeader(headers, "Authorization", `Bearer ${resolveVariables(auth.token, variables)}`);
+  else if (auth.type === "basic") setHeader(headers, "Authorization", `Basic ${Buffer.from(`${resolveVariables(auth.username, variables)}:${resolveVariables(auth.password, variables)}`).toString("base64")}`);
   else if (auth.type === "apiKey") {
     const value = resolveVariables(auth.value, variables);
-    if (auth.in === "header") headers[auth.key] = value;
+    if (auth.in === "header") setHeader(headers, auth.key, value);
     else url.searchParams.set(auth.key, value);
   }
 
@@ -49,15 +80,15 @@ export function buildRequest(request: RequestSnapshot, variables: Record<string,
     if (request.bodyType === "json" && request.body !== undefined) {
       bodySnapshot = resolveDeep(request.body, variables);
       body = JSON.stringify(bodySnapshot);
-      headers["Content-Type"] ??= "application/json";
+      if (!hasHeader(headers, "content-type")) headers["Content-Type"] = "application/json";
     } else if (request.bodyType === "form" && request.bodyText) {
       bodySnapshot = resolveVariables(request.bodyText, variables);
       body = bodySnapshot as string;
-      headers["Content-Type"] ??= "application/x-www-form-urlencoded";
+      if (!hasHeader(headers, "content-type")) headers["Content-Type"] = "application/x-www-form-urlencoded";
     } else if (request.bodyType === "text" && request.bodyText) {
       bodySnapshot = resolveVariables(request.bodyText, variables);
       body = bodySnapshot as string;
-      headers["Content-Type"] ??= "text/plain";
+      if (!hasHeader(headers, "content-type")) headers["Content-Type"] = "text/plain";
     }
   }
 
@@ -69,6 +100,11 @@ export type LoadedEnvironment = {
   name?: string;
   /** Variables and secrets merged; secrets win, so a secret cannot be shadowed. */
   variables: Record<string, string>;
+  /**
+   * 环境默认头（P3-2，计划 6.5）：buildRequest 里以最低优先级合并。没有环境时为空
+   * ——默认头是环境的属性，「不用环境」的执行自然一头不带。
+   */
+  defaultHeaders: Record<string, string>;
   /** Plaintext secret values, used only to mask them out of the snapshot. */
   secretValues: string[];
   /** Project opt-in: store execution evidence unmasked (Spec 4.6 放宽). */
@@ -80,7 +116,7 @@ export async function loadEnvironment(projectId: string, environmentId: string |
     /* The plaintext flag is project-scoped, so a run without an environment must
        still read it — otherwise the toggle silently stays masked for such runs. */
     const setting = await pool.query("SELECT store_plaintext FROM project_settings WHERE project_id = $1", [projectId]);
-    return { variables: {}, secretValues: [], storePlaintext: Boolean(setting.rows[0]?.store_plaintext) };
+    return { variables: {}, defaultHeaders: {}, secretValues: [], storePlaintext: Boolean(setting.rows[0]?.store_plaintext) };
   }
   const result = await pool.query(
     `SELECT e.*, ps.store_plaintext FROM environments e
@@ -94,6 +130,7 @@ export async function loadEnvironment(projectId: string, environmentId: string |
     id: environmentId,
     name: String(row.name),
     variables: { ...((row.variables ?? {}) as Record<string, string>), ...((row.secrets ?? {}) as Record<string, string>) },
+    defaultHeaders: (row.default_headers ?? {}) as Record<string, string>,
     secretValues: Object.values((row.secrets ?? {}) as Record<string, string>),
     storePlaintext: Boolean(row.store_plaintext),
   };
@@ -195,7 +232,7 @@ export async function executeRequest(options: {
   let responseOk = false;
   try {
     const environment = await options.environment();
-    const prepared = buildRequest(options.request, environment.variables);
+    const prepared = buildRequest(options.request, environment.variables, environment.defaultHeaders);
 
     /**
      * A project that opted into plaintext records skips masking entirely, so

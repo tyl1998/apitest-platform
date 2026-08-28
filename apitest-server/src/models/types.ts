@@ -5,7 +5,16 @@ export type Project = { id: string; name: string; description: string; ownerId: 
  * Secret values never leave the server (Spec 4.6 默认掩码). Only the key names
  * travel, so the UI can show "configured" without ever holding the plaintext.
  */
-export type Environment = { id: string; projectId: string; name: string; variables: Record<string, string>; secretKeys: string[]; runnerLabel: string };
+export type Environment = {
+  id: string; projectId: string; name: string;
+  variables: Record<string, string>; secretKeys: string[]; runnerLabel: string;
+  /**
+   * 环境默认头（P3，计划 6.5 流量泳道第一层）：buildRequest 里以**最低优先级**
+   * 合并进每一个 HTTP 请求——接口自己写了同名头就以接口为准。值可引用 `{{变量}}`
+   * （如 `{"X-Env-Tag": "{{lane}}"}`），由触发时的变量覆盖决定这一次走哪条泳道。
+   */
+  defaultHeaders: Record<string, string>;
+};
 export type BodyType = "none" | "json" | "form" | "text";
 export type EndpointAuth =
   | { type: "none" }
@@ -703,6 +712,21 @@ export type MockRequestLog = {
   requestSnapshot: Record<string, unknown>; responseSizeBytes: number; createdAt: string;
 };
 
+/** 一次父执行是谁触发的（P3，计划 6.0）。`ci` 在 CHECK 里先行占位，P4.5 才产出它。 */
+export type TriggerSource = "manual" | "scheduled" | "webhook" | "ci";
+
+/**
+ * 一次触发的身份（P3-3）：写进 `execution_index` 的三列。
+ *
+ * manual 只有 source；调度 / Webhook 带 refId + 名字快照（边界 13：触发器被删后，
+ * 报告仍要说得出「谁让它跑的」）。手动路径不传 trigger，入队侧缺省 manual。
+ */
+export type TriggerContext = {
+  source: TriggerSource;
+  refId?: string;
+  refName?: string;
+};
+
 export type ExecutionIndex = {
   id: string;
   projectId: string;
@@ -712,6 +736,15 @@ export type ExecutionIndex = {
   targetId?: string;
   targetName: string;
   detailId: string;
+  /**
+   * 触发源（P3）：归属父索引而不是三张执行表——可被调度/Webhook 触发的只有流程
+   * 与套件，两者都有 index 行；叶子的触发源由父级回答，单接口调试永远是 manual。
+   */
+  triggerSource: TriggerSource;
+  /** 调度 / Webhook 的 id。无 FK：历史要活过触发器的删除。 */
+  triggerRefId?: string;
+  /** 触发者名字的快照（边界 13）：调度被删后，报告仍要说得出「谁让它跑的」。 */
+  triggerRefName?: string;
   status: "queued" | "running" | "success" | "failed" | "canceled";
   total: number;
   successCount: number;
@@ -951,6 +984,17 @@ export const SUITE_DEFAULT_CONCURRENCY = 4;
 export const SUITE_MAX_CONCURRENCY = 10;
 export const SUITE_MAX_MEMBERS = 200;
 
+/**
+ * 套件级通知设置（P3-11，6.8）：终态按开关投递到所选渠道。
+ * 两个开关默认关；template 覆盖默认模版（title / body 可只覆盖其一）。
+ */
+export type SuiteNotifyConfig = {
+  onSuccess: boolean;
+  onFailure: boolean;
+  channelIds: string[];
+  template?: { title?: string; body?: string };
+};
+
 export type TestSuite = {
   id: string;
   projectId: string;
@@ -958,6 +1002,7 @@ export type TestSuite = {
   description: string;
   selection: SuiteSelection;
   execution: SuiteExecutionConfig;
+  notify: SuiteNotifyConfig;
   tags: string[];
   createdAt: string;
   updatedAt: string;
@@ -982,9 +1027,161 @@ export type SuiteExecution = {
   error?: string;
   /** Frozen at enqueue so a tag/all selection stays reproducible. */
   members: SuiteMemberSnapshot[];
+  /**
+   * 报告名 `套件名_YYYYMMDD[_n]`（边界 13）：入队事务里一次定终身，不在读取端算。
+   * 同一天同一套件跑多次靠序号区分；删除某次运行不会让别人的名字位移。历史行为空
+   * ——报告是 P3 起的派生物。耗时不存列，由 finished_at - started_at 算出。
+   */
+  reportName?: string;
+  /**
+   * 触发时下发的变量覆盖（P3-2/6.5 泳道第二层，迁移 032）：与 run_spec 同一事务
+   * 冻结，但 run_spec 落终态即置 NULL，这一列让报告标识段在执行结束后仍读得到
+   * 「这次是按哪套泳道跑的」。
+   */
+  variableOverrides: Record<string, string>;
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
+};
+
+/* ---------------------------------------------------------------------------
+ * P3: 调度、Webhook 触发、告警（计划第六节，迁移 030 / 031）。
+ * 本批次只落表结构与类型映射；触发路径、调度器进程、路由在 P3-3 ~ P3-6 接入。
+ * ------------------------------------------------------------------------- */
+
+/**
+ * 一条定时调度（边界 1）：目标只有测试套件——要按时跑一条流程，把它放进一个
+ * 只含它的套件。`targetType` 目前单值，留列是为了 P4.5 的 CI 目标不必回填历史行
+ * （与迁移 010 的 workers.mode 同一条理由）。
+ */
+export type Schedule = {
+  id: string;
+  projectId: string;
+  name: string;
+  targetType: "suite";
+  targetId: string;
+  /** 列表查询 join 出的目标名，编辑器要能显示「这条调度跑的是哪个套件」。 */
+  targetName?: string;
+  /** 为空 = 套件自己的环境配置；有值 = 触发时覆盖（边界 4，复用既有 override 链）。 */
+  environmentId?: string;
+  cron: string;
+  timezone: string;
+  enabled: boolean;
+  /** 每次触发都带的变量覆盖（6.5 泳道第二层），以最高优先级压过环境变量。 */
+  variables: Record<string, string>;
+  /** 禁用时置空；同时也是调度器行级认领去重的锚点（6.0）。 */
+  nextRunAt?: string;
+  lastRunAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * 一个到期时刻及其结果（边界 2 / 3）。
+ *
+ * `skipped` 是漏跑的证据：不留痕的话「昨晚没跑」与「昨晚跑了但没失败」在界面上
+ * 无法区分。触发失败（2004 无执行器、零成员等）记 `failed` 且**不**自动禁用调度。
+ */
+export type ScheduleRun = {
+  id: string;
+  projectId: string;
+  scheduleId: string;
+  plannedAt: string;
+  triggeredAt?: string;
+  status: "triggered" | "skipped" | "failed";
+  /** 触发成功才指向产生的父执行；skipped / failed 没有。 */
+  executionIndexId?: string;
+  /** 触发失败的原因（哪个分区没有执行器、解析成几个成员等）。 */
+  error?: string;
+  createdAt: string;
+};
+
+/**
+ * 外部可调用的触发器，凭 HMAC 准入（边界 6，形状照 P2-5 的 Mock 运行时）。
+ *
+ * 密钥 AES-GCM 加密存库（验签需要明文，所以不能只存哈希）；明文只在创建 / 轮换时
+ * 返回一次，之后接口只回 `hasSecret`。
+ */
+export type WebhookTrigger = {
+  id: string;
+  projectId: string;
+  name: string;
+  /** 流程仍可被 Webhook 触发（边界 1 末段）：业务事件天然是单链路且要带入参。 */
+  targetType: "flow" | "suite";
+  targetId: string;
+  /** 列表查询 join 出的目标名。 */
+  targetName?: string;
+  environmentId?: string;
+  publicId: string;
+  hasSecret: boolean;
+  enabled: boolean;
+  lastTriggeredAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** 四种「POST 一段 JSON 到一个 URL」渠道（边界 8：Email 不做）。 */
+export type NotificationChannelType = "webhook" | "wecom" | "dingtalk" | "slack";
+
+export type NotificationChannel = {
+  id: string;
+  projectId: string;
+  name: string;
+  type: NotificationChannelType;
+  url: string;
+  /** 加签密钥是否已配置（wecom / dingtalk 常用）；明文不回显。 */
+  secretConfigured: boolean;
+  /** 可选的自定义前缀文案——不是模板语言（明确不做）。 */
+  templatePrefix?: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * 告警指标（边界 9）：`execution_failed` 是事件型（失败事件一到就评估，无窗口），
+ * 其余三个是窗口型（在同一条事件上跑一次聚合查询）。
+ *
+ * threshold 的单位按指标定：success_rate 为百分比 0–100，avg_duration 为毫秒，
+ * consecutive_failures 为次数。
+ */
+export type AlertMetric = "execution_failed" | "consecutive_failures" | "success_rate" | "avg_duration";
+export type AlertComparator = "gt" | "gte" | "lt" | "lte";
+
+export type AlertRule = {
+  id: string;
+  projectId: string;
+  name: string;
+  metric: AlertMetric;
+  comparator: AlertComparator;
+  threshold: number;
+  /** 事件型指标为空；窗口型必填（路由校验）。 */
+  windowMinutes?: number;
+  /** 压制窗口：没有冷却，一次雪崩会把渠道刷爆。 */
+  cooldownSeconds: number;
+  /** 目标渠道。UUID[] 无法携带真外键，归属由路由校验。 */
+  channelIds: string[];
+  enabled: boolean;
+  /** 冷却起点，兼作多实例派发时 compare-and-set 的锚点。 */
+  lastFiredAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** 一次通知投递的证据（边界 10）：「没收到告警」的三种原因靠它区分。 */
+export type NotificationDelivery = {
+  id: string;
+  projectId: string;
+  /** 渠道 / 规则被删后置空，证据行仍可读。 */
+  channelId?: string;
+  ruleId?: string;
+  executionIndexId?: string;
+  status: "sent" | "failed";
+  statusCode?: number;
+  error?: string;
+  /** 实际 POST 出去的那份 JSON——复现「对方到底收到了什么」只能靠它。 */
+  payload: Record<string, unknown>;
+  createdAt: string;
 };
 
 export function mapUser(row: Record<string, unknown>): User {
@@ -1005,6 +1202,8 @@ export function mapEnvironment(row: Record<string, unknown>): Environment {
     secretKeys: Object.keys((row.secrets ?? {}) as Record<string, string>).sort(),
     /* 执行分区（P2-8）：这个环境指向的系统该从哪个网段发请求。 */
     runnerLabel: String(row.runner_label ?? "default"),
+    /* 环境默认头（P3/6.5）：列 DEFAULT '{}'，旧行与未接线前读成空对象即「无默认头」。 */
+    defaultHeaders: (row.default_headers ?? {}) as Record<string, string>,
   };
 }
 
@@ -1163,8 +1362,27 @@ export function normalizeSuiteSelection(type: unknown, config: unknown): SuiteSe
 }
 
 /**
+ * notify_config 的归一：缺省 = 两开关全关、无渠道。channelIds 不在此去重——
+ * 渠道被删时路由会把悬空 id 摘掉（与 alert_rules 同款），这里只负责形状。
+ */
+export function normalizeSuiteNotify(config: unknown): SuiteNotifyConfig {
+  const raw = (config ?? {}) as Record<string, unknown>;
+  return {
+    onSuccess: Boolean(raw.onSuccess),
+    onFailure: Boolean(raw.onFailure),
+    channelIds: Array.isArray(raw.channelIds) ? raw.channelIds.map(String) : [],
+    template: raw.template && typeof raw.template === "object"
+      ? {
+          title: typeof (raw.template as Record<string, unknown>).title === "string" ? String((raw.template as Record<string, unknown>).title) : undefined,
+          body: typeof (raw.template as Record<string, unknown>).body === "string" ? String((raw.template as Record<string, unknown>).body) : undefined,
+        }
+      : undefined,
+  };
+}
+
+/**
  * execution_config 的默认值放在 mapper 而不是 DB DEFAULT：并发上限这类保护性数值会随
- * 平台调整，写进建表默认值以后既有行不会跟着变，反而留下两套真相。
+ * 平台调整，写进建表默认值以后既有行不会跟着变，反而留下两套真相。notify_config 同理。
  */
 export function mapTestSuite(row: Record<string, unknown>): TestSuite {
   const execution = (row.execution_config ?? {}) as Record<string, unknown>;
@@ -1177,6 +1395,7 @@ export function mapTestSuite(row: Record<string, unknown>): TestSuite {
       environmentStrategy: execution.environmentStrategy === "override" ? "override" : "member_default",
       environmentId: execution.environmentId ? String(execution.environmentId) : undefined,
     },
+    notify: normalizeSuiteNotify(row.notify_config),
     tags: (row.tags ?? []) as string[],
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
@@ -1196,6 +1415,8 @@ export function mapSuiteExecution(row: Record<string, unknown>): SuiteExecution 
     successCount: Number(row.success_count), failedCount: Number(row.failed_count), skippedCount: Number(row.skipped_count ?? 0),
     error: row.error === null || row.error === undefined ? undefined : String(row.error),
     members: (row.member_snapshot ?? []) as SuiteMemberSnapshot[],
+    reportName: row.report_name ? String(row.report_name) : undefined,
+    variableOverrides: (row.variable_overrides ?? {}) as Record<string, string>,
     createdAt: new Date(String(row.created_at)).toISOString(),
     startedAt: row.started_at ? new Date(String(row.started_at)).toISOString() : undefined,
     finishedAt: row.finished_at ? new Date(String(row.finished_at)).toISOString() : undefined,
@@ -1245,6 +1466,10 @@ export function mapExecutionIndex(row: Record<string, unknown>): ExecutionIndex 
   return {
     id: String(row.id), projectId: String(row.project_id), kind: String(row.kind) as ExecutionIndex["kind"],
     targetId: row.target_id ? String(row.target_id) : undefined, targetName: String(row.target_name), detailId: String(row.detail_id),
+    /* 迁移 030 之前的行与尚未接线的手动路径都读作 manual（列 DEFAULT 同款兜底）。 */
+    triggerSource: (row.trigger_source ?? "manual") as TriggerSource,
+    triggerRefId: row.trigger_ref_id ? String(row.trigger_ref_id) : undefined,
+    triggerRefName: row.trigger_ref_name ? String(row.trigger_ref_name) : undefined,
     status: String(row.status) as ExecutionIndex["status"], total: Number(row.total), successCount: Number(row.success_count),
     failedCount: Number(row.failed_count), skippedCount: Number(row.skipped_count), canceledCount: Number(row.canceled_count),
     createdAt: new Date(String(row.created_at)).toISOString(),
@@ -1324,5 +1549,104 @@ export function mapWorker(row: Record<string, unknown>): Worker {
     online: Boolean(row.online),
     startedAt: new Date(String(row.started_at)).toISOString(),
     lastSeenAt: new Date(String(row.last_seen_at)).toISOString(),
+  };
+}
+
+/* ---------------------------------------------------------------------------
+ * P3 mappers（计划第六节，迁移 030 / 031）。路由在 P3-6 才暴露这些资源，
+ * 但 mapper 先行落位：列名 → camelCase 的边界只允许存在 types.ts 一份。
+ * ------------------------------------------------------------------------- */
+
+export function mapSchedule(row: Record<string, unknown>): Schedule {
+  return {
+    id: String(row.id), projectId: String(row.project_id), name: String(row.name),
+    /* CHECK 当前只有 'suite'；cast 而不是硬编码字面量，P4.5 放宽 CHECK 时这里不用改。 */
+    targetType: String(row.target_type) as Schedule["targetType"],
+    targetId: String(row.target_id),
+    /* 列表查询 join test_suites 的名字；未 join 时缺省。 */
+    targetName: row.target_name ? String(row.target_name) : undefined,
+    environmentId: row.environment_id ? String(row.environment_id) : undefined,
+    cron: String(row.cron),
+    timezone: String(row.timezone ?? "Asia/Shanghai"),
+    enabled: Boolean(row.enabled),
+    variables: (row.variables ?? {}) as Record<string, string>,
+    nextRunAt: row.next_run_at ? new Date(String(row.next_run_at)).toISOString() : undefined,
+    lastRunAt: row.last_run_at ? new Date(String(row.last_run_at)).toISOString() : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+  };
+}
+
+export function mapScheduleRun(row: Record<string, unknown>): ScheduleRun {
+  return {
+    id: String(row.id), projectId: String(row.project_id), scheduleId: String(row.schedule_id),
+    plannedAt: new Date(String(row.planned_at)).toISOString(),
+    triggeredAt: row.triggered_at ? new Date(String(row.triggered_at)).toISOString() : undefined,
+    status: String(row.status) as ScheduleRun["status"],
+    executionIndexId: row.execution_index_id ? String(row.execution_index_id) : undefined,
+    error: row.error === null || row.error === undefined ? undefined : String(row.error),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+export function mapWebhookTrigger(row: Record<string, unknown>): WebhookTrigger {
+  return {
+    id: String(row.id), projectId: String(row.project_id), name: String(row.name),
+    targetType: String(row.target_type) as WebhookTrigger["targetType"],
+    targetId: String(row.target_id),
+    targetName: row.target_name ? String(row.target_name) : undefined,
+    environmentId: row.environment_id ? String(row.environment_id) : undefined,
+    publicId: String(row.public_id),
+    /* 列 NOT NULL 时恒为 true；保留这个字段让客户端契约与 data_sources 的
+       passwordConfigured 同形，也不给明文留任何出口。 */
+    hasSecret: Boolean(row.secret_encrypted),
+    enabled: Boolean(row.enabled),
+    lastTriggeredAt: row.last_triggered_at ? new Date(String(row.last_triggered_at)).toISOString() : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+  };
+}
+
+export function mapNotificationChannel(row: Record<string, unknown>): NotificationChannel {
+  return {
+    id: String(row.id), projectId: String(row.project_id), name: String(row.name),
+    type: String(row.type) as NotificationChannelType,
+    url: String(row.url),
+    secretConfigured: Boolean(row.secret_encrypted),
+    templatePrefix: row.template_prefix ? String(row.template_prefix) : undefined,
+    enabled: Boolean(row.enabled),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+  };
+}
+
+export function mapAlertRule(row: Record<string, unknown>): AlertRule {
+  return {
+    id: String(row.id), projectId: String(row.project_id), name: String(row.name),
+    metric: String(row.metric) as AlertMetric,
+    comparator: String(row.comparator) as AlertComparator,
+    threshold: Number(row.threshold),
+    windowMinutes: row.window_minutes === null || row.window_minutes === undefined ? undefined : Number(row.window_minutes),
+    cooldownSeconds: Number(row.cooldown_seconds),
+    /* UUID[] 经 pg 读回即 string[]；空数组如实保留（创建时是否至少一个渠道由路由管）。 */
+    channelIds: Array.isArray(row.channel_ids) ? (row.channel_ids as unknown[]).map(String) : [],
+    enabled: Boolean(row.enabled),
+    lastFiredAt: row.last_fired_at ? new Date(String(row.last_fired_at)).toISOString() : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+  };
+}
+
+export function mapNotificationDelivery(row: Record<string, unknown>): NotificationDelivery {
+  return {
+    id: String(row.id), projectId: String(row.project_id),
+    channelId: row.channel_id ? String(row.channel_id) : undefined,
+    ruleId: row.rule_id ? String(row.rule_id) : undefined,
+    executionIndexId: row.execution_index_id ? String(row.execution_index_id) : undefined,
+    status: String(row.status) as NotificationDelivery["status"],
+    statusCode: row.status_code === null || row.status_code === undefined ? undefined : Number(row.status_code),
+    error: row.error === null || row.error === undefined ? undefined : String(row.error),
+    payload: (row.payload ?? {}) as Record<string, unknown>,
+    createdAt: new Date(String(row.created_at)).toISOString(),
   };
 }
