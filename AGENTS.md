@@ -32,16 +32,17 @@ The project is in active development and has never shipped. Do not write code to
 
 ## Start / Stop Services
 
-Repo-root convenience scripts manage the three app processes (backend API, execution worker, frontend). **Postgres and Redis are external** (OrbStack / manually started docker), the scripts do not touch them.
+Repo-root convenience scripts manage the four app processes (backend API, execution worker, scheduler, frontend). **Postgres and Redis are external** (OrbStack / manually started docker), the scripts do not touch them.
 
-- `./start.sh` — run migrations, then start API (3000) + worker + web (5173). Add `--skip-migrate` to skip the migration step when the schema has not changed.
-- `./start.sh --restart [api|worker|web ...]` — stop the listed services (or all of them when none are named) and start them again. Useful after a backend change: `./start.sh --restart api worker` recycles only the two server-side processes while the frontend keeps running.
-- `./stop.sh` — stop the three app processes (kills the whole `pnpm → tsx → node` process tree). Postgres/Redis stay running.
+- `./start.sh` — run migrations, then start API (3000) + worker + scheduler + web (5173). Add `--skip-migrate` to skip the migration step when the schema has not changed.
+- `./start.sh --restart [api|worker|scheduler|web ...]` — stop the listed services (or all of them when none are named) and start them again. Useful after a backend change: `./start.sh --restart api worker` recycles only the two server-side processes while the frontend keeps running.
+- `./stop.sh` — stop the four app processes (kills the whole `pnpm → tsx → node` process tree). Postgres/Redis stay running.
 
 Implementation details:
 
-- Started processes write logs to `.dev-logs/{api,worker,web}.log`; their PIDs are recorded in `.dev-pids` (`name=pid` lines). `stop.sh` kills from the pidfile first, then pattern-matches any leftovers.
+- Started processes write logs to `.dev-logs/{api,worker,scheduler,web}.log`; their PIDs are recorded in `.dev-pids` (`name=pid` lines). `stop.sh` kills from the pidfile first, then pattern-matches any leftovers.
 - The execution queue is **never inlined into the API process**: runs stay `queued` until a worker is running. The worker is a separate process; `tsx watch` restarts only itself.
+- The scheduler is the third backend process (cron tick / missed-run detection / alert dispatch); it is multi-instance safe but single instance is recommended.
 - To stop the database containers too (data persists in volumes): `docker compose -f apitest-server/compose.yaml down`.
 
 ## Frontend Design System

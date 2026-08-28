@@ -1,6 +1,6 @@
 # 接口自动化平台 — 开发计划
 
-> 版本: v0.5
+> 版本: v0.6
 > 基于: API_AUTOMATION_SPEC.md v1.4 / FRONTEND_INTERACTION_DESIGN.md v1.8 / REPOSITORY_ARCHITECTURE.md v1.0
 > 当前阶段: P0、P1 全部已实现；P2-0/P2-1/P2-2 已实现并通过用户验收；P2-2.1 请求节点生命周期收尾、
 > 认证页签变量补全与项目级「明文执行记录」开关已实现并通过用户验收；P2-6 高级节点已验收
@@ -9,6 +9,29 @@
 > （见 5.0.6），编排统一由流程承担；**P2-4 测试套件 + 统一执行记录已实现并于 2026-08-27
 > 通过用户验收**（P2-4.1–P2-4.5 分批验收记录见 5.0.11，缺陷归档于
 > `issue_fix/P2-4_ISSUE_LOG.md`）
+>
+> **v0.6 规划**: **P3（套件定时调度 / Webhook 触发 / 套件执行报告 / 流量泳道参数 /
+> 告警通知 / 趋势分析）范围与边界已于 2026-08-27/28 确认**；**P3-1 数据层（迁移
+> 030/031 + 类型与 mapper）、P3-2 流量泳道两层（默认头合并 + 变量覆盖下发，迁移
+> 032）、P3-3 统一触发路径（lib/trigger.ts + 触发三列透传 + report_name 入队生成）、
+> P3-4 调度器进程（lib/schedule.ts + src/scheduler.ts + lib/alerts.ts 订阅管线）、
+> P3-5 告警评估与投递（lib/alerts.ts 规则评估 + lib/notify.ts 四渠道投递落证据）、
+> P3-6 后端路由全套（调度 / Webhook 触发（含公开 HMAC 入口）/ 告警 / 报告 / 触发源
+> 筛选 / dashboard 真值）、P3-7 套件列表分页补齐（边界 14）、P3-8 前端 api 类型与
+> 双语 i18n 键、P3-9 前端页面全套（调度/告警/报告/趋势四页 + 默认头编辑 + 运行
+> 抽屉报告标识 + 导航路由）、P3-10 进程编排收尾（调度器进 start.sh/stop.sh、
+> SCHEDULER_TICK_MS/SCHEDULER_MISS_GRACE_MS 可调、.env.example 补齐）均已于
+> 2026-08-28 实现——**P3 十个批次全部完成**（状态见 6.6）。相对原计划的变更：流程不做定时调度（只有测试套件可被调度）、新增
+> 「套件执行报告」（统一报告名 `套件名_日期`，带触发源与整体耗时）、新增「流量泳道」
+> （环境默认头 + 触发时变量覆盖）、套件相关列表补服务端分页；趋势图表撤销
+> `@ant-design/charts`，改手写 SVG。
+>
+> **2026-08-28 验收反馈增补（P3-11）**：独立「定时调度」页删除、定时配置并入套件详情页；
+> 套件级通知设置（成功/失败开关 + 渠道 + 占位符模版，形状见 6.8，迁移 033）。同轮修复
+> 验收缺陷六项（白屏 ×2、编辑调度 500、报告成员证据抽屉、看板调度数、mocks 存量类型错，
+> 见 `issue_fix/问题记录-P3验收第一轮.md`）与环境管理列表服务端分页。
+>
+> **验收结论**：2026-08-28 用户验收通过（P3-1 ~ P3-11 全量）。
 >
 > **v0.5 增量切片**: **P2-8 执行分区（跨网段执行）** 已全部实现（P2-8.1–P2-8.6 于
 > 2026-08-26 完成，P2-8.7 配置体验补齐于 2026-08-27 增补）**并于 2026-08-27 通过用户
@@ -25,9 +48,9 @@
 
 ```
 P0 ──→ P1 ──→ P2 ──→ P3 ──→ P4 ──→ P4.5 ──→ P5 ──→ P6
-MVP    流程    数据源  调度    仓库     Runner   MCP     性能
-       编排    节点补全 告警    用例                     插件
-       断言    套件
+MVP    流程    数据源  套件调度 仓库    Runner   MCP     性能
+       编排    节点补全 报告告警 用例                     插件
+       断言    套件    趋势
        用例    Mock
 ```
 
@@ -624,7 +647,7 @@ ASSERTIONS  [已实现]
   # 不做 assertions 公共库 CRUD: 断言内联存于用例, 无「断言库」界面需求
 
 SCRIPTS  [已实现] (P1-1 断言收尾)
-  GET    /projects/:id/scripts             (公共脚本列表, name IS NOT NULL, 支持 keyword)
+  GET    /projects/:id/scripts             (公共脚本列表, name IS NOT NULL, 支持 keyword; 带 page/pageSize 走服务端分页, 缺省全量供选择器用)
   POST   /projects/:id/scripts             (新建公共脚本)
   GET    /projects/:id/scripts/:scriptId
   PATCH  /projects/:id/scripts/:scriptId   (编辑公共脚本, 响应带 follower 清单)
@@ -667,7 +690,8 @@ EXECUTIONS  [已实现]
   `ctx.assert` 直接断言, 逐条通过/失败在行内展开 (契约见 4.0.2.5); 支持本地命名、
   `return` 值在结果里以折叠块展示 (见 4.0.2.6)。
 - `[已实现]` **公共脚本管理页** (环境管理 → 公共脚本 tab): 公共脚本 CRUD、
-  引用数、编辑时显示跟随用例清单、删除两段式确认。接口工作台内公共脚本**只读**
+  引用数、编辑时显示跟随用例清单、删除两段式确认、**列表服务端分页**
+  (page/pageSize, 依赖库下拉仍走全量接口)。接口工作台内公共脚本**只读**
   (跟随态不可编辑, 编辑统一在环境管理页, 避免在接口页顺手改影响其他用例)。
 - `[已实现]` **内置动态变量参数化**: `{{$name(args)}}`, 环境变量编辑抽屉内有
   可折叠的参数速查表 (`{{$randomStr(16)}}` / `{{$date(YYYY-MM-DD)}}` / ...)。
@@ -2063,31 +2087,458 @@ EXECUTION PARTITION (P2-8)                     # 无新路由，只扩现有形�
 
 ---
 
-## 六、P3 — 调度、告警、趋势 (3 周)
+## 六、P3 — 调度、触发、报告、告警、趋势 (3 周)
 
-### 6.1 数据库迁移: 004_p3_schema.sql
+> 本节是 P3 的权威范围（2026-08-27/28 确认，已全部实现并于 2026-08-28 验收通过）。
+> 计划原写的迁移名 `004_p3_schema.sql` 为过时命名：实际序号接在 `029` 之后，即
+> `030` / `031`。原 6.1/6.2 那三行表结构与六条路由是占位草案，已被本节取代。
+>
+> **用户修正与增补已并入本节**：① 流程不做定时调度（边界 1）；② 增加套件执行报告，
+> 统一报告名 `套件名_日期`，含触发源与整体耗时（边界 13、6.4）；③ 套件相关列表补服务端
+> 分页（边界 14）；④ 多套测试环境的流量泳道：环境默认头 + 触发时变量覆盖，两层都做
+> （边界 16、17、6.5，2026-08-28 确认）。**批次见 6.6（P3-1 ~ P3-11 全部已实现，2026-08-28
+> 验收通过；验收反馈增补的 P3-11 见 6.8）。**
+
+### 6.0 P3 范围与边界（已确认）
+
+**问题**
+
+P0–P2 把「怎么执行」做完了：一次执行有统一的父索引（`execution_index`）、统一的入队路径
+（`lib/enqueue.ts`）、统一的分区路由（P2-8）。缺的是另外四件事：
+
+1. **谁来按时触发**——现在只有人点按钮。夜间回归、每小时冒烟都办不到。
+2. **跑完之后能拿走什么**——套件执行详情能看，但说不出「这是哪天哪次、谁让它跑的、一共
+   花了多久」，因此它是一份排障视图而不是一份可以交出去的报告。
+3. **失败了谁知道**——一次失败只写进库，没有任何东西会主动告诉人。
+4. **一段时间里质量在往哪走**——`/dashboard` 只有累计值，看不出「昨天开始变差」。
+
+四件事共享一个前提：**必须能分辨一次执行是谁触发的**。库里现在没有任何一列记录这件事
+（`executions.source` 说的是「跑的是什么定义」，不是「谁让它跑」），所以调度列表读不到
+「上次结果」、报告说不出触发来源，趋势也无法把人工调试的噪声与定时回归分开。这是 P3 的
+第一块砖。
+
+**核心模型**
+
+**触发源写进 `execution_index`；报告是 `suite_executions` 上的一个入队时命名 + 一个只读
+视图；调度靠 `next_run_at` 的行级认领去重；告警在调度器进程里订阅执行事件流派发。**
+
+- **触发源归属父索引**，不是三张执行表都加列。`execution_index` 已经是「报告/统计/告警的
+  唯一查询入口」（Spec 2.1 归一原则），而可被调度/Webhook 触发的对象只有流程与套件，两者
+  都有 `execution_index_id`。叶子 `executions` 不加这一列——它的触发源由父级回答，单接口
+  调试永远是 `manual`。
+- **报告不新建表**：一份报告就是一次套件执行，缺的只是一个稳定名字与一处能读到触发信息的
+  地方（见边界 13）。新建 `suite_reports` 表意味着同一次执行的结论存两份，而两份计数迟早
+  在取消与回收路径上分叉。
+- **去重用行级认领而不是分布式锁**：`UPDATE schedules SET next_run_at = <重算> WHERE id = $1
+  AND next_run_at = $2`，`rowCount` 就是「我抢到了没有」。这与全库已有的
+  `WHERE status = 'queued'` 认领是同一个惯用法（4.7 at-most-once），不引入第二套并发原语。
+  也**不用 BullMQ repeatable jobs**：那会让「下次什么时候跑」在 Redis 与 Postgres 里各有
+  一份，而用户改 cron 时改的是 Postgres 那份。
+- **告警不侵入执行路径**：`lib/events.ts` 已经把每次状态变化广播到 Redis
+  `executions:events`，调度器进程订阅它即可。往 `run.ts` / `flowRun.ts` / `suiteRun.ts` 的
+  收尾里插通知发送会把「发一条 HTTP 通知」的延迟与失败算进用户那次执行的耗时里。
+
+**已确认的边界决策（15 项）**
+
+1. **定时调度的目标只有测试套件**（2026-08-27 用户确认收窄）。**流程不给定时入口**：
+   一条要按时跑的链路本来就该是套件的成员——套件已经承担「一次跑一批 + 一份统一报告 +
+   fail-fast + 并发」，给流程再开一条定时入口就会出现两种「定时产物」（一次流程执行 vs
+   一次套件执行），而报告、告警、趋势三处都要各自兼容两种形状。需要定时跑单条流程时，
+   建一个只含它一个成员的套件——这不是绕路，它换来的正是一份可读的报告。
+   接口用例同理不给入口（交互文档 3.7），CI 任务等 P4.5。
+   因此 `schedules.target_type` 的 CHECK 只有 `'suite'` 一个值——**保留这一列而不是删掉**，
+   是为了 P4.5 的 CI 任务接进来时不必回填历史行（迁移 010 已经吃过这个亏）。
+   **Webhook 触发仍然支持流程**：它是「外部系统把一次业务事件转成一次执行」，天然是单条
+   链路且要带入参（边界 7 的变量注入），与「按时跑一批回归」不是同一件事。
+2. **漏跑不补，只留一条 `skipped` 证据**。调度器停机一个周末后，一条每小时的调度会攒下
+   40 多个到期时刻；补跑等于同一刻对被测系统打 40 发，且产出 40 份没人会看的失败报告。
+   超过宽限期（`SCHEDULE_MISS_GRACE_MS`，2 分钟）的到期时刻写一行
+   `schedule_runs(status='skipped')` 并把 `next_run_at` 快进到当前之后的第一个时刻。
+   **漏跑必须留痕**：不留痕的话「昨晚没跑」与「昨晚跑了但没失败」在界面上无法区分。
+3. **触发失败不自动禁用调度**。目标分区没有在线执行器（2004）、套件解析成零成员、流程引用
+   了已删除的子流程——这些都记 `schedule_runs(status='failed')` 并带上原因，调度保持启用。
+   自动禁用会让一个临时故障静默变成永久停跑，而用户以为它还在跑。
+4. **调度可以覆盖环境，且沿用既有的覆盖路径**。`schedules.environment_id` 为空就用目标自己
+   的配置；有值时流程直接换 `environmentId`，套件走它已有的
+   `environmentStrategy='override'`。不新造第三条环境选择链（2.4 那条链已被五处共用）。
+   代价要明说：换环境就是换分区（P2-8），所以「白天手动跑得起来、夜里定时跑报 2004」是
+   成立的，调度编辑器因此要显示所选环境的分区在线状态。
+5. **触发必须走与手动执行完全相同的校验**。为此把 `flows.ts` / `suites.ts` 执行路由里的
+   校验与入队抽成 `lib/trigger.ts`：流程的图校验 + 跨流程递归检测 + 资源归属，套件的成员
+   解析 + 成员上限 + 令牌预算。**这是本阶段唯一的重构，且不可省**——留两条入口，就等于
+   定时跑的那条迟早会缺一项检查，而它恰好是没人盯着的那条。
+6. **Webhook 触发是公开无鉴权路由，凭 HMAC 准入**，形状照 P2-5 的 Mock 运行时
+   （`/mock/:publicId/*`）——那是本仓库唯一已有的「外部可直接调用」先例。
+   签名串是 `timestamp.nonce.body`，`X-Apitest-Signature` / `-Timestamp` / `-Nonce` 三个头
+   缺一不可；时间戳窗口 ±300 秒，nonce 用 Redis `SET NX EX` 挡重放。
+   **密钥用 `lib/crypto.ts` 的 AES-GCM 加密存库**：验签必须拿到明文，所以不能存哈希；
+   创建时回明文一次，之后接口只回 `hasSecret`。
+7. **Webhook 的请求体只注入流程变量，套件忽略它**。套件没有变量模型（5.0.11：成员之间不
+   传变量），硬塞一份会造出一个只有 Webhook 才有的隐形入参。注入只取顶层的字符串/数字/
+   布尔，且键必须匹配 `^[A-Za-z_][A-Za-z0-9_]*$`——嵌套对象要展开就得定义一套扁平化规则，
+   而那是流程变量该管的事。
+8. **通知渠道只做「POST 一段 JSON 到一个 URL」这一族**：通用 Webhook / 企业微信 / 钉钉 /
+   Slack 四种，差别只在默认模板。**Email 不做**——它需要 SMTP 主机、发件人身份与投递重试，
+   是一套独立的基础设施，塞进本阶段只会做成一个发不出去的开关。
+9. **告警在事件到达时评估，用冷却窗口而不是定时扫表**。终态事件本来就会来，扫表是重复
+   劳动。窗口型规则（连续失败 N 次 / 成功率 / 平均耗时）在同一条事件上跑一次聚合查询，
+   命中后按 `cooldown_seconds` 压制——没有冷却，一次雪崩会把渠道刷爆，而第 2 条到第 200 条
+   通知不携带任何新信息。
+10. **每次派发都落 `notification_deliveries`**。通知本身是「发出去就看不见了」的动作，不留
+    投递记录时「没收到告警」有三种同样可能的原因（规则没命中 / 渠道配错 / 对方 5xx），
+    没有证据就只能猜。
+11. **趋势用 SQL 补齐空桶**（`generate_series` LEFT JOIN）。前端补桶会让「这一小时没有执行」
+    与「这一小时全失败」在折线上长得一样。分位数用 `percentile_cont`，不自己在 Node 里排序
+    ——那要把窗口内所有行拉进内存。
+12. **图表手写 SVG，不引入图表库**。计划 11.2 原本给 P3 记的 `@ant-design/charts` 在此
+    **撤销**：Quiet Console 把 `--pass/--fail/--skip/--busy` 定为保留语义色、禁渐变与发光
+    （见 skill `quiet-console`），而图表库带的是自己一整套配色与动效，接进来的工作量是「逐项
+    对抗它的默认值」，多于画一条折线；`@antv/*` 还会把前端包体积抬高一个量级。趋势图只需要
+    折线 + 柱 + 环形三种，各几十行 SVG。**这是与原计划的偏离，记在此处而不是悄悄换掉。**
+13. **套件执行报告：不建新表，在 `suite_executions` 上补一个报告名，触发信息取自
+    `execution_index`**（2026-08-27 用户要求新增）。
+
+    要的是一份「一次套件跑完之后可以拿去交差」的东西：**有稳定名字**（`套件名_日期`）、
+    **说清是谁触发的**（手动 / 定时 / Webhook / 将来的 CI）、**说清整体耗时与通过率**。
+    这些事实今天分散在三处：计数与起止时间在 `suite_executions`，触发源在
+    `execution_index`（P3-1 新增），成员明细在 `execution_steps`。用户已经指出「与当前
+    信息有一点冗余」——所以关键是**别把冗余变成第二份真相**：
+
+    - **名字在入队时定下并存进 `suite_executions.report_name`**，不在读取时算。
+      入队是单一写入点（`enqueueSuiteRun` 的那一个事务），而读取端有列表、详情、告警
+      模板三处——放在读取端就是三份各自算一遍的重名规则。
+    - **同一天同一套件跑多次要能区分**：名字是 `套件名_YYYYMMDD`，第二次起追加 `_2`、
+      `_3`。序号在入队事务里按「这个套件今天已有几行」算出来，因此它**一次定终身**，
+      不会因为后来删了某次运行而让别人的名字发生位移。**用套件改名前的当时名字**——
+      报告名是那一刻的事实快照，与 `suite_name` 快照同一条理由（Spec 4.4）。
+    - **耗时不新存一列**：`finished_at - started_at` 是整体墙钟耗时，`started_at -
+      created_at` 是排队等待，两者已经在表上，再存一个 `duration_ms` 只会在取消/回收
+      路径上与它们对不上。报告接口把它算出来返回，界面不自己减时间戳。
+    - **触发者的名字要快照**：`execution_index` 除 `trigger_source` / `trigger_ref_id`
+      外再加 `trigger_ref_name`。调度被删掉之后，一份写着「由定时任务触发」却说不出是哪个
+      的报告等于没说——而这正是回看两个月前那次失败时唯一想知道的事。
+    - **报告是只读派生物，不可编辑、不单独删除**。它跟着那次执行走：执行在，报告在；
+      套件被删，`suite_id` 置空而报告仍读得通。
+    - **`ci` 这个触发源现在就写进 CHECK**，尽管 P4.5 才产出它。理由与迁移 010/027 同款：
+      等做出来再改 CHECK 就要回填，而回填时分不清历史行。
+
+14. **套件相关列表全部服务端分页**（2026-08-27 用户要求补齐）。现状 `GET /test-suites` 一次
+    返回全部（`routes/suites.ts:301`，只回一个 `total` 充数），前端 `SuiteList.tsx` 也没有
+    分页器——项目里套件多起来之后这是一次全表扫描 + 一屏读不完的表。改成与执行记录同一套
+    约定：`page` / `pageSize`（默认 20，上限 100）+ SQL 里的 `keyword` / `tag` 过滤，`meta`
+    回 `{ page, pageSize, total }`。**报告列表同款分页。**
+
+    **不分页的两处，理由要写下来**：套件的**成员清单**（手动选择的成员表、tag/all 的预览
+    清单）与**一次报告的成员明细**不分页——它们有 `SUITE_MAX_MEMBERS`（200）硬上限，
+    且它们的用途就是「通读一遍确认会跑到谁 / 哪几个失败了」，翻页会让「一共有几个失败」
+    需要翻完才数得出来。成员选择器里的用例清单**保持分页**（它是全项目的用例，没有上限）。
+
+15. **报告不引入第二条「谁触发的」查询口径**。调度列表的「上次结果」、报告列表的触发列、
+    告警消息里的触发说明，三处都读 `execution_index` 的那三列，不各自去 join
+    `schedule_runs`。`schedule_runs` 只回答「调度自己有没有按时触发成功」（含漏跑与触发
+    失败——那两种情况根本没有执行，也就没有报告），两张表回答的是不同的问题，不能互相替代。
+
+16. **多套测试环境的流量泳道：环境默认头 + 触发时变量覆盖，两层都做**（2026-08-28 用户
+    场景确认）。详细形状见 6.5。要点：
+
+    - **环境加 `default_headers`**，在 `buildRequest` 里以**最低优先级**合并进每一个 HTTP
+      请求。这是「整套换头」唯一能落地的位置——`buildRequest` 是全平台唯一的请求组装点
+      （单接口调试、用例、流程节点、套件成员都走它），放在别处必然漏掉一类。
+    - **套件/流程执行与三种触发（手动、调度、Webhook）都接受 `variables` 覆盖**，冻进
+      `run_spec`，以最高优先级压过环境变量。复用既有的 `RunSpec.variables` 通道（P1-2
+      单步调试建的那条），不新造第二条变量层。
+    - 于是一条「夜里 2 点，按 lane-b 跑一遍冒烟」的调度 = 一个套件 + 一条 cron + 一行
+      `{ "lane": "lane-b" }`，接口定义、用例、流程一个都不用改。
+
+17. **不做「触发时直接传一组 header」**。参数只能是**变量**，头由环境的 `default_headers`
+    用 `{{lane}}` 引用。让触发方直接塞 header 会让「这次执行实际发了什么头」散落在调度
+    配置、Webhook 请求体、套件运行参数三处，而 `buildRequest` 已经是唯一答案；更实际的
+    问题是 header 名字可以任意，一次误传 `Authorization` 就是一次凭据注入，而变量走的是
+    既有的脱敏与快照路径。**触发参数里不要放密钥**：它按明文冻进 `run_spec` 并出现在
+    执行快照里，密钥仍然只放环境 secret。
+
+**明确不做**
+
+- **流程的定时调度**（边界 1）。要定时跑一条流程，把它放进一个套件。
+- **一次性定时执行**（Spec 2.5.1）。它要在 `cron` 之外再加一个 `run_at`，且每处「算下次
+  时间」都要分叉；真需要跑一次的场合，手动点一下就是。
+- **日历排除 / 节假日跳过**（Spec 2.5.1）。需要一份可信的节假日数据源与它的年度维护，
+  平台自己造一份只会过期。
+- **Cron 可视化配置器**（交互文档 3.7 的分钟/小时输入格）。只做表达式输入 +
+  服务端算出的下 5 次执行时间预览——预览是可视化真正解决的那个问题，而输入格另建一套
+  与表达式互相同步的状态。
+- **Email 告警渠道**（见边界 8）。
+- **告警的自定义消息模板语法**。渠道有默认模板 + 一个可选的自定义前缀文案；引入模板语言
+  等于再做一个沙箱。
+- **报告导出**（PDF / Excel / 分享链接）。本阶段只做站内可读的那一份；导出要先定版式与
+  权限（分享链接等于一条免鉴权读接口），是独立一件事。报告名已经定好，导出接上去时不必
+  返工。
+- **报告的编辑、备注与手工归档**：它是执行的派生物（边界 13），可编辑就意味着报告与执行
+  可能互相矛盾。
+- **流程执行报告**：流程执行详情（P1-2 的步骤树）已经是它的报告。本阶段的「报告」特指
+  套件那一份统一摘要，不为流程再做一层。
+- **AI 趋势洞察 / 失败根因分析**（Spec 2.4.4）：属于 P5 的 MCP 能力。
+- **覆盖率趋势与 `CoverageSnapshot`**（Spec 2.3）：覆盖率现在是即时算的，做趋势要先决定
+  快照频率，与本阶段无关。
+- **调度产生的执行不参与「重跑对比」**（交互文档 3.6.1 的 A/B）：那是报告页的能力，本阶段
+  只保证调度产生的执行能从调度列表点进统一执行详情。
+- **多租户级的调度配额**：不限制一个项目能建多少条调度，只按 `SCHEDULE_MAX_PER_PROJECT`
+  给一个软上限拒绝，避免误建循环。
+
+### 6.1 数据库迁移（接在 029 之后）
+
+**`030_p3_scheduling.sql`**
 
 ```
-schedules          (id, project_id, target_type, target_id, cron, config JSONB, status)
-notifications      (id, project_id, type, config JSONB, channels JSONB)
-alert_rules        (id, project_id, metric, condition, threshold)
+schedules        (id, project_id, name,
+                  target_type CHECK(suite)   -- 只有套件（边界 1）；留列是为了 P4.5 接 CI 任务
+                  target_id, environment_id, cron, timezone, enabled,
+                  variables JSONB DEFAULT '{}',   -- 每次触发都带的变量覆盖（6.5）
+                  next_run_at, last_run_at, created_at, updated_at)
+schedule_runs    (id, schedule_id, project_id, planned_at, triggered_at,
+                  status CHECK(triggered|skipped|failed), execution_index_id, error)
+webhook_triggers (id, project_id, name,
+                  target_type CHECK(flow|suite),   -- Webhook 仍支持流程（边界 1 末段）
+                  target_id, environment_id,
+                  public_id UNIQUE, secret_encrypted BYTEA, enabled,
+                  last_triggered_at, created_at, updated_at)
+execution_index  += trigger_source CHECK(manual|scheduled|webhook|ci) DEFAULT 'manual'
+                 += trigger_ref_id UUID    -- 调度 / Webhook 的 id，无 FK（历史要活过删除）
+                 += trigger_ref_name TEXT  -- 触发者名字的快照（边界 13）
+suite_executions += report_name TEXT       -- 「套件名_YYYYMMDD[_n]」，入队时定（边界 13）
+environments     += default_headers JSONB  -- 环境默认头，buildRequest 最低优先级合并（6.5）
+```
+
+**`031_p3_alerts.sql`**
+
+```
+notification_channels  (id, project_id, name, type CHECK(webhook|wecom|dingtalk|slack),
+                        url, secret_encrypted BYTEA, template_prefix, enabled, ...)
+alert_rules            (id, project_id, name, metric, comparator, threshold,
+                        window_minutes, cooldown_seconds, channel_ids UUID[],
+                        enabled, last_fired_at, ...)
+notification_deliveries(id, project_id, channel_id, rule_id, execution_index_id,
+                        status CHECK(sent|failed), status_code, error, payload, created_at)
+```
+
+**`032_p3_suite_variable_overrides.sql`**（P3-2 实现时增补，030 草图的缺口）
+
+```
+suite_executions += variable_overrides JSONB NOT NULL DEFAULT '{}'
+                     # 6.5「证据与可读性」要求变量覆盖出现在报告标识段（6.4），而
+                     # suite run_spec 落终态即置 NULL——标识段缺一个终态后仍可读的
+                     # 存放位置。刻意不叫 variables：flow_executions.variables 是
+                     # 「跑完后的最终变量袋」，这里存「入队时给的覆盖」，撞名会读错。
 ```
 
 ### 6.2 后端新 API
 
 ```
-SCHEDULES
-  GET/POST /projects/:id/schedules
-  PUT/DELETE /projects/:id/schedules/:scheduleId
+SCHEDULES（目标只有套件）
+  GET/POST      /projects/:id/schedules                       分页 + keyword/enabled 筛选
+  GET/PUT/DELETE /projects/:id/schedules/:scheduleId
+  GET           /projects/:id/schedules/:scheduleId/runs      触发历史（含漏跑/失败），分页
+  POST          /projects/:id/schedules/:scheduleId/run       立即跑一次（trigger_source=manual）
+  POST          /projects/:id/schedules/preview               校验 cron + 返回下 5 次时间
 
-ALERTS
-  GET/POST /projects/:id/alerts
-  PUT/DELETE /projects/:id/alerts/:alertId
+WEBHOOK 触发（目标为流程或套件）
+  GET/POST      /projects/:id/webhook-triggers
+  PUT/DELETE    /projects/:id/webhook-triggers/:triggerId
+  POST          /projects/:id/webhook-triggers/:triggerId/rotate-secret
+  POST          /webhooks/:publicId                            公开，HMAC 准入
 
-REPORTS
-  GET /projects/:id/reports/trend
-  GET /projects/:id/reports/summary
+套件执行报告（边界 13）
+  GET /projects/:id/suite-reports                              分页：报告名/触发源/耗时/通过率
+  GET /projects/:id/suite-reports/:executionId                 一份报告：摘要 + 成员明细（不分页）
+
+执行入参（6.5，改既有路由）
+  POST /projects/:id/test-suites/:suiteId/execute              Body 可带 variables 覆盖
+  POST /projects/:id/flows/:flowId/execute                     已支持 variables，不改
+  GET/PUT /projects/:id/environments                           default_headers 读写
+
+分页补齐（边界 14，改既有路由）
+  GET /projects/:id/test-suites                                加 page/pageSize，meta 回 total
+
+告警
+  GET/POST      /projects/:id/notification-channels
+  PUT/DELETE    /projects/:id/notification-channels/:channelId
+  POST          /projects/:id/notification-channels/:channelId/test
+  GET/POST      /projects/:id/alert-rules
+  PUT/DELETE    /projects/:id/alert-rules/:ruleId
+  GET           /projects/:id/notification-deliveries          派发证据
+
+报表
+  GET /projects/:id/reports/trend?range=24h|7d|30d             按桶的通过率 + P50/P90/P99
+  GET /projects/:id/reports/summary?range=...                  总量、失败分布（按接口/按错误类型）
 ```
+
+### 6.3 新进程：`src/scheduler.ts`
+
+worker 之外的第三个进程（`pnpm scheduler`，`start.sh` 一并拉起）。三件事：
+
+- **cron tick**（10 秒）：认领到期调度 → `lib/trigger.ts` → 写 `schedule_runs`。
+- **漏跑判定**：超过宽限期的到期时刻记 `skipped` 并快进 `next_run_at`（边界 2）。
+- **告警派发**：订阅 `executions:events`，终态事件上评估规则并投递（边界 9、10）。
+
+多实例安全（行级认领 + 冷却写回都带 `WHERE last_fired_at = <读到的那个>`），但**推荐单实例**
+——它不是吞吐瓶颈，多起只会让日志难读。
+
+### 6.4 套件执行报告（边界 13 的落地形状）
+
+**一份报告 = 一次套件执行的只读视图**，三段：
+
+| 段 | 字段 | 来源 |
+|---|---|---|
+| 标识 | 报告名（`套件名_YYYYMMDD[_n]`）、套件名、环境名 | `suite_executions`（都是入队时的快照） |
+| 触发 | 触发源（手动/定时/Webhook/CI）、触发者名字、执行分区 | `execution_index.trigger_*` + `suite_executions.runner_label` |
+| 结论 | 状态、成员总数/通过/失败/跳过、通过率、整体耗时、排队等待、开始与结束时刻 | `suite_executions`，耗时由时间戳算出 |
+| 明细 | 每个成员一行：类型、名字、状态、耗时、失败原因 | `execution_steps`（不分页，边界 14） |
+
+**入口三处，同一份数据**：套件配置页的运行抽屉（已有，加一条报告名 + 触发行）、报告列表页
+（新，分页 + 按触发源/状态筛选）、执行记录页的父执行抽屉（已有，加同样两行）。不为报告
+再做第四个页面——它就是套件执行详情，只是把「谁触发的、跑了多久」补齐了。
+
+### 6.5 多套测试环境的流量泳道（边界 16、17 的落地形状）
+
+**问题**（2026-08-28 用户提出）
+
+测试环境有多套，靠 **header 或请求参数**区分流量（灰度泳道 / 全链路压测那一类
+`X-Env-Tag: lane-b`）。现在要给一个套件换泳道，只能把每个接口的 header 挨个改一遍，
+或者复制一套环境；定时任务更没有入口——它跑的永远是保存下来的那份。
+
+**为什么不是插件**
+
+插件（P6）解决的是「平台不知道你要干什么」的扩展点。这里不是：**「一次执行该带哪些头」
+本来就是执行模型的一部分**，缺的只是两样东西——一个「整套生效」的头的存放位置，和一条
+「触发这一次时把某个值换掉」的通道。这两样都落在既有结构上，等插件反而会把一个 3 行的
+合并写成一套钩子生命周期。
+
+**两层，各解决一半**
+
+| 层 | 放哪 | 解决 |
+|---|---|---|
+| 环境默认头 `environments.default_headers` | `buildRequest` 里最低优先级合并 | 「整套请求都带这个头」——不用逐个接口改 |
+| 触发时变量覆盖 `variables` | 冻进 `run_spec`，最高优先级 | 「这一次/这条定时任务用哪个泳道」 |
+
+两层是配合关系：默认头写 `{"X-Env-Tag": "{{lane}}"}`，`lane` 的值由环境变量给默认、由
+触发参数按次覆盖。
+
+**优先级（自低到高，`buildRequest` 里的合并顺序）**
+
+```
+环境 default_headers  →  接口/用例定义的 headers  →  auth 注入  →  前置钩子改写
+```
+
+- **默认头垫在最底层**，接口自己写了同名 header 就以接口为准（大小写不敏感比对——HTTP
+  头名不区分大小写，两份 `content-type` 同时出现在快照里比覆盖更糟）。理由：默认头是
+  「这套环境的公共前缀」，它不该有能力悄悄改掉某个接口刻意写死的头。
+- **钩子仍在最后**（`lib/hooks.ts` 的注释已经解释过：签名必须签最终字节）。默认头因此
+  是「被签进去」的一部分，这是对的——泳道头本来就要参与签名。
+
+变量优先级不变，仍是 P1-2 定下的那条：`环境变量/secret → run_spec.variables`（后者胜）。
+
+**触发参数的形状**
+
+```
+POST /projects/:id/test-suites/:suiteId/execute   { execution?, variables? }
+POST /projects/:id/flows/:flowId/execute          { ..., variables? }        // 已有
+schedules.variables JSONB                          调度每次触发都带这一份
+webhook_triggers                                   请求体注入（边界 7，仅流程）
+```
+
+`variables` 只接受 `Record<string, string>`，键匹配 `^[A-Za-z_][A-Za-z0-9_]*$`。套件的
+这一份**下发给每个成员**（成员的 `insertRun` / `insertFlowRun` 都带上它）——这是套件唯一
+一处「成员共享一个值」，与 5.0.11「成员之间不传变量」不矛盾：那条说的是成员**之间**不
+互相传递运行产物，而这是整次执行的入参，对每个成员都一样，且不随执行改变。
+
+**证据与可读性**
+
+- 一次执行的 `variables` 覆盖要出现在**报告的标识段**（6.4），否则两份跑同一个套件的报告
+  长得一模一样而结论不同。
+- 默认头进请求快照（走既有脱敏），所以「这次到底带了什么头」在执行详情里一眼可见。
+- 环境编辑器里默认头与变量分两块：头是「每个请求都加什么」，变量是「`{{}}` 展开成什么」，
+  混在一起用户会往变量里写 `X-Env-Tag` 然后奇怪它没生效。
+
+**明确不做**
+
+- 触发时直传 header（边界 17）。
+- 项目级默认头：环境已经是「我指向哪套系统」的归属者（同 P2-8 的分区决策），再加一层
+  项目级会让「这个头从哪来」需要查两个地方。
+- 按 header 名的删除语义（用默认头「去掉」某个头）：`buildRequest` 是加法，引入删除就要
+  定义空串与 null 的区别，而泳道场景不需要。
+
+---
+
+### 6.6 分批交付
+
+| 批次 | 内容 | 状态 |
+|---|---|---|
+| P3-1 | 迁移 `030` / `031`：`schedules` / `schedule_runs` / `webhook_triggers` / 通知三表 / `execution_index.trigger_*` / `suite_executions.report_name` / `environments.default_headers`；`models/types.ts` 新类型 + mapper | **已实现**（2026-08-28，仅结构与类型；路由/触发路径在 P3-3/6 接入） |
+| P3-2 | **两层泳道**（6.5）：`buildRequest` 最低优先级合并环境默认头（大小写不敏感）；`RunSpec.variables` 承接套件/流程执行与三种触发的变量覆盖，套件成员逐一下发；`environments.ts` 读写校验 + 复制带上默认头 | **已实现**（2026-08-28，含迁移 032 `suite_executions.variable_overrides`；前端默认头编辑块在 P3-9） |
+| P3-3 | `lib/trigger.ts` 抽取统一触发路径；`flows.ts` / `suites.ts` 执行路由改为调用它并接受 `variables`；`enqueue.ts` 透传 `triggerSource` / `triggerRefId` / `triggerRefName`，入队事务里生成 `report_name` | **已实现**（2026-08-28；含流程成员经 run_spec 冻结的 trigger 继承套件触发者，趋势/筛选才不会把回归成员算成手动） |
+| P3-4 | `lib/schedule.ts`（cron 解析、下次时间、行级认领）+ `src/scheduler.ts` 进程（tick / 漏跑 / 告警派发） | **已实现**（2026-08-28；告警只落订阅管线与评估入口 `lib/alerts.ts`，规则评估/冷却/投递是 P3-5。`cron-parser` 直接依赖与 `pnpm scheduler` 脚本从 P3-10 提前落地，P3-10 剩 start.sh/stop.sh/.env.example） |
+| P3-5 | `lib/notify.ts`（四种渠道的载荷 + 投递 + 落 delivery）+ `lib/alerts.ts`（规则评估 + 冷却） | **已实现**（2026-08-28；窗口统计只看已定局的 flow/suite 父执行，canceled 不计入；冷却 = 读判 + `last_fired_at IS NOT DISTINCT FROM` 写回认领；钉钉加签用渠道 secret，wecom/slack/通用 webhook 的准入凭据在 URL 里） |
+| P3-6 | 路由：`schedules.ts`（含 preview / runs / 立即执行，`variables` 进调度配置）、`webhooks.ts`（含公开 HMAC 入口）、`alerts.ts`、`reports.ts`（trend / summary / suite-reports）；`index.ts` 注册；`executionIndex.ts` 加 `triggerSource` 筛选；`dashboard.ts` 的 `scheduleCount` 变真值 | **已实现**（2026-08-28；文件按「一资源一文件」拆成 `schedules.ts` / `webhookTriggers.ts`（含 `POST /webhooks/:publicId`）/ `notificationChannels.ts` + `alertRules.ts` + `notificationDeliveries.ts` / `reports.ts`。调度软上限 50/项目、`meta.scheduler.overdue` 活性提示；HMAC 三头 + 原始字节验签（子作用域 buffer 解析器）+ nonce `SET NX EX` 防重放；test-suites 列表分页（边界 14）；渠道删除 409+force 并摘规则里的悬空 id；trend 空桶由 `generate_series` 补齐 + `percentile_cont` 分位数） |
+| P3-7 | **分页补齐**（边界 14）：`GET /test-suites` 服务端分页；`SuiteList.tsx` 加分页器与 total | **已实现**（2026-08-28；服务端分页随 P3-6 落地，本批补前端：`api.testSuites` 返回 `Paged<SuiteSummary>`，列表加分页器（20/50/100、真实 total），关键字输入重置页码、删掉本页最后一行自动退页、执行流终态重取不丢当前页） |
+| P3-8 | 前端 `api.ts` 类型与调用、`i18n.ts` 两份键（zh-CN + en） | **已实现**（2026-08-28；`Environment.defaultHeaders`、`ExecutionIndex.triggerSource/refId/refName`、`SuiteExecution.reportName/variableOverrides`、`Dashboard.scheduleCount` 必填真值；新增 Schedule/ScheduleRun/WebhookTrigger/NotificationChannel/AlertRule/NotificationDelivery/SuiteReport(±Summary)/TrendReport/ReportSummary 全套类型与 33 个 api 调用；`executeSuite` 补 variables 入参、`executionIndex` 补 triggerSource 筛选、schedules 列表带 `scheduler.overdue` 活性提示。i18n 双语各 1191 键，已脚本校验两份键集完全一致且无重复键） |
+| P3-9 | 前端页面：`Schedules.tsx`（列表 + cron 抽屉 + 变量覆盖 + 触发历史）、`Alerts.tsx`（渠道 + 规则 + 派发记录）、`SuiteReports.tsx`（报告列表 + 详情，标识段含变量覆盖）、`Trends.tsx`（手写 SVG 折线/柱/环形）；`Environments.tsx` 加默认头编辑块；`SuiteRunDrawer` 补报告名与触发行；导航与路由 | **已实现**（2026-08-28；含少量后端/键增补：`/suite-executions/:id` 详情带触发三列（抽屉数据源，边界 15）、i18n 补 nav/空态/时段等 16 键（两份各 1207 键，脚本校验一致）。调度列表带 overdue 活性提示、cron 防抖预览下 5 次、变量覆盖 KeyValueEditor；报告列表行内显示变量覆盖、详情为独立路由；趋势页手写 SVG（折线断开=无执行、柱堆叠通过/失败、环形失败类型）；导航编排组加「定时调度」、通用组加套件报告/趋势/告警） |
+| P3-10 | `.env.example`（SCHEDULER_TICK 之类）/ `start.sh` / `stop.sh` 拉起第三个进程；`package.json`（`cron-parser` 提为直接依赖）/ 依赖清单 | **已实现**（2026-08-28；`cron-parser` 直接依赖与 `pnpm scheduler` 脚本已随 P3-4 提前落地。本批：`SCHEDULER_TICK_MS`/`SCHEDULER_MISS_GRACE_MS` 改为环境变量可调（钳位 1s–60s / 30s–1h）、`.env.example` 调度器段落（含三进程共用密钥的说明）、`start.sh`/`stop.sh` 拉起与回收 scheduler（日志就绪检查 `ticking every`）、`AGENTS.md` 服务段落同步为四进程） |
+| P3-11 | **验收反馈重构（2026-08-28 用户确认）**：① 删除独立「定时调度」页，定时配置并入套件详情页（`schedules` 表与 CRUD 路由不动，`GET /schedules` 加 `targetId` 过滤；套件页新建的调度 target 固定为该套件）；② 套件级通知设置：`test_suites.notify_config`（onSuccess / onFailure 开关 + channelIds），套件执行终态按配置投递（复用渠道与投递证据表，`rule_id` 为空）；③ 通知模版支持 `{{suiteName}}` 等占位符，套件级可覆盖默认模版（标题 + 正文，未知占位符原样保留） | **已实现**（2026-08-28，形状见 6.8；迁移 `033`） |
+| P3-12 | **验收反馈第二轮（2026-08-28 用户确认）**：① 「套件报告」改名「报告列表」（导航 + 页面标题；路由 `/suite-reports` 不动）——为后续接入仓库类报告（单测/流水线）预留泛化入口；② 报告详情接入通用面包屑 `{项目}/报告列表/{报告名称}`（报告名经 Outlet context 上抛，`DetailCrumbContext`），删除页内返回按钮；③ 列表分页补齐：`GET /endpoints`、`GET /data-sources`、`GET /mocks` 加 **opt-in** 分页（不传 `pageSize` 仍回全量，项目 store / 流程节点选择器 / Mock 快照来源依赖全量契约），接口/数据源/Mock 列表页走 `endpointsPaged` 等新客户端读法；环境管理与套件成员解析列表数据源是共享全量（store / preview 一次解析），就地分页 | **已实现**（2026-08-28；界面缺陷明细见 `issue_fix/问题记录-P3验收第二轮.md`。i18n 双语各 +2 键（`suiteReports.memberPass` / `suiteReports.current`）、改 2 键（nav/title）） |
+| P3-13 | **验收反馈第三轮（2026-08-28 用户确认）**：① 手动运行套件补**变量覆盖**入口——「运行」改为先弹确认窗（键约束与服务端同一条），覆盖随 `POST /execute` 的 `variables` 入队，不落库；至此手动/调度/Webhook（含 CI 泳道场景）三种触发源同一能力，替换优先级确认为 触发时的变量覆盖 > 流程种子变量 > 环境变量（`run.ts` / `suiteRun.ts` / `flowRun.ts` 既有实现即此链）；② 成员相关列表分页补齐：运行抽屉成员行、添加成员选择器流程 tab（报告成员明细按边界 14 维持不分页）；③ 套件页「定时调度」空态改内联「暂无数据」（`common.noData`），删 `schedules.emptyTitle/emptyHint` 两键；④ 定时调度卡片移到通知设置之前；⑤ 变量覆盖提示文案口径统一（运行弹窗/调度/环境默认头三处，同一层名「触发时的变量覆盖」+ 同一条优先级链）；⑥ 变量覆盖编辑器（运行弹窗 + 调度编辑）换用新组件 `VariableRowsEditor`——环境抽屉普通变量行的同款排版（列头 + 键/值/复制/删除），弃用为请求头/参数设计的 `KeyValueEditor` 双模式控件 | **已实现**（2026-08-28；明细见 `issue_fix/问题记录-P3验收第三轮.md`。i18n 双语各 +6 键（含 `common.variableName/variableValue`）、删 2 键、改 3 处提示。无后端改动——分页均为前端就地分页，`variables` 通道 P3-3 已就绪） |
+| P3-14 | **验收反馈第四轮（2026-08-28 用户确认）**：① 环境抽屉「默认请求头」编辑器换 `VariableRowsEditor`（`copyTemplate=false`，复制给头名）——变量覆盖行样式三处对齐，`KeyValueEditor` 保留给请求头/参数（停用一行、批量粘贴是那两处的真实动作）；② 运行弹窗抽成共享 `SuiteRunModal`（自持变量状态 + 键校验 + 自绘 `.btn` 页脚），套件配置页与**套件列表行**共用——列表行运行也从一键直跑改为先确认变量覆盖；③ 「变量覆盖未生效」经 DB 取证为非缺陷：`variable_overrides={"x":"123"}` 已冻结入库，但该套件成员无任何 `{{x}}` 引用（覆盖是替换值，只在占位符处出现，另见报告标识段）；④ 套件页补 Cmd+S / Ctrl+S 快捷保存（与接口/流程工作台同一模式） | **已实现**（2026-08-28；明细见 `issue_fix/问题记录-P3验收第四轮.md`。i18n 无新增键。无后端改动） |
+| P3-15 | **验收反馈第五轮（2026-08-28 用户确认）**：① 流程列表补**服务端分页**——`GET /flows` 加 opt-in 分页（传 `pageSize` 才分页，与 endpoints / data-sources / mocks 同一约定；lastRun 只查当前页），前端 `flowsPaged` + 列表页分页器（20/50/100、筛选重置页码、删空本页退页），成员选择器等全量调用方不受影响；② 修复第四轮 Cmd+S 引入的套件页白屏回归（useEffect 声明在 `if (!draft)` 早退之后，违反 Rules of Hooks；移到早退前）；③ 「默认头 x=2 + 覆盖 x=xxx 未生效」取证为非缺陷（默认头值是纯文本非 `{{x}}` 模板；`defaultHeadersHint` 补「固定值不会被覆盖」显式对照） | **已实现**（2026-08-28；缺陷明细见 `issue_fix/问题记录-P3验收第五轮.md`。i18n 改 1 处提示。后端有改动：`routes/flows.ts`） |
+
+### 6.7 验收门槛
+
+1. **P3-1/3**：手动执行流程/套件的行为与 P2 完全一致（校验、错误码、202 载荷都不变），
+   `execution_index.trigger_source` 对手动执行为 `manual`；执行记录页可按来源筛选。
+2. **泳道（P3-2）**：环境默认头 `{"X-Env-Tag": "{{lane}}"}` 下，接口自己写了 `X-Env-Tag` 的
+   以接口为准；触发套件传 `variables: {"lane": "lane-b"}` 后，该次执行所有成员的请求快照里
+   `X-Env-Tag` 全部是 `lane-b`，而环境不变、接口定义不变；同一套件的两次执行（一次带覆盖、
+   一次不带）报告里能看出差别；带 `Authorization` 字样的头照常被掩码。
+3. **P3-4**：一条 `*/1 * * * *` 的套件调度按分钟产出执行，`schedule_runs` 一行一次；停掉
+   调度器十分钟再拉起，**不会**补跑那十分钟，而是留下 `skipped` 证据并从下一个整点继续；
+   两个调度器实例同时跑，同一个到期时刻只产出一次执行；流程页面上**没有**定时入口。
+4. **P3-5**：一条「本次失败」规则在套件失败后 10 秒内投递到渠道，`notification_deliveries`
+   记下 `status_code`；渠道 URL 改错后规则仍命中，但投递记 `failed` + 原因；冷却期内的第二
+   次失败不再发。
+5. **P3-6**：`reports/trend` 的空桶返回 0 而不是缺桶；`reports/summary` 的失败分布合计等于
+   窗口内失败总数；`/dashboard` 的定时任务数不再显示「未启用」。
+6. **报告（P3-6/9）**：同一套件同一天跑三次得到 `名_日期`、`名_日期_2`、`名_日期_3` 三个
+   互不相同且**不再变化**的报告名；报告显示触发源与触发者名字，删掉那条调度后仍显示原名字；
+   整体耗时与排队等待分开显示；套件改名后旧报告仍是旧名字。
+7. **分页（P3-7）**：套件列表按 20 条分页并显示真实总数，关键字搜索命中的是全量而不是当前
+   页；成员清单与报告成员明细**不分页**（有 200 上限）。
+8. **P3-8/9**：调度列表显示下次执行时间与上次结果，上次结果可点进统一执行详情；调度所选
+   环境的分区无在线执行器时，编辑器提前给出提示（与环境编辑器同款，P2-8.7）；趋势页在两种
+   主题下都不出现横向滚动，图表只用保留语义色。
+
+**验收结论**：2026-08-28 用户验收通过（P3-1 ~ P3-11 全量；首轮验收发现的六项缺陷
+已修复并随 P3-11 增补一并复验，缺陷明细见 `issue_fix/问题记录-P3验收第一轮.md`）。
+
+### 6.8 P3-11：套件级定时与通知（验收反馈，2026-08-28 确认）
+
+用户验收后确认的三个范围决策：**删除独立「定时调度」页**（定时配置并入套件详情页）、
+**套件内通知设置**（成功 + 失败开关，选渠道）、**通知模版支持占位符**。
+
+- **定时并入套件**：`schedules` 表、CRUD 路由、调度器认领全部不动；前端删掉
+  `Schedules.tsx` 页面与导航入口，套件详情页加「定时调度」面板（本套件的调度列表 +
+  创建/编辑抽屉，抽屉里不再选目标套件）。`GET /schedules` 加 `targetId` 查询参数
+  （套件页过滤用）。调度的「触发历史」与「立即跑一次」随面板进套件页。
+- **通知设置**：`test_suites.notify_config JSONB`，形状
+  `{ onSuccess: boolean, onFailure: boolean, channelIds: string[], template?: { title?: string, body?: string } }`。
+  投递挂在调度器的事件订阅管线上（与告警同一条 `executions:events` 订阅）：套件终态
+  事件到达时读套件配置，按开关投递到所选渠道；`canceled` 不通知（用户动作不是结果）。
+  投递走 `lib/notify.ts` 同一条路径，`notification_deliveries.rule_id` 为空（与渠道
+  「测试」同款），`execution_index_id` 指向该次执行。
+- **模版**：默认模版内置（标题「【接口自动化】套件 {{suiteName}} {{status}}」，正文
+  带结论/通过率/耗时/触发者/报告名/时间）；占位符 `{{suiteName}}`、`{{status}}`、
+  `{{passRate}}`、`{{successCount}}`、`{{failedCount}}`、`{{skippedCount}}`、
+  `{{total}}`、`{{duration}}`、`{{reportName}}`、`{{trigger}}`、`{{finishedAt}}`。
+  渲染是纯字符串替换：未知占位符原样保留（写错了看得见，静默吞掉反而难查）。
+  套件级 `template` 覆盖默认（title / body 均可只覆盖其一）；项目级告警规则的固定文案
+  不变——那是规则语义，不是套件通知。
 
 ---
 
@@ -2239,7 +2690,7 @@ mcp_tool_calls     (id, flow_execution_id, tool_name, args JSONB, result JSONB)
 | P2-7 | `mssql` + `@types/mssql` **已装** | SQL Server 驱动（包不自带类型声明） |
 | P2-7 | `oracledb` + `@types/oracledb` **已装** | Oracle 驱动，thin 模式（包不自带类型声明） |
 | P2-7 | `mongodb` **已装**    | MongoDB 驱动     |
-| P3   | `node-cron`           | 定时调度         |
+| P3   | `cron-parser` **已装**（bullmq 传递依赖，显式提为直接依赖） | Cron 解析与下次执行时间 |
 | P5   | `@fastify/swagger`    | OpenAPI 文档生成 |
 
 > 说明: P1-3 的执行进度推送用 **SSE**(`reply.hijack()` + `text/event-stream`)实现,
@@ -2261,7 +2712,7 @@ mcp_tool_calls     (id, flow_execution_id, tool_name, args JSONB, result JSONB)
 | P1   | `@xyflow/react`        | DAG 画布      |
 | P1   | `@monaco-editor/react` | 代码编辑器    |
 | P1   | `ajv` **已装**          | JSON Schema 断言（P1-1 收尾） |
-| P3   | `@ant-design/charts`   | 趋势图表      |
+| ~~P3~~ | ~~`@ant-design/charts`~~ | **撤销**：趋势图手写 SVG，理由见 6.0 边界 12 |
 | P5   | `@uiw/react-md-editor` | Markdown 编辑 |
 
 > 说明: 脚本断言沙箱**定案用 `node:vm`**（零依赖），不再引入 `isolated-vm`——原生
@@ -2280,7 +2731,7 @@ mcp_tool_calls     (id, flow_execution_id, tool_name, args JSONB, result JSONB)
 | M0     | P0 重构 | 模块化代码 + 路由 + 测试 | 现有功能全部通过测试                             |
 | M1     | P1      | Flow 编排 + 测试用例     | 可创建 DAG 并执行, 结果可查                      |
 | M2     | P2      | 数据源 + 流程节点补全 + 套件 + Mock | 数据源可连可跑命名 SQL；流程支持脚本/条件/数据库节点与并行；可批量执行 + 模拟响应 |
-| M3     | P3      | 调度 + 告警 + 趋势       | 定时执行 + 失败通知                              |
+| M3     | P3      | 套件调度 + Webhook 触发 + 套件执行报告 + 告警 + 趋势 | 定时执行（漏跑不补但留痕）+ HMAC 触发 + 报告名 `套件名_日期` 且带触发源与耗时 + 失败通知 + 趋势图 |
 | M4     | P4      | SDK 上报                 | Python SDK 可安装使用                            |
 | M5     | P4.5    | Runner                   | 可拉取代码执行并查看结果                         |
 | M6     | P5      | 平台 MCP 对外暴露        | 外部可通过 MCP 创建接口/用例/DAG (统一上线) |

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 快速停止。用法:
 #   ./stop.sh               # 停全部
-#   ./stop.sh api worker    # 只停指定服务 (api | worker | web)
+#   ./stop.sh api worker    # 只停指定服务 (api | worker | scheduler | web)
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -10,9 +10,10 @@ PID_FILE="$ROOT/.dev-pids"
 # 服务名 → 兜底清理的模式。tsx watch 与 vite 进程树在 pidfile 之外也可能有活口。
 pattern_of() {
   case "$1" in
-    api)    echo "watch src/index.ts" ;;
-    worker) echo "watch src/worker.ts" ;;
-    web)    echo "--port 5173" ;;
+    api)       echo "watch src/index.ts" ;;
+    worker)    echo "watch src/worker.ts" ;;
+    scheduler) echo "watch src/scheduler.ts" ;;
+    web)       echo "--port 5173" ;;
   esac
 }
 
@@ -20,7 +21,7 @@ FULL=0
 NAMES=("$@")
 if [ "${#NAMES[@]}" -eq 0 ]; then
   FULL=1
-  NAMES=(api worker web)
+  NAMES=(api worker scheduler web)
 fi
 
 wanted() {
@@ -69,9 +70,10 @@ cleanup() {
 }
 for name in "${NAMES[@]}"; do
   case "$name" in
-    api)    cleanup "watch src/index.ts" "API" ;;
-    worker) cleanup "watch src/worker.ts" "worker" ;;
-    web)    cleanup "--port 5173" "前端" ;;
+    api)       cleanup "watch src/index.ts" "API" ;;
+    worker)    cleanup "watch src/worker.ts" "worker" ;;
+    scheduler) cleanup "watch src/scheduler.ts" "调度器" ;;
+    web)       cleanup "--port 5173" "前端" ;;
   esac
 done
 

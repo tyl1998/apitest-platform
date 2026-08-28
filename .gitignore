@@ -6,6 +6,7 @@ apitest-web/
 # 运行时产物
 .dev-logs/
 .dev-pids
+.dev-certs/
 .playwright-mcp/
 
 # macOS 元数据

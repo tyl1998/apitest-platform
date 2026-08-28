@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 快速启动/重启：迁移 → API + worker + 前端。
+# 快速启动/重启：迁移 → API + worker + 调度器 + 前端。
 # 用法:
 #   ./start.sh                        # 启动全部(已在运行的跳过)
 #   ./start.sh --restart              # 重启全部
-#   ./start.sh --restart api worker   # 只重启指定服务 (api | worker | web)
+#   ./start.sh --restart api worker   # 只重启指定服务 (api | worker | scheduler | web)
 #   ./start.sh --skip-migrate         # 跳过迁移(迁移不变时更快)
 set -euo pipefail
 
@@ -46,6 +46,28 @@ if [ "$RESTART" -eq 1 ]; then
   fi
 fi
 
+# 企业内部 CA（*.example.net 等内网 https 域名）：Node 不读 macOS 系统钥匙串，
+# 没有这份 PEM 时 fetch 会报 SELF_SIGNED_CERT_IN_CHAIN。文件存在才注入，
+# 不存在则保持原生行为（公共 CA 站点不受影响）。
+# macOS 公司机器：钥匙串里有 MDM 下发的企业 CA，缺文件时下面会自动导出（自愈）。
+# Linux / 无钥匙串的机器：需要把 example-ca.pem 随部署带到同路径 —— CA 证书是
+# 公开材料不是密钥，可以直接进部署包或仓库。
+# 手动重新生成（企业 CA 轮换后）：
+#   security find-certificate -a -c "example" -p /Library/Keychains/System.keychain \
+#     | awk '/BEGIN CERT/,/END CERT/' > .dev-certs/example-ca.pem
+CA_BUNDLE="$ROOT/.dev-certs/example-ca.pem"
+if [ ! -f "$CA_BUNDLE" ] && command -v security >/dev/null 2>&1; then
+  mkdir -p "$ROOT/.dev-certs"
+  security find-certificate -a -c "example" -p /Library/Keychains/System.keychain 2>/dev/null \
+    | awk '/BEGIN CERT/,/END CERT/' > "$CA_BUNDLE"
+  # 非公司机器导出为空文件, 删掉以免注入空 PEM
+  [ -s "$CA_BUNDLE" ] || rm -f "$CA_BUNDLE"
+fi
+if [ -f "$CA_BUNDLE" ]; then
+  export NODE_EXTRA_CA_CERTS="$CA_BUNDLE"
+  echo "[env] NODE_EXTRA_CA_CERTS=$CA_BUNDLE"
+fi
+
 # Postgres/Redis 由外部常驻(如 OrbStack / docker 手动拉起), 脚本不再负责。
 # 需要脚本代管时, 取消下面两行注释:
 # echo "[1/3] Postgres + Redis (docker compose)"
@@ -79,9 +101,12 @@ start_one() {
 }
 
 echo "[2/3] 应用进程"
-start_one api    "$SERVER" pnpm dev
-start_one worker "$SERVER" env WORKER_LABELS=default pnpm worker
-start_one web    "$WEB" pnpm dev -- --host 0.0.0.0 --port 5173
+start_one api       "$SERVER" pnpm dev
+start_one worker    "$SERVER" env WORKER_LABELS=default pnpm worker
+# 调度器（P3-4）：第三个进程。cron 认领/漏跑判定/告警派发都在它里面；多实例安全但
+# 推荐单实例。改后端调度逻辑后 ./start.sh --restart scheduler 即可单独回收它。
+start_one scheduler "$SERVER" pnpm scheduler
+start_one web       "$WEB" pnpm dev -- --host 0.0.0.0 --port 5173
 
 # 执行分区（P2-8）：上面这个 worker 只服务 default 分区（本机所在网段）。指向别的网段的
 # 环境需要在**那个网段的机器上**另起一个 worker，本脚本不自动拉起 —— 那台机器不在本地：
@@ -115,6 +140,12 @@ if grep -q "consuming" "$LOG_DIR/worker.log" 2>/dev/null; then
   echo "[3/3] worker 就绪"
 else
   echo "[3/3] worker 可能未就绪, 日志: $LOG_DIR/worker.log" >&2
+fi
+# 调度器同样只看日志：启动行会打出 tick 与宽限期参数
+if grep -q "ticking every" "$LOG_DIR/scheduler.log" 2>/dev/null; then
+  echo "[3/3] 调度器就绪"
+else
+  echo "[3/3] 调度器可能未就绪, 日志: $LOG_DIR/scheduler.log" >&2
 fi
 
 echo
