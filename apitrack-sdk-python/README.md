@@ -118,18 +118,27 @@ def test_create_order():
 
 | 触发 | 版本号 | 上传目标 | 用途 |
 |---|---|---|---|
-| Actions 页 **Run workflow** | `<主包版本>.dev<run 号>` | 只 TestPyPI | 调试，想跑几次跑几次 |
+| Actions 页 **Run workflow** | `<主包版本>.dev<epoch 秒>` | 只 TestPyPI | 调试，想跑几次跑几次 |
 | 打 tag `v0.1.0` | `0.1.0` | TestPyPI → PyPI | 真发布 |
 
 调试路径每次自动带一个新的 `.devN` 版本号，这一点是必需的而不是方便：TestPyPI 与 PyPI 一样
-**版本号不可重用**，若复用 `0.1.0`，上传会被 `skip-existing` 静默跳过，接着 `verify` 装下来
-的是第一次上传的旧包并绿着通过——你以为修好了，其实一行新代码都没验到。
+**版本号不可重用**，若复用同一个号，上传会被 `skip-existing` 静默跳过，接着 `verify` 装下来
+的是上一次上传的旧包并绿着通过——你以为修好了，其实一行新代码都没验到。
 
-调试循环：
+### 调试循环
 
 ```
 改代码 → push main → Actions 页 Run workflow → 看 verify → 重复到绿
 ```
+
+> ⚠️ **推了修复之后要新建一次 run，不要点 Re-run。**
+>
+> GitHub 的 re-run 保留原 run 的 commit SHA，按定义就是**重测那个旧 commit**；
+> 「Re-run failed jobs」更狠——`build` 不重跑，`verify` 直接复用上一次的 artifact（旧 wheel）。
+> 症状是「改了代码但错误一字不变」，很容易被当成修复无效。
+>
+> 每个 job 的日志开头都会打印**版本号 + commit SHA + 提交标题**，`build` 还会写进 run 的
+> Summary。对不上就说明在测旧代码。
 
 真发布（tag 必须与 `pyproject.toml` 的 `version` 逐字一致，否则 `build` 在构建前就失败）：
 

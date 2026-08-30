@@ -5,16 +5,24 @@ name: publish
 #
 # 两条路径，靠触发方式区分：
 #
-# | 触发             | 版本号                    | 上传目标        | 用途           |
-# |------------------|---------------------------|-----------------|----------------|
-# | 手动 Run workflow | `<主包版本>.dev<run 号>`  | 只 TestPyPI     | 想跑几次跑几次 |
-# | 打 tag `v0.1.0`  | `0.1.0`                   | TestPyPI → PyPI | 真发布         |
+# | 触发             | 版本号                       | 上传目标        | 用途           |
+# |------------------|------------------------------|-----------------|----------------|
+# | 手动 Run workflow | `<主包版本>.dev<epoch 秒>`   | 只 TestPyPI     | 想跑几次跑几次 |
+# | 打 tag `v0.1.0`  | `0.1.0`                      | TestPyPI → PyPI | 真发布         |
 #
 # **调试路径必须每次带一个新版本号**，这是整个设计的关键：TestPyPI 与 PyPI 一样版本号
 # 不可重用，如果调试时改了代码却复用 `0.1.0`，上传会被 `skip-existing` 静默跳过，接着
-# `verify` 从 TestPyPI 装下来的是**第一次上传的那个旧包**，然后绿着通过——你以为修好了，
-# 其实一行新代码都没验到。`.devN` 是 PEP 440 的合法预发布号，跟着 run 号自动递增，既不撞
-# 已存在的版本，也不烧掉任何正式版本号。
+# `verify` 从 TestPyPI 装下来的是**上一次上传的那个旧包**，然后绿着通过——你以为修好了，
+# 其实一行新代码都没验到。`.devN` 是 PEP 440 的合法预发布号，既不撞已存在的版本，也不烧掉
+# 任何正式版本号。
+#
+# ⚠️ **推了修复之后要「新建一次 run」，不要点 Re-run**。这一条已经害人空转过一轮：
+# GitHub 的 re-run 保留原 run 的 commit SHA 与 run number，按定义就是**重测那个旧 commit**；
+# 「Re-run failed jobs」更狠——`build` 不重跑，`verify` 直接复用上一次的 artifact（旧 wheel）。
+# 所以 dev 版本号用的是 **epoch 秒**而不是 `github.run_number`：后者在 re-run 时不变，于是
+# 上传被 `skip-existing` 跳过、装回旧包，症状与「修复没生效」一模一样。时间戳让每次构建都
+# 产出一个新版本号，即使误点 re-run 也会真的重新上传（虽然装到的仍是旧 commit 的代码——
+# 那就是 re-run 的语义，只能靠下面打印的 SHA 认出来）。
 #
 # 顺序也是刻意的：先 TestPyPI 真装一次再发 PyPI。`pyproject.toml` 写对但 entry point 没
 # 生效这类错，只有真装一次才看得见——而 PyPI 的版本号不可重用，发错就烧掉一个号。
@@ -65,6 +73,10 @@ jobs:
         # 不查的话，打 `v0.2.0` 但忘了改 pyproject 会走完整个 TestPyPI 上传，然后在
         # `verify` 里花 100 秒重试一个永远装不到的版本才失败——而失败信息指向索引延迟，
         # 完全看不出真实原因。
+        #
+        # 调试路径的后缀用 **epoch 秒**而不是 `github.run_number`：后者在 re-run 时不变，于是
+        # 上传被 `skip-existing` 跳过、`verify` 装回旧包，症状与「修复没生效」一模一样（已经
+        # 空转过一轮）。时间戳保证每次构建都产出一个未被占用的版本号。
         run: |
           MAIN=$(python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
           case "$GITHUB_REF" in
@@ -78,13 +90,30 @@ jobs:
               IS_RELEASE=true
               ;;
             *)
-              VERSION="${MAIN}.dev${GITHUB_RUN_NUMBER}"
+              VERSION="${MAIN}.dev$(date -u +%s)"
               IS_RELEASE=false
               ;;
           esac
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "is_release=$IS_RELEASE" >> "$GITHUB_OUTPUT"
-          echo "publishing $VERSION (release=$IS_RELEASE)"
+          # 这三行是「我到底在测哪一版代码」的唯一答案，必须打在最前面。
+          # 之前要翻到 traceback 里读行号才能发现跑的是旧 commit，那时已经浪费了一整轮。
+          # `git log -1` 打出提交标题：SHA 认人靠机器，标题认人靠眼睛。
+          {
+            echo "### 本次构建"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 版本号 | \`$VERSION\` |"
+            echo "| 正式发布 | $IS_RELEASE |"
+            echo "| commit | \`$GITHUB_SHA\` |"
+            echo "| 提交标题 | $(git log -1 --pretty=%s) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "=========================================================="
+          echo " version : $VERSION  (release=$IS_RELEASE)"
+          echo " commit  : $GITHUB_SHA"
+          echo " subject : $(git log -1 --pretty=%s)"
+          echo "=========================================================="
 
       - name: Rewrite the version for a debug run
         # 调试路径**就地重写 pyproject.toml**：改工作树而不是传 `--version` 之类的参数，
@@ -131,7 +160,11 @@ jobs:
           packages-dir: dist/
           # 同一个 tag 重跑（`verify` 失败后重试是常态）时，TestPyPI 会因版本号重复整个
           # 拒绝上传——而这次上传本身没有任何问题。跳过已存在的版本让重试变成可行的动作。
-          # 调试路径的 `.devN` 本来就不会重复，这个参数只服务于 tag 重跑。
+          # 调试路径的 `.dev<epoch>` 本来就不会重复，这个参数只服务于 tag 重跑。
+          #
+          # 注意它与「装到旧包」那个坑的关系：`skip-existing` 会**静默**跳过，所以版本号一旦
+          # 复用，后面的 `verify` 就会装回旧包并绿着通过。dev 版用时间戳正是为了让这两件事
+          # 不可能同时发生。
           # **真 PyPI 那一步刻意不加这个参数**：那里版本号重复必须硬失败。
           skip-existing: true
 
@@ -151,6 +184,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Announce what is being verified
+        # 「我到底在测哪一版」必须在 verify 的日志开头就能读到。上一轮的教训：装到的是旧包，
+        # 而唯一的线索是 traceback 里的行号对不上——那时已经浪费了一整轮。
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          echo "=========================================================="
+          echo " verifying apitrack-sdk==$VERSION  on Python ${{ matrix.python-version }}"
+          echo " from commit $GITHUB_SHA"
+          echo " ⚠️ 若这个版本号不是刚构建出来的，说明这是一次 re-run（保留旧 commit）。"
+          echo "    推了修复之后要新建 run，不要点 Re-run。"
+          echo "=========================================================="
 
       - name: Install exactly this build from TestPyPI into a clean venv
         # **钉死本次的版本号**，不装「TestPyPI 上最新的」：后者可能是上一次上传的包，于是
