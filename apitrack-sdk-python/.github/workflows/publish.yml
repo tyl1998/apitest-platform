@@ -3,7 +3,20 @@ name: publish
 # PyPI 发布走 Trusted Publishing（OIDC），**不在 CI 里存长期 API Token**（计划 7.4）：
 # 长期 token 泄露等于任何人都能往这个包名发一个版本，而它会被自动装进所有接入方的 CI。
 #
-# 顺序是刻意的：先 TestPyPI 真装一次，再发 PyPI。`pyproject.toml` 写对但 entry point 没
+# 两条路径，靠触发方式区分：
+#
+# | 触发             | 版本号                    | 上传目标        | 用途           |
+# |------------------|---------------------------|-----------------|----------------|
+# | 手动 Run workflow | `<主包版本>.dev<run 号>`  | 只 TestPyPI     | 想跑几次跑几次 |
+# | 打 tag `v0.1.0`  | `0.1.0`                   | TestPyPI → PyPI | 真发布         |
+#
+# **调试路径必须每次带一个新版本号**，这是整个设计的关键：TestPyPI 与 PyPI 一样版本号
+# 不可重用，如果调试时改了代码却复用 `0.1.0`，上传会被 `skip-existing` 静默跳过，接着
+# `verify` 从 TestPyPI 装下来的是**第一次上传的那个旧包**，然后绿着通过——你以为修好了，
+# 其实一行新代码都没验到。`.devN` 是 PEP 440 的合法预发布号，跟着 run 号自动递增，既不撞
+# 已存在的版本，也不烧掉任何正式版本号。
+#
+# 顺序也是刻意的：先 TestPyPI 真装一次再发 PyPI。`pyproject.toml` 写对但 entry point 没
 # 生效这类错，只有真装一次才看得见——而 PyPI 的版本号不可重用，发错就烧掉一个号。
 
 on:
@@ -14,39 +27,69 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_release: ${{ steps.version.outputs.is_release }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: The tag, the main package and the placeholder pin must agree
-        # 三处版本号必须一致，**在构建之前**就查（fail fast）：
-        #   ① tag `v0.2.0`  ② pyproject 的 `version`  ③ 占位包钉的 `apitrack-sdk==…`
+
+      - name: Decide the version to publish
+        id: version
+        # tag 路径要求 tag 与 `pyproject.toml` 逐字一致，**在构建之前**就查（fail fast）。
         # 不查的话，打 `v0.2.0` 但忘了改 pyproject 会走完整个 TestPyPI 上传，然后在
         # `verify` 里花 100 秒重试一个永远装不到的版本才失败——而失败信息指向索引延迟，
-        # 完全看不出真实原因。占位包钉死版本是刻意的（它必须跟主包同版发布），所以它也得
-        # 一起查，否则 `pip install pytest-apitrack` 会去装一个还不存在的主包版本。
-        if: startsWith(github.ref, 'refs/tags/v')
+        # 完全看不出真实原因。
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
           MAIN=$(python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
-          PIN=$(python -c "import tomllib,pathlib;d=tomllib.loads(pathlib.Path('packaging/pytest-apitrack/pyproject.toml').read_text());print(d['project']['version'],[x for x in d['project']['dependencies'] if x.startswith('apitrack-sdk')][0])")
-          echo "tag=$TAG main=$MAIN placeholder=$PIN"
-          test "$TAG" = "$MAIN" || { echo "::error::tag $TAG != pyproject version $MAIN"; exit 1; }
-          test "$PIN" = "$TAG apitrack-sdk==$TAG" || { echo "::error::placeholder must be version $TAG pinned to apitrack-sdk==$TAG, got: $PIN"; exit 1; }
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              TAG="${GITHUB_REF_NAME#v}"
+              if [ "$TAG" != "$MAIN" ]; then
+                echo "::error::tag $TAG != pyproject version $MAIN"
+                exit 1
+              fi
+              VERSION="$MAIN"
+              IS_RELEASE=true
+              ;;
+            *)
+              VERSION="${MAIN}.dev${GITHUB_RUN_NUMBER}"
+              IS_RELEASE=false
+              ;;
+          esac
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "is_release=$IS_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "publishing $VERSION (release=$IS_RELEASE)"
+
+      - name: Rewrite the version for a debug run
+        # 调试路径**就地重写 pyproject.toml**：改工作树而不是传 `--version` 之类的参数，
+        # 是因为 hatchling 的版本来源就是这个文件，没有构建期覆盖的入口。改动只存在于这次
+        # runner 的工作副本里，不会被推回仓库。
+        #
+        # 正则锚在行首的 `version = "` 上（文件里没有第二处同形的行），并要求恰好替换一处
+        # ——替换到 0 处或 2 处都说明文件结构变了，那时宁可让流水线停下来。
+        if: steps.version.outputs.is_release != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python -c "
+          import os, pathlib, re
+          target = os.environ['VERSION']
+          path = pathlib.Path('pyproject.toml')
+          patched, count = re.subn(r'(?m)^version = \"[^\"]+\"$', f'version = \"{target}\"', path.read_text(), count=1)
+          assert count == 1, f'expected exactly one version line, patched {count}'
+          path.write_text(patched)
+          print(f'pyproject version -> {target}')
+          "
+
       - run: pip install build
-      - name: Build the main package
-        run: python -m build --outdir dist .
-      - name: Build the pytest-apitrack placeholder
-        # 占位包与主包分开构建、分开上传：它只有元数据，混进同一个 dist/ 会让 twine 的
-        # 校验分不清两个包。
-        run: python -m build --outdir dist-placeholder packaging/pytest-apitrack
+      - run: python -m build --outdir dist .
       - uses: actions/upload-artifact@v4
         with:
           name: dist
-          path: |
-            dist/
-            dist-placeholder/
+          path: dist/
 
   testpypi:
     needs: build
@@ -58,45 +101,49 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: dist
+          path: dist
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist/
           # 同一个 tag 重跑（`verify` 失败后重试是常态）时，TestPyPI 会因版本号重复整个
           # 拒绝上传——而这次上传本身没有任何问题。跳过已存在的版本让重试变成可行的动作。
+          # 调试路径的 `.devN` 本来就不会重复，这个参数只服务于 tag 重跑。
           # **真 PyPI 那一步刻意不加这个参数**：那里版本号重复必须硬失败。
           skip-existing: true
 
   verify:
-    needs: testpypi
+    needs: [build, testpypi]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install from TestPyPI into a clean venv
-        # 装的必须是**这次构建的那个版本**，不是「TestPyPI 上最新的」：后者可能是上一次
-        # 发布的包，于是这一步会绿着通过而完全没验到本次改动。tag 推送时版本号取自
-        # `v0.1.0` → `0.1.0`；手动触发（workflow_dispatch）没有 tag，退回不钉版本。
+
+      - name: Install exactly this build from TestPyPI into a clean venv
+        # **钉死本次的版本号**，不装「TestPyPI 上最新的」：后者可能是上一次上传的包，于是
+        # 这一步会绿着通过而完全没验到本次改动（这也是调试路径要用 `.devN` 的同一条理由）。
         #
         # `--extra-index-url` 指向真 PyPI：pytest 只在 TestPyPI 上未必有可用版本。
-        # TestPyPI 的索引有几十秒的传播延迟，刚上传就装会撞 404，所以带重试。
+        # `--pre` 是 dev 版必需的：pip 默认跳过预发布版本，不加它会报「找不到该版本」。
+        # TestPyPI 的索引有几十秒传播延迟，刚上传就装会撞 404，所以带重试。
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           python -m venv /tmp/verify
-          case "$GITHUB_REF" in
-            refs/tags/v*) SPEC="apitrack-sdk==${GITHUB_REF_NAME#v}" ;;
-            *)            SPEC="apitrack-sdk" ;;
-          esac
-          echo "installing $SPEC"
+          echo "installing apitrack-sdk==$VERSION"
           for attempt in 1 2 3 4 5; do
-            if /tmp/verify/bin/pip install --index-url https://test.pypi.org/simple/ \
-                 --extra-index-url https://pypi.org/simple/ "$SPEC" pytest; then
+            if /tmp/verify/bin/pip install --pre \
+                 --index-url https://test.pypi.org/simple/ \
+                 --extra-index-url https://pypi.org/simple/ \
+                 "apitrack-sdk==$VERSION" pytest; then
               exit 0
             fi
             echo "attempt $attempt failed, waiting for the TestPyPI index"
             sleep 20
           done
           exit 1
+
       - name: The plugin must load without conftest.py or -p
         # 这一步是整个流水线存在的理由（验收 13）：`pyproject.toml` 写对但 entry point 没
         # 生效时，包能装上、也能 import，唯一的症状是「跑完什么都没上报」。
@@ -125,13 +172,18 @@ jobs:
           # dry-run 的 payload 里必须有那条探针用例，且 name 取自 docstring 首行
           # （边界 7 的映射规则）——只看到「插件加载了」还不能说明采集是对的。
           grep -q '"name": "探针用例。"' /tmp/dry.log
+
       - name: It must not require httpx
         # 只装了 requests 的环境（甚至两个都没装）必须能正常 import：两个 HTTP 库都靠
         # find_spec 探测，探不到就不打那个桩。
         run: /tmp/verify/bin/python -c "import apitrack, apitrack.plugin; print(apitrack.__version__)"
 
   pypi:
-    needs: verify
+    needs: [build, verify]
+    # 只有 tag 推送才发真 PyPI（`workflow_dispatch` 的调试跑到 `verify` 就停）。
+    # 建议在 GitHub 的 `pypi` environment 上再加一个 required reviewer：那是最后一道人工
+    # 闸门，即使误打了 tag 也会停下来等确认。那只能在网页上配。
+    if: needs.build.outputs.is_release == 'true'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -140,13 +192,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: dist
-      - name: Publish apitrack-sdk
-        uses: pypa/gh-action-pypi-publish@release/v1
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
-      - name: Publish the pytest-apitrack placeholder
-        # 首发就把两个名字都占下（计划 7.4）：名字是先到先得且不可回收的，等 0.2 再想起来
-        # 占就可能已经没了。
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist-placeholder/

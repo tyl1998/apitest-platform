@@ -99,24 +99,42 @@ def test_create_order():
 
 ## 发布（维护者）
 
-版本号出现在**三处**，必须一致，否则 `build` job 会在构建前直接失败：
+只发**一个**分发包：`apitrack-sdk`。发布走 **Trusted Publishing（OIDC）**，仓库里没有也
+不需要 PyPI token。
 
-| 位置 | 内容 |
-|---|---|
-| git tag | `v0.1.0` |
-| `pyproject.toml` | `version = "0.1.0"` |
-| `packaging/pytest-apitrack/pyproject.toml` | `version` 与 `dependencies = ["apitrack-sdk==0.1.0"]` |
+流水线有两条路径，靠触发方式区分：
 
-发布靠打 tag 触发，走 **Trusted Publishing（OIDC）**，仓库里没有也不需要 PyPI token：
+| 触发 | 版本号 | 上传目标 | 用途 |
+|---|---|---|---|
+| Actions 页 **Run workflow** | `<主包版本>.dev<run 号>` | 只 TestPyPI | 调试，想跑几次跑几次 |
+| 打 tag `v0.1.0` | `0.1.0` | TestPyPI → PyPI | 真发布 |
+
+调试路径每次自动带一个新的 `.devN` 版本号，这一点是必需的而不是方便：TestPyPI 与 PyPI 一样
+**版本号不可重用**，若复用 `0.1.0`，上传会被 `skip-existing` 静默跳过，接着 `verify` 装下来
+的是第一次上传的旧包并绿着通过——你以为修好了，其实一行新代码都没验到。
+
+调试循环：
+
+```
+改代码 → push main → Actions 页 Run workflow → 看 verify → 重复到绿
+```
+
+真发布（tag 必须与 `pyproject.toml` 的 `version` 逐字一致，否则 `build` 在构建前就失败）：
 
 ```bash
 git tag v0.1.0 && git push --tags
 ```
 
-流水线顺序：`build`（版本一致性检查 → 构建两个包）→ `testpypi` → `verify`（从 TestPyPI
-装进干净 venv，验插件确实自动加载并能采集）→ `pypi`（主包 + 占位包）。
+`pypi` job 只在 tag 路径执行，手动跑到 `verify` 就停。
 
-首次发布前需要在网页上各配一次 pending publisher（两个站点 × 两个包名，共 4 条），
-以及在 GitHub 仓库 Settings → Environments 建 `testpypi` 与 `pypi` 两个环境。
-四项元数据必须与本工作流完全一致：owner `tyl1998` / repo `apitrack-sdk-python` /
-workflow `publish.yml` / environment `testpypi` 或 `pypi`。
+### 首次发布前的人工前置（都在网页上）
+
+1. **两个站点各登记一次 pending publisher**（包还没发过，所以用「发布前先登记」）：
+   [TestPyPI](https://test.pypi.org/manage/account/publishing/) 与
+   [PyPI](https://pypi.org/manage/account/publishing/)。四项元数据必须与本工作流逐字一致：
+   PyPI Project Name `apitrack-sdk` / owner `tyl1998` / repo `apitrack-sdk-python` /
+   workflow `publish.yml` / environment `testpypi` 或 `pypi`。错一个字符的表现是 OIDC 拒绝，
+   报错长得像权限问题。
+2. **GitHub 仓库 Settings → Environments** 建 `testpypi` 与 `pypi`。
+3. 建议给 `pypi` environment 加一个 **required reviewer**：那是最后一道人工闸门，即使误打了
+   tag 也会停下来等确认。
