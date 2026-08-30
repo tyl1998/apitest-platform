@@ -66,15 +66,32 @@ def _run_pytest(tmp_path: Path, *args: str, env: dict[str, str] | None = None) -
     )
 
 
+DRY_RUN_MARKER = "[apitrack] dry run, nothing was sent:"
+
+
+def _dry_run_payload(result: subprocess.CompletedProcess[str]) -> dict:
+    """从 dry-run 的 stdout 里取出那份 payload。
+
+    **不能直接 `json.loads` 标记之后的全部内容**：dry-run 打完 payload 之后，pytest 自己还会
+    继续输出测试摘要（`=== 1 failed, 3 passed ===` 之类），而 `json.loads` 要求整个字符串恰好
+    是一个 JSON 值，于是报 `Extra data`。
+
+    `raw_decode` 正好对应这里的事实——解析第一个完整的 JSON 值就停下，后面是什么都不管。
+    这比「按 `====` 之类的分隔符截断」稳：那种切法依赖 pytest 的输出措辞，换个版本就失效。
+    """
+    assert DRY_RUN_MARKER in result.stdout, result.stdout + result.stderr
+    tail = result.stdout.split(DRY_RUN_MARKER, 1)[1].lstrip()
+    payload, _ = json.JSONDecoder().raw_decode(tail)
+    return payload
+
+
 def test_dry_run_payload_shape(tmp_path: Path):
     """dry-run 输出的 payload 形状就是协议 v1.0。
 
     顺带验两件事：docstring 首行当名字、其后当描述；参数化用例在 inventory 里是**一条**。
     """
     result = _run_pytest(tmp_path, "--apitrack-dry-run", "tests/")
-    marker = "[apitrack] dry run, nothing was sent:"
-    assert marker in result.stdout, result.stdout
-    payload = json.loads(result.stdout.split(marker, 1)[1])
+    payload = _dry_run_payload(result)
 
     assert payload["protocol_version"] == "1.0"
     assert payload["run"]["scope"] == ["tests"]
@@ -97,14 +114,12 @@ def test_dry_run_payload_shape(tmp_path: Path):
 def test_marker_filter_is_not_full_inventory(tmp_path: Path):
     """`-m` 是范围内的挑选 → 非全量，平台侧不会删任何用例（边界 11）。"""
     result = _run_pytest(tmp_path, "--apitrack-dry-run", "-m", "not slow", "tests/")
-    payload = json.loads(result.stdout.split("[apitrack] dry run, nothing was sent:", 1)[1])
-    assert payload["run"]["is_full_inventory"] is False
+    assert _dry_run_payload(result)["run"]["is_full_inventory"] is False
 
 
 def test_keyword_filter_is_not_full_inventory(tmp_path: Path):
     result = _run_pytest(tmp_path, "--apitrack-dry-run", "-k", "passes", "tests/")
-    payload = json.loads(result.stdout.split("[apitrack] dry run, nothing was sent:", 1)[1])
-    assert payload["run"]["is_full_inventory"] is False
+    assert _dry_run_payload(result)["run"]["is_full_inventory"] is False
 
 
 def test_unreachable_platform_does_not_change_exit_code(tmp_path: Path):

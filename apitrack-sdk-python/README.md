@@ -87,6 +87,19 @@ def test_create_order():
 `-k` / `-m` / `--lf` / `--ff` / `-x` / `--deselect` 与收集报错一律判为非全量。平台侧还要求
 分支等于仓库配置的跟踪分支才真正执行删除，所以一次 feature 分支上的全量跑不会删任何东西。
 
+## 本地跑测试
+
+```bash
+pip install pytest requests
+python -m pytest tests -q          # 19 条
+```
+
+`requests` 不是必需的，但装上才不会 skip 掉「`stream=True` 的响应不被桩吃掉」那一条——它是
+最重要的行为保证之一。
+
+> 在有企业 CA 的机器上 pip 可能报 `CERTIFICATE_VERIFY_FAILED`，加
+> `--trusted-host pypi.org --trusted-host files.pythonhosted.org` 即可。
+
 ## Python 版本
 
 `>=3.9`。下界定在 3.9 是刻意的：接入方常常正是那些最不愿意动的老仓库，而「零改动接入」这条
