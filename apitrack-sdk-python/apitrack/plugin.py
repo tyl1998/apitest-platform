@@ -88,6 +88,12 @@ def describe(item) -> CaseEntry:  # noqa: ANN001 - pytest Item
     映射规则（边界 7）：显示名取 ``@case("…")`` > docstring 首行 > 函数名**原样**；描述取
     docstring 首行之后全部。首行当名字、余下当描述是 PEP 257 已有的约定，也是 pytest ``-v``
     的习惯——不让用户学新东西。函数名兜底时保持原样，不做中文猜测。
+
+    兜底名取 **case_key 的函数名段**而不是 ``item.name``（2026-08-30 修正）：
+    ``item.name`` 在参数化时带着参数后缀（``test_create_order[vip_user]``），而多个子项共用
+    一个 ``case_key``、只登记一次——存下来的名字会被 collect 顺序里**第一个**参数的
+    后缀污染，读起来像「这条用例就是 vip 场景」，其余场景的名字则消失。函数名段对所有
+    子项一致，也正是「一条用例、多个子结果」该有的名字。
     """
     key, _, file_path = split_nodeid(item.nodeid)
     function = getattr(item, "function", None)
@@ -109,7 +115,7 @@ def describe(item) -> CaseEntry:  # noqa: ANN001 - pytest Item
 
     return CaseEntry(
         case_key=override.get("key") or key,
-        name=override.get("name") or doc_name or item.name,
+        name=override.get("name") or doc_name or key.split("::")[-1],
         description=description,
         file_path=file_path,
         tags=tags,

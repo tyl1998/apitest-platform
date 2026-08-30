@@ -205,3 +205,17 @@ def test_describe_falls_back_to_the_function_name():
     assert entry.name == "test_bare"
     assert entry.description == ""
     assert entry.tags == []
+
+
+def test_describe_strips_the_param_suffix_from_the_name_fallback():
+    """参数化子项的兜底名不带 ``[param]`` 后缀（2026-08-30 修正）。
+
+    ``item.name`` 在参数化时是 ``test_create_order[vip_user]``，而多个子项共用一个
+    case_key、inventory 只登记一次——拿 ``item.name`` 兜底会让 collect 顺序里**第一个**
+    参数的后缀污染整条用例的名字（读起来像「这条用例就是 vip 场景」），其余场景的名字
+    则消失。兜底名取 case_key 的函数名段；场景维度归 records 的 ``param_id``。
+    """
+    entry = describe(FakeItem("tests/test_d.py::test_create_order[vip_user]", _sample_bare, ("parametrize",)))
+    assert entry.name == "test_create_order"
+    # case_key 同样剥掉 [...]（边界 7）：参数化的多个子项是同一条用例。
+    assert entry.case_key == "tests/test_d.py::test_create_order"

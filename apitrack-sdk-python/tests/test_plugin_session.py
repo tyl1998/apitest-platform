@@ -43,6 +43,12 @@ def test_parametrized(tier):
     assert tier
 
 
+@pytest.mark.parametrize("tier", ["vip", "normal"])
+def test_tier_bare(tier):
+    # 无 docstring 的参数化用例：兜底名走 case_key 的函数名段（2026-08-30 修正）。
+    assert tier
+
+
 @pytest.mark.skip(reason="deliberate")
 def test_skipped():
     """被跳过的用例。"""
@@ -88,7 +94,10 @@ def _dry_run_payload(result: subprocess.CompletedProcess[str]) -> dict:
 def test_dry_run_payload_shape(tmp_path: Path):
     """dry-run 输出的 payload 形状就是协议 v1.0。
 
-    顺带验两件事：docstring 首行当名字、其后当描述；参数化用例在 inventory 里是**一条**。
+    顺带验三件事：docstring 首行当名字、其后当描述；参数化用例在 inventory 里是**一条**；
+    参数化的名字是函数级的——带 docstring 的取 docstring 首行，裸函数取函数名段，
+    都不带第一个参数的 ``[param]`` 后缀（2026-08-30 修正前，兜底名会被污染成
+    ``test_tier_bare[vip]``）。
     """
     result = _run_pytest(tmp_path, "--apitrack-dry-run", "tests/")
     payload = _dry_run_payload(result)
@@ -99,7 +108,7 @@ def test_dry_run_payload_shape(tmp_path: Path):
     assert payload["run"]["is_full_inventory"] is True
 
     by_key = {entry["case_key"]: entry for entry in payload["inventory"]}
-    assert len(by_key) == 4, sorted(by_key)
+    assert len(by_key) == 5, sorted(by_key)
 
     passing = by_key["tests/test_sample.py::test_passes"]
     assert passing["name"] == "一条通过的用例。"
@@ -107,8 +116,12 @@ def test_dry_run_payload_shape(tmp_path: Path):
     assert passing["result"] == "passed"
     assert by_key["tests/test_sample.py::test_fails"]["result"] == "failed"
     assert by_key["tests/test_sample.py::test_skipped"]["result"] == "skipped"
-    # 参数化：一条用例，不是两条。
+    # 参数化：一条用例，不是两条；名字取 docstring 首行（函数级）。
+    assert by_key["tests/test_sample.py::test_parametrized"]["name"] == "参数化用例。"
     assert by_key["tests/test_sample.py::test_parametrized"]["result"] == "passed"
+    # 无 docstring 的参数化：兜底名是函数名段，不带 [vip] 后缀。
+    assert by_key["tests/test_sample.py::test_tier_bare"]["name"] == "test_tier_bare"
+    assert by_key["tests/test_sample.py::test_tier_bare"]["result"] == "passed"
 
 
 def test_marker_filter_is_not_full_inventory(tmp_path: Path):
@@ -120,6 +133,66 @@ def test_marker_filter_is_not_full_inventory(tmp_path: Path):
 def test_keyword_filter_is_not_full_inventory(tmp_path: Path):
     result = _run_pytest(tmp_path, "--apitrack-dry-run", "-k", "passes", "tests/")
     assert _dry_run_payload(result)["run"]["is_full_inventory"] is False
+
+
+@pytest.mark.skipif(
+    __import__("importlib.util", fromlist=["util"]).find_spec("requests") is None,
+    reason="requests is not installed in this environment",
+)
+def test_parametrized_records_carry_param_id(tmp_path: Path):
+    """参数化的场景维度要落到 records 上（2026-08-30）。
+
+    树上的用例名是函数级的（兜底名不带 ``[param]`` 后缀），**场景这一层只存在于
+    ``records[].param_id``**——nodeid 拆分 → contextvar → 传输层桩这条链路不验的话，
+    平台侧「哪个场景发的请求」就查不出来。用真实 HTTP 服务而不是 mock：桩挂在传输层，
+    mock 响应对象根本到不了那一层。
+    """
+    (tmp_path / "tests").mkdir(exist_ok=True)
+    (tmp_path / "tests" / "test_scenarios.py").write_text(
+        '''
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import pytest
+import requests
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *args):
+        pass
+
+
+server = HTTPServer(("127.0.0.1", 0), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+
+
+@pytest.mark.parametrize("tier", ["vip", "normal"])
+def test_hits_api_per_scenario(tier):
+    # 无 docstring：连带验证兜底名不带第一个参数的 [vip] 后缀。
+    requests.get(f"http://127.0.0.1:{server.server_port}/orders", timeout=5)
+''',
+        "utf-8",
+    )
+    result = _run_pytest(tmp_path, "--apitrack-dry-run", "tests/test_scenarios.py")
+    payload = _dry_run_payload(result)
+
+    by_key = {entry["case_key"]: entry for entry in payload["inventory"]}
+    case_key = "tests/test_scenarios.py::test_hits_api_per_scenario"
+    assert by_key[case_key]["name"] == "test_hits_api_per_scenario"
+    assert by_key[case_key]["result"] == "passed"
+
+    # 两个场景各发了一条请求，param_id 各归各的；归属都在同一条用例上。
+    assert sorted(record["param_id"] for record in payload["records"]) == ["normal", "vip"]
+    for record in payload["records"]:
+        assert record["case_key"] == case_key
+        assert record["method"] == "GET"
+        assert record["phase"] == "call"
 
 
 def test_unreachable_platform_does_not_change_exit_code(tmp_path: Path):
