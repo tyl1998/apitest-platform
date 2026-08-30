@@ -7,6 +7,9 @@ name = "apitrack-sdk"
 version = "0.1.0"
 description = "Report existing pytest results to an ApiTrack platform without changing a line of test code."
 readme = "README.md"
+# 下界 3.9 是刻意的：接入方常常正是那些最不愿意动的老仓库，而「零改动接入」这条硬指标对
+# 它们才最有价值。代价是每个模块都必须有 `from __future__ import annotations`
+# （`str | None` 这类写法在 3.9 会在运行期炸），CI 的 verify matrix 里因此钉了一档 3.9。
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "ApiTrack" }]
@@ -15,7 +18,15 @@ classifiers = [
   "Framework :: Pytest",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
+  # 逐版本列出，PyPI 页面的「支持哪些 Python」就读这些行；只写 `:: 3` 的话包能装但页面上
+  # 看不出下界。这份清单必须与 `requires-python` 和 CI 的 verify matrix 保持一致——三处
+  # 各说一套时，声明的下界就成了一句没人执行的话。
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Testing",
 ]
 

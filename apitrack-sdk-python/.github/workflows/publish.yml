@@ -25,7 +25,30 @@ on:
   workflow_dispatch:
 
 jobs:
+  # 仓库自己的测试，**排在上传之前**。
+  #
+  # 这一层是补上来的：`describe()` 里一个包属性遮蔽的 bug（`from . import case` 拿到的是
+  # 装饰器函数而不是模块）一路走到了 TestPyPI 校验才炸——因为当时唯一的自动化是「装完之后
+  # 验行为」，而缺陷在装之前就存在。上传前先跑一遍源码树的测试，同类问题在 30 秒内就能暴露，
+  # 且不消耗任何 TestPyPI 版本号。
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # requests 是可选的：`test_plugin_session.py` 里验「stream 不被吃」的那条需要它，
+      # 装上才不会被 skip 掉——那条恰好是最重要的行为保证之一。
+      - run: pip install pytest requests
+      - run: python -m pytest tests -q
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -115,10 +138,19 @@ jobs:
   verify:
     needs: [build, testpypi]
     runs-on: ubuntu-latest
+    strategy:
+      # 三档而不是一档：`requires-python = ">=3.9"` 声明的下界必须真的被执行过，否则它只是
+      # 一句话——某天有人把 `X | Y` 写在非注解位置，3.11 的 CI 全绿而 3.9 的用户装上就
+      # TypeError。3.9 是下界、3.13 是当前上界，中间取 3.11 作代表。
+      # `fail-fast: false` 让三档都跑完：只有 3.9 挂时要能一眼看出「是下界的问题」，而不是
+      # 在一片红里猜。
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
     steps:
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install exactly this build from TestPyPI into a clean venv
         # **钉死本次的版本号**，不装「TestPyPI 上最新的」：后者可能是上一次上传的包，于是

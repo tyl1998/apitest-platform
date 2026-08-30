@@ -87,6 +87,12 @@ def test_create_order():
 `-k` / `-m` / `--lf` / `--ff` / `-x` / `--deselect` 与收集报错一律判为非全量。平台侧还要求
 分支等于仓库配置的跟踪分支才真正执行删除，所以一次 feature 分支上的全量跑不会删任何东西。
 
+## Python 版本
+
+`>=3.9`。下界定在 3.9 是刻意的：接入方常常正是那些最不愿意动的老仓库，而「零改动接入」这条
+承诺对它们才最有价值。CI 在 **3.9 / 3.11 / 3.13** 三档上各跑一次测试与装包验证——声明的下界
+必须真的被执行过，否则某天一行写在非注解位置的 `X | Y` 就会让 3.9 的用户装上即报错，而 CI 全绿。
+
 ## 支持的 HTTP 库
 
 `requests`（`HTTPAdapter.send`）与 `httpx`（`HTTPTransport.handle_request` 及其 async 版）。
@@ -102,7 +108,13 @@ def test_create_order():
 只发**一个**分发包：`apitrack-sdk`。发布走 **Trusted Publishing（OIDC）**，仓库里没有也
 不需要 PyPI token。
 
-流水线有两条路径，靠触发方式区分：
+流水线：`test`（3.9/3.11/3.13 三档跑 `tests/`）→ `build` → `testpypi` → `verify`
+（三档各从 TestPyPI 装进干净 venv，验插件真的自动加载并能采集）→ `pypi`。
+
+**测试排在上传之前**是补上来的一条：一个 30 秒就能被单元测试抓到的缺陷曾经一路走到
+`verify` 才炸，还烧掉一个 TestPyPI 版本号（见文档仓 `issue_fix/`）。
+
+两条路径靠触发方式区分：
 
 | 触发 | 版本号 | 上传目标 | 用途 |
 |---|---|---|---|

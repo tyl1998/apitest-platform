@@ -7,6 +7,12 @@
 1. 从 nodeid 推出用例身份（``case_key``）与显示名，两者分开（边界 7）；
 2. 用 contextvar 标出「现在跑的是哪条用例、在哪个阶段」，给传输层的桩用（边界 10）；
 3. 判断本次跑的**范围**与**这个范围内有没有过滤**（边界 11），并在 sessionfinish 时上报。
+
+**取 ``case.py`` 里的符号一律直接导入**（``from .case import read``），不要写
+``from . import case``：``apitrack/__init__.py`` 的 ``from .case import case`` 把包属性
+``case`` 重新绑定成了那个装饰器函数，于是 ``from . import case`` 拿到的是函数而不是模块。
+这条已经炸过一次（``AttributeError: 'function' object has no attribute 'read'``，见
+``issue_fix``）。
 """
 
 from __future__ import annotations
@@ -16,7 +22,7 @@ import os
 import warnings
 from datetime import datetime, timezone
 
-from . import case as case_meta
+from .case import read as read_case_override
 from .collector import CaseEntry, Collector, current_case, current_param, current_phase
 from .config import BODY_LIMIT, load
 from .patch import install_all, uninstall_all
@@ -85,7 +91,7 @@ def describe(item) -> CaseEntry:  # noqa: ANN001 - pytest Item
     """
     key, _, file_path = split_nodeid(item.nodeid)
     function = getattr(item, "function", None)
-    override = case_meta.read(function) if function is not None else {}
+    override = read_case_override(function) if function is not None else {}
 
     doc = (getattr(function, "__doc__", None) or "").strip()
     lines = [line.strip() for line in doc.splitlines()] if doc else []
@@ -219,7 +225,7 @@ class ApitrackPlugin:
     def _enter(self, item, phase: str) -> None:  # noqa: ANN001
         key, param_id, _ = split_nodeid(item.nodeid)
         function = getattr(item, "function", None)
-        override = case_meta.read(function) if function is not None else {}
+        override = read_case_override(function) if function is not None else {}
         current_case.set(override.get("key") or key)
         current_param.set(param_id)
         current_phase.set(phase)  # type: ignore[arg-type]
