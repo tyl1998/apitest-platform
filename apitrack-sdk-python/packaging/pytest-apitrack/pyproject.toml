@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+# 占位包（计划 7.4）。
+#
+# 主包叫 `apitrack-sdk` 而不是 `pytest-apitrack`，因为 pytest 只是首版**唯一**的自动挡，
+# 而 SDK 的能力边界不止 pytest。但 `pytest-apitrack` 要占下来：pytest 生态的人找插件的第
+# 一反应就是搜 `pytest-` 前缀，这个名字空着，早晚被别人拿去发一个同名不同物的包，而它会被
+# 误装进接入方的 CI。
+#
+# **不在这里放任何代码**：两份代码同名不同源是最难查的一类事故。它只做一件事——依赖主包。
+[project]
+name = "pytest-apitrack"
+version = "0.1.0"
+description = "Placeholder: install apitrack-sdk instead."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = ["apitrack-sdk==0.1.0"]
+
+[tool.hatch.build.targets.wheel]
+# 没有包目录，只交付元数据。
+bypass-selection = true
+
+[tool.hatch.build.targets.sdist]
+include = ["pyproject.toml", "README.md"]

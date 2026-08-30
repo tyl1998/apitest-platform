@@ -1,0 +1,152 @@
+name: publish
+
+# PyPI 发布走 Trusted Publishing（OIDC），**不在 CI 里存长期 API Token**（计划 7.4）：
+# 长期 token 泄露等于任何人都能往这个包名发一个版本，而它会被自动装进所有接入方的 CI。
+#
+# 顺序是刻意的：先 TestPyPI 真装一次，再发 PyPI。`pyproject.toml` 写对但 entry point 没
+# 生效这类错，只有真装一次才看得见——而 PyPI 的版本号不可重用，发错就烧掉一个号。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: The tag, the main package and the placeholder pin must agree
+        # 三处版本号必须一致，**在构建之前**就查（fail fast）：
+        #   ① tag `v0.2.0`  ② pyproject 的 `version`  ③ 占位包钉的 `apitrack-sdk==…`
+        # 不查的话，打 `v0.2.0` 但忘了改 pyproject 会走完整个 TestPyPI 上传，然后在
+        # `verify` 里花 100 秒重试一个永远装不到的版本才失败——而失败信息指向索引延迟，
+        # 完全看不出真实原因。占位包钉死版本是刻意的（它必须跟主包同版发布），所以它也得
+        # 一起查，否则 `pip install pytest-apitrack` 会去装一个还不存在的主包版本。
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          MAIN=$(python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          PIN=$(python -c "import tomllib,pathlib;d=tomllib.loads(pathlib.Path('packaging/pytest-apitrack/pyproject.toml').read_text());print(d['project']['version'],[x for x in d['project']['dependencies'] if x.startswith('apitrack-sdk')][0])")
+          echo "tag=$TAG main=$MAIN placeholder=$PIN"
+          test "$TAG" = "$MAIN" || { echo "::error::tag $TAG != pyproject version $MAIN"; exit 1; }
+          test "$PIN" = "$TAG apitrack-sdk==$TAG" || { echo "::error::placeholder must be version $TAG pinned to apitrack-sdk==$TAG, got: $PIN"; exit 1; }
+      - run: pip install build
+      - name: Build the main package
+        run: python -m build --outdir dist .
+      - name: Build the pytest-apitrack placeholder
+        # 占位包与主包分开构建、分开上传：它只有元数据，混进同一个 dist/ 会让 twine 的
+        # 校验分不清两个包。
+        run: python -m build --outdir dist-placeholder packaging/pytest-apitrack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: |
+            dist/
+            dist-placeholder/
+
+  testpypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+          # 同一个 tag 重跑（`verify` 失败后重试是常态）时，TestPyPI 会因版本号重复整个
+          # 拒绝上传——而这次上传本身没有任何问题。跳过已存在的版本让重试变成可行的动作。
+          # **真 PyPI 那一步刻意不加这个参数**：那里版本号重复必须硬失败。
+          skip-existing: true
+
+  verify:
+    needs: testpypi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install from TestPyPI into a clean venv
+        # 装的必须是**这次构建的那个版本**，不是「TestPyPI 上最新的」：后者可能是上一次
+        # 发布的包，于是这一步会绿着通过而完全没验到本次改动。tag 推送时版本号取自
+        # `v0.1.0` → `0.1.0`；手动触发（workflow_dispatch）没有 tag，退回不钉版本。
+        #
+        # `--extra-index-url` 指向真 PyPI：pytest 只在 TestPyPI 上未必有可用版本。
+        # TestPyPI 的索引有几十秒的传播延迟，刚上传就装会撞 404，所以带重试。
+        run: |
+          python -m venv /tmp/verify
+          case "$GITHUB_REF" in
+            refs/tags/v*) SPEC="apitrack-sdk==${GITHUB_REF_NAME#v}" ;;
+            *)            SPEC="apitrack-sdk" ;;
+          esac
+          echo "installing $SPEC"
+          for attempt in 1 2 3 4 5; do
+            if /tmp/verify/bin/pip install --index-url https://test.pypi.org/simple/ \
+                 --extra-index-url https://pypi.org/simple/ "$SPEC" pytest; then
+              exit 0
+            fi
+            echo "attempt $attempt failed, waiting for the TestPyPI index"
+            sleep 20
+          done
+          exit 1
+      - name: The plugin must load without conftest.py or -p
+        # 这一步是整个流水线存在的理由（验收 13）：`pyproject.toml` 写对但 entry point 没
+        # 生效时，包能装上、也能 import，唯一的症状是「跑完什么都没上报」。
+        #
+        # 判据不看 `--trace-config` 的输出文本：那段文本里本来就有安装路径
+        # `.../site-packages/apitrack/plugin.py`，`grep apitrack` 会被它蒙过去；而换个 pytest
+        # 版本措辞一变又会假阴性。改成两条**行为**判据，它们只有在插件真被加载时才成立：
+        #
+        #   ① `--apitrack-dry-run` 出现在 `--help` 里 → `pytest_addoption` 跑过了，
+        #      也就是 entry point 被 pytest 发现并加载了（不靠 conftest、不靠 -p）；
+        #   ② dry-run 真的打出那行标记 → `pytest_configure` 与 `pytest_sessionfinish`
+        #      也都跑到了，即整条插件生命周期完整。
+        #
+        # 探针测试必须真能被收集到：`--collect-only` / 空目录会让 pytest 返回退出码 5
+        # （EXIT_NOTESTSCOLLECTED），那会在包完全正常的情况下把这一步弄红。
+        run: |
+          mkdir -p /tmp/probe
+          printf 'def test_probe():\n    """探针用例。"""\n    assert True\n' > /tmp/probe/test_probe.py
+          cd /tmp/probe
+          # 诊断用，不作为判据：装到哪、加载了哪些插件，失败时要能一眼看到。
+          /tmp/verify/bin/pytest --trace-config --collect-only || true
+          /tmp/verify/bin/pytest --help | grep -q -- '--apitrack-dry-run'
+          /tmp/verify/bin/pytest --apitrack-dry-run > /tmp/dry.log 2>&1
+          cat /tmp/dry.log
+          grep -q '\[apitrack\] dry run' /tmp/dry.log
+          # dry-run 的 payload 里必须有那条探针用例，且 name 取自 docstring 首行
+          # （边界 7 的映射规则）——只看到「插件加载了」还不能说明采集是对的。
+          grep -q '"name": "探针用例。"' /tmp/dry.log
+      - name: It must not require httpx
+        # 只装了 requests 的环境（甚至两个都没装）必须能正常 import：两个 HTTP 库都靠
+        # find_spec 探测，探不到就不打那个桩。
+        run: /tmp/verify/bin/python -c "import apitrack, apitrack.plugin; print(apitrack.__version__)"
+
+  pypi:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+      - name: Publish apitrack-sdk
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+      - name: Publish the pytest-apitrack placeholder
+        # 首发就把两个名字都占下（计划 7.4）：名字是先到先得且不可回收的，等 0.2 再想起来
+        # 占就可能已经没了。
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist-placeholder/

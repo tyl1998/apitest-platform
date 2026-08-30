@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "apitrack-sdk"
+version = "0.1.0"
+description = "Report existing pytest results to an ApiTrack platform without changing a line of test code."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "ApiTrack" }]
+keywords = ["pytest", "api", "coverage", "test-reporting"]
+classifiers = [
+  "Framework :: Pytest",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Testing",
+]
+
+# 刻意为空（计划 7.4）：`requests` / `httpx` / `pytest` 全部不进 dependencies。
+# 它们是用户已有的东西，声明依赖会在用户环境里触发一次不必要的版本解析，甚至升级掉他们
+# 钉住的版本。两个 HTTP 库靠 importlib.util.find_spec 探测，探不到就不打那个桩；上报本身
+# 用标准库 urllib，所以这个包真的零依赖。
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "requests>=2.25"]
+
+[project.urls]
+Homepage = "https://github.com/apitrack/apitrack-sdk-python"
+
+# 插件靠这一行自动加载：不要 conftest.py、不要 -p 参数（边界 4 的硬指标）。
+# 注册名是 `apitrack`，于是关掉它就是 `-p no:apitrack`。
+[project.entry-points.pytest11]
+apitrack = "apitrack.plugin"
+
+[tool.hatch.build.targets.wheel]
+packages = ["apitrack"]
+
+[tool.hatch.build.targets.sdist]
+include = ["apitrack", "tests", "README.md", "LICENSE", "pyproject.toml"]
