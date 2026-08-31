@@ -16,7 +16,7 @@
 |---|------|----------|--------|---------|
 | 1 | **apitest-server** | Node.js + TypeScript (monorepo) | 容器镜像 | **P0** |
 | 2 | **apitest-web** | React 18 + TypeScript | 静态资源 (CDN) | **P0** |
-| 3 | **apitrack-sdk-python** | Python | PyPI 包 (分发名 `apitrack-sdk`) | P4 ✅ 已建仓 |
+| 3 | **apitrack-sdk-python** | Python | PyPI 包 (分发名 `apitrack-sdk`) | P4 ✅ 已建仓，**已发布 PyPI `v0.1.0`**（2026-08-31） |
 | 4 | **apitest-runner** | Node.js + 容器 | 容器镜像 (可自托管) | P4.5 |
 
 > **P0 只需建 1、2 两个仓**。3、4 分别在「仓库用例(上报式)」与「自研 Runner」阶段才需要。
