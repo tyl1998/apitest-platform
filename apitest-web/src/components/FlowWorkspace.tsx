@@ -2,11 +2,11 @@ import { startTransition, useCallback, useEffect, useMemo, useRef, useState } fr
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Background, Controls, Handle, NodeResizer, Position, ReactFlow, ReactFlowProvider, SelectionMode, addEdge, useEdgesState, useNodesState, type Connection, type Edge, type Node, type NodeProps } from "@xyflow/react";
+import { Background, Controls, Handle, NodeResizer, Position, ReactFlow, ReactFlowProvider, SelectionMode, addEdge, useEdgesState, useNodesState, useReactFlow, type Connection, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Braces, Database, GitBranch, Globe2, Hand, MousePointer2, Play, Plus, Redo2, Repeat, Save, Square, Timer, Undo2, Workflow, X } from "lucide-react";
+import { Braces, Database, GitBranch, Globe2, Hand, LayoutList, MousePointer2, Play, Plus, Redo2, Repeat, Save, Square, Timer, Undo2, Workflow, X } from "lucide-react";
 import { api, noRunnerLabel, type DataSource, type Flow, type FlowEdge, type FlowExecution, type FlowExecutionDetail, type FlowNode, type FlowStepResult, type FlowSummary, type Paged } from "../api";
-import { addStep as addStepToTree, clampInsideLoop, collectEdges, findStep as findStepIn, flattenSteps, foldPositions, loopAt, loopSize, removeStep as removeStepDeep, reparentStep, splitEdges, updateStep as updateStepDeep, LOOP_MIN_SIZE } from "../lib/flowCanvas";
+import { addStep as addStepToTree, afterConditionTarget, clampInsideLoop, collectEdges, findStep as findStepIn, findFreePosition, flattenSteps, foldPositions, loopAt, loopSize, moveStepIntoLoop, moveStepOutOfLoop, moveStepOutAt, nodeFootprint, reorderStepEdges, removeStep as removeStepDeep, reparentStep, restackLoopBody, restackTopLevel, splitEdges, unlinkedSteps, updateStep as updateStepDeep, LOOP_MIN_SIZE } from "../lib/flowCanvas";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { variableOptions } from "../lib/flowVariables";
 import { useNavGuardStore } from "../stores/navGuardStore";
@@ -14,6 +14,8 @@ import { useProjectStore } from "../stores/projectStore";
 import { Empty, Method, toRunStatus, type RunStatus } from "../ui";
 import { DEFAULT_SCRIPT_NODE_TEMPLATE, FlowNodeDrawer } from "./FlowNodeDrawer";
 import { FlowRunDrawer } from "./FlowRunDrawer";
+import { FlowStepList } from "./FlowStepList";
+import { KIND_BADGE, NodeKindIcon, stepSubtitle } from "./FlowStepPresentation";
 import { HistorySidebar } from "./HistorySidebar";
 import { IconButton } from "./IconButton";
 import { KeyValueEditor, fromPairs, toPairs, type Pair } from "./KeyValueEditor";
@@ -41,11 +43,6 @@ type StepData = {
   onAddAfter?: (nodeId: string, handleId?: string) => void;
 };
 type StepEdgeData = { flowEdge: FlowEdge };
-
-/** Two-letter badge per non-HTTP kind; a request node shows its method instead. */
-const KIND_BADGE: Record<Exclude<FlowNode["type"], "request">, string> = {
-  database: "DB", script: "JS", condition: "IF", wait: "⏱", subflow: "SUB", loop: "LOOP",
-};
 
 /**
  * 出口圆点上「点击」与「拖拽」的分界（像素）。
@@ -87,25 +84,6 @@ function SourceHandle({ nodeId, handleId, style, onAddAfter }: {
       onAddAfter(nodeId, handleId);
     }}
   />;
-}
-
-/**
- * One line describing what this step does, per kind.
- *
- * Written as a function rather than a nested ternary chain: with seven kinds the
- * chain stopped being readable, and TypeScript could no longer narrow it because
- * `FlowNodeBase` carries an open index signature.
- */
-function stepSubtitle(node: FlowNode, t: (key: string, options?: Record<string, unknown>) => string, dataSourceName?: string, bodyName?: string): string {
-  if (node.type === "request") return node.request.url || "—";
-  if (node.type === "database") return `${dataSourceName ?? node.dataSourceId ?? "—"} · ${node.sqlDefinitionId ? t("flows.namedSql") : node.operation ? t("flows.operation") : node.statementType ?? "—"}`;
-  if (node.type === "script") return t("flows.scriptNodeSub");
-  if (node.type === "condition") return `${node.condition.mode === "any" ? "OR" : "AND"} · ${t("flows.conditionCount", { count: node.condition.rules.length })}`;
-  if (node.type === "wait") return t("flows.waitNodeSub", { seconds: (node.waitMs / 1000).toFixed(node.waitMs % 1000 === 0 ? 0 : 1) });
-  if (node.type === "subflow") return bodyName ?? node.flowName ?? t("flows.subflowUnset");
-  /* 循环：副标题说「几次 × 并发布局」，体内步骤数帮助判断容器里有没有东西。 */
-  const times = node.mode === "count" ? t("flows.loopCountSub", { count: node.count ?? 0 }) : `{{${node.listVariable ?? "?"}}}`;
-  return `${t("flows.loopSub", { body: node.body.nodes.length })} · ${times}${(node.concurrency ?? 1) > 1 ? ` · ×${node.concurrency}` : ""}`;
 }
 
 /**
@@ -212,17 +190,6 @@ function LoopContainerNode({ data, selected }: { data: StepData; selected?: bool
   </div>;
 }
 
-/** Small per-kind icon for non-HTTP steps on the canvas. */
-function NodeKindIcon({ type, size }: { type: FlowNode["type"]; size: number }) {
-  if (type === "database") return <Database size={size} />;
-  if (type === "script") return <Braces size={size} />;
-  if (type === "condition") return <GitBranch size={size} />;
-  if (type === "wait") return <Timer size={size} />;
-  if (type === "subflow") return <Workflow size={size} />;
-  if (type === "loop") return <Repeat size={size} />;
-  return <Globe2 size={size} />;
-}
-
 /** React Flow 节点壳：把 NodeProps 拆成容器组件要的形状。 */
 function LoopNodeShell({ data, selected }: NodeProps<Node<StepData>>) {
   return <LoopContainerNode data={data} selected={selected} />;
@@ -292,7 +259,35 @@ function FlowCanvas() {
    * 可以整组拖动（React Flow 原生支持，拖动结束由同一个 onNodeDragStop 落库）。
    */
   const [selectMode, setSelectMode] = useState(false);
-  const nextPosition = useRef(0);
+  /**
+   * 显示方式：画布或列表——同一份流程文档的两个投影（5.0.13 列表模式）。
+   *
+   * 记忆在 localStorage（与运行记录侧栏同一约定）：昨天用列表编辑的人，今天打开还是列表。
+   * 框选/多选是画布专属交互，列表模式下其入口隐藏。
+   */
+  const [viewMode, setViewMode] = useState<"canvas" | "list">(localStorage.getItem("apitest.flowViewMode") === "list" ? "list" : "canvas");
+
+  /**
+   * 画布视口中心（画布坐标，含当前平移/缩放）：工具栏新增步骤落在这里——用户正在看
+   * 哪里，新卡就出现在哪里，而不是固定左上角让人满画布找。`screenToFlowPosition` 把
+   * 画布容器的屏幕几何中心换算成流程坐标；列表模式新增由 FlowStepList 锚定，不走这里。
+   */
+  const { screenToFlowPosition } = useReactFlow();
+  function viewportCenter(): { x: number; y: number } {
+    const wrapper = document.querySelector(".flow-canvas .react-flow");
+    if (!wrapper) return { x: 460, y: 320 };
+    const rect = wrapper.getBoundingClientRect();
+    const center = screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+    return { x: center.x, y: center.y };
+  }
+
+  /** 顶层所有卡的占位矩形（绝对坐标，循环框按实际尺寸）：找空位时用来避让。 */
+  function occupiedRects() {
+    return stepsRef.current.map((node) => {
+      const size = nodeFootprint(node);
+      return { x: node.position?.x ?? 0, y: node.position?.y ?? 0, width: size.width, height: size.height };
+    });
+  }
 
   /* 循环容器上的「+」：打开同一个节点选择器，但落点是这个循环。 */
   const openLoopPicker = useCallback((loopId: string) => {
@@ -306,7 +301,7 @@ function FlowCanvas() {
   }, []);
 
   /** 点圆点新增时的落点：接在这个节点后面（条件节点还要记住走哪个分支）。 */
-  const [insertAfter, setInsertAfter] = useState<{ nodeId: string; handleId?: string }>();
+  const [insertAfter, setInsertAfter] = useState<{ nodeId: string; handleId?: string; splice?: boolean; anchors?: { id: string; on?: FlowEdge["on"] }[] }>();
   /* 圆点回调必须是稳定引用（否则每次 steps 变化都要重建全部画布节点），所以用 ref 读最新文档。 */
   const stepsRef = useRef<FlowNode[]>([]);
   useEffect(() => { stepsRef.current = steps; }, [steps]);
@@ -315,13 +310,31 @@ function FlowCanvas() {
    * 点出口圆点：在这一步下面加一步。
    *
    * 落点与作用域跟着来源节点：框内点出来的留在框内；来源是条件节点时记住点的是哪个
-   * 出口，新步骤按真/假分支接上。
+   * 出口，新步骤按真/假分支接上。`splice`（列表模式）：不是在后面并列一步，而是
+   * **插进链条里**——断开来源节点原来的后继边，改走「来源 → 新步骤 → 原后继」。
    */
-  const addAfterNode = useCallback((nodeId: string, handleId?: string) => {
-    setInsertAfter({ nodeId, handleId });
+  const addAfterNode = useCallback((nodeId: string, handleId?: string, splice?: boolean) => {
+    setInsertAfter({ nodeId, handleId, splice });
     setLoopTarget(findStepIn(stepsRef.current, nodeId)?.loopId);
     setNodePickerOpen(true);
   }, []);
+
+  /**
+   * 「在整个条件后加一步」（5.0.13）：分支已汇合 → 插在汇合点后（splice）；没汇合 →
+   * 接到所有分支尾巴上（未接线的分支由条件按该分支标签引出）；一个分支都没有 →
+   * 条件 → 新步骤的无标签边（条件成功即执行，两种结果都跑）。见 afterConditionTarget。
+   */
+  const addAfterCondition = useCallback((conditionId: string, loopId?: string) => {
+    const locatedLoop = loopId ? findStepIn(stepsRef.current, loopId)?.node : undefined;
+    const scopeNodes = loopId && locatedLoop?.type === "loop" ? locatedLoop.body?.nodes ?? [] : stepsRef.current;
+    const scopeOrder = loopId ? scopeNodes.map((node) => node.id) : order;
+    const target = afterConditionTarget(scopeNodes, toFlowEdges(edges), scopeOrder, conditionId);
+    if (!target) return;
+    if (target.joinId) { addAfterNode(target.joinId, undefined, true); return; }
+    setInsertAfter({ nodeId: conditionId, anchors: target.anchors });
+    setLoopTarget(loopId);
+    setNodePickerOpen(true);
+  }, [edges, order, addAfterNode]);
 
   const stream = useExecutionStream(projectId);
 
@@ -340,7 +353,6 @@ function FlowCanvas() {
         setEnvironmentId(loaded.environmentId ?? "none");
         /* 画布要画的连线是顶层的加上每个循环体内的——框内的连线也在画布上。 */
         setEdges(collectEdges(loaded.nodes, loaded.edges).map((edge) => toCanvasEdge(edge, t)));
-        nextPosition.current = loaded.nodes.length;
         setBaseline(snapshot(loaded.name, loaded.environmentId ?? "none", loaded.nodes, loaded.edges, loaded.variables, loaded.tags));
       } catch { message.error(t("flows.loadFailed")); }
       finally { setLoading(false); }
@@ -496,6 +508,86 @@ function FlowCanvas() {
 
   const pushHistory = useCallback(() => pushEntry(capture()), [pushEntry, capture]);
 
+  /**
+   * 列表模式的「移入/移出循环」（5.0.13）：与画布拖进框同一套树操作，但**自动接线**
+   * ——原位置合拢、体内/顶层接入叶子（见 moveStepIntoLoop / moveStepOutOfLoop），
+   * 不接线的话保存会被未连线校验拦下。菜单与拖拽共用这两个入口。
+   */
+  const moveIntoLoop = useCallback((nodeId: string, loopId: string) => {
+    const result = moveStepIntoLoop(stepsRef.current, toFlowEdges(edges), nodeId, loopId);
+    if (!result) return;
+    pushHistory();
+    setSteps(result.steps);
+    setEdges(result.edges.map((edge) => toCanvasEdge(edge, t)));
+    message.info(t("flows.loopStepMovedIn"));
+  }, [edges, pushHistory, setSteps, setEdges, t]);
+
+  const moveOutOfLoop = useCallback((nodeId: string) => {
+    const result = moveStepOutOfLoop(stepsRef.current, toFlowEdges(edges), nodeId);
+    if (!result) return;
+    pushHistory();
+    setSteps(result.steps);
+    setEdges(result.edges.map((edge) => toCanvasEdge(edge, t)));
+    message.info(t("flows.loopStepMovedOut"));
+  }, [edges, pushHistory, setSteps, setEdges, t]);
+
+  /**
+   * 列表模式：把体内步骤拖到顶层的某个位置（移出 + splice 接进顶层链，一次完成）。
+   * 落在条件出口上会被 splice 的分支守卫拒绝——与换位同一条规则。
+   */
+  const moveOutAt = useCallback((node: FlowNode, topSequence: FlowNode[], targetId: string, before: boolean) => {
+    const result = moveStepOutAt(stepsRef.current, toFlowEdges(edges), node, topSequence, targetId, before);
+    if (!result) { message.warning(t("flows.listReorderRefused")); return; }
+    pushHistory();
+    setSteps(result.steps);
+    setEdges(result.edges.map((edge) => toCanvasEdge(edge, t)));
+    /* 顶层行序乐观更新：X 原本不在顶层 order 里，直接插到目标位置（计划回来会校准）。 */
+    setOrder((current) => {
+      const next = current.filter((step) => step !== node.id);
+      const at = next.indexOf(targetId);
+      if (at === -1) return current;
+      next.splice(before ? at : at + 1, 0, node.id);
+      return next;
+    });
+  }, [edges, pushHistory, setSteps, setEdges, t]);
+
+  /* 列表模式「所选步骤」：最后点过的行。新增步骤默认接在它后面，没有所选行就接在最后。 */
+  const [activeRow, setActiveRow] = useState<string>();
+  const addFromList = useCallback(() => {
+    const flat = flattenSteps(stepsRef.current);
+    const anchor = (activeRow ? flat.find((item) => item.node.id === activeRow) : undefined) ?? flat[flat.length - 1];
+    /* 空流程走无锚点新增；锚点是循环行时接在循环后面（splice 语义一致）。 */
+    if (anchor) addAfterNode(anchor.node.id, undefined, true);
+    else setNodePickerOpen(true);
+  }, [activeRow, addAfterNode]);
+
+  /**
+   * 列表模式的拖动排序（5.0.13 增补）：换位置 = 改连线（splice），不是挪坐标——
+   * 画布布局保持原样，执行顺序由新连线决定。多连线步骤被拒绝时说明原因并指回画布。
+   */
+  const reorder = useCallback((loopId: string | undefined, sequence: FlowNode[], id: string, targetId: string, before: boolean) => {
+    const result = reorderStepEdges(sequence, toFlowEdges(edges), id, targetId, before);
+    if (!result) { message.warning(t("flows.listReorderRefused")); return; }
+    pushHistory();
+    setEdges(result.edges.map((edge) => toCanvasEdge(edge, t)));
+    if (loopId) {
+      /* 循环体的显示顺序按画布坐标算、没有服务端计划：坐标按新序列重排，行才跟着动；
+         画布上框内也变成自上而下按新顺序摞放。 */
+      setSteps((current) => restackLoopBody(current, loopId, result.sequence));
+    } else {
+      /* 顶层坐标同样按新序列摞成竖链：切回画布时连线才对得上卡片，不会出现「线从
+         下面绕回上面」。行序先乐观更新，计划回来后内容一致会保持原数组，不会闪。 */
+      setSteps((current) => restackTopLevel(current, result.sequence));
+      setOrder((current) => {
+        const next = current.filter((step) => step !== id);
+        const at = next.indexOf(targetId);
+        if (at === -1) return current;
+        next.splice(before ? at : at + 1, 0, id);
+        return next;
+      });
+    }
+  }, [edges, pushHistory, setEdges, setSteps, t]);
+
   const applyEntry = useCallback((entry: HistoryEntry) => {
     setName(entry.name);
     setEnvironmentId(entry.environmentId);
@@ -622,9 +714,16 @@ function FlowCanvas() {
 
   const save = useCallback(async () => {
     if (!projectId || !flowId || !name.trim()) return;
+    const document = documentNow();
+    /* 未连线的步骤不允许保存：游离节点进不了任何执行批次，存下去等于埋雷。
+       单节点作用域没有连线可言，不算未链接（见 unlinkedSteps）。 */
+    const unlinked = unlinkedSteps(document.nodes, document.edges);
+    if (unlinked.length) {
+      message.error(t("flows.saveUnlinked", { names: unlinked.map((node) => node.name || "—").join("、") }));
+      return;
+    }
     setSaving(true);
     try {
-      const document = documentNow();
       const saved = await api.updateFlow(projectId, flowId, {
         name: name.trim(),
         environmentId: environmentId === "none" ? null : environmentId,
@@ -673,8 +772,19 @@ function FlowCanvas() {
      * duplicated flow — would otherwise share ids and mix each other's runs.
      */
     const id = crypto.randomUUID();
-    const at = nextPosition.current++;
-    const base = { id, name: "", position: { x: 80, y: 60 + at * 130 }, onFailure: "stop" as const };
+    /**
+     * 落点：工具栏新增落在**视口中心**（用户正在看的地方，而不是固定左上角）；从出口
+     * 圆点新增落在锚点下方一格。两处都走碰撞避让——从落点往下逐格让位，直到不压住
+     * 任何现有卡（循环框按实际尺寸占位）。之前的「x=80, y=60+序号×130」在节点多了
+     * 以后必然盖住别人的卡，序号还会在删除/撤销后失步。循环体内的新步骤不从这里落：
+     * `addStep` 会把它摞到框内最后一张卡的下面，天然不冲突。
+     */
+    const anchor = insertAfter ? findStepIn(stepsRef.current, insertAfter.nodeId) : undefined;
+    const center = viewportCenter();
+    const start = anchor
+      ? { x: anchor.node.position?.x ?? 80, y: (anchor.node.position?.y ?? 60) + nodeFootprint(anchor.node).height + 24 }
+      : { x: center.x - 120, y: center.y - 60 };
+    const base = { id, name: "", position: findFreePosition(start, occupiedRects()), onFailure: "stop" as const };
     const step: FlowNode = type === "request" ? {
       ...base, type: "request", endpointId: "",
       request: { method: "GET", url: "", headers: {}, queryParams: {}, pathParams: {}, bodyType: "none", auth: { type: "none" } },
@@ -698,23 +808,41 @@ function FlowCanvas() {
     /* 循环不嵌套循环：画布上只做一层容器，嵌套容器的坐标换算成本远高于价值。 */
     const target = type === "loop" ? undefined : intoLoopId;
     pushHistory();
-    /**
-     * 从某个出口圆点点出来的：摆在那个节点下面并自动接上。
-     *
-     * 位置沿用来源节点的 x、y 往下让一格，这样「点圆点 → 选类型」出来的就是一条
-     * 顺着往下长的链路，而不是又一个落在左上角、还要自己拖过来连线的孤立节点。
-     */
-    const anchor = insertAfter ? findStepIn(stepsRef.current, insertAfter.nodeId) : undefined;
-    const placed = anchor
-      ? { ...step, position: { x: anchor.node.position?.x ?? 80, y: (anchor.node.position?.y ?? 60) + 150 } }
-      : step;
+    /* 位置已按锚点/视口 + 避让算好，直接落树（体内新增由 addStep 摞底覆盖）。 */
+    const placed = step;
     setSteps((current) => addStepToTree(current, placed, anchor ? anchor.loopId : target));
     if (insertAfter && anchor) {
       const branch = anchor.node.type === "condition"
         ? (insertAfter.handleId === "false" ? "false" : "true")
         : undefined;
-      const flowEdge: FlowEdge = { id: `${insertAfter.nodeId}->${id}`, source: insertAfter.nodeId, target: id, on: branch };
-      setEdges((current) => addEdge(toCanvasEdge(flowEdge, t), current));
+      setEdges((current) => {
+        let base = current;
+        /* 「在整个条件后」的多锚点：每个分支尾巴（或未接线分支的条件本身，带分支标签）
+           都接一条边到新步骤——它要等每条路径走完才轮到。 */
+        if (insertAfter.anchors) {
+          for (const anchorPoint of insertAfter.anchors) {
+            const edge: FlowEdge = { id: `${anchorPoint.id}->${id}`, source: anchorPoint.id, target: id, ...(anchorPoint.on ? { on: anchorPoint.on } : {}) };
+            base = addEdge(toCanvasEdge(edge, t), base);
+          }
+          return base;
+        }
+        /* 列表插入 = 接进链里：来源节点原来的后继边（同分支那条）由新步骤顶替，新步骤
+           再接它——「在这一步后加一步」就该把后面顺次往后推。画布的出口圆点保持原
+           语义（另起一条并行线），不 splice。 */
+        if (insertAfter.splice) {
+          const taken = current.filter((edge) => edge.source === anchor.node.id
+            && (branch
+              ? (edge.data as StepEdgeData | undefined)?.flowEdge?.on === branch
+              : !(edge.data as StepEdgeData | undefined)?.flowEdge?.on));
+          if (taken.length === 1) {
+            const successor = taken[0].target;
+            const spliced: FlowEdge = { id: `${id}->${successor}`, source: id, target: successor, on: type === "condition" ? "true" : undefined };
+            base = [...current.filter((edge) => edge.id !== taken[0].id), toCanvasEdge(spliced, t)];
+          }
+        }
+        const flowEdge: FlowEdge = { id: `${insertAfter.nodeId}->${id}`, source: insertAfter.nodeId, target: id, on: branch };
+        return addEdge(toCanvasEdge(flowEdge, t), base);
+      });
     }
     setInsertAfter(undefined);
     setNodePickerOpen(false);
@@ -729,6 +857,7 @@ function FlowCanvas() {
 
   /* 侧栏运行记录：新开一次运行或收到终态事件时刷新，让侧栏与实际一致。 */
   useEffect(() => { localStorage.setItem("apitest.flowHistoryOpen", String(historyOpen)); }, [historyOpen]);
+  useEffect(() => { localStorage.setItem("apitest.flowViewMode", viewMode); }, [viewMode]);
   const loadHistory = useCallback(() => {
     if (!projectId || !flowId) return;
     void api.flowExecutions(projectId, flowId, {
@@ -851,8 +980,23 @@ function FlowCanvas() {
         </div>
       </div>
       <div className="topbar-actions">
-        {/* 框选：打开后左键拖拽画选择框，多选之后可以整组拖动。不开也能按住 Shift 拖。 */}
-        <button
+        {/* 显示方式：画布 / 列表——同一份文档的两个投影，未保存状态与撤销栈跨模式共享。 */}
+        <div className="mode-switch" role="group" aria-label={t("editor.viewMode")}>
+          <button
+            className={`icon-btn${viewMode === "canvas" ? " is-active" : ""}`}
+            aria-pressed={viewMode === "canvas"}
+            title={t("flows.viewCanvas")}
+            onClick={() => setViewMode("canvas")}
+          ><Workflow size={14} /></button>
+          <button
+            className={`icon-btn${viewMode === "list" ? " is-active" : ""}`}
+            aria-pressed={viewMode === "list"}
+            title={t("flows.viewList")}
+            onClick={() => setViewMode("list")}
+          ><LayoutList size={14} /></button>
+        </div>
+        {/* 框选是画布专属交互：左键拖拽画选择框、多选整组拖动，列表模式没有这个概念。 */}
+        {viewMode === "canvas" && <button
           className={`btn btn-with-icon${selectMode ? " is-active" : ""}`}
           aria-pressed={selectMode}
           title={t("flows.selectModeHint")}
@@ -860,10 +1004,11 @@ function FlowCanvas() {
         >
           {selectMode ? <MousePointer2 size={14} /> : <Hand size={14} />}
           {selectMode ? t("flows.selectMode") : t("flows.panMode")}
-        </button>
+        </button>}
         <IconButton icon={<Undo2 size={15} />} label={t("action.undo")} disabled={!historyDepth.past} onClick={undo} />
-        <IconButton icon={<Redo2 size={15} />} label={t("action.redo")} disabled={!historyDepth.future} onClick={redo} />
-         <button className="btn btn-with-icon" onClick={() => setNodePickerOpen(true)}><Plus size={14} />{t("flows.addNode")}</button>
+          <IconButton icon={<Redo2 size={15} />} label={t("action.redo")} disabled={!historyDepth.future} onClick={redo} />
+          {/* 列表模式的新增接在所选行后面（画布保持无锚点、自由摆放的原语义）。 */}
+          <button className="btn btn-with-icon" onClick={() => (viewMode === "list" ? addFromList() : setNodePickerOpen(true))}><Plus size={14} />{t("flows.addNode")}</button>
         {busy
           ? <button className="btn btn-with-icon" onClick={() => void stop()}><Square size={14} />{t("run.cancel")}</button>
           : <button className="btn btn-with-icon" disabled={!steps.length} onClick={() => void start()}><Play size={14} />{t("flows.run")}</button>}
@@ -876,8 +1021,10 @@ function FlowCanvas() {
     {/* A cycle has no runnable order, so it is reported on the canvas rather
         than at save time, where it would arrive too late to act on. */}
     {planError && <div className="bulk-bar flow-warning"><strong className="text-fail">{planError}</strong></div>}
-    {/* 画布操作提示：多选与出口圆点这两件事不写出来没人会试。 */}
-    <p className="flow-canvas-hint">{t("flows.canvasHint")}</p>
+    {/* 操作提示按视图给：画布讲框选与出口圆点，列表讲拖动换位（不写出来没人会试）。 */}
+    {viewMode === "canvas"
+      ? <p className="flow-canvas-hint">{t("flows.canvasHint")}</p>
+      : <p className="flow-canvas-hint">{t("flows.listHint")}</p>}
 
     {run && <div className="flow-run-bar">
       <RunStatusTag status={busy ? (run.status === "queued" ? "queued" : "running") : toRunStatus(run.status)} />
@@ -893,7 +1040,31 @@ function FlowCanvas() {
     </div>}
 
     <div className={`flow-body${historyOpen ? "" : " is-solo"}`}>
-      <div className="flow-canvas">
+      {/* 列表模式：同一份文档的第二个投影，纯展示与回调，编辑内核（历史/保存/运行）不变。
+          空流程时仍走画布分支的 Empty——空态说什么与用哪种视图无关。 */}
+      {viewMode === "list" && steps.length ? <div className="flow-list-wrap">
+        <FlowStepList
+          steps={steps}
+          edges={toFlowEdges(edges)}
+          order={order}
+          stages={stages}
+          nodeStatus={nodeStatus}
+          dataSources={dataSources}
+          projectFlows={projectFlows}
+          active={activeRow}
+          onActive={setActiveRow}
+          onOpen={openDrawer}
+          onDelete={removeStep}
+          onAddAfter={(nodeId, handleId) => addAfterNode(nodeId, handleId, true)}
+          onAddInside={openLoopPicker}
+          onAddTop={addFromList}
+          onMoveIntoLoop={moveIntoLoop}
+          onMoveOut={moveOutOfLoop}
+          onMoveOutAt={moveOutAt}
+          onAddAfterCondition={addAfterCondition}
+          onReorder={reorder}
+        />
+      </div> : <div className="flow-canvas">
         {steps.length ? <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -1022,8 +1193,7 @@ function FlowCanvas() {
          hint={endpoints.length || dataSources.length ? t("flows.canvasEmptyHint") : t("flows.canvasNeedsAssets")}
          action={endpoints.length || dataSources.length ? <button className="btn btn-primary" onClick={() => setNodePickerOpen(true)}>{t("flows.addNode")}</button> : undefined}
       />}
-      </div>
-
+      </div>}
       <HistorySidebar
         open={historyOpen}
         onToggle={() => setHistoryOpen((current) => !current)}

@@ -193,17 +193,27 @@ export function Trends() {
   const [trend, setTrend] = useState<TrendReport>();
   const [summary, setSummary] = useState<ReportSummary>();
   const [failed, setFailed] = useState(false);
+  /**
+   * 「含仓库上报」开关（P4 边界 1），**默认关闭**。
+   *
+   * 关着的时候这两张图算的还是平台自己跑的那些（flow / suite）。打开之后混进外部 CI 的
+   * 上报：它的耗时是用户进程里的客户端耗时，与平台的墙钟耗时不是一个口径；一次 `-m smoke`
+   * 的局部跑也会把通过率拉出一个台阶。所以它是一个「我知道自己在看混合视图」的显式选择，
+   * 不进地址栏——分享一条链接时不该顺手把别人的口径也改掉。
+   */
+  const [includeIngest, setIncludeIngest] = useState(false);
 
   useEffect(() => {
     if (!projectId || loadedProjectId !== projectId || projectLoading) return;
     let alive = true;
     setTrend(undefined); setSummary(undefined); setFailed(false);
-    /* 趋势与汇总同一份数据口径（父执行），一起取；任一失败都算这页没加载出来。 */
-    void Promise.all([api.trendReport(projectId, range), api.reportSummary(projectId, range)])
+    /* 趋势与汇总同一份数据口径（父执行 + 可选的仓库上报），一起取；任一失败都算这页
+       没加载出来。 */
+    void Promise.all([api.trendReport(projectId, range, includeIngest), api.reportSummary(projectId, range, includeIngest)])
       .then(([trendResult, summaryResult]) => { if (alive) { setTrend(trendResult); setSummary(summaryResult); } })
       .catch(() => { if (alive) setFailed(true); });
     return () => { alive = false; };
-  }, [projectId, loadedProjectId, projectLoading, range]);
+  }, [projectId, loadedProjectId, projectLoading, range, includeIngest]);
 
   const hourly = range === "24h";
   const buckets = trend?.buckets ?? [];
@@ -222,6 +232,14 @@ export function Trends() {
         >{t(`trends.range${each}`)}</button>)}
       </div>
     </div>
+
+    {/* 口径开关（P4 边界 1）：默认关。说明文字必须留着——两个口径混在一条曲线上时，
+        「为什么 p90 突然掉了一半」只有这一句能解释。 */}
+    <label className="check-field">
+      <input type="checkbox" checked={includeIngest} onChange={(event) => setIncludeIngest(event.target.checked)} />
+      {t("trends.includeIngest")}
+    </label>
+    <p className="form-note">{t("trends.includeIngestHint")}</p>
 
     {failed && <p className="form-error">{t("trends.loadFailed")}</p>}
 

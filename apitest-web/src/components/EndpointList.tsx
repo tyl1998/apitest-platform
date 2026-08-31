@@ -12,7 +12,7 @@ import { BatchResultList } from "./BatchResultList";
 import { ExecutionSnapshot } from "./ExecutionSnapshot";
 import { IconButton } from "./IconButton";
 import { RunStatusTag } from "./RunStatusTag";
-import { hasUnsupportedShell, parseCurl, parseOpenApi } from "../lib/importers";
+import { hasUnsupportedShell, parseCurl, parseOpenApi, parsePaths } from "../lib/importers";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 const PAGE_SIZES = [20, 50, 100];
@@ -49,6 +49,8 @@ export function EndpointList() {
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importForm] = Form.useForm();
+  /* 路径清单格式的行语法提示只在选中它时出现（Form.Item 的 extra 不随另一字段联动）。 */
+  const importFormat = Form.useWatch("format", importForm);
   const previousProjectId = useRef(projectId);
 
   /* Runs are queued and executed by a worker (P1-3); progress arrives here. */
@@ -254,8 +256,10 @@ export function EndpointList() {
     const values = await importForm.validateFields();
     const source: string = values.source.trim();
     let items;
-    try { items = values.format === "curl" ? parseCurl(source) : parseOpenApi(source); }
-    catch { message.error(t("import.parseFailed")); return; }
+    try { items = values.format === "curl" ? parseCurl(source) : values.format === "paths" ? parsePaths(source) : parseOpenApi(source); }
+    /* 路径清单的解析错误带行号与原文（哪一行、什么内容），比一句笼统的「解析失败」
+       可行动得多；其它格式的引擎报错也一并透出，前缀仍是本地化的提示。 */
+    catch (error) { message.error(error instanceof Error && error.message ? `${t("import.parseFailed")} ${error.message}` : t("import.parseFailed")); return; }
     if (!items.length) { message.error(t("import.nothingFound")); return; }
     if (values.format === "curl" && hasUnsupportedShell(source)) message.warning(t("import.shellWarning"));
 
@@ -454,10 +458,19 @@ export function EndpointList() {
     >
       <Form form={importForm} layout="vertical" initialValues={{ strategy: "skip", format: "openapi" }}>
         <Form.Item name="format" label={t("import.format")}>
-          <Select options={[{ value: "openapi", label: t("import.openapi") }, { value: "curl", label: t("import.curl") }]} />
+          <Select options={[{ value: "openapi", label: t("import.openapi") }, { value: "curl", label: t("import.curl") }, { value: "paths", label: t("import.paths") }]} />
         </Form.Item>
-        <Form.Item name="source" label={t("import.source")} rules={[{ required: true, message: t("import.sourceRequired") }]}>
-          <Input.TextArea rows={12} className="mono" />
+        <Form.Item
+          name="source"
+          label={t("import.source")}
+          rules={[{ required: true, message: t("import.sourceRequired") }]}
+          extra={importFormat === "paths" ? t("import.pathsHint") : undefined}
+        >
+          <Input.TextArea
+            rows={12}
+            className="mono"
+            placeholder={importFormat === "paths" ? "GET /users/{id} 查询用户\nPOST /orders 创建订单\n# 注释行" : undefined}
+          />
         </Form.Item>
         <Form.Item name="strategy" label={t("import.strategy")} extra={t("import.strategyHint")}>
           <Select options={[

@@ -786,7 +786,8 @@ export type FlowPlanStep = { nodeId: string; name: string; endpointId?: string; 
 export type ExecutionIndex = {
   id: string;
   projectId: string;
-  kind: "flow" | "suite" | "batch";
+  /** `ingest` 是仓库模式的一次上报（P4 边界 1）：它归一进这张清单，但不参与趋势口径。 */
+  kind: "flow" | "suite" | "batch" | "ingest";
   targetId?: string;
   targetName: string;
   detailId: string;
@@ -1406,13 +1407,15 @@ export type TrendBucket = {
   p99: number | null;
 };
 
-export type TrendReport = { range: "24h" | "7d" | "30d"; buckets: TrendBucket[] };
+export type TrendReport = { range: "24h" | "7d" | "30d"; includeIngest: boolean; buckets: TrendBucket[] };
 
 export type ReportRange = "24h" | "7d" | "30d";
 
 /** 汇总：总量 + 失败分布（按接口 Top20 / 按错误类型）。 */
 export type ReportSummary = {
   range: ReportRange;
+  /** 样本里是否含仓库上报（P4 边界 1），默认 false。 */
+  includeIngest: boolean;
   total: number;
   successCount: number;
   failedCount: number;
@@ -1445,6 +1448,151 @@ export type PlatformLimits = {
   suiteMaxMembers: number;
 };
 export type ProjectFilters = { keyword?: string; projectIds?: string[] };
+
+/* ── P4: 仓库模式（上报式用例）。范围与边界见 DEVELOPMENT_PLAN.md 7.0 ───────────── */
+
+export type RepositoryProvider = "github" | "gitlab" | "gitee" | "bitbucket" | "other";
+
+/**
+ * 项目绑定的唯一仓库。**绑定由首次上报完成**，前端没有「创建仓库」这件事——所以未绑定
+ * 时接口回的是 `null` 而不是 404，接入指引页把它当成一个正常的初始状态显示。
+ */
+export type Repository = {
+  id: string;
+  projectId: string;
+  gitUrl: string;
+  provider: RepositoryProvider;
+  /** 删除对账的第二道闸门：只有这个分支上的全量上报才会软删用例。 */
+  trackingBranch: string;
+  status: "active" | "unbound";
+  firstSeenCommit?: string;
+  lastIngestAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  activeCaseCount: number;
+  ingestRunCount: number;
+};
+
+/** 上报 Token。明文只在创建响应里出现一次，列表只回 `tokenPrefix`。 */
+export type IngestToken = {
+  id: string;
+  name: string;
+  tokenPrefix: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+  createdAt: string;
+};
+
+export type RepoCaseResult = "passed" | "failed" | "unknown" | "not_run";
+
+export type RepoTestCase = {
+  id: string;
+  caseKey: string;
+  name: string;
+  description: string;
+  filePath: string;
+  tags: string[];
+  status: "active" | "removed";
+  lastResult: RepoCaseResult;
+  lastSeenCommit?: string;
+  lastRunAt?: string;
+  removedAt?: string;
+  /** 树里这条用例在该接口下的请求数（关系表上的累积值）。 */
+  requestCount?: number;
+  endpoints?: { endpointId: string; endpointName: string; method: string; url: string; requestCount: number }[];
+};
+
+/**
+ * 用例树的一页：**按接口分组**（树是「系统 → 接口 → 用例」），分页分在接口上。
+ *
+ * `caseCount` 与 `coverage.distinctCaseTotal` 是**两个不同口径**（边界 9）：前者数关系数
+ * （一个用例打三个接口就在三处各算一次），后者数 distinct case_key。两者相加不相等，
+ * 界面上必须写明，否则会被当成 bug 报上来。
+ */
+export type RepoCaseTree = {
+  endpoints: { endpointId: string; name: string; method: string; url: string; caseCount: number; cases: RepoTestCase[] }[];
+  coverage: {
+    endpointTotal: number;
+    coveredEndpointTotal: number;
+    distinctCaseTotal: number;
+    removedCaseTotal: number;
+    /** 有用例但一个接口都没打到（边界 21）：树上挂不住，单独一个分组。 */
+    unplacedCaseTotal: number;
+  };
+};
+
+export type IngestRun = {
+  id: string;
+  commitSha: string;
+  branch: string;
+  ciRunId: string;
+  ciRunUrl?: string;
+  /** 本次跑的范围，相对仓库根。空数组 = 全仓。 */
+  scope: string[];
+  /** 「这个范围内没有过滤」，不是「跑了整个仓库」。 */
+  isFullInventory: boolean;
+  /** **实际**有没有参与删除对账（全量 + 跟踪分支两道闸门都成立才为 true）。 */
+  reconciled: boolean;
+  caseTotal: number;
+  passedCount: number;
+  failedCount: number;
+  requestCount: number;
+  addedCount: number;
+  removedCount: number;
+  updatedCount: number;
+  unmatchedCount: number;
+  unplacedCount: number;
+  sdkName: string;
+  sdkVersion: string;
+  warnings: string[];
+  startedAt?: string;
+  finishedAt?: string;
+  createdAt: string;
+};
+
+export type IngestRecord = {
+  id: string;
+  phase: "setup" | "call" | "teardown";
+  paramId?: string;
+  seq: number;
+  method: string;
+  pathRaw: string;
+  pathNormalized?: string;
+  statusCode?: number;
+  latencyMs?: number;
+  passed?: boolean;
+  error?: string;
+  requestSummary: Record<string, unknown>;
+  createdAt: string;
+  caseName?: string;
+  caseKey?: string;
+  endpointName?: string;
+};
+
+export type IngestRunDetail = IngestRun & { records: IngestRecord[] };
+
+/**
+ * 未匹配诊断视图的一行（边界 20）。
+ *
+ * **这是诊断视图，不是待办清单**：界面上不要待处理计数、不要红点、不要「全部处理」，
+ * 也不要「补登记接口」的按钮。三样字段都是**读时标注**而不是判定——`phases` 里集中在
+ * `setup` 的几乎一定是跨系统前置，`registeredInProjects` 空着不代表「这是我们的」
+ * （别人还没做自动化时它就是空的）。
+ */
+export type UnmatchedPath = {
+  method: string;
+  path: string;
+  hitCount: number;
+  caseCount: number;
+  caseNames: string[];
+  phases: { setup: number; call: number; teardown: number };
+  lastSeenAt?: string;
+  /** 别的项目登记过这条路径，只有项目名。从不参与任何判定。 */
+  registeredInProjects: string[];
+};
+
+/** 人工标注的外部依赖前缀。只影响诊断列表的显示，不影响任何统计。 */
+export type IngestPathRule = { id: string; pathPrefix: string; note: string; createdAt: string };
 export type ExecutionSourceFilter = "endpoint_debug" | "test_case" | "flow_step" | "all";
 export type ExecutionFilters = { status?: string; endpointId?: string; source?: ExecutionSourceFilter; caseId?: string; page?: number; pageSize?: number };
 /** Paged reads keep `total` so the UI can show real page controls. */
@@ -1567,6 +1715,10 @@ export const api = {
   runnerLabels: () => client.get("/system/runner-labels").then(data<RunnerLabelStatus[]>),
 
   projects: (filters?: ProjectFilters) => client.get("/projects", { params: projectParams(filters) }).then(data<ProjectMetric[]>),
+  /** 管理页的分页读法（与 environmentList 同一契约）：keyword 在 SQL 里过滤，total 是全量
+      命中数。项目切换器仍走 `projects`（全量）——切换器里缺一个真实存在的项目比多列几个更糟。 */
+  projectList: (filters?: { keyword?: string; page?: number; pageSize?: number }) =>
+    client.get("/projects", { params: { keyword: filters?.keyword?.trim() || undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<ProjectMetric>),
   project: (id: string) => client.get(`/projects/${id}`).then(data<Project>),
   createProject: (name: string, description: string) => client.post("/projects", { name, description }).then(data<Project>),
   updateProject: (id: string, input: Partial<Pick<Project, "name" | "description">>) => client.patch(`/projects/${id}`, input).then(data<Project>),
@@ -1963,9 +2115,71 @@ export const api = {
   suiteReport: (projectId: string, executionId: string) =>
     client.get(`/projects/${projectId}/suite-reports/${executionId}`).then(data<SuiteReport>),
   /** 趋势（边界 11）：空桶由服务端补齐，分位数 percentile_cont 在 SQL 里算。 */
-  trendReport: (projectId: string, range: ReportRange) =>
-    client.get(`/projects/${projectId}/reports/trend`, { params: { range } }).then(data<TrendReport>),
+  trendReport: (projectId: string, range: ReportRange, includeIngest?: boolean) =>
+    client.get(`/projects/${projectId}/reports/trend`, { params: { range, includeIngest: includeIngest ? "1" : undefined } }).then(data<TrendReport>),
   /** 汇总：总量 + 失败分布（按接口 Top20 / 按错误类型）。 */
-  reportSummary: (projectId: string, range: ReportRange) =>
-    client.get(`/projects/${projectId}/reports/summary`, { params: { range } }).then(data<ReportSummary>),
+  reportSummary: (projectId: string, range: ReportRange, includeIngest?: boolean) =>
+    client.get(`/projects/${projectId}/reports/summary`, { params: { range, includeIngest: includeIngest ? "1" : undefined } }).then(data<ReportSummary>),
+
+  /* ── P4: 仓库模式 ─────────────────────────────────────────────────────────── */
+
+  /** 单例视图：未绑定回 `null`（绑定由首次上报完成，前端没有「创建」这个动作）。 */
+  repository: (projectId: string) => client.get(`/projects/${projectId}/repository`).then(data<Repository | null>),
+  /** 只能改跟踪分支与托管方：`gitUrl` 是上报准入判据，改它等于绕过校验换个仓库进来。 */
+  updateRepository: (projectId: string, input: { trackingBranch?: string; provider?: RepositoryProvider }) =>
+    client.patch(`/projects/${projectId}/repository`, input).then(data<Repository>),
+  /** 解绑：置 unbound，**保留**历史用例与上报记录。 */
+  unbindRepository: (projectId: string) => client.delete(`/projects/${projectId}/repository`).then(data<Repository>),
+
+  ingestTokens: (projectId: string) => client.get(`/projects/${projectId}/ingest-tokens`).then(data<IngestToken[]>),
+  /** 创建：`token` 明文**只在这一次响应里**出现，丢了只能吊销重发。 */
+  createIngestToken: (projectId: string, name: string) =>
+    client.post(`/projects/${projectId}/ingest-tokens`, { name }).then(data<IngestToken & { token: string }>),
+  revokeIngestToken: (projectId: string, tokenId: string) =>
+    client.delete(`/projects/${projectId}/ingest-tokens/${tokenId}`).then(data<IngestToken>),
+
+  /** 用例树（按接口分组，分页在接口上）+ 覆盖统计。 */
+  repoCases: (projectId: string, filters?: { keyword?: string; status?: string; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/repo-cases`, { params: { keyword: filters?.keyword?.trim() || undefined, status: filters?.status && filters.status !== "active" ? filters.status : undefined, page: filters?.page, pageSize: filters?.pageSize } })
+      .then((response) => ({
+        ...(response.data.data as RepoCaseTree),
+        page: (response.data.meta as { page?: number } | undefined)?.page ?? 1,
+        pageSize: (response.data.meta as { pageSize?: number } | undefined)?.pageSize ?? 20,
+        total: (response.data.meta as { total?: number } | undefined)?.total ?? 0,
+      })),
+  /** 未归位用例（边界 21）：有用例、但在本项目一个接口都没打到。 */
+  unplacedRepoCases: (projectId: string, page?: number, pageSize?: number) =>
+    client.get(`/projects/${projectId}/repo-cases/unplaced`, { params: { page, pageSize } }).then(paged<RepoTestCase>),
+  /** 单用例详情（抽屉用）：`params` 是 records 里 distinct 的参数化场景 id。
+      records 仍在响应里（run 明细页的口径），抽屉不展示。 */
+  repoCase: (projectId: string, caseId: string) =>
+    client.get(`/projects/${projectId}/repo-cases/${caseId}`)
+      .then(data<RepoTestCase & { params: string[]; records: IngestRecord[] }>),
+
+  /** 两个过滤都是布尔闸（后端 OR 语义）：changed = 新增或消失 > 0，unmatched = 有未匹配。 */
+  ingestRuns: (projectId: string, page?: number, pageSize?: number, filters?: { changed?: boolean; unmatched?: boolean }) =>
+    client.get(`/projects/${projectId}/ingest-runs`, { params: { page, pageSize, changed: filters?.changed ? "1" : undefined, unmatched: filters?.unmatched ? "1" : undefined } }).then(paged<IngestRun>),
+  /** `changes` = 只看有变动的记录（未匹配 + 本轮新增的覆盖，后端定义）；`recordsTotal`
+      是**当前过滤口径**下的总数（meta），截断提示以它为准而不是 run.requestCount。 */
+  ingestRun: (projectId: string, runId: string, page?: number, pageSize?: number, filters?: { changes?: boolean }) =>
+    client.get(`/projects/${projectId}/ingest-runs/${runId}`, { params: { page, pageSize, changes: filters?.changes ? "1" : undefined } })
+      .then((response) => ({
+        detail: response.data.data as IngestRunDetail,
+        recordsTotal: (response.data.meta as { total?: number } | undefined)?.total ?? 0,
+      })),
+
+  /** 未匹配诊断视图。`silenced` 为真时回被前缀规则静默的那些行。 */
+  ingestUnmatched: (projectId: string, filters?: { silenced?: boolean; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/ingest-unmatched`, { params: { silenced: filters?.silenced ? "true" : undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<UnmatchedPath>),
+  /** 关联到**已登记**接口。安全的那个动作：目标本来就在本项目、本来就在分母里。 */
+  linkUnmatched: (projectId: string, input: { method: string; path: string; endpointId: string }) =>
+    client.post(`/projects/${projectId}/ingest-unmatched/link`, input).then(data<{ linkedRecords: number; linkedCases: number }>),
+  /** 一键登记：建最小 endpoint 并把历史未匹配记录按匹配语义归位（单行显式动作，无批量）。 */
+  registerUnmatched: (projectId: string, input: { method: string; path: string; name?: string }) =>
+    client.post(`/projects/${projectId}/ingest-unmatched/register`, input).then(data<{ endpoint: Endpoint; linkedRecords: number; linkedCases: number }>),
+  ingestPathRules: (projectId: string) => client.get(`/projects/${projectId}/ingest-path-rules`).then(data<IngestPathRule[]>),
+  createIngestPathRule: (projectId: string, input: { pathPrefix: string; note?: string }) =>
+    client.post(`/projects/${projectId}/ingest-path-rules`, input).then(data<IngestPathRule>),
+  deleteIngestPathRule: (projectId: string, ruleId: string) =>
+    client.delete(`/projects/${projectId}/ingest-path-rules/${ruleId}`).then(data<{ id: string }>),
 };

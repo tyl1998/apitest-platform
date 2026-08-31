@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Drawer, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type BatchDebugResult, type BatchDebugSummary, type Execution, type ExecutionIndex, type ExecutionSourceFilter, type FlowExecutionDetail, type Paged, type SuiteExecutionDetail } from "../api";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useProjectStore } from "../stores/projectStore";
@@ -42,6 +42,7 @@ function toRecordType(value: string | null) {
 export function ExecutionRecords() {
   const { t } = useTranslation();
   const { projectId } = useParams();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { endpoints } = useProjectStore();
   const stream = useExecutionStream(projectId);
@@ -132,7 +133,21 @@ export function ExecutionRecords() {
       : { indexId: row.id, flow: await api.flowExecution(projectId, row.detailId) });
   }, [projectId]);
 
+  /**
+   * 仓库上报（P4 边界 1）没有平台侧的抽屉可开。
+   *
+   * 它归一进这份清单是为了「来源筛选 + 一个统一入口」，但它的明细在仓库用例的上报记录页
+   * ——那里才有 scope、对账状态与请求明细。所以点它是**跳过去**，不是开一个空抽屉：
+   * `loadParent` 会把非 suite 的行当成流程去读 `flow_executions`，而 `ingest` 的 `detailId`
+   * 指向 `ingest_runs`，那一定 404。
+   */
+  function openIngest() {
+    if (!projectId) return;
+    navigate(`/projects/${projectId}/repo-cases/runs`);
+  }
+
   function openParent(row: ExecutionIndex) {
+    if (row.kind === "ingest") { openIngest(); return; }
     void loadParent(row)
       .then(() => setSearchParams((current) => { current.set("parent", row.id); return current; }, { replace: true }))
       .catch(() => message.error(t("reports.loadFailed")));
@@ -180,12 +195,21 @@ export function ExecutionRecords() {
     const indexId = searchParams.get("parent");
     if (!projectId || !indexId || parent?.indexId === indexId) return;
     void api.executionIndexDetail(projectId, indexId)
-      .then(loadParent)
+      .then((row) => {
+        /* 深链指到一条仓库上报时同样不开抽屉（见 `openIngest`）：`?parent=` 是可以被贴出来
+           的，而它指向的那一行完全可能是 `ingest`。摘掉参数再跳，否则回退回来又会试一次。 */
+        if (row.kind === "ingest") {
+          setSearchParams((current) => { current.delete("parent"); return current; }, { replace: true });
+          openIngest();
+          return;
+        }
+        return loadParent(row);
+      })
       .catch(() => {
         message.error(t("reports.detailGone"));
         setSearchParams((current) => { current.delete("parent"); return current; }, { replace: true });
       });
-  }, [projectId, searchParams, parent?.indexId, loadParent, setSearchParams, t]);
+  }, [projectId, searchParams, parent?.indexId, loadParent, setSearchParams, t]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const runId = searchParams.get("run");
@@ -341,6 +365,9 @@ export function ExecutionRecords() {
             { value: "all", label: t("reports.kindAll") },
             { value: "flow", label: t("reports.kindFlow") },
             { value: "suite", label: t("reports.kindSuite") },
+            /* 仓库上报（P4 边界 1）：来源筛选一处不改就能看到它，这正是把它归一进
+               execution_index 的理由。 */
+            { value: "ingest", label: t("reports.kindIngest") },
           ]}
           style={{ width: 120 }}
         />
@@ -406,11 +433,12 @@ export function ExecutionRecords() {
         </tr></thead>
         <tbody>
           {parents.items.map((run) => <tr key={run.id} data-clickable="" onClick={() => openParent(run)}>
-            {/* 流程还是套件决定了点开看到什么（步骤树 / 成员行），所以类型要在收起状态下
-                就能读到——一份混着两种运行的清单里，名字本身说不清这一点。 */}
+            {/* 流程、套件还是仓库上报，决定了点开看到什么（步骤树 / 成员行 / 跳去上报记录
+                页），所以类型要在收起状态下就能读到——一份混着三种运行的清单里，名字本身
+                说不清这一点。 */}
             <td>
               <span className="cell-name">
-                <span className="chip">{run.kind === "suite" ? t("reports.kindSuite") : t("reports.kindFlow")}</span>
+                <span className="chip">{run.kind === "suite" ? t("reports.kindSuite") : run.kind === "ingest" ? t("reports.kindIngest") : t("reports.kindFlow")}</span>
                 <span className="truncate">{run.targetName}</span>
               </span>
             </td>

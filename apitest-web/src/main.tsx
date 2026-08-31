@@ -26,6 +26,10 @@ import { ExecutionRecords } from "./components/ExecutionRecords";
 import { DataSourceList } from "./components/DataSourceList";
 import { DataSourceDetail } from "./components/DataSourceDetail";
 import { MockList } from "./components/MockList";
+import { RepoCaseTreePage } from "./components/RepoCaseTree";
+import { RepoOnboarding } from "./components/RepoOnboarding";
+import { IngestRuns } from "./components/IngestRuns";
+import { IngestUnmatched } from "./components/IngestUnmatched";
 import { antdTheme, useMode } from "./theme";
 import { useAuthStore } from "./stores/authStore";
 import { useLimitsStore } from "./stores/limitsStore";
@@ -92,6 +96,12 @@ function Root() {
         <Route path="suite-reports/:executionId" element={<SuiteReportPage />} />
         <Route path="trends" element={<Trends />} />
         <Route path="alerts" element={<Alerts />} />
+        {/* P4：仓库模式。四个平级页面各有自己的路由而不是 `?tab=`——接入指引会被贴进
+            别人的 CI 说明、上报记录会被贴进排查群，两者都要是一条能直接打开的地址。 */}
+        <Route path="repo-cases" element={<RepoCaseTreePage />} />
+        <Route path="repo-cases/onboarding" element={<RepoOnboarding />} />
+        <Route path="repo-cases/runs" element={<IngestRuns />} />
+        <Route path="repo-cases/unmatched" element={<IngestUnmatched />} />
       </Route>
 
       <Route path="/" element={<Navigate to="/dashboard" replace />} />

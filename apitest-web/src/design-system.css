@@ -553,6 +553,11 @@ body {
 .grid tbody tr:last-child td { border-bottom: 0; }
 .grid tbody tr:hover { background: var(--raised); }
 
+/* 固定列宽：树形表格（接口行 colSpan + 展开的子行）在 auto 布局下，展开一组子行会让
+   列宽随全部行的内容重新分配，整张表跳一次。fixed 布局 + colgroup 的显式宽度让列宽
+   与「展开了哪些行」无关。配 <colgroup> 用；不指定宽度的 col 吃剩余空间。 */
+.grid.grid-fixed { table-layout: fixed; }
+
 .grid tbody tr[data-clickable] { cursor: pointer; transition: background var(--t); }
 
 .grid tbody tr.is-selected {
@@ -756,6 +761,28 @@ body {
 .project-facts dd { margin: 3px 0 0; color: var(--ink); }
 .project-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
 .btn.danger { color: var(--fail); border-color: var(--fail); }
+
+/* 详情抽屉的事实清单：标签列固定、值列吃剩余——抽屉窄、长路径是常态，值截断配 title
+   悬停。与 .project-facts（三列居中的卡片统计块）是两种语境，不共用。
+   两列网格长在每个 dt/dd 包裹 div 上而不是 dl 上：dl 的直接子元素是 div，把列定义放
+   dl 会让相邻两行并排挤进 96px 的列里（首版就是这条 bug）。 */
+.detail-facts {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.detail-facts > div {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: start;
+}
+.detail-facts dt { font-size: 11px; color: var(--ink-3); padding-top: 3px; }
+.detail-facts dd { margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+/* 值列里的长文本：flex 子项默认不收缩，截断要显式允许。 */
+.detail-facts dd .truncate { flex: 1 1 auto; min-width: 0; }
 
 .settings-list {
   background: var(--surface);
@@ -2152,6 +2179,175 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .flow-node-delete:focus-visible { opacity: 1; }
 .flow-node-delete:hover { background: var(--fail-bg); color: var(--fail); }
 
+/*
+ * 列表模式（5.0.13）：同一份流程文档的第二个投影。
+ *
+ * 行沿用画布卡片的读法——左边框是运行状态（[data-status] 语义与 .flow-node 完全一致）、
+ * mono 副标题、提取/断言 chip——只是把「位置」换成了「顺序」：顶层按执行顺序排，
+ * 循环体用缩进竖线表达归属。不引入任何新颜色；框架仍是 raised 面上摆 surface 行。
+ */
+.flow-list-wrap {
+  flex: 1 1 auto;
+  align-self: stretch;
+  min-width: 0;
+  min-height: 420px;
+  /* 列表永远是「一个框」：超过一屏就框内滚动，而不是把页面越撑越长——与画布
+     （.flow-canvas overflow: hidden）同一约束。 */
+  max-height: calc(100dvh - 300px);
+  padding: var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--raised);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.flow-list { display: flex; flex-direction: column; gap: 6px; }
+/* 折叠开关：disclosure 是状态不是动作，无边框、ink-3 一笔带过；与 NestedStepList 的
+   折叠箭头同一读法。 */
+.flow-collapse {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+.flow-collapse:hover { color: var(--ink); }
+.flow-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  padding: 7px var(--s3);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color var(--t), background var(--t);
+}
+.flow-row:hover { border-color: var(--line-strong); }
+/* 「所选行」：列表新增步骤默认接在它后面（写进 is-active 的左边框，accent 一笔带过；
+   运行状态的左边框优先级更高——写在后面的 [data-status] 规则会盖掉它）。 */
+.flow-row.is-active { border-left-color: var(--accent); }
+/* 拖动排序：源行半透明跟手；插入位置用 accent 色硬边线表达（零模糊的 inset 阴影，
+   不是发光——只是不挤占布局的 2px 线）。 */
+.flow-row.is-dragging { opacity: .5; }
+.flow-row.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
+.flow-row.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
+/* 拖到循环容器行中段 = 移入该循环：整行高亮成「框正在接收」，与画布选中的读法一致。 */
+.flow-row.drop-into { border-color: var(--accent); background: var(--selected); }
+.flow-row[data-status="pass"] { border-left-color: var(--pass); }
+.flow-row[data-status="fail"] { border-left-color: var(--fail); background: var(--fail-bg); }
+.flow-row[data-status="running"],
+.flow-row[data-status="queued"] { border-left-color: var(--busy); }
+.flow-row[data-status="canceled"],
+.flow-row[data-status="skip"] { border-left-color: var(--skip); }
+/* 循环行是范围而不是一个会发请求的步骤：虚线框与画布容器同一语义，状态染整圈边框。 */
+.flow-row-loop { border-style: dashed; border-left-width: 1px; }
+.flow-row-loop[data-status="pass"] { border-color: var(--pass); }
+.flow-row-loop[data-status="fail"] { border-color: var(--fail); }
+.flow-row-loop[data-status="running"],
+.flow-row-loop[data-status="queued"] { border-color: var(--busy); }
+.flow-row-loop[data-status="canceled"],
+.flow-row-loop[data-status="skip"] { border-color: var(--skip); }
+.flow-row-index {
+  flex: 0 0 24px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--ink-3);
+}
+.flow-row-name { flex: 0 1 auto; min-width: 0; font-size: 13px; font-weight: 500; color: var(--ink); }
+.flow-row-sub { flex: 1 1 auto; min-width: 0; font-size: 11px; color: var(--ink-3); }
+.flow-row .chip { flex: 0 0 auto; font-size: 10px; }
+/* 行内动作：与画布卡片的加号/删除同一克制——加号常驻（列表没有出口圆点可发现），
+   删除悬停才显形。 */
+.flow-row-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink-3);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color var(--t), color var(--t);
+}
+.flow-row-add:hover { border-color: var(--accent); color: var(--accent); }
+.flow-row-delete {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-3);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity var(--t), color var(--t), background var(--t);
+}
+.flow-row:hover .flow-row-delete,
+.flow-row-delete:focus-visible { opacity: 1; }
+.flow-row-delete:hover { background: var(--fail-bg); color: var(--fail); }
+/* 循环块：容器行 + 缩进竖线包住的体内步骤，归属一眼可读。 */
+.flow-loop-block { display: flex; flex-direction: column; gap: 6px; }
+.flow-loop-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 2px 12px;
+  padding-left: var(--s4);
+  border-left: 2px solid var(--line);
+}
+.flow-loop-child-empty { margin: 0; font-size: 11px; color: var(--ink-3); }
+/* 循环尾部落点条：透明的命中区，只覆盖块底与下一行之间的间隙（不碰最后一张子卡的
+   下半区——那里还是「体内行后」的落点）。拖着步骤悬上时亮一条 accent 插入线——
+   循环是最后一行时「循环后」的可落区。 */
+.flow-loop-block { position: relative; }
+.flow-loop-tail { position: absolute; left: 0; right: 0; bottom: -6px; height: 8px; }
+.flow-loop-tail.is-active { box-shadow: inset 0 -2px 0 0 var(--accent); }
+/* 条件块：条件行 + 两条分支链的缩进（IF 的形状，5.0.13）。竖线与循环体同一语义——
+   竖线即「里面的行隶属于上面的结构」。 */
+.flow-cond-block { display: flex; flex-direction: column; gap: 6px; }
+.flow-cond-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 2px 12px;
+  padding-left: var(--s4);
+  border-left: 2px solid var(--line);
+}
+/* 列表尾的虚线加行：与画布空态的「添加节点」同一邀请语气。 */
+.flow-list-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  padding: 8px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r);
+  background: transparent;
+  color: var(--ink-3);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--t), color var(--t);
+}
+.flow-list-add:hover { border-color: var(--accent); color: var(--accent); }
+
 /* Extract rows: the verdict sits under its own row, because "could not extract"
    as a single combined message hides which value failed and why. */
 .extract-row { margin-bottom: var(--s2); }
@@ -2456,3 +2652,24 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
   font-family: var(--mono);
   font-size: 12px;
 }
+
+/*
+ * P4: 仓库用例树。
+ *
+ * 软删的用例保留在树上并置灰（交互 3.11.1）：它的历史与最后结果仍然读得通，下次再出现
+ * 会自动回 active。置灰用 opacity 而不是换文字色——一整行都要退到背景里去，逐个单元格
+ * 改颜色会漏掉 mono 副标题与状态标签。
+ */
+.grid tbody tr[data-removed] { opacity: .55; }
+.grid tbody tr[data-removed]:hover { opacity: 1; }
+
+/*
+ * 未匹配诊断视图的 phase 分布。
+ *
+ * 只是三个数字加标签，**不用语义色**：setup/call/teardown 是「请求发生在哪个阶段」，
+ * 不是通过/失败/跳过。借用 --skip 表达「这条大概是跨系统前置」会让语义色开始承担第二种
+ * 含义，而那正是设计系统里被明确禁止的事。
+ */
+.phase-split { display: flex; gap: var(--s2); }
+.phase-split > span { color: var(--ink-3); font-family: var(--mono); font-size: 11px; }
+.phase-split > span[data-dominant] { color: var(--ink); font-weight: 500; }

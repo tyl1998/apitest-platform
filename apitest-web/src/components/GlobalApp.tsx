@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Form, Input, Modal, Select, Switch, message } from "antd";
+import { Form, Input, Modal, Pagination, Select, Switch, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { LogOut } from "lucide-react";
@@ -12,6 +12,8 @@ import { Empty, Readout, Status } from "../ui";
 import { IconButton } from "./IconButton";
 
 type GlobalPage = "dashboard" | "projects" | "system";
+
+const PAGE_SIZES = [20, 50, 100];
 
 export function GlobalApp({ page, themePreference, onThemeChange }: { page: GlobalPage; themePreference: ModePreference; onThemeChange: (mode: ModePreference) => void }) {
   useRecordLastPage();
@@ -96,24 +98,54 @@ function ProjectsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [keyword, setKeyword] = useState(searchParams.get("keyword") ?? "");
   const debouncedKeyword = useDebounced(keyword);
+  /* 页码进地址栏（与接口列表同款约定）：一页筛好的清单要能贴给别人。`|| 1` / `|| 20`
+     兜住 NaN（`?page=abc`）：不兜的话 NaN 会原样发给后端，落进 LIMIT/OFFSET 让整条
+     查询炸掉。pageSize 同时按后端同款上限收紧。 */
+  const page = Math.max(1, Number(searchParams.get("page") ?? 1) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(searchParams.get("pageSize") ?? 20) || 20));
   const [projects, setProjects] = useState<ProjectMetric[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [projectDialog, setProjectDialog] = useState<"create" | "edit">();
   const [editing, setEditing] = useState<ProjectMetric>();
   const [form] = Form.useForm();
 
+  function patchParams(next: Record<string, string | undefined>) {
+    setSearchParams((current) => {
+      for (const [key, value] of Object.entries(next)) {
+        if (value === undefined || value === "") current.delete(key);
+        else current.set(key, value);
+      }
+      return current;
+    }, { replace: true });
+  }
+
   async function load() {
     setLoading(true);
     /* Archiving is not a product concept, so every project is always listed. */
-    try { setProjects(await api.projects({ keyword: debouncedKeyword })); }
+    try {
+      const result = await api.projectList({ keyword: debouncedKeyword, page, pageSize });
+      /* 删掉本页最后一张卡后自动退一页，而不是停在一张空卡片墙上。 */
+      if (!result.items.length && result.total > 0 && page > 1) {
+        patchParams({ page: page - 1 === 1 ? undefined : String(page - 1) });
+        return;
+      }
+      setProjects(result.items);
+      setTotal(result.total);
+    }
     catch { message.error(t("projects.loadFailed")); }
     finally { setLoading(false); }
   }
 
   useEffect(() => {
-    setSearchParams({ ...(debouncedKeyword ? { keyword: debouncedKeyword } : {}) }, { replace: true });
+    /* keyword 走合并而不是整体替换：整体替换会把 page/pageSize 一并抹掉，翻着页搜字的人
+       会被甩回第一页以外的状态丢失。 */
+    setSearchParams((current) => {
+      if (debouncedKeyword) current.set("keyword", debouncedKeyword); else current.delete("keyword");
+      return current;
+    }, { replace: true });
     void load();
-  }, [debouncedKeyword]);
+  }, [debouncedKeyword, page, pageSize]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function openCreate() { setEditing(undefined); form.resetFields(); setProjectDialog("create"); }
   function openEdit(project: ProjectMetric) { setEditing(project); form.setFieldsValue(project); setProjectDialog("edit"); }
@@ -131,7 +163,10 @@ function ProjectsPage() {
       <button className="btn btn-primary" onClick={openCreate}>{t("action.createProject")}</button>
     </div>
     <div className="filter-bar">
-      <input className="input" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={t("filter.keyword")} />
+      {/* 换关键字回第一页：旧页码对新结果集多半越界。 */}
+      <input className="input" value={keyword} onChange={(event) => { setKeyword(event.target.value); patchParams({ page: undefined }); }} placeholder={t("filter.keyword")} />
+      <span className="filter-spacer" />
+      <span className="muted mono">{t("projects.totalCount", { count: total })}</span>
     </div>
     {loading && <p className="muted">{t("filter.searching")}</p>}
     {projects.length ? <div className="project-grid">{projects.map((project) => <article className="project-card" key={project.id}>
@@ -139,6 +174,16 @@ function ProjectsPage() {
       <dl className="project-facts"><div><dt>{t("dashboard.environments")}</dt><dd className="mono">{project.environmentCount}</dd></div><div><dt>{t("dashboard.endpoints")}</dt><dd className="mono">{project.endpointCount}</dd></div><div><dt>{t("dashboard.passRate")}</dt><dd className="mono">{project.passRate === null ? "—" : `${project.passRate.toFixed(1)}%`}</dd></div></dl>
       <div className="project-actions"><button className="btn btn-primary" onClick={() => navigate(`/projects/${project.id}/endpoints`)}>{t("action.enter")}</button><button className="btn" onClick={() => openEdit(project)}>{t("action.edit")}</button><button className="btn danger" onClick={() => remove(project)}>{t("action.delete")}</button></div>
     </article>)}</div> : !loading && <Empty title={keyword ? t("projects.emptySearchTitle") : t("projects.emptyTitle")} hint={keyword ? t("projects.emptySearchHint") : t("projects.emptyHint")} action={!keyword ? <button className="btn btn-primary" onClick={openCreate}>{t("action.createProject")}</button> : undefined} />}
+    {total > pageSize && <div className="pager">
+      <Pagination
+        current={page}
+        pageSize={pageSize}
+        total={total}
+        pageSizeOptions={PAGE_SIZES}
+        showSizeChanger
+        onChange={(nextPage, nextSize) => patchParams({ page: nextPage === 1 ? undefined : String(nextPage), pageSize: nextSize === 20 ? undefined : String(nextSize) })}
+      />
+    </div>}
     <Modal title={editing ? t("projects.editTitle") : t("action.createProject")} open={Boolean(projectDialog)} onCancel={() => setProjectDialog(undefined)} onOk={() => void save()} okText={t("action.save")} cancelText={t("action.cancel")}>
       <Form form={form} layout="vertical"><Form.Item name="name" label={t("projects.name")} rules={[{ required: true, message: t("projects.nameRequired") }]}><Input /></Form.Item><Form.Item name="description" label={t("projects.description")}><Input.TextArea rows={4} /></Form.Item></Form>
     </Modal>

@@ -59,6 +59,45 @@ export function hasUnsupportedShell(source: string) {
   return /\$\(|\$\{|`|(?:^|\s)@[^\s]+/.test(source);
 }
 
+/**
+ * 路径清单（批量粘贴，2026-08-30）：每行 `METHOD /path [名称]`，`#` 开头是注释。
+ *
+ * 服务仓库模式团队「为了覆盖率把仓库里已有的接口清单再抄一遍」的那一步：他们手里往往
+ * 就是一份路径列表，而不是 OpenAPI 文档。只建**最小接口**（无 headers/body/auth）——
+ * 这批接口的职责是进覆盖分母，要调试再单个补全。
+ *
+ * url 记成 `{{baseUrl}}` + 路径：满足「绝对地址或含 `{{`」的 URL 契约，匹配归一时变量段
+ * 会被剥掉，与未匹配区「一键登记」生成的接口同形。
+ *
+ * 解析是严格的：认不出的行直接抛错（带行号与内容），而不是悄悄丢掉——悄悄丢掉的行
+ * 不会出现在任何计数里，用户会以为它导进来了。
+ */
+export function parsePaths(source: string): EndpointInput[] {
+  const items: EndpointInput[] = [];
+  const bad: string[] = [];
+  source.split("\n").forEach((line, index) => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) return;
+    const tokens = trimmed.split(/\s+/);
+    const method = (tokens[0] ?? "").toUpperCase();
+    const path = tokens[1] ?? "";
+    /* 方法表与后端 lib/http.ts 的 METHODS 同一张（HEAD/OPTIONS 都在），否则 import 路由
+       会把校验不过的行静默跳过——那是这里的严格性要防的同一类静默丢失。 */
+    if (!HTTP_METHODS.includes(method.toLowerCase()) || !path.startsWith("/")) {
+      bad.push(`line ${index + 1}: ${trimmed}`);
+      return;
+    }
+    items.push({
+      name: tokens.slice(2).join(" ") || `${method} ${path}`,
+      method,
+      url: `{{baseUrl}}${path}`,
+      tags: [],
+    });
+  });
+  if (bad.length) throw new Error(bad.slice(0, 3).join(" · "));
+  return items;
+}
+
 export function parseCurl(source: string): EndpointInput[] {
   const commands = source.split(/\n(?=\s*curl\b)/i).map((item) => item.trim()).filter(Boolean);
 

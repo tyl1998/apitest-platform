@@ -9,7 +9,7 @@ import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 import { IconButton } from "./IconButton";
 
-const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "reports", "suite-reports", "trends", "alerts"] as const;
+const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "repo-cases", "reports", "suite-reports", "trends", "alerts"] as const;
 export type ProjectPage = typeof PAGES[number];
 
 /** What a detail page hands up so the crumb can show its real name. */
@@ -60,14 +60,17 @@ export function ProjectShell() {
 
   const nav: { group: string; items: [ProjectPage, string][] }[] = [
     { group: t("nav.interfaceAssets"), items: [["endpoints", t("nav.endpoints")], ["environments", t("nav.environments")], ["data-sources", t("nav.dataSources")], ["mocks", "Mock"]] },
-    /* 定时调度没有独立页（P3-11）：配置入口在套件详情页的「定时调度」面板。 */
-    { group: t("nav.orchestration"), items: [["flows", t("nav.flows")], ["suites", t("nav.suites")]] },
+    /* 定时调度没有独立页（P3-11）：配置入口在套件详情页的「定时调度」面板。
+       仓库用例（P4）放在编排与回归组：它与流程/套件回答的是同一个问题（这个系统测到了
+       多少），只是测试代码不在平台里。 */
+    { group: t("nav.orchestration"), items: [["flows", t("nav.flows")], ["suites", t("nav.suites")], ["repo-cases", t("nav.repoCases")]] },
     { group: t("nav.common"), items: [["reports", t("nav.reports")], ["suite-reports", t("nav.suiteReports")], ["trends", t("nav.trends")], ["alerts", t("nav.alerts")]] },
   ];
   /* kebab 路由段与 i18n 的 camelCase 键对不上（suite-reports ≠ suiteReports），与
      data-sources 同款在这里折中。 */
   const pageTitle = active === "data-sources" ? t("dataSources.title")
     : active === "suite-reports" ? t("suiteReports.title")
+    : active === "repo-cases" ? t("repoCases.title")
     : active === "mocks" ? "Mock"
     : t(`${active}.title`);
 

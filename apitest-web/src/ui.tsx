@@ -1,6 +1,17 @@
 import type { ReactNode } from "react";
+import { Tooltip } from "antd";
 
 export type RunStatus = "pass" | "fail" | "skip" | "running" | "queued" | "canceled";
+
+/**
+ * 原生 `title` 悬停的替代（2026-08-30）。原生 title 的延迟由浏览器决定（~1 秒）且
+ * 不可调，用户已经嫌慢；antd Tooltip 走 `mouseEnterDelay`，100ms 出来，触屏与键盘
+ * 可达性也归它。文本为空时直接透传 children——「没有内容就不要包一层」。
+ */
+export function Tip({ text, children }: { text?: string; children: ReactNode }) {
+  if (!text) return <>{children}</>;
+  return <Tooltip title={text} mouseEnterDelay={0.1}>{children}</Tooltip>;
+}
 
 const STATUS_LABEL: Record<RunStatus, string> = {
   pass: "通过",
