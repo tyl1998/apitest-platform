@@ -56,7 +56,11 @@ export async function executionIndexRoutes(app: FastifyInstance) {
     const detailId = String(result.rows[0].detail_id);
     /* 每一类父执行有自己的取消路径：它们各自要停的东西不一样（流程要停下一步 + 在途
        请求，套件还要停在途成员的整次子执行）。批量调试不写 execution_index，所以这里
-       只可能是 flow 或 suite。 */
+       只可能是 flow、suite 或 ingest。
+       `ingest` 必须**显式**拒绝（P4 边界 1 末段）：它是「别人已经跑完的历史」，取消对它
+       没有意义，而这一处是按 kind 分派的——不拒绝就会走到一个空实现里静默失败，用户点了
+       取消、什么也没发生、也没有任何提示。 */
+    if (kind === "ingest") return fail(reply, 400, 1001, "repository ingest records cannot be canceled: the run already finished outside the platform");
     if (kind !== "flow" && kind !== "suite") return fail(reply, 400, 1001, "this execution kind cannot be canceled");
     const canceled = kind === "suite"
       ? await cancelSuiteRun(context.project.id, detailId)

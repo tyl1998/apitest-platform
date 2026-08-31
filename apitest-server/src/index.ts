@@ -23,6 +23,8 @@ import { notificationChannelRoutes } from "./routes/notificationChannels.js";
 import { alertRuleRoutes } from "./routes/alertRules.js";
 import { notificationDeliveryRoutes } from "./routes/notificationDeliveries.js";
 import { reportRoutes } from "./routes/reports.js";
+import { repositoryRoutes } from "./routes/repositories.js";
+import { ingestRoutes } from "./routes/ingest.js";
 
 declare module "@fastify/jwt" {
   interface FastifyJWT { payload: { userId: string; email: string }; user: { userId: string; email: string }; }
@@ -41,6 +43,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(authRoutes); await app.register(projectRoutes); await app.register(environmentRoutes); await app.register(dataSourceRoutes); await app.register(endpointRoutes); await app.register(caseRoutes); await app.register(scriptRoutes); await app.register(flowRoutes); await app.register(suiteRoutes); await app.register(mockRoutes); await app.register(executionIndexRoutes); await app.register(dashboardRoutes); await app.register(streamRoutes); await app.register(systemRoutes);
   /* P3：调度 / Webhook 触发（含公开 HMAC 路由）/ 告警 / 报告。 */
   await app.register(scheduleRoutes); await app.register(webhookTriggerRoutes); await app.register(notificationChannelRoutes); await app.register(alertRuleRoutes); await app.register(notificationDeliveryRoutes); await app.register(reportRoutes);
+  /* P4：仓库模式。`ingestRoutes` 带公开上报入口 `POST /ingest`（Token 鉴权，不走 JWT）。 */
+  await app.register(repositoryRoutes); await app.register(ingestRoutes);
   return app;
 }
 

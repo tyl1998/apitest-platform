@@ -36,6 +36,20 @@ function derivedColumns(): string {
       THEN ROUND(se.success_count::numeric * 100 / se.total, 1) END AS pass_rate`;
 }
 
+/**
+ * 趋势与汇总的样本口径（P4 边界 1）。
+ *
+ * 默认只算 `flow` / `suite`：外部 CI 的 `latency_ms` 是用户进程里的客户端耗时，与平台的
+ * 墙钟耗时不是一个口径，混进同一条分位数曲线得到的是一个谁都不认的数；而一次 `-m smoke`
+ * 的局部跑会把通过率拉出一个没人认的台阶。
+ *
+ * `includeIngest=true` 才把 `kind='ingest'` 放进样本——趋势页的开关**默认关闭**，让人可以
+ * 自己要那份混合视图。这是一段代码作者写死的 SQL 片段，不是请求值拼接。
+ */
+function sampleKinds(includeIngest: boolean) {
+  return includeIngest ? "('flow', 'suite', 'ingest')" : "('flow', 'suite')";
+}
+
 export async function reportRoutes(app: FastifyInstance) {
   /**
    * 报告列表（边界 14 分页 + 触发源/状态筛选，6.4 的三入口共用这份数据）。
@@ -135,11 +149,15 @@ export async function reportRoutes(app: FastifyInstance) {
    「这一小时全失败」在折线上长得一样。分位数在 SQL 里算，不在 Node 里排序：把窗口
    * 内所有行拉进内存只为了让 JS sort 一遍，是趋势接口最经典的慢法。样本与告警同一
    * 口径（已定局的 flow/suite 父执行）。
+   *
+   * `includeIngest=1` 才把仓库上报算进来（P4 边界 1），开关默认关——理由见
+   * `sampleKinds`。耗时分位数在混合视图下会掺进客户端耗时，这正是它不默认打开的原因。
    */
-  app.get<{ Params: { id: string }; Querystring: { range?: string } }>("/api/v1/projects/:id/reports/trend", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { range?: string; includeIngest?: string } }>("/api/v1/projects/:id/reports/trend", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     const range = (request.query.range && request.query.range in RANGES ? request.query.range : "24h") as RangeKey;
     const config = RANGES[range];
+    const includeIngest = request.query.includeIngest === "1" || request.query.includeIngest === "true";
     /* 桶数恰好 = buckets 个（generate_series 双端闭合会多一个），最后一桶是进行中的
        当前桶——它的计数随执行增长，这是实时图的常态。 */
     const result = await pool.query(
@@ -158,12 +176,13 @@ export async function reportRoutes(app: FastifyInstance) {
          FROM buckets b
          LEFT JOIN execution_index ei
            ON ei.created_at >= b.bucket AND ei.created_at < b.bucket + INTERVAL '1 ${config.bucket}'
-          AND ei.project_id = $1 AND ei.kind IN ('flow', 'suite') AND ei.status IN ('success', 'failed')
+          AND ei.project_id = $1 AND ei.kind IN ${sampleKinds(includeIngest)} AND ei.status IN ('success', 'failed')
         GROUP BY b.bucket ORDER BY b.bucket`,
       [context.project.id],
     );
     return success({
       range,
+      includeIngest,
       buckets: result.rows.map((row) => ({
         bucket: new Date(String(row.bucket)).toISOString(),
         total: Number(row.total),
@@ -182,12 +201,14 @@ export async function reportRoutes(app: FastifyInstance) {
    * 汇总（6.2）：总量 + 失败分布（按接口 / 按错误类型）。
    *
    * 按接口的失败分布来自叶子 executions（接口粒度），按错误类型的来自断言/请求错误
-   * 的归类列。窗口与趋势同口径（默认 24h，可带 range）。
+   * 的归类列。窗口与趋势同口径（默认 24h，可带 range），样本口径也同款（默认排除
+   * 仓库上报，`includeIngest=1` 才含，P4 边界 1）。
    */
-  app.get<{ Params: { id: string }; Querystring: { range?: string } }>("/api/v1/projects/:id/reports/summary", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { range?: string; includeIngest?: string } }>("/api/v1/projects/:id/reports/summary", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     const range = (request.query.range && request.query.range in RANGES ? request.query.range : "24h") as RangeKey;
     const interval = RANGES[range].interval;
+    const includeIngest = request.query.includeIngest === "1" || request.query.includeIngest === "true";
     const totals = await pool.query(
       `SELECT COUNT(*)::int AS total,
               COUNT(*) FILTER (WHERE status = 'success')::int AS success_count,
@@ -195,7 +216,7 @@ export async function reportRoutes(app: FastifyInstance) {
               COUNT(*) FILTER (WHERE status = 'canceled')::int AS canceled_count,
               AVG(EXTRACT(EPOCH FROM (finished_at - started_at)) * 1000) FILTER (WHERE finished_at IS NOT NULL AND started_at IS NOT NULL) AS avg_duration_ms
          FROM execution_index
-        WHERE project_id = $1 AND kind IN ('flow', 'suite') AND created_at >= now() - INTERVAL '${interval}'`,
+        WHERE project_id = $1 AND kind IN ${sampleKinds(includeIngest)} AND created_at >= now() - INTERVAL '${interval}'`,
       [context.project.id],
     );
     const row = totals.rows[0];
@@ -226,6 +247,7 @@ export async function reportRoutes(app: FastifyInstance) {
     const types = byType.rows[0];
     return success({
       range,
+      includeIngest,
       total: Number(row.total),
       successCount: Number(row.success_count),
       failedCount: Number(row.failed_count),

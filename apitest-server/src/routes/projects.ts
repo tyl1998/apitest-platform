@@ -12,11 +12,21 @@ export async function projectRoutes(app: FastifyInstance) {
    * Filtering happens in SQL, so the keyword matches every project the user
    * can see rather than only the rows already delivered to the client.
    * Metrics ship with the list so the project directory needs one request.
+   *
+   * 分页是 opt-in（与接口/环境列表同一契约，2026-08-30 项目管理页补齐）：不给 `pageSize`
+   * 就回全量——项目切换器（projectStore）与 dashboard 聚合都依赖无分页契约。给了则
+   * total 是这份过滤命中的全量数，翻页器才画得出来。
    */
-  app.get<{ Querystring: ProjectFilters }>("/api/v1/projects", async (request, reply) => {
+  app.get<{ Querystring: ProjectFilters & { page?: string; pageSize?: string } }>("/api/v1/projects", async (request, reply) => {
     const user = await currentUser(request, reply); if (!user) return;
-    const data = await queryProjectMetrics(user, request.query);
-    return success(data, { total: data.length });
+    if (request.query.pageSize === undefined) {
+      const data = await queryProjectMetrics(user, request.query);
+      return success(data.projects, { total: data.total });
+    }
+    const page = Math.max(1, Number(request.query.page ?? 1));
+    const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize)));
+    const data = await queryProjectMetrics(user, request.query, { page, pageSize });
+    return success(data.projects, { page, pageSize, total: data.total });
   });
 
   app.post<{ Body: { name?: string; description?: string } }>("/api/v1/projects", async (request, reply) => {

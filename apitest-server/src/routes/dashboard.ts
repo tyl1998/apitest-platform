@@ -13,8 +13,16 @@ export type ProjectFilters = { keyword?: string; projectIds?: string };
  * Counts come from separate grouped sub-selects rather than joined rows:
  * joining endpoints, environments and executions together multiplies each
  * table by the others and inflates every count.
+ *
+ * `paging` 只有项目列表页传（卡片墙随项目数线性长下去）；dashboard 聚合永远全量——
+ * 它的 readout 数的是「全部可见项目」的合计，分页会把分子分母一起截短。total 与主查询
+ * 共用同一份 WHERE，两个数才对得上。
  */
-export async function queryProjectMetrics(user: User, filters: ProjectFilters) {
+export async function queryProjectMetrics(
+  user: User,
+  filters: ProjectFilters,
+  paging?: { page: number; pageSize: number },
+) {
   const params: unknown[] = [];
   const clauses: string[] = [];
 
@@ -38,6 +46,16 @@ export async function queryProjectMetrics(user: User, filters: ProjectFilters) {
   }
 
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  /* 分页时 total 数的是「这份 WHERE 命中的全量」，不是当前页行数——卡片墙的翻页器
+     需要前者。不分页就不多付这次查询：dashboard 天然要拿全部行。 */
+  let total: number | undefined;
+  if (paging) {
+    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM projects p ${where}`, params);
+    total = Number(count.rows[0].total);
+  }
+  /* LIMIT/OFFSET 占位符追加在过滤参数之后，与动态过滤同一纪律。 */
+  const limitFragment = paging ? `LIMIT $${params.length + 1} OFFSET $${params.length + 2}` : "";
+  if (paging) params.push(paging.pageSize, (paging.page - 1) * paging.pageSize);
   const result = await pool.query(`
     SELECT p.id, p.name, p.description, p.created_at,
       COALESCE(ep.endpoint_count, 0)::int      AS endpoint_count,
@@ -83,9 +101,10 @@ export async function queryProjectMetrics(user: User, filters: ProjectFilters) {
       SELECT project_id, COUNT(*) AS schedule_count FROM schedules GROUP BY project_id
     ) sc ON sc.project_id = p.id
     ${where}
-    ORDER BY p.created_at DESC`, params);
+    ORDER BY p.created_at DESC
+    ${limitFragment}`, params);
 
-  return result.rows.map((row) => {
+  const projects = result.rows.map((row) => {
     const executionCount = Number(row.execution_count);
     /* Pass rate divides by runs that produced a verdict, not by every row. */
     const judgedCount = Number(row.judged_count);
@@ -113,6 +132,8 @@ export async function queryProjectMetrics(user: User, filters: ProjectFilters) {
       lastExecutionAt: row.last_execution_at ? new Date(row.last_execution_at).toISOString() : null,
     };
   });
+
+  return { projects, total: total ?? projects.length };
 }
 
 export async function dashboardRoutes(app: FastifyInstance) {
@@ -120,7 +141,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const user = await currentUser(request, reply);
     if (!user) return;
 
-    const projects = await queryProjectMetrics(user, request.query);
+    /* 聚合页永远全量（见 queryProjectMetrics 的 paging 注释），不透传分页参数。 */
+    const { projects } = await queryProjectMetrics(user, request.query);
     const endpointCount = projects.reduce((sum, item) => sum + item.endpointCount, 0);
     const executionCount = projects.reduce((sum, item) => sum + item.executionCount, 0);
     /* Same rule as per-project: only runs with a verdict form the denominator. */

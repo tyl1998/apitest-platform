@@ -731,8 +731,10 @@ export type ExecutionIndex = {
   id: string;
   projectId: string;
   /* 'scenario' 已由 026 从 CHECK 中移除（P2-3 场景下线，行由 021 删净）。
-     'batch' 仍在 CHECK 里但暂无写入方：批量调试有自己的 batch_executions。 */
-  kind: "flow" | "suite" | "batch";
+     'batch' 仍在 CHECK 里但暂无写入方：批量调试有自己的 batch_executions。
+     'ingest' 是仓库模式的一次上报（P4 边界 1，迁移 035 放宽 CHECK）：它是「别人已经
+     跑完的历史」，所以取消/重跑/回收三条路径都要显式拒绝它。 */
+  kind: "flow" | "suite" | "batch" | "ingest";
   targetId?: string;
   targetName: string;
   detailId: string;
@@ -1647,6 +1649,245 @@ export function mapNotificationDelivery(row: Record<string, unknown>): Notificat
     statusCode: row.status_code === null || row.status_code === undefined ? undefined : Number(row.status_code),
     error: row.error === null || row.error === undefined ? undefined : String(row.error),
     payload: (row.payload ?? {}) as Record<string, unknown>,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+/* ── P4: 仓库模式（上报式用例）。范围与边界见 DEVELOPMENT_PLAN.md 7.0 ────────── */
+
+export type RepositoryProvider = "github" | "gitlab" | "gitee" | "bitbucket" | "other";
+
+/**
+ * 项目绑定的唯一仓库（Spec 2.10 基数约束，边界 18）。
+ *
+ * 平台不拥有代码、不执行代码：这一行记的只是「哪个仓库有权往这棵树里报」与
+ * 「对账允许发生在哪个分支上」。
+ */
+export type Repository = {
+  id: string;
+  projectId: string;
+  gitUrl: string;
+  provider: RepositoryProvider;
+  /** 删除对账的第二道闸门（边界 11）：只有跟踪分支上的全量上报才允许软删用例。 */
+  trackingBranch: string;
+  status: "active" | "unbound";
+  firstSeenCommit?: string;
+  lastIngestAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * 上报 Token。明文**只在创建时回一次**（边界 17），此后接口只回 `tokenPrefix`。
+ *
+ * 与 `WebhookTrigger.hasSecret` 的区别正是那条边界：Webhook 要拿明文验签所以加密存，
+ * 上报 Token 只需比对所以哈希存——能哈希的地方就不该加密。
+ */
+export type IngestToken = {
+  id: string;
+  projectId: string;
+  name: string;
+  /** 明文前 8 位，供列表辨认「这条是哪个」，不足以反推 Token。 */
+  tokenPrefix: string;
+  createdBy?: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+  createdAt: string;
+};
+
+/** 一次上报（一个 commit 快照）。幂等键是 `(repository, commitSha, ciRunId)`。 */
+export type IngestRun = {
+  id: string;
+  projectId: string;
+  repositoryId: string;
+  executionIndexId?: string;
+  protocolVersion: string;
+  commitSha: string;
+  branch: string;
+  /** 本地跑没有 CI id，协议里存空串而不是 null（NULL 在 UNIQUE 里不去重）。 */
+  ciRunId: string;
+  ciRunUrl?: string;
+  /** 本次跑的范围，相对仓库根（边界 11/19）。空数组 = 全仓。 */
+  scope: string[];
+  /** 「这个范围内没有过滤」，不是「跑了整个仓库」。 */
+  isFullInventory: boolean;
+  /** 实际有没有对账（双闸门都成立才为 true），不是「该不该」。 */
+  reconciled: boolean;
+  caseTotal: number;
+  passedCount: number;
+  failedCount: number;
+  requestCount: number;
+  addedCount: number;
+  removedCount: number;
+  updatedCount: number;
+  unmatchedCount: number;
+  unplacedCount: number;
+  sdkName: string;
+  sdkVersion: string;
+  warnings: string[];
+  startedAt?: string;
+  finishedAt?: string;
+  createdAt: string;
+};
+
+/**
+ * 仓库用例。`caseKey` 是身份，`name` 是显示（边界 7）。
+ *
+ * `endpoints` 只在树/详情查询里 join 出来：一个用例挂它实际打过的每一个接口
+ * （边界 9），空数组 = 未归位用例（边界 21）。
+ */
+export type RepoTestCase = {
+  id: string;
+  projectId: string;
+  repositoryId: string;
+  caseKey: string;
+  name: string;
+  description: string;
+  /** 仓库根的相对路径。是对账的裁剪依据，但不参与 removed 的身份判定（边界 8）。 */
+  filePath: string;
+  tags: string[];
+  status: "active" | "removed";
+  /** `not_run` 留给 P4.5 的勾选执行（枚举本阶段就写进 CHECK）。 */
+  lastResult: "passed" | "failed" | "unknown" | "not_run";
+  lastSeenCommit?: string;
+  lastIngestRunId?: string;
+  lastRunAt?: string;
+  removedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  /** 关系表 join 出的接口清单，仅查询侧填充。 */
+  endpoints?: { endpointId: string; endpointName: string; method: string; url: string; requestCount: number }[];
+};
+
+/** 不可变的上报请求记录。`endpointId` 为空 = 未匹配（边界 16/20）。 */
+export type IngestRecord = {
+  id: string;
+  ingestRunId: string;
+  projectId: string;
+  repoCaseId?: string;
+  endpointId?: string;
+  /** 只有 `call` 阶段的请求建立用例关系（边界 10）。 */
+  phase: "setup" | "call" | "teardown";
+  paramId?: string;
+  seq: number;
+  method: string;
+  pathRaw: string;
+  pathNormalized?: string;
+  statusCode?: number;
+  latencyMs?: number;
+  passed?: boolean;
+  error?: string;
+  requestSummary: Record<string, unknown>;
+  createdAt: string;
+};
+
+/** 人工标注的外部依赖前缀（边界 20）：只影响诊断列表的显示，不影响任何统计。 */
+export type IngestPathRule = {
+  id: string;
+  projectId: string;
+  pathPrefix: string;
+  note: string;
+  createdBy?: string;
+  createdAt: string;
+};
+
+export function mapRepository(row: Record<string, unknown>): Repository {
+  return {
+    id: String(row.id), projectId: String(row.project_id), gitUrl: String(row.git_url),
+    provider: String(row.provider) as RepositoryProvider,
+    trackingBranch: String(row.tracking_branch), status: String(row.status) as Repository["status"],
+    firstSeenCommit: row.first_seen_commit ? String(row.first_seen_commit) : undefined,
+    lastIngestAt: row.last_ingest_at ? new Date(String(row.last_ingest_at)).toISOString() : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+  };
+}
+
+export function mapIngestToken(row: Record<string, unknown>): IngestToken {
+  return {
+    id: String(row.id), projectId: String(row.project_id), name: String(row.name),
+    /* token_hash 刻意不出现在这个映射里：它没有任何客户端用途，映射里留一行就迟早
+       会被某个 `SELECT *` 带到响应里去。 */
+    tokenPrefix: String(row.token_prefix),
+    createdBy: row.created_by ? String(row.created_by) : undefined,
+    lastUsedAt: row.last_used_at ? new Date(String(row.last_used_at)).toISOString() : undefined,
+    revokedAt: row.revoked_at ? new Date(String(row.revoked_at)).toISOString() : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+export function mapIngestRun(row: Record<string, unknown>): IngestRun {
+  return {
+    id: String(row.id), projectId: String(row.project_id), repositoryId: String(row.repository_id),
+    executionIndexId: row.execution_index_id ? String(row.execution_index_id) : undefined,
+    protocolVersion: String(row.protocol_version), commitSha: String(row.commit_sha),
+    branch: String(row.branch ?? ""), ciRunId: String(row.ci_run_id ?? ""),
+    ciRunUrl: row.ci_run_url ? String(row.ci_run_url) : undefined,
+    /* TEXT[] 经 pg 读回即 string[]。 */
+    scope: Array.isArray(row.scope) ? (row.scope as unknown[]).map(String) : [],
+    isFullInventory: Boolean(row.is_full_inventory), reconciled: Boolean(row.reconciled),
+    caseTotal: Number(row.case_total), passedCount: Number(row.passed_count), failedCount: Number(row.failed_count),
+    requestCount: Number(row.request_count),
+    addedCount: Number(row.added_count), removedCount: Number(row.removed_count), updatedCount: Number(row.updated_count),
+    unmatchedCount: Number(row.unmatched_count), unplacedCount: Number(row.unplaced_count),
+    sdkName: String(row.sdk_name ?? ""), sdkVersion: String(row.sdk_version ?? ""),
+    warnings: Array.isArray(row.warnings) ? (row.warnings as unknown[]).map(String) : [],
+    startedAt: row.started_at ? new Date(String(row.started_at)).toISOString() : undefined,
+    finishedAt: row.finished_at ? new Date(String(row.finished_at)).toISOString() : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+export function mapRepoTestCase(row: Record<string, unknown>): RepoTestCase {
+  return {
+    id: String(row.id), projectId: String(row.project_id), repositoryId: String(row.repository_id),
+    caseKey: String(row.case_key), name: String(row.name), description: String(row.description ?? ""),
+    filePath: String(row.file_path ?? ""),
+    tags: Array.isArray(row.tags) ? (row.tags as unknown[]).map(String) : [],
+    status: String(row.status) as RepoTestCase["status"],
+    lastResult: String(row.last_result) as RepoTestCase["lastResult"],
+    lastSeenCommit: row.last_seen_commit ? String(row.last_seen_commit) : undefined,
+    lastIngestRunId: row.last_ingest_run_id ? String(row.last_ingest_run_id) : undefined,
+    lastRunAt: row.last_run_at ? new Date(String(row.last_run_at)).toISOString() : undefined,
+    removedAt: row.removed_at ? new Date(String(row.removed_at)).toISOString() : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+    /* json_agg 的空结果是 NULL 而不是 []，所以未归位用例在这里读作 undefined；
+       查询侧按需把它显示成「未归位」。 */
+    endpoints: Array.isArray(row.endpoints)
+      ? (row.endpoints as Record<string, unknown>[]).map((entry) => ({
+          endpointId: String(entry.endpointId ?? entry.endpoint_id),
+          endpointName: String(entry.endpointName ?? entry.endpoint_name),
+          method: String(entry.method), url: String(entry.url),
+          requestCount: Number(entry.requestCount ?? entry.request_count ?? 0),
+        }))
+      : undefined,
+  };
+}
+
+export function mapIngestRecord(row: Record<string, unknown>): IngestRecord {
+  return {
+    id: String(row.id), ingestRunId: String(row.ingest_run_id), projectId: String(row.project_id),
+    repoCaseId: row.repo_case_id ? String(row.repo_case_id) : undefined,
+    endpointId: row.endpoint_id ? String(row.endpoint_id) : undefined,
+    phase: String(row.phase) as IngestRecord["phase"],
+    paramId: row.param_id ? String(row.param_id) : undefined,
+    seq: Number(row.seq), method: String(row.method), pathRaw: String(row.path_raw),
+    pathNormalized: row.path_normalized ? String(row.path_normalized) : undefined,
+    statusCode: row.status_code === null || row.status_code === undefined ? undefined : Number(row.status_code),
+    latencyMs: row.latency_ms === null || row.latency_ms === undefined ? undefined : Number(row.latency_ms),
+    passed: row.passed === null || row.passed === undefined ? undefined : Boolean(row.passed),
+    error: row.error === null || row.error === undefined ? undefined : String(row.error),
+    requestSummary: (row.request_summary ?? {}) as Record<string, unknown>,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+export function mapIngestPathRule(row: Record<string, unknown>): IngestPathRule {
+  return {
+    id: String(row.id), projectId: String(row.project_id), pathPrefix: String(row.path_prefix),
+    note: String(row.note ?? ""),
+    createdBy: row.created_by ? String(row.created_by) : undefined,
     createdAt: new Date(String(row.created_at)).toISOString(),
   };
 }
