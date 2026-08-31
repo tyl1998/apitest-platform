@@ -34,6 +34,12 @@
 | P3 验收第三轮 | `问题记录-P3验收第三轮.md` | 运行抽屉成员行与添加成员选择器流程 tab 分页、定时调度空态改内联「暂无数据」、定时调度与通知卡片互换、手动运行套件补变量覆盖弹窗（优先级确认：触发时的变量覆盖 > 流程 > 环境）、三处变量覆盖提示文案口径统一、变量覆盖编辑器换环境变量行样式（`VariableRowsEditor`） |
 | P3 验收第四轮 | `问题记录-P3验收第四轮.md` | 环境默认头编辑器换 `VariableRowsEditor`（复制给头名）、运行弹窗抽成共享 `SuiteRunModal` 并接入套件列表行、自绘弹窗页脚按钮、变量覆盖“未生效”取证为非缺陷（成员无 `{{x}}` 引用，方法说明）、套件页补 Cmd+S/Ctrl+S 保存 |
 | P3 验收第五轮 | `问题记录-P3验收第五轮.md` | 套件页白屏（第四轮 Cmd+S 的 useEffect 声明在早退之后，违反 Rules of Hooks——已移到早退前）、流程列表补服务端分页（`GET /flows` opt-in 分页 + `flowsPaged`，与接口列表同一模式）、默认头 x=2 + 覆盖 x=xxx 取证为非缺陷（值是纯文本非 {{x}} 模板，提示文案已补「固定值不会被覆盖」） |
+| P4 仓库模式 SDK 首轮校验 | `问题记录-P4仓库模式SDK首轮校验.md` | 五项：① `describe()` 抛 `AttributeError: 'function' object has no attribute 'read'`（`apitrack/__init__.py` 的 `from .case import case` 把包属性 `case` 从模块遮蔽成装饰器函数，而 `plugin.py` 写的是 `from . import case`；改为直接导符号并补免 pytest 的 `FakeItem` 测试）；② 上传 TestPyPI 前不跑仓库自己的测试（新增 `test` job 并让 `build` 依赖它）；③ 修复推送后点 Re-run 导致验的仍是旧包并空转一轮（dev 版本号从 `run_number` 改为 epoch 秒、日志与 Summary 打印版本号+commit SHA+提交标题、文档写明「新建 run 而非 re-run」）；④ 三条集成测试自身写错且从未被执行过（`json.loads` 吃到 payload 之后的 pytest 摘要，改用 `raw_decode`）——顺带发现 pip 加 `--trusted-host` 即可绕过企业 CA，开发机现在能跑全部 19 条；⑤ 声明 `>=3.9` 却只在 3.11 验过（`test`/`verify` 改 3.9/3.11/3.13 matrix，classifiers 补全逐版本行） |
+| P4 覆盖统计基数未去重 | `问题记录-P4覆盖统计基数未去重.md` | 仓库用例页覆盖分母按 `endpoints` **行数**计，`:id` vs `{id}`、不同 `{{host}}`、尾斜杠、import `create` 重复导入造成同行不同串 ⇒ 同一接口被数成 N 个，而匹配器只把用例挂到其中一行，覆盖率被压低。修法（读时去重，用户选定）：`coverageShapeKey`（METHOD + 占位符无名化路径）distinct 计数，分子按「同形任一行挂用例即覆盖」；树仍为行口径，dashboard 不动（边界 2） |
+| SDK 参数化用例兜底名污染 | `问题记录-SDK参数化用例兜底名污染.md` | `describe()` 兜底名取 `item.name`，参数化时带 `[param]` 后缀，而 inventory 按共用 case_key 只登记一次 ⇒ 第一个参数的后缀污染整条用例名、其余场景消失。修法：兜底名取 case_key 函数名段；场景维度归 records 的 `param_id` |
+| 项目管理分页补齐 | `问题记录-项目管理分页补齐.md` | `/projects` 全量渲染卡片墙无翻页器（P2-4/P3 分页补齐漏了全局层页面）。修法：`queryProjectMetrics` 可选 paging + COUNT、`GET /projects` opt-in 分页（切换器维持全量契约）、前端 `projectList` 服务端分页（URL 深链/关键字回第一页/删尾卡退页）；dashboard 聚合不分页 |
+| 仓库用例树列宽跳动 | `问题记录-仓库用例树列宽跳动.md` | auto 布局下 colSpan 的接口行与展开的用例子行一起参与列宽分配，展开即整表跳宽；截断单元格无悬停。修法：`grid-fixed`（table-layout: fixed + colgroup 显式宽度），截断列补 title；工具类可复用 |
+| 悬停提示延迟过长 | `问题记录-悬停提示延迟过长.md` | 截断单元格用原生 `title`，浏览器悬停延迟 ~1 秒且不可调。修法：`ui.tsx` 新增 `Tip`（antd Tooltip，100ms），替换树/抽屉/run 明细里的 title；其余未动 |
 
 ## 约定
 

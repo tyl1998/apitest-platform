@@ -1,37 +1,42 @@
 # 接口自动化平台 — 开发计划
 
-> 版本: v0.6
-> 基于: API_AUTOMATION_SPEC.md v1.4 / FRONTEND_INTERACTION_DESIGN.md v1.8 / REPOSITORY_ARCHITECTURE.md v1.0
-> 当前阶段: P0、P1 全部已实现；P2-0/P2-1/P2-2 已实现并通过用户验收；P2-2.1 请求节点生命周期收尾、
-> 认证页签变量补全与项目级「明文执行记录」开关已实现并通过用户验收；P2-6 高级节点已验收
-> （见 5.0.8）；**P2-7 数据源适配器增量（MySQL / SQL Server / Oracle / MongoDB / Redis）
-> 已全部实现并于 2026-08-22 通过用户验收**（见 5.0.10）；**P2-3 场景已实现后撤回**
-> （见 5.0.6），编排统一由流程承担；**P2-4 测试套件 + 统一执行记录已实现并于 2026-08-27
-> 通过用户验收**（P2-4.1–P2-4.5 分批验收记录见 5.0.11，缺陷归档于
-> `issue_fix/P2-4_ISSUE_LOG.md`）
+> 版本: v0.8
+> 基于: API_AUTOMATION_SPEC.md v1.9 / FRONTEND_INTERACTION_DESIGN.md v2.0 / REPOSITORY_ARCHITECTURE.md v1.1
+> 当前阶段: P0、P1 全部已实现；P2 全部已实现并通过验收；**P3 十一个批次全部实现并于
+> 2026-08-28 通过用户验收**；**P4（仓库模式：上报式用例 + `apitrack-sdk`）十二个批次于
+> 2026-08-29 全部实现，并于 2026-08-31 通过用户验收；`apitrack-sdk` v0.1.0 已发布至
+> 正式 PyPI**，范围与边界见 7.0，状态见 7.6。
 >
-> **v0.6 规划**: **P3（套件定时调度 / Webhook 触发 / 套件执行报告 / 流量泳道参数 /
-> 告警通知 / 趋势分析）范围与边界已于 2026-08-27/28 确认**；**P3-1 数据层（迁移
-> 030/031 + 类型与 mapper）、P3-2 流量泳道两层（默认头合并 + 变量覆盖下发，迁移
-> 032）、P3-3 统一触发路径（lib/trigger.ts + 触发三列透传 + report_name 入队生成）、
-> P3-4 调度器进程（lib/schedule.ts + src/scheduler.ts + lib/alerts.ts 订阅管线）、
-> P3-5 告警评估与投递（lib/alerts.ts 规则评估 + lib/notify.ts 四渠道投递落证据）、
-> P3-6 后端路由全套（调度 / Webhook 触发（含公开 HMAC 入口）/ 告警 / 报告 / 触发源
-> 筛选 / dashboard 真值）、P3-7 套件列表分页补齐（边界 14）、P3-8 前端 api 类型与
-> 双语 i18n 键、P3-9 前端页面全套（调度/告警/报告/趋势四页 + 默认头编辑 + 运行
-> 抽屉报告标识 + 导航路由）、P3-10 进程编排收尾（调度器进 start.sh/stop.sh、
-> SCHEDULER_TICK_MS/SCHEDULER_MISS_GRACE_MS 可调、.env.example 补齐）均已于
-> 2026-08-28 实现——**P3 十个批次全部完成**（状态见 6.6）。相对原计划的变更：流程不做定时调度（只有测试套件可被调度）、新增
-> 「套件执行报告」（统一报告名 `套件名_日期`，带触发源与整体耗时）、新增「流量泳道」
-> （环境默认头 + 触发时变量覆盖）、套件相关列表补服务端分页；趋势图表撤销
-> `@ant-design/charts`，改手写 SVG。
+> **v0.8（P4，2026-08-29 实现完成）**：十二个批次全部落地，逐批落点与「相对计划的六处收窄」见 7.6。
+>
+> **P4 验收结论（2026-08-31）**：用户验收**通过**（P4-1 ~ P4-12 全量，含 7.6.1–7.6.4
+> 四个验收后增量；结论明细见 7.7 末尾）。原唯一保留项（门槛 13 的 PyPI 实际发布）已于
+> 同日完成：tag `v0.1.0` 触发全流水线（test ×3 → build → TestPyPI → verify ×3 → pypi）
+> 全绿，`pip install apitrack-sdk` 生效。
+>
+> **v0.7 规划（P4，2026-08-29 确认）**：仓库模式的上报式用例。核心是「平台不拥有测试代码，
+> 只接收上报并做覆盖可视化」。相对既有 Spec / 交互文档的**四处显式变更**：
+> ① SDK 改为**零改动接入**（pytest 插件自动加载 + 传输层打桩），撤销 Spec 2.10.1 的
+> `http_req.py` 封装示例与交互 3.11.2 的 `apitest-run` 命令；② 包名定为 **`apitrack-sdk`**
+> （发布 PyPI，环境变量前缀 `APITRACK_`）；③ `is_full_inventory` 收窄为**范围级全量**，
+> 协议新增 `scope`（否则按目录划分系统的 monorepo 永远不会对账）；④ **未匹配区从待办清单
+> 改为诊断视图**，撤销交互 3.11.1 的「从未匹配区补登记接口」动作。统计口径（覆盖率、看板、
+> 趋势）本阶段**一律不动**，等整体重做那一版。
+>
+> **v0.6**: P3（套件定时调度 / Webhook 触发 / 套件执行报告 / 流量泳道 / 告警通知 /
+> 趋势分析）范围与边界已于 2026-08-27/28 确认；P3-1 数据层（迁移 030/031）、P3-2 流量泳道
+> 两层（迁移 032）、P3-3 统一触发路径（lib/trigger.ts）、P3-4 调度器进程、P3-5 告警评估与
+> 投递、P3-6 后端路由全套、P3-7 套件列表分页、P3-8 前端 api 与 i18n、P3-9 前端页面全套、
+> P3-10 进程编排收尾均已于 2026-08-28 实现，**P3 十个批次全部完成**（状态见 6.6）。
+> 相对原计划的变更：流程不做定时调度（只有测试套件可被调度）、新增「套件执行报告」、
+> 新增「流量泳道」、套件相关列表补服务端分页；趋势图表撤销 `@ant-design/charts`，改手写 SVG。
 >
 > **2026-08-28 验收反馈增补（P3-11）**：独立「定时调度」页删除、定时配置并入套件详情页；
 > 套件级通知设置（成功/失败开关 + 渠道 + 占位符模版，形状见 6.8，迁移 033）。同轮修复
 > 验收缺陷六项（白屏 ×2、编辑调度 500、报告成员证据抽屉、看板调度数、mocks 存量类型错，
 > 见 `issue_fix/问题记录-P3验收第一轮.md`）与环境管理列表服务端分页。
 >
-> **验收结论**：2026-08-28 用户验收通过（P3-1 ~ P3-11 全量）。
+> **P3 验收结论**：2026-08-28 用户验收通过（P3-1 ~ P3-11 全量）。
 >
 > **v0.5 增量切片**: **P2-8 执行分区（跨网段执行）** 已全部实现（P2-8.1–P2-8.6 于
 > 2026-08-26 完成，P2-8.7 配置体验补齐于 2026-08-27 增补）**并于 2026-08-27 通过用户
@@ -2080,10 +2085,118 @@ EXECUTION PARTITION (P2-8)                     # 无新路由，只扩现有形�
    「按次数循环 + 单节点循环体 + concurrency」表达；父级计数只统计顶层步骤，容器内部
    每一步都有可复盘证据行。
 7. **P2-8**（见 5.0.12）：环境可配执行分区标签，指向该环境的用例/流程/套件/批量调试全部
-   路由到对应分区的 worker；一个只服务 `prod-dmz` 的 worker 不会领到 `default` 的任务，
-   反之亦然；**目标分区无在线 worker 时执行请求直接失败（错误码 2004，文案指明是哪个分区
-   没有执行器），不写出一条会被回收判死的 `queued` 记录**；执行器面板列出全部分区（含
-   「配了但没人服务」且 online=0 的那些）；环境改标签或被删后，历史执行仍显示原分区名。
+    路由到对应分区的 worker；一个只服务 `prod-dmz` 的 worker 不会领到 `default` 的任务，
+    反之亦然；**目标分区无在线 worker 时执行请求直接失败（错误码 2004，文案指明是哪个分区
+    没有执行器），不写出一条会被回收判死的 `queued` 记录**；执行器面板列出全部分区（含
+    「配了但没人服务」且 online=0 的那些）；环境改标签或被删后，历史执行仍显示原分区名。
+
+#### 5.0.13 流程编辑器「列表模式」（2026-08-29 范围与边界已确认）
+
+**定位**：后端零改动（不加路由、不加迁移、不动 `api.ts`）。列表模式是同一份流程文档
+（`nodes`/`edges`）在 `FlowWorkspace` 的**第二个投影**：保存、运行、撤销、脏检查、
+`flowPlan` 计划、运行状态、节点抽屉、运行记录侧栏全部复用画布现有逻辑，列表不建第二套
+状态。两模式随时互切（顶栏分段开关，`localStorage apitest.flowViewMode` 记忆，默认画布），
+未保存守卫与撤销栈天然跨模式共享。
+
+**已确认边界**：
+
+1. **拓扑编辑平价**：列表内新增步骤自动接在前一步后（复用 `insertAfter` 语义，条件节点
+   提供「满足/不满足」两个分支入口），**不提供**任意两节点手工连线；改接已有节点回画布做。
+2. **排序与拖动换位**（2026-08-30 用户确认增补并两次修订）：列表支持行拖动换位，语义是
+   **改连线**（链表式 splice：X 的入边/出边改接到新邻居，缺口两侧直连，沿用原边的分支
+   标签；拖回原位是净空操作，不压捷径边）。坐标处理（二次修订，验收发现「列表改完切回
+   画布，连线对不上卡片」）：**换位后坐标按新序列重排**——顶层摞成 x=80 的竖链
+   （`restackTopLevel`，与 `addNode` 同一起点与间距）、循环体按 `addStep` 摞放规则重排
+   （`restackLoopBody`），画布与列表从此一一对应。代价：列表一拖，画布二维布局压成
+   竖链——「顺序即语义」，以列表为准时就该如此（撤销可恢复）。顶层行序另做乐观 order
+   更新让行立即到位（计划回来内容一致则保持原数组）。顶层顺序沿用服务端计划的
+   `order`/`stages`（与画布批次号同一来源，含并行语义）；循环体不在计划内、按坐标排；
+   计划不可用时退回声明顺序、未入序节点沉底。
+   **分支守卫**（二次修订，验收发现「拖动后执行顺序变乱」的根因是 splice 静默改分支）：
+   会改变分支归属的拖动一律拒绝（提示回画布）——X 挂在条件出口下但落点换了挂点；
+   落点的前驱是条件节点或插入点带分支标签（X 要顶替另一条分支的后继）；X 留在原出口
+   下但插入点标签与原标签冲突。两个安全例外：X 仍挂在原出口下挪位置（标签原样带走）、
+   X 贴身换位到原后继的正后方（仍在原路径下游）。此外 X 有多条入边或多条出线（汇聚
+   点/并行扇出）时同样拒绝。splice 在无环图上不会造出环（插入点两侧行的拓扑层级保证
+   了这一点），历史（撤销）走文档快照。
+3. **移入/移出循环**（2026-08-30 两次修订，纯拖拽、不再有独立虚线区）：拖拽对齐画布
+   手感——顶层步骤拖到**循环容器行的中段** = 移入该循环（上/下边缘仍是插前/插后，三段
+   式命中；循环本身被拖时没有「移入」，循环不嵌套循环）；体内步骤拖到**任何顶层行** =
+   移出并 splice 插在该行的前/后（`moveStepOutAt`：一次完成移出 + 接链 + 坐标摞放，
+   分支守卫同样生效），拖到**另一个循环行的中段** = 直接换进那个循环。悬在体内行上不
+   放行（往体内指定位置 = 先移入再体内换位两步，与画布一致）。菜单「移入循环 / 移出」
+   保留作为键盘路径；首版的「列表底部虚线区移出」已撤——长列表里沉底的落点没人找得到。
+   **自动接线**（三次修订，验收发现「拖进循环后线没连上」）：列表的移入/移出都会把两
+   处的线接好——原位置合拢（P→X→S 变回 P→S，沿用 P 的分支标签）；移入时 X 接在目标
+   体内所有「无出边的叶子」后面（简单链 = 最后一步，并行分支 = 公共尾巴），移出（菜单）
+   时 X 接在顶层叶子后面、拖拽移出时 splice 进指定位置且体内缺口同样合拢。X 原位置有多
+   条入边/出线时合拢没有唯一答案，退回画布行为（只清线不接）。画布上的拖进/拖出框保持
+   原语义（视觉上看得见断线，手工补）——自动接线只属于列表。
+4. **列表新增步骤**（2026-08-30 增补，修订「追加不接线」）：列表模式里点行上的 + 或
+   工具栏「添加步骤」，新步骤**接进链条**而不是另起一条并行线——断开锚点原来的后继边
+   （同分支那条），改走「锚点 → 新步骤 → 原后继」（画布出口圆点保持「另起并行线」的
+   原语义，不 splice）。工具栏新增的锚点是**所选行**（最后点过的行，accent 左边框标示），
+   没有所选行就接在列表最后。
+5. **保存拦截未连线步骤**（2026-08-30 用户规则，画布与列表同一条）：任一作用域里有
+   超过一个节点、且某节点既无入边也无出边，保存直接拒绝并点名这些步骤（单节点作用域
+   没有连线可言，不算未链接）。游离节点进不了任何执行批次，留着它保存等于埋雷。
+6. **画布专属能力**：框选/多选/整组拖动/自由连线/拖拽换框在列表模式不出现（入口隐藏，
+   功能不删减）。
+7. **分支语义**：列表不渲染连线本身（顺序即语义），条件分支用行上 chip（满足/不满足）表达。
+   **IF 缩进**（2026-08-30 增补）：条件的两条分支链缩进进 `.flow-cond-children`（竖线与循环
+   体同一语义），嵌套条件/循环递归渲染；**汇合点**（两分支都能到达的节点）退回外层——它
+   属于「整个条件之后」。归属判定按作用域计算（`branchOwnersOf`）：在某条分支标签边的
+   下游、不在另一条分支的下游、且全部入边来自条件或同块节点（共享节点退回外层）；按显示
+   序（拓扑序）处理条件，外层先认领、内层后改写，嵌套逐层加深。循环体内的条件同样以块
+   缩进。**「条件后」加一步**（同日增补）：条件行第三个入口——分支已汇合时插在最早的
+   汇合点后（splice）；没汇合时接到**所有**分支尾巴上（每条路径走完才轮到它），未接线
+   的分支由条件本身按该分支标签引出；一个分支都没有时用条件 → 新步骤的**无标签边**
+   （执行器里无标签边 = 来源成功即激活，两种结果都执行——正是「整个条件后」）。
+9. **循环尾部落点条**（2026-08-30 增补）：循环是最后一行时「循环后」没有下一行的上半区
+   可落，循环块底部加一条**透明命中条**（覆盖块底与下一行的间隙，不占布局高度），拖着
+   步骤悬上时亮 accent 插入线：顶层步骤落下 = 插到循环后，体内步骤落下 = 移出并插到
+   循环后。
+10. **块折叠与列表滚动**（2026-08-30 增补）：循环块与条件块可折叠（块头行前的 chevron；
+    折叠只藏子行，块头信息还在——条件行上补折叠计数 chip，循环行副标题本就带「N 步」）。
+    往块里加步骤（+ / 拖入 / 分支按钮）自动展开——藏起来的新增会让人以为没加成功。
+    折叠状态不持久化（阅读动作而非文档结构，重开恢复全展开）。长列表**永远在一个框内**：
+    `.flow-list-wrap` 上限 `calc(100dvh - 300px)`、超出框内滚动（`overflow-y: auto` +
+    `overscroll-behavior: contain`），与画布的 `overflow: hidden` 同一约束——页面高度
+    不随步骤数增长。
+8. **画布新增步骤落点**（2026-08-30 增补）：工具栏「添加步骤」落在**视口中心**
+   （`useReactFlow().screenToFlowPosition` 换算画布容器的几何中心——用户正在看哪里，
+   新卡就出现在哪里）；出口圆点新增落在锚点下方一格。两处都走碰撞避让
+   （`findFreePosition`：从落点向下逐格让位，直到不压住任何现有卡；循环框按实际尺寸
+   占位 `nodeFootprint`）。取代旧的「x=80, y=60+序号×130」固定落点——节点多了必然
+   重叠，序号还会在删除/撤销后失步。循环体内新增不受影响：`addStep` 摞到框内最后
+   一张卡下面，天然不冲突。
+
+**组件落点**：`FlowStepList.tsx`（纯投影组件，回调与画布 `StepData` 同款）；
+`FlowStepPresentation.tsx`（`stepSubtitle`/`KIND_BADGE`/`NodeKindIcon` 共享，卡片与行对
+同一节点永远显示同一句描述）；`flowCanvas.ts` 增 `moveStepIntoLoop`/`moveStepOutOfLoop`
+（坐标换算集中在树 ↔ 画布模块，不散落组件）。
+
+**实施状态**（2026-08-29，已实现待用户验收）：
+
+- [x] 共享展示模块抽取（画布行为不变）
+- [x] `viewMode` 切换 + localStorage 记忆
+- [x] `FlowStepList` 渲染（排序、循环嵌套缩进、分支 chip、运行态 `[data-status]`）
+- [x] 增删交互（行间 +、行尾 X、开抽屉、条件分支入口、列表尾「添加步骤」）
+- [x] 移入/移出循环菜单
+- [x] 拖动换位（HTML5 DnD，同作用域 splice 改线；多连线步骤拒绝并提示，2026-08-30 增补）
+- [x] 拖入循环 / 拖出循环（循环行中段移入、体内拖到顶层行 = 移出并接进链，2026-08-30 三次修订）
+- [x] 移入/移出自动接线（原位置合拢 + 叶子接入 + 拖出缺口合拢，修复「拖进循环线没连上」，2026-08-30）
+- [x] 换位后坐标重排（顶层竖链 + 体内摞放，修复切回画布连线对不上卡片，2026-08-30 二次修订）
+- [x] 分支守卫（拒绝会改分支归属的拖动，修复「拖动后执行顺序变乱」，2026-08-30）
+- [x] 列表新增步骤接进链条 + 所选行作锚点（2026-08-30）
+- [x] 保存拦截未连线步骤（`unlinkedSteps`，画布与列表同一条规则，2026-08-30）
+- [x] 画布新增步骤落点：视口中心 + 碰撞避让（`findFreePosition`/`nodeFootprint`，2026-08-30）
+- [x] IF 分支链缩进 + 汇合点退回外层（`branchOwnersOf` 递归渲染，2026-08-30）
+- [x] 「条件后」加一步（汇合点后 splice / 全部尾巴接线 / 无标签边兜底，2026-08-30）
+- [x] 循环尾部落点条（循环是最后一行时「循环后」的可落区，2026-08-30）
+- [x] 块折叠（循环/条件 chevron + 折叠计数 + 结构变更自动展开，2026-08-30）
+- [x] 列表框内滚动（`.flow-list-wrap` max-height + overflow-y，页面高度不再随步骤数增长，2026-08-30）
+- [x] CSS（`.flow-list` 系列，全复用现有令牌）+ i18n（zh/en）
 
 ---
 
@@ -2544,20 +2657,769 @@ webhook_triggers                                   请求体注入（边界 7，
 
 ## 七、P4 — 仓库模式: 上报式用例 (4 周)
 
-### 7.1 数据库迁移: 005_p4_schema.sql
+### 7.0 P4 范围与边界（2026-08-29 确认）
+
+**问题**
+
+P0–P3 做完的是「测试资产在平台里」这一条路：接口、用例、流程、套件、调度、报告全部以平台
+为唯一存放点。但已经有 pytest 仓库的团队进不来——他们的测试逻辑在 Git 里，重写一遍进平台
+既不现实也没道理。于是平台看到的接口覆盖永远只是自己那一半，而「这个系统到底测到了多少」
+这个问题答不出来。
+
+P4 要的不是把那些代码搬进来，而是**让它们跑完之后把结果说给平台听**：用例挂到「系统 →
+接口 → 用例」树上，接口下有用例 = 已覆盖。平台不拥有代码、不执行代码、不重放代码。
+
+**核心模型**
+
+**平台只暴露一个上报入口 `POST /ingest`；用例身份是 `case_key`，与显示名解耦；一次上报是一个
+commit 快照，按 `(project, case_key)` upsert、按 `(repo, commit, ci_run_id)` 幂等；SDK 在用户
+进程内零网络地采集，跑完一次性上报。**
+
+- **上报归一进 `execution_index`（`kind='ingest'`）**，理由与 P2-0 建这张表时相同：执行记录
+  页的来源筛选、统一详情跳转、告警订阅三处都读它，不归一就要各写一套仓库模式分支。
+- **用例不存 endpoint 外键，而是一张关系表**。一个用例打三个接口是常态（先登录再下单再查
+  详情），归给「主接口」会让另外两个显示未覆盖，而它们明明被测到了。
+- **SDK 不要求用户改任何一行测试代码**：pytest 插件靠 entry point 自动加载，请求靠传输层
+  打桩采集。要求用户改 client 或写 conftest，接入率就止步于「愿意重构的那几个仓库」。
+
+**已确认的边界决策（21 项）**
+
+1. **上报归一进 `execution_index`，但趋势与通过率的口径默认排除它**（用户选定）。
+   `kind` 的 CHECK 加 `'ingest'`，`trigger_source` 用已有的 `'ci'`（P3 边界 13 已提前写进
+   CHECK，正是为这一刻）。于是执行记录页的来源筛选、`executions/by-index/:indexId` 统一
+   详情入口一处不改就能看到仓库模式。
+   **但 `reports/trend` 与 `reports/summary` 仍只算 `kind IN ('flow','suite')`**：外部 CI 的
+   `latency_ms` 是用户进程里的客户端耗时，与平台的墙钟耗时不是一个口径，混进同一条分位数
+   曲线得到的是一个谁都不认的数；而一次 `-m smoke` 的局部跑会把通过率拉出一个没人认的台阶。
+   趋势页给一个**默认关闭**的「含仓库上报」开关，让人可以自己要那份混合视图。
+   **取消 / 重跑 / 回收三条路径要显式拒绝 `ingest`**：它们对一次「别人已经跑完的历史」没有
+   意义，而这三处现在都只按 `kind` 分派——不拒绝就会走到一个空实现里静默失败。
+2. **统计口径（覆盖率、看板、通过率）本阶段一律不动**（用户明确）。仓库用例的覆盖只在
+   「仓库用例」页自己算自己显示，`routes/dashboard.ts` 的 `coverageRate` 保持只数
+   `test_cases`。整套统计要重新设计一版，那是独立一件事——本阶段先把数据收进来，不去改一个
+   即将被重做的口径，否则等于改两遍。
+3. **SDK 本阶段一起做，并且发布到 PyPI**（用户 2026-08-29 决定，推翻了先前「不发 PyPI、用
+   git 直链」的方案）。理由是 `pip install git+ssh://…` 要求每台 CI 机器有仓库读权限，而这
+   恰好是接入时最难协调的一项授权；PyPI 让第 ① 步退化成一行无凭据的 `pip install`。
+   **包名 `apitrack-sdk`**（2026-08-29 用户改名，原拟 `apitest-sdk`）；导入名与环境变量
+   前缀随之改为 `apitrack` / `APITRACK_*`。包名与发布形状见 7.4。
+4. **零改动接入是硬指标**：装包 + 配两个环境变量 + 原样跑 `pytest`。为此三件事都要成立
+   ——pytest 插件靠 `pytest11` entry point 自动加载（不要 `conftest.py`、不要 `-p` 参数）、
+   请求靠传输层打桩（不要用户换 client）、CI 命令不变（不要 wrapper 命令）。
+   **这与两份既有文档冲突，在此记下而不是悄悄改掉**：Spec 2.10.1 的示例要求把请求集中封装
+   进 `http_req.py` 并改用 `apitest_sdk.client`——**撤销**，那等于让用户重写全部请求代码；
+   交互文档 3.11.2 第 ④ 步的「CI 里跑 `apitest-run` 并上报」——**降级为非 pytest 场景的备用
+   入口**，pytest 场景下 CI 命令一个字都不改。接入指引页的四步要照此重写，包名与命令一并
+   换成 `apitrack-sdk` / `APITRACK_*`。
+5. **打桩打在传输层，不打门面函数**：`requests` 打 `HTTPAdapter.send`，`httpx` 打
+   `HTTPTransport.handle_request` 与 `AsyncHTTPTransport.handle_async_request`。打
+   `requests.get` 那一层必然漏掉所有用 `Session` 或自建 client 的仓库（也就是绝大多数）；
+   打 socket 层则拿不到 URL 与 header 语义，还会连带采到 SDK 自己的上报请求。
+   **`aiohttp` 首版不做**（它没有干净的 transport 层，拦截点脏），走边界 7 的装饰器路径。
+6. **上报只发生一次，在 `pytest_sessionfinish`**。桩体只做「往内存 list 追加一条 dict」，
+   全程零网络——这是「上报不能影响用例执行」这条要求的落地形状（用户 2026-08-29 提出）。
+   桩里的纪律要写进代码注释：
+   - **绝不读 body**（`.content` / `.text` / `.json()`）。`stream=True` 与 httpx 的未读流被
+     桩读一次就被吃掉了，那是真正会改变用户测试行为的事。响应大小只从 `Content-Length` 取，
+     取不到记 `null`。
+   - **延迟用桩自己的 `perf_counter` 差**，不用 `response.elapsed`（adapter 层还没有它）。
+   - **桩自身的失败不外溢**：整体裹 `try/except BaseException`，异常只计数；连续失败 3 次
+     自我卸载并打一条 warning。用户的测试不该因为上报库有 bug 而变红。
+   - **最后那一次上报也不动退出码**：5 秒超时 + 一次重试，失败只 warning。
+7. **`case_key` 是身份，`name` 是显示，两者分开**。合成一个的话，用户改一句 docstring 就会
+   在树上长出一条新用例、旧的那条被判 `removed`。映射规则（pytest nodeid
+   `tests/order/test_create.py::TestCreate::test_create_order[vip]`）：
+
+   | 字段 | 来源 | 优先级 |
+   |---|---|---|
+   | `case_key` | nodeid 去掉 `[...]` | `@case(key=…)` > nodeid |
+   | `param_id` | `[...]` 内容 | pytest 的 parametrize id |
+   | `name` | 显示名 | `@case("…")` > docstring 首行 > 函数名原样 |
+   | `description` | docstring 首行之后全部 | 无则空串 |
+   | `file_path` | nodeid 的文件路径段 | 仓库根的相对路径 |
+   | `tags` | pytest marker 名（剔除内置 parametrize/skip/xfail 等） | 与 `@case(tags=[…])` 取并集 |
+
+   首行当名字、余下当描述，是 PEP 257 已有的约定，也是 pytest `-v` 的习惯——不让用户学新
+   东西。函数名兜底时**保持原样**，不做中文猜测。
+8. **目录路径只是用例行上的元数据，不做成树的一层**。平台的树是「系统 → 接口 → 用例」，
+   而 `tests/order/` 下的用例完全可能打 `POST /payments`——把目录塞进树就有两套互相打架的
+   层级。`file_path` 用于详情显示与按前缀搜索，**不参与 `removed` 判定**（文件移动了但
+   `@case(key=…)` 没变，仍是同一条用例）。真需要「按目录看」时那是第二种**视图**，不是第二
+   种存储。
+9. **一个用例挂它实际打过的每一个接口**（用户 2026-08-29 确认：「一个接口本身就有可能在多个
+   用例下」，反向同理）。落地为关系表 `repo_case_endpoints`，而不是 `repo_test_cases.
+   endpoint_id` 单列。
+   **两个计数口径因此不同，必须在界面上写明**：接口节点上的「用例数」数的是**关系数**，
+   项目级「仓库用例总数」数的是 **distinct `case_key`**，两者相加不相等。不写明就会被当成
+   bug 报上来。
+10. **只有 `call` 阶段的请求建立用例关系**。登录、造数这类请求发生在 fixture 里，
+    `contextvar` 此时指向触发该 fixture 的第一个用例，直接归进去会得到「登录接口的用例数
+    = 恰好第一个用例」这种失真。`setup` / `teardown` 阶段的请求**仍进 `ingest_records`
+    并计入接口覆盖**，但不挂到用例节点上——于是 `POST /login` 显示为「已覆盖，但没有专属
+    用例」，这正是事实。`phase` 列因此是必需的，不是调试信息。
+11. **全量是「范围内的全量」，不是「仓库的全量」**（2026-08-29 用户场景修正）。
+    `is_full_inventory` 决定平台是否执行删除对账（软删 `removed`），判错一次就删掉一片
+    用例树。
+
+    **原写法有一处硬错误，在此改掉**：原文把「指定了文件或目录参数」列为「不是全量」的
+    依据之一。但一个仓库常按目录划分系统，该项目的 CI 每次都是 `pytest tests/order/`
+    ——按原规则，这类仓库的对账**永远不会发生**，用例删掉了平台永远不知道，树只会越长越长。
+    这跟多目录仓库其实没有必然关系：同一项目里有人跑 `pytest tests/order/smoke/`，没有范围
+    概念就会把 `tests/order/regression/` 下的用例全判成消失。**范围是必需的，不是特设的。**
+
+    于是分成两件事：**范围**（跑的是哪一片）与**过滤**（片内挑了几个）。
+
+    - **`scope` 随上报带上**（相对仓库根的路径数组，进协议 v1.0，见边界 19），从 pytest 自己
+      的参数取，零配置：`config.args` → 退到 ini 的 `testpaths` → 都没有则仓库根。
+    - **`is_full_inventory` 的含义变成「这个范围内没有过滤」**。`-k` / `-m` / `--lf` /
+      `--ff` / `-x` / `--deselect` / collect error 仍然一律判非全量——它们是范围内的挑选。
+    - **对账只删 `file_path` 在 `scope` 之内、且本次 inventory 里缺失的用例**；范围之外的
+      一律不动。
+
+    | 命令 | scope | 全量 | 对账范围 |
+    |---|---|---|---|
+    | `pytest` | 仓库根 | 是 | 全仓 |
+    | `pytest tests/order/` | `tests/order` | 是 | 只 `tests/order` 下 |
+    | `pytest tests/order/ -m smoke` | `tests/order` | 否 | 不对账 |
+    | `pytest tests/order/test_a.py` | 该文件 | 是 | 只该文件 |
+
+    **对账只看 `inventory`，绝不看 `records`**。被 `skip` 掉的用例、或这一轮恰好没打到任何
+    接口的用例，`records` 里是空的；按「没报到就算消失」去删，一次全量跑就会把所有 skip
+    的用例判成 `removed`，某个依赖服务当天没起更会让一整片用例集体消失。分工是：**存在性看
+    inventory**（用例还在不在代码里），**归属看 records**（这一轮它打到了谁）。因此
+    `repo_case_endpoints` 的关系是**累积的，不是每轮重建**——有 inventory 无 records 的用例
+    保留上一轮的接口关系，状态不动。
+
+    **宁可少报一次全量**（后果：本该删的用例多留一天），**不可多报一次**（后果：跑个 smoke
+    删掉 90% 的树）。平台侧再叠一道闸门：只有 `is_full_inventory=true` 且
+    `branch = repositories.tracking_branch` 才对账，实际有没有对账记在 `ingest_runs.reconciled`。
+12. **崩溃兜底的落盘补投放二期，本阶段不做**（用户 2026-08-29 决定）。`-x` 中断、CI 超时、
+    OOM 会让 `sessionfinish` 不执行，那一次运行就**整份不上报**——这是有意的：宁可界面上
+    「昨晚那次没有记录」，也不要半份数据被当成全量去对账。二期的形状留在这里备查：
+    `.apitrack/spool/*.jsonl` 边跑边追加（纯本地 IO），`sessionfinish` 读盘上报后删除，CI 的
+    `always()` 步骤跑 `python -m apitrack flush` 补投——幂等键在，补投是合并不是新增。
+    **本阶段的 `/ingest` 与幂等键必须已经支持重投**，否则二期要改协议。
+13. **默认只报摘要，body 默认不传**：method、raw path、`status_code`、`latency_ms`、
+    `passed`、`error` 摘要。`APITRACK_BODY_CAPTURE=1` 才带，且截断。这条同时挡掉「测试数据
+    被搬进平台」这一类合规问题——默认不传，就不需要为它做审批。
+14. **脱敏在 SDK 侧就做**，不指望平台侧。`Authorization` / `Cookie` / `Set-Cookie` 与名字
+    含 `token|secret|key|password` 的头只留键名。数据一旦离开用户机器，平台侧再脱敏已经晚了。
+15. **path 归一留在平台侧，SDK 只报 raw path**。归一规则一定会随 `endpoints` 的实际形状
+    演进，而 SDK 装在用户仓库里、版本完全不可控——规则冻在用户机器上就再也改不动了。
+    这也是 7.4「协议版本与包版本分开」的同一条理由。
+16. **绝不自动登记 endpoint**。上报到未登记的接口就自动建一条 `endpoints` 的话，覆盖率会
+    永远是 100%——分母跟着分子长。这正是「未匹配区」存在的理由：让分母保持诚实，并把「该
+    补登记接口了」显式摆出来。
+    **未匹配不做回溯改写**：人工去补登记接口后，**下一次上报**自动归位，不回头重写历史
+    `ingest_records`。回溯改写要定义「改到哪一天为止」，而那个界线没有正确答案。
+17. **上报 Token 用哈希存库，与 Webhook 密钥的加密存储刻意不同**。Webhook 必须拿到明文才能
+    验签（P3 边界 6），所以那里是 AES-GCM；上报 Token 只需比对，因此走 `scrypt` 哈希
+    （与 `users.password_hash` 同款），明文只在创建时回一次。库被读走时，前者能被解密、
+    后者不能——能哈希的地方就不该加密。
+    另存 `token_prefix`（前 8 位明文）用于列表展示与「这条是哪个」的辨认。
+18. **仓库唯一绑定 + 首次上报登记**（Spec 2.10.1 基数约束）。首次上报按 Token 所属项目登记
+    该项目的唯一仓库；此后每次校验 `git_url`，不一致直接拒绝——否则持有 Token 的任意 CI 都
+    能往这棵树里灌用例。换仓库由项目 admin 在 UI 显式解绑，解绑**保留**历史用例与上报记录
+    （置 `status='unbound'`），不做级联删除。
+
+    **`project_id UNIQUE` 禁止的是「一项目挂两仓库」，不禁止「一个仓库出现在多个项目里」**
+    ——`git_url` 上没有全局唯一约束，同一个 git_url 可以在多个项目里各登记一行，每个项目看到
+    的仍是自己的单例视图。一个 monorepo 按目录划分多个系统时就是这么用的（边界 19）。
+19. **一次运行只上报一个项目**（2026-08-29 用户确认）。一个 monorepo 里可能放着多个系统的
+    测试，但**该项目的 CI 只跑它自己那个目录**（`pytest tests/order/`），因此一次上报天然
+    只对应一个项目、一个 Token、一行 `ingest_runs`。
+    **不做「一次上报按 endpoint 匹配结果分派到多个项目」**：那需要 Token 携带一份跨项目授权
+    清单、`/ingest` 一次写 N 行、以及一套跨项目越权校验，而它解决的是一个不存在的场景。
+    `scope`（边界 11）就是这条决定在协议上的落点——它同时表达了「这次跑的是哪个系统的目录」
+    与「对账该限制在哪一片」。
+
+    **跨目录引用要分两种，答案完全不同**：
+    - **共用代码**（`tests/order/` 里 import `tests/common/auth.py`）：**不需要任何处理**。
+      `case_key` 与 `file_path` 取的是测试函数自己的 nodeid，它在 `tests/order/` 下；被
+      import 的模块里没有测试函数，不进 inventory。共用得再多都不影响归属。
+    - **跨系统调用**（订单的用例先调用户系统登录、调商品系统建 SKU）：这些请求打的是本项目
+      **没有登记**的接口，会全部涌进未匹配区。见边界 20。
+20. **未匹配区是诊断视图，不是待办清单**（2026-08-29 多轮讨论后定案）。
+
+    先确认一件事：**「这条未匹配记录属于谁」这个问题，平台不需要答案**。覆盖率的分子只数
+    匹配到已登记接口的记录，分母只数已登记接口——未匹配记录既不进分子也不进分母，怎么归类
+    都不影响任何数字。
+    真正的风险来自**界面形状**：原交互文档 3.11.1 把它做成「未匹配上报 (3) → 人工关联/
+    补登记接口」这样一份待清空的清单。清单会被清空，清空的动作是补登记，补登记就是把别的
+    系统的接口拉进本项目的分母——**风险全部来自这个待办形状，不来自数据**。
+
+    **依次否掉的三个方案，理由记下以免重提**：
+    - **SDK 侧自动判定归属**：仓库里读不到判据。同网关时 URL 的 host 一样；`file_path` 说的
+      是「用例写在哪」而不是「请求打给谁」（跨目录调用的前提就是两者不一致）；import 关系
+      只能看出代码依赖，看不出服务归属。唯一能"读到"的是用户提交进仓库的一份声明，那不是
+      读到，是让用户告诉我们。
+    - **按「别的项目是否登记过这条路径」自动标外部**：方向是错的——它只在别人已登记时才
+      生效。用户中心的自动化还没做时，它不报警、不标记，静默落回「可能是我们的」。一个安全
+      的默认值不该在信息缺失时倒向「是我们的」（用户 2026-08-29 指出）。
+    - **项目声明 `owned_path_prefixes` 反向判定**：一个系统有多个前缀、前缀还可能跨系统重复
+      （用户 2026-08-29 指出），说明「路径长什么样」与「归属哪个系统」之间没有稳定映射；
+      任何形式的配置都只是把一个不存在的规律写成一份要长期维护的清单。
+
+    **定案的形状**：
+
+    - **不显示待处理计数、不放红点、不放「全部处理」**。它是一张按出现频次排序的路径列表。
+    - **删掉「从这里补登记接口」这个动作**（与原交互文档 3.11.1 冲突，在此显式撤销）。要登记
+      接口就去接口管理页手工建——保留这一步摩擦是有意的，它让「把一个接口放进本系统的分母」
+      始终是一次显式决定，而不是清列表的副产品。
+      **2026-08-30 修订（7.6.1）**：这道摩擦被证明挡住的是接入而不是误登记——仓库模式团队
+      为了统计要把仓库里已有的接口清单再抄一遍，路径其实已经躺在未匹配区里。恢复**单行**
+      「登记接口」动作：仍是一次显式决定（确认一个预填好的模板），仍无批量、无待办形状，
+      同形重复 409 拦截。
+    - **保留「关联到已登记接口」**。它安全：目标接口本来就在本项目、本来就在分母里，关联只是
+      把记录挪过去。它解决的也不是归属问题，而是 path 归一没匹配上（`/users/abc-123` 这类）
+      ——那是技术缺陷，该修。
+    - **保留「人工标注为外部依赖」，可顺手把这条路径写成一条前缀规则**（`ingest_path_rules`，
+      用户 2026-08-29 确认保留）。**前缀可以写多层**（`/api/v2/user/`），命中即在这张列表里
+      静默。它**只影响这张诊断列表的显示，不影响任何统计**——所以规则写错的代价是「列表里
+      多一条或少一条」，不是一次分类错误。前缀在项目内可以重复、可以有多条，因为它不承担
+      归属判定，重复也就无害。
+    - **读时标注代替判定**：判定要落库、要承担错误；标注只是摆在人眼前的事实，错了也没有
+      后果。列表每行给三样信息——出现频次 + 打过它的用例、`phase` 分布（集中在 `setup` 的
+      几乎一定是跨系统前置，这是仓库里唯一真正有判别力的信号，且是行为特征而非命名约定）、
+      **别的项目是否登记过这条路径**（只显示项目名，不显示接口详情）。
+      跨项目那一项**在读取时查，不在 `/ingest` 时查**：既不进上报热路径，又是活的——用户
+      中心那边今天才登记，昨天那条记录的标注今天自动出现。它从不参与任何判定，所以「别人
+      还没做自动化」时标注缺失什么都不代表。
+    - **不变量**：未匹配记录与被静默的记录**永不计入覆盖分子**，覆盖率不会因为这套规则的
+      任何误判而虚高。
+21. **有 inventory 但一个接口都没打到的用例，进「未归位用例」分组**。跨系统调用一多就会出现
+    「这条用例只打了外部接口」的情况——它在 inventory 里，但在本项目拿不到任何
+    `repo_case_endpoints` 关系，而树是「系统 → 接口 → 用例」，它没有地方挂。
+    **不能藏掉**：藏了之后「上报了 36 条用例，树上只数出 31 条」会被当成 bug 报上来。树底下
+    一个「未归位用例」分组，与未匹配区并列——两者是同一件事的两端：一个是「有记录找不到
+    接口」，一个是「有用例找不到接口」。
+
+**明确不做**
+
+- **平台执行或重放上报用例**：平台只有请求摘要，没有代码。这是模式 B 的定义，不是取舍。
+- **CI 任务与自研 Runner**：P4.5 整个阶段，含 8.3 的勾选用例快速执行。本阶段产出的
+  `repo_test_cases.last_result` 已为它的 `not_run` 兜底留好位置（枚举本阶段就写进 CHECK，
+  理由同 P3 边界 13）。
+- **覆盖率趋势与快照**：见边界 2，统计整体重做时一起定。
+- **多语言 SDK**（js / java）：先让 Python 这一条路被真实仓库用起来，再谈复制。
+- **按目录的用例树视图**：见边界 8。
+- **上报数据的编辑**：`ingest_records` 是不可变日志（Spec 2.10.1），可编辑就意味着上报的
+  事实与树上的显示可以互相矛盾。
+- **`aiohttp` / `urllib3` 直连 / `http.client` 的打桩**：见边界 5。
+- **上报量的软配额与计费**：只做一道硬上限（7.2 的 413），不做项目级配额。
+- **一次上报分派到多个项目**（边界 19）：含 Token 的跨项目授权清单与一次写 N 行 `ingest_runs`。
+- **自动判定记录归属哪个系统**（边界 20）：三个方案都已否掉，理由记在那里以免重提。
+- **从未匹配区直接补登记接口**（边界 20）：与原交互文档 3.11.1 冲突，显式撤销。
+  **2026-08-30 修订**：恢复为单行「登记接口」（见 7.6.1）；「批量补登记 / 全部处理」仍不做。
+- **`ingest_path_rules` 用正则**：正则要防灾难性回溯，而这里要表达的就是「`/api/v2/user/`
+  开头的不是我的」。只做前缀，可多层。
+
+### 7.1 数据库迁移（接在 033 之后）
+
+> 计划原写的 `005_p4_schema.sql` 为过时命名，实际接在 `033` 之后。
+
+**`034_p4_repositories.sql`**
 
 ```
-repositories       (id, project_id, git_url, branch, status)
-ingest_runs        (id, repository_id, commit_sha, status)
-ingest_records     (id, ingest_run_id, endpoint_id, action)
-repo_test_cases    (id, repository_id, endpoint_id, file_path, code_hash)
+repositories        (id, project_id UNIQUE, git_url, provider, tracking_branch DEFAULT 'main',
+                     status CHECK(active|unbound), first_seen_commit,
+                     last_ingest_at, created_at, updated_at)
+                     # project_id UNIQUE = 「一个项目 = 一个仓库」（Spec 2.10 基数约束）
+                     # 由数据库保证，不靠路由里的一次查询
+
+ingest_tokens       (id, project_id, name, token_hash TEXT, token_prefix TEXT,
+                     created_by, last_used_at, revoked_at, created_at)
+                     # 哈希不加密（边界 17）；prefix 供列表辨认
 ```
 
-### 7.2 SDK 包 (apitest-sdk-python)
+**`035_p4_ingest.sql`**
 
-- `apitest.ingest()` — 上报用例结果
-- `apitest.TestCase` — 装饰器 + 断言工具
-- `apitest.Client` — 鉴权 + 重试
+```
+ingest_runs         (id, project_id, repository_id, execution_index_id,
+                     protocol_version, commit_sha, branch, ci_run_id, ci_run_url,
+                     scope TEXT[] NOT NULL DEFAULT '{}',          -- 本次跑的范围（边界 11/19）
+                     is_full_inventory BOOLEAN NOT NULL DEFAULT false,
+                     reconciled BOOLEAN NOT NULL DEFAULT false,   -- 实际有没有对账（边界 11 双闸门）
+                     case_total, passed_count, failed_count, request_count,
+                     added_count, removed_count, updated_count,   -- 全量 run 的 diff（交互 3.11.3）
+                     unmatched_count, unplaced_count,             -- 未匹配记录数 / 未归位用例数（边界 20/21）
+                     sdk_name, sdk_version, warnings JSONB DEFAULT '[]',
+                     started_at, finished_at, created_at,
+                     UNIQUE (repository_id, commit_sha, ci_run_id))
+                     # UNIQUE 就是协议的幂等键（Spec 2.10.1）；重投命中它 → 合并不新增
+                     # ci_run_id 可能为空（本地跑），用 '' 而不是 NULL —— NULL 在 UNIQUE 里不去重
+                     # scope 为空数组 = 全仓；对账时按它裁剪（边界 11）
+
+repo_test_cases     (id, project_id, repository_id, case_key,
+                     name, description, file_path, tags TEXT[],
+                     status CHECK(active|removed) DEFAULT 'active',
+                     last_result CHECK(passed|failed|unknown|not_run) DEFAULT 'unknown',
+                     last_seen_commit, last_ingest_run_id, last_run_at,
+                     removed_at, created_at, updated_at,
+                     UNIQUE (project_id, case_key))
+                     # case_key 在项目内唯一（Spec 2.10 基数：项目内仓库唯一，无需叠仓库维度）
+                     # not_run 现在就写进 CHECK，P4.5 的勾选执行要用（边界「明确不做」末条）
+                     # file_path 是对账的裁剪依据（边界 11），不参与 removed 身份判定（边界 8）
+
+repo_case_endpoints (repo_case_id, endpoint_id, first_seen_run_id, last_seen_run_id,
+                     request_count, PRIMARY KEY (repo_case_id, endpoint_id))
+                     # 一个用例挂多个接口（边界 9）。接口节点的「用例数」= COUNT(*) here；
+                     # 项目级「仓库用例数」= COUNT(DISTINCT case_key) —— 两个数不相加
+                     # 关系累积、不每轮重建（边界 11）：有 inventory 无 records 的用例保留上轮关系
+                     # 一条 active 用例在此没有任何行 = 未归位用例（边界 21），不新增状态列
+
+ingest_records      (id, ingest_run_id, project_id, repo_case_id, endpoint_id,
+                     phase CHECK(setup|call|teardown) DEFAULT 'call',   -- 边界 10
+                     param_id, seq INTEGER,
+                     method, path_raw, path_normalized,
+                     status_code, latency_ms, passed, error,
+                     request_summary JSONB, created_at,
+                     UNIQUE (ingest_run_id, seq))
+                     # 不可变日志。UNIQUE(run, seq) 让分批重投在批次内也幂等（Spec 2.10.1）
+                     # endpoint_id 可空 = 未匹配（边界 16/20）；path_normalized 亦然
+                     # 刻意不加 external/silenced 列：静默是读时按规则前缀匹配算出来的（边界 20），
+                     # 落列就意味着改一条规则要回填全部历史，且与「不可变日志」冲突
+
+ingest_path_rules   (id, project_id, path_prefix, note, created_by, created_at)
+                     # 人工标注的外部依赖前缀（边界 20），可多层如 '/api/v2/user/'
+                     # 只影响未匹配诊断视图的显示，不影响任何统计；项目内允许重复与多条
+                     # 前缀匹配，不用正则（见「明确不做」）
+
+execution_index     += kind CHECK 放宽加 'ingest'（边界 1）
+```
+
+索引：`ingest_records(endpoint_id, created_at DESC) WHERE endpoint_id IS NOT NULL`（接口详情的
+最近上报）、`ingest_records(ingest_run_id, seq)`、`ingest_records(project_id, created_at DESC)
+WHERE endpoint_id IS NULL`（未匹配诊断视图）、`repo_test_cases(project_id, status)`、
+`repo_test_cases(project_id, file_path)`（对账按 `scope` 前缀裁剪，边界 11）、
+`repo_case_endpoints(endpoint_id)`（接口 → 用例反查，覆盖判定用它）、
+`ingest_path_rules(project_id)`。
+
+### 7.2 上报接口 `POST /ingest`（协议 v1.0，冻结）
+
+平台**只暴露这一个入口**（Spec 2.10.1）。请求形状见 `REPOSITORY_ARCHITECTURE.md` 3.4，
+本阶段落地时补齐的实现约定：
+
+```
+POST /ingest
+  Authorization: Bearer apitrack_<token>       # 项目级，scrypt 比对（边界 17）
+  Content-Type: application/json
+  → 200 { runId, indexId, matched, unmatched, unplaced, warnings[], reconciled }
+  → 401 token 无效或已吊销
+  → 409 git_url 与已绑定仓库不一致（边界 18），message 说清绑的是哪个
+  → 413 超过 INGEST_MAX_RECORDS / INGEST_MAX_BODY_BYTES
+  → 422 protocol_version 未知 / inventory 与 records 的 case_key 不自洽
+```
+
+**协议 v1.0 相对 `REPOSITORY_ARCHITECTURE.md` 3.4 草图的增补，全部在 `run` 段**：
+
+```yaml
+run:
+  scope: ["tests/order"]        # ★ 本次跑的范围，相对仓库根（边界 11/19）
+  is_full_inventory: bool       # 含义收窄为「这个范围内没有过滤」
+  sdk: { name, version }        # 平台侧回 warnings 提示升级时要知道对方是谁
+records:
+  - phase: setup|call|teardown  # ★ 只有 call 阶段建立用例关系（边界 10）
+```
+
+**`scope` 必须进 v1.0，不能等**（用户 2026-08-29 确认）：协议只增不改
+（`REPOSITORY_ARCHITECTURE.md` 3.1 最严格一档），首版漏掉之后再加，就要面对「老 SDK 报上来
+的没有 scope，那它算全仓全量吗」——这个问题的两个答案一个会误删用例、一个会让对账永久失效，
+没有安全解。`phase` 同理。
+
+**处理顺序（单事务）**：校验 Token → 登记或校验仓库 → `ingest_runs` upsert（命中幂等键则
+走合并分支）→ `repo_test_cases` 按 `case_key` upsert → `repo_case_endpoints` upsert（累积，
+不重建）→ `ingest_records` 批量插入 → 全量且在跟踪分支则按 `scope` 裁剪后对账（软删）→
+写 `execution_index` 一行 → 算 diff 与未匹配/未归位计数回填 `ingest_runs`。
+
+**为什么单事务**：一次上报要么整份进去要么一份都不进。半份进去之后，`is_full_inventory`
+的对账就会拿一份不完整的清单去删用例——那正是边界 11 要防的事故，只是换了个成因。
+
+其余路由：
+
+```
+GET    /ingest/protocol                                 协议自描述（版本 + 两道上限），要 Token
+GET    /api/v1/projects/:id/repository                  单例视图（Spec 2.10 基数）
+PATCH  /api/v1/projects/:id/repository                  只改跟踪分支与托管方标注（git_url 不可改）
+DELETE /api/v1/projects/:id/repository                  解绑（保留历史，置 unbound）
+GET    /api/v1/projects/:id/ingest-tokens               列表（只回 prefix）
+POST   /api/v1/projects/:id/ingest-tokens               创建，明文只回一次
+DELETE /api/v1/projects/:id/ingest-tokens/:tokenId      吊销（软删，留 revoked_at）
+GET    /api/v1/projects/:id/repo-cases                  用例树数据 + 覆盖统计，分页
+GET    /api/v1/projects/:id/repo-cases/:caseId          单用例：上报历史 + 接口关系
+GET    /api/v1/projects/:id/repo-cases/unplaced         未归位用例（边界 21），分页
+GET    /api/v1/projects/:id/ingest-unmatched            未匹配诊断视图（边界 20），分页
+                                                        每行带频次 / phase 分布 / 别的项目是否登记过
+                                                        （跨项目那一项在此读时查，只回项目名）
+POST   /api/v1/projects/:id/ingest-unmatched/link       关联到已登记接口（不回溯，边界 16）
+POST   /api/v1/projects/:id/ingest-unmatched/register  一键登记：建最小接口并归位历史（7.6.1）
+GET/POST/DELETE /api/v1/projects/:id/ingest-path-rules  人工标注的外部依赖前缀（边界 20）
+GET    /api/v1/projects/:id/ingest-runs                 上报记录，分页
+GET    /api/v1/projects/:id/ingest-runs/:runId          单次 run：diff + 请求明细，分页
+```
+
+`git_url` **刻意不可改**（落地时补的一条）：它是上报的准入判据（边界 18），在 UI 里改掉等于
+绕过那道校验换一个仓库进来。要换仓库走解绑，那是一次显式决定。
+
+**补登记接口的形状（2026-08-30 修订，见 7.6.1）**：`register` 是**单行显式**动作——建最小
+接口（method + 模板，其余全空）+ 按**匹配语义**归位历史记录 + 同形 409 拦截；仍然没有批量
+与待办形状。P4 落地时这条路完全不存在（边界 20 原判），登记只能去接口管理页手工建。
+
+### 7.3 前端页面
+
+- **仓库用例树**（`repo-cases`，交互文档 3.11.1）：左树「系统 → 接口 → 用例」+ 右详情。
+  与接口列表同构，因此复用现有列表约定（URL query 深链、服务端分页、Quiet Console 语义色）。
+  `removed` 默认折叠置灰。树底部两个并列分组：**未归位用例**（边界 21）与进入未匹配诊断的入口。
+- **接入指引**（`repo-cases/onboarding`，交互文档 3.11.2）：Token 管理 + 三步复制块。
+  **照边界 4 重写**——`pip install apitrack-sdk` / 两个环境变量（`APITRACK_URL`、
+  `APITRACK_TOKEN`）/ `pytest`（原样，命令不变）+ 连通状态，而不是原文档的「封装
+  http_req.py」+「跑 apitest-run」那四步。
+- **上报记录**（`repo-cases/runs`，交互文档 3.11.3）：run 列表带 commit/分支/**scope**/
+  是否全量/diff；非全量行显式标「不参与删除对账」，全量行显示对账范围是哪一片。
+- **未匹配诊断视图**（独立标签页）：按频次排序的路径列表，**无待处理计数、无红点、无「全部
+  处理」**（边界 20）。每行三样标注（频次与打过它的用例 / `phase` 分布 / 别的项目是否登记过）
+  与两个动作（关联到已登记接口 / 标为外部依赖并可写成前缀规则）。规则管理在同页。
+- **趋势页加「含仓库上报」开关**（边界 1），默认关。
+
+### 7.4 SDK 包 `apitrack-sdk`（发布 PyPI）
+
+**包名（2026-08-29 用户改名，原拟 `apitest-sdk`）**：分发名 `apitrack-sdk`，导入名
+`apitrack`，pytest 插件注册名 `apitrack`（于是关掉它就是 `-p no:apitrack`）。首版 `0.1.0`。
+
+PyPI 占用已核（2026-08-29）：`apitrack-sdk` / `pytest-apitrack` / `apitrack` /
+`apitrack-python` 四个名字**全部空闲**；原拟的 `apitest` 已被他人占用，这也是改名的一项
+额外收益。
+
+**只发一个分发包**：`apitrack-sdk`。
+- 主包叫 `apitrack-sdk` 而不是 `pytest-apitrack`，因为 pytest 只是首版**唯一**的自动挡，
+  而 SDK 的能力边界不止 pytest（边界 4 的降级阶梯里还有 `python -m apitrack` 的非 pytest
+  入口、二期的 `flush` 补投）。叫 `pytest-*` 会把包的定位锁死在一个框架上，之后要么改名
+  （用户侧要改一行 install），要么长期名不副实。
+- **`pytest-apitrack` 占位包已撤销**（2026-08-30 用户决定）。原计划注册它但不放任何代码
+  （只 `dependencies = ["apitrack-sdk"]`），理由是 pytest 生态的人找插件的第一反应是搜
+  `pytest-` 前缀，名字空着早晚被别人拿去发一个同名不同物的包并误装进接入方的 CI。撤销的
+  权衡：它的代价是**每次发版多一处版本号要同步**（占位包必须钉死主包同版），而收益只是一个
+  防御性的名字占用。**已知代价**：该名字仍然空闲，可能被他人注册；届时只能靠 README 与
+  接入指引页说明「正确的包名是 `apitrack-sdk`」。
+
+```
+apitrack-sdk-python/
+├── apitrack/
+│   ├── plugin.py        # pytest 插件：hook + contextvar 当前 item + phase 标记
+│   ├── patch/
+│   │   ├── requests.py  # HTTPAdapter.send
+│   │   └── httpx.py     # HTTPTransport.handle_request / async 版
+│   ├── collector.py     # 内存缓冲 + inventory 收集 + 上限降级
+│   ├── case.py          # @case 装饰器（可选，边界 7 的显式覆盖）
+│   ├── reporter.py      # sessionfinish 一次性 POST
+│   ├── masker.py        # 头部脱敏（边界 14）
+│   ├── config.py        # 环境变量 + CI 元数据探测
+│   └── cli.py           # 非 pytest 备用入口 + --dry-run
+├── tests/
+└── pyproject.toml       # [project.entry-points.pytest11] apitrack = "apitrack.plugin"
+```
+
+**环境变量前缀随包名改为 `APITRACK_`**：`APITRACK_URL` / `APITRACK_TOKEN` /
+`APITRACK_BODY_CAPTURE`。落盘目录（二期）为 `.apitrack/spool/`。前缀与包名一致是唯一能让人
+「看到变量名就知道是谁在读它」的做法，留 `APITEST_` 只会在两年后变成一处考古题。
+**不做 `APITEST_*` 的兼容读取**：这个包一次都还没发出去，没有存量用户需要兼容（AGENTS.md
+数据兼容原则同理）。
+Token 明文前缀同步改为 `apitrack_`（`ingest_tokens.token_prefix` 存的就是它的前 8 位）。
+
+**接入形状（边界 4 的硬指标）**
+
+```
+① pip install apitrack-sdk
+② CI 加两个 secret：APITRACK_URL / APITRACK_TOKEN
+③ pytest            ← 原样，命令不变
+```
+
+**发布约定**
+
+- **协议版本与包版本分开**：`protocol_version` 独立于 semver。SDK 装在用户仓库里、版本
+  不可控（`REPOSITORY_ARCHITECTURE.md` 3.1「最严格」），所以包可以随便发，协议只增不改。
+- **PyPI 发布走 Trusted Publishing（OIDC），不在 CI 里存长期 API Token**：长期 token 泄露
+  等于任何人都能往这个包名发一个版本，而它会被自动装进所有接入方的 CI。
+- **先发 TestPyPI 验一次真实 `pip install`**：`pyproject.toml` 写对但 entry point 没生效
+  这类错，只有真装一次才看得见——而 PyPI 的版本号不可重用，发错就烧掉一个号。
+- **调试路径必须每次带一个新版本号**（落地时补的一条）：TestPyPI 与 PyPI 一样版本号不可
+  重用，而重跑必需的 `skip-existing` 会把重复上传**静默跳过**，于是验证步骤装下来的是第一次
+  上传的旧包并绿着通过——调试时改了代码却什么都没验到。落地形状：手动触发时把版本改写成
+  `<主包版本>.dev<run 号>`（PEP 440 合法预发布号，跟 run 号递增），只上 TestPyPI 且不执行
+  PyPI 那一步；打 tag 才走真发布。验证步骤相应**钉死本次版本**并加 `--pre`（pip 默认跳过
+  预发布版本）。
+- **`requests` / `httpx` / `pytest` 全部不进 `dependencies`**：它们是用户已有的东西，声明
+  依赖会在用户环境里触发一次不必要的版本解析，甚至升级掉他们钉住的版本。`pytest` 进
+  `[project.optional-dependencies].dev`，两个 HTTP 库靠 `importlib.util.find_spec` 探测，
+  探不到就不打那个桩。
+- **`APITRACK_TOKEN` 缺失则完全 no-op**，连桩都不打。本地开发跑测试时 SDK 等于不存在——
+  否则第一个在自己机器上跑全量的人就会误报一次「全量快照」并触发对账。
+- **`--apitrack-dry-run`**：把这次会上报什么打到 stdout 而不发出去。第一次接入的人一定会
+  想看这个，而「先看一眼再开」是让人敢装一个拦截全部 HTTP 流量的包的前提。
+
+### 7.5 分批交付
+
+| 批次 | 内容 | 依赖 |
+|---|---|---|
+| **P4-1** | 迁移 034/035 + `models/types.ts` 行→API 映射 + `kind='ingest'` 放宽 | — |
+| **P4-2** | Token 哈希与仓库绑定：`lib/ingestAuth.ts` + 仓库单例路由 + Token CRUD | P4-1 |
+| **P4-3** | `POST /ingest` 主链路：幂等、upsert、关系表累积、records 批插、写 index | P4-2 |
+| **P4-4** | path 归一 + 按 `scope` 裁剪的全量对账（双闸门）+ diff / 未匹配 / 未归位计数 | P4-3 |
+| **P4-5** | 查询侧路由：用例树、单用例、上报记录、未归位用例 | P4-4 |
+| **P4-6** | 未匹配诊断视图：读时三样标注（含跨项目登记查询）+ link + 前缀规则 CRUD | P4-4 |
+| **P4-7** | 取消/重跑/回收三条路径显式拒绝 `ingest`（边界 1 末段） | P4-1 |
+| **P4-8** | 前端：树页（含未归位分组）+ 接入指引 + 上报记录 + 趋势开关 + 双语 i18n | P4-5 |
+| **P4-9** | 前端：未匹配诊断页 + 前缀规则管理 | P4-6、P4-8 |
+| **P4-10** | SDK：插件 + 两个桩 + collector（scope/phase）+ reporter + masker + dry-run | P4-3 |
+| **P4-11** | SDK 打包与发布：TestPyPI 验证 → PyPI Trusted Publishing（两个名字）→ 指引页填真实命令 | P4-10 |
+| **P4-12** | 文档回写：Spec 2.10.1 撤销 `http_req.py` 示例、交互 3.11.1 撤销「补登记接口」动作与 3.11.2 三步重写、`REPOSITORY_ARCHITECTURE.md` 3.4 补 `scope`/`phase` 与改包名 | P4-9、P4-11 |
+
+P4-7 与主链路无依赖，可并行。P4-10 只依赖 `/ingest` 可用，不必等前端。P4-6 与 P4-5 都依赖
+P4-4，但彼此独立。
+
+### 7.6 实现状态（2026-08-29）
+
+十二个批次全部实现，落点如下。
+
+| 批次 | 状态 | 落点 |
+|---|---|---|
+| P4-1 | **已实现** | `migrations/034_p4_repositories.sql`、`035_p4_ingest.sql`；`models/types.ts` 新增 `Repository` / `IngestToken` / `IngestRun` / `RepoTestCase` / `IngestRecord` / `IngestPathRule` 六个类型与映射，`ExecutionIndex.kind` 加 `'ingest'` |
+| P4-2 | **已实现** | `lib/ingestAuth.ts`（scrypt 签发与比对、`bindRepository` 的 409）、`routes/repositories.ts`（单例视图 / 改跟踪分支 / 解绑 / Token CRUD） |
+| P4-3 | **已实现** | `lib/ingest.ts`（单事务：校验 → 绑定 → run upsert → 用例 upsert → records 批插 → 关系累积 → 对账 → 写 index → 回填计数）、`routes/ingest.ts` 的 `POST /ingest` |
+| P4-4 | **已实现** | `lib/ingestPath.ts`（`endpointPath` / `buildEndpointMatcher` / `normalizePath` / `comparableTemplate`）、`lib/ingest.ts` 的 `reconcile` 与 `underScope` |
+| P4-5 | **已实现** | `routes/ingest.ts`：`/repo-cases`（按接口分组 + 覆盖统计）、`/repo-cases/unplaced`、`/repo-cases/:caseId`、`/ingest-runs`、`/ingest-runs/:runId` |
+| P4-6 | **已实现** | `routes/ingest.ts`：`/ingest-unmatched`（按归一模板聚合 + 三样读时标注）、`/ingest-unmatched/link`、`/ingest-path-rules` CRUD |
+| P4-7 | **已实现** | `routes/executionIndex.ts` 的取消路径显式拒绝 `ingest`（400 + 说明）；重跑与回收本就只作用于 `flow`/`suite` 的明细表，`ingest` 没有对应明细行，因此不存在第二处分派点 |
+| P4-8 | **已实现** | `components/RepoShell.tsx`（四页共用标签条）、`RepoCaseTree.tsx`、`RepoOnboarding.tsx`、`IngestRuns.tsx`；`Trends.tsx` 的「含仓库上报」开关（默认关）；`ExecutionRecords.tsx` 的来源筛选加 `ingest` 并把点击改为**跳去上报记录页**（`ingest` 的 `detailId` 指向 `ingest_runs`，按流程去读一定 404）；`i18n.ts` 双语约 130 键；侧栏「仓库用例」入口 |
+| P4-9 | **已实现** | `components/IngestUnmatched.tsx`（无计数徽标、无红点、无补登记入口）+ 同页前缀规则管理 |
+| P4-10 | **已实现** | `apitrack-sdk-python/apitrack/`：`plugin.py`（nodeid 拆分、contextvar 三阶段、scope 与过滤推导）、`patch/requests_patch.py`、`patch/httpx_patch.py`、`collector.py`、`reporter.py`、`masker.py`、`case.py`、`config.py`、`cli.py`；单测 + 子进程集成测试 |
+| P4-11 | **已实现** | `apitrack-sdk-python/pyproject.toml`（零 `dependencies`、`pytest11` entry point）、`.github/workflows/publish.yml`（双路径：手动触发发 `.devN` 到 TestPyPI 供调试 / 打 tag 走 TestPyPI → 行为验证 → PyPI Trusted Publishing）。**只发一个分发包**，`pytest-apitrack` 占位包已撤销（见 7.4）。**SDK 已独立建仓并推送**（`github.com/tyl1998/apitrack-sdk-python`，2026-08-30）；**已发布至正式 PyPI**（`v0.1.0`，2026-08-31，流水线全绿），前置留档见下 |
+| P4-12 | **已实现** | Spec 2.10.1 改写（撤销 `http_req.py`、补零改动接入与范围级对账）、交互 3.11 全节重写（三步接入、三种对账状态、新增 3.11.4 未匹配诊断）、`REPOSITORY_ARCHITECTURE.md` 2.3 与 3.4 改写并改名 |
+
+**落地时相对 7.0/7.1/7.2 的六处收窄**（都是执行时才暴露的细节，记下而不是悄悄改掉）：
+
+1. **协议 v1.0 增补的是四个字段，不是三个**。7.2 记了 `run.scope`、`records[].phase`、
+   `run.sdk`，但漏了 **`inventory[].result`**。用例结果不能由 `records[].passed` 推出来：
+   一条被 `skip` 的用例、或只断言本地计算的用例，records 里是空的，按「没有失败的请求就算
+   通过」会把它算成绿的；一条断言「404 是预期行为」的用例反过来会被算成红的。理由与 `scope`
+   同款——首版漏掉之后再加，就要面对「老 SDK 没报，那它算通过吗」这个两个答案都错的问题。
+   缺省时仍从 records 回退推断，所以 3.4 草图形状的上报也能进来。
+2. **`ingest_records.path_normalized` 在未匹配时也要填**。7.1 原写「未匹配时 path_normalized
+   亦为空」，落地时改为填**通用归一**的结果（`/users/abc-123` → `/users/{id}`）。未匹配诊断
+   视图要按频次聚合、要跟别的项目登记过的路径比对，两件事都需要一个稳定的分组键；按
+   `path_raw` 聚合的话，`/users/1`…`/users/900` 会长成 900 行各出现一次的列表，那张表就再也
+   读不出「哪条路径最常被打到」。
+3. **`ingest_tokens.token_prefix` 存的是「`apitrack_` + 随机段前 8 位」，不是「明文前 8 位」**。
+   7.4 的字面写法会得到常量 `apitrack`——它辨认不了任何东西，也无法把 `/ingest` 鉴权时的
+   scrypt 候选集收窄。
+4. **`ingest_runs` 的计数分成三类刷，不是「每次都刷」**。重投同一份 payload 时用例已经全部
+   存在，diff 三列（`added/removed/updated`）算出来必然是「+0 −0 ~N」——照它回写就会把上报
+   记录页里已经定局的「+2 −1 ~33」抹掉，而 diff 描述的是「那一次上报改变了什么」，不该随
+   重投次数变化。落地形状：**diff 三列只在首次写入时算**（靠 `xmax = 0` 判断 upsert 走的是
+   INSERT 还是 UPDATE），**请求数与未匹配数按真正插进去的行累积**（分批重投时会增长，完全
+   重复的重投增量为 0），**其余每次重算**。同理 `matched` / `unmatched` 只数
+   `ON CONFLICT DO NOTHING ... RETURNING` 真的返回的行，否则一次重投会让未匹配数凭空翻倍。
+5. **跨项目登记标注要按「占位符无名化」的形状比对**。本项目未匹配记录归一出的是
+   `/users/{id}`（通用归一不知道别人管它叫什么），而用户中心那边登记的可能是 `/users/{userId}`
+   ——按原样比，这条标注几乎永远为空，而它空着与「真的没人登记」看起来一样。落地为
+   `lib/ingestPath.ts` 的 `comparableTemplate`（任何占位符段归成 `{}`），**只服务于诊断视图
+   的显示，不参与统计、不落库**。
+6. **归一进执行记录页 = 能筛出来 + 能点进去，但「点进去」是跳转不是抽屉**。边界 1 说「统一
+   详情入口一处不改就能看到仓库模式」，落地时发现前端那一处是按 `kind` 分派抽屉的：
+   `ingest` 的 `detailId` 指向 `ingest_runs`，按流程去读 `flow_executions` 必然 404。而它的
+   明细本来就在上报记录页（那里才有 scope、对账状态与请求明细），所以点击改成跳过去。
+   `?parent=` 深链指到一条 `ingest` 时同样先摘参数再跳，否则浏览器回退回来会再试一次。
+
+**曾未做的一项（2026-08-31 已完成）**：**PyPI / TestPyPI 的实际发布**。工作流就位、SDK
+独立建仓推送后，三步人工前置已全部执行：TestPyPI 与 PyPI 各登记 pending publisher、
+GitHub 建 `testpypi` / `pypi` environments、手动触发在 TestPyPI 调试到绿后打 tag `v0.1.0`
+触发真发布（全流水线全绿，见 7.7 验收结论）。原始三步说明留档如下：
+
+1. **两个站点各一条 pending publisher**（包还没发过，所以用「发布前先登记」）：TestPyPI 与
+   PyPI 的 *Publishing* 页各登记 `apitrack-sdk`。四项元数据必须与工作流逐字一致：
+   owner `tyl1998` / repo `apitrack-sdk-python` / workflow `publish.yml` / environment
+   `testpypi` 或 `pypi`。错一个字符的表现是 OIDC 拒绝，报错长得像权限问题。
+2. **GitHub 仓库 Settings → Environments 建 `testpypi` 与 `pypi`**。job 上的 `environment:`
+   与登记的 environment name 必须对上，否则 OIDC 的 subject 不匹配。
+3. **先用手动触发在 TestPyPI 上调试到绿**（Actions 页 Run workflow，每次自动发一个
+   `.devN`，不烧正式版本号），再**打 tag 触发真发布**：`git tag v0.1.0 && git push --tags`。
+   建议同时给 `pypi` environment 加一个 required reviewer——那是最后一道人工闸门，即使误打
+   了 tag 也会停下来等确认。
+
+包已发出（`v0.1.0`，2026-08-31）：接入指引页里的 `pip install apitrack-sdk` 从正式 PyPI
+安装；验收门槛 13 的「唯一无法在本地验证」一条已由发布流水线与 PyPI 上线事实闭环。
+
+**同轮修掉的四处工作流缺陷**（写的时候没想周全，都会在包完全正常的情况下误判或漏判）：
+
+- **`verify` 的判据从「读 `--trace-config` 的输出文本」改成两条行为判据**。原判据有两个
+  假阳性来源：那段输出里本来就有安装路径 `.../site-packages/apitrack/plugin.py`，
+  `grep apitrack` 会被它蒙过去；措辞还随 pytest 版本变。现在改为 ① `--apitrack-dry-run`
+  出现在 `--help` 里（证明 `pytest_addoption` 跑过 = entry point 被发现并加载），
+  ② dry-run 真打出标记行且 payload 里那条探针用例的 `name` 取自 docstring 首行（证明
+  `configure`/`sessionfinish` 都跑到、采集与边界 7 的映射也是对的）。
+- **探针目录里要放一个真能被收集到的测试**。原来在空的 `/tmp` 里跑 `--collect-only`，
+  pytest 收不到测试时返回退出码 5（`EXIT_NOTESTSCOLLECTED`）——它没让 job 红纯属侥幸：
+  `| tee` 吃掉了退出码，而 Actions 默认 shell 没开 `pipefail`。
+- **TestPyPI 那一步加 `skip-existing: true`，PyPI 那一步刻意不加**。同一个 tag 重跑（第三步
+  失败后重试是常态）时 TestPyPI 会因版本号重复整个拒绝，而这次上传本身没问题；真发布重复
+  则必须硬失败。另外 `verify` 装的是**钉死本次版本**的包而不是「TestPyPI 上最新的」，否则
+  它可能装到上一次发布的包并绿着通过，完全没验到本次改动。
+- **调试路径每次带一个新的 `.devN` 版本号**。上面那条 `skip-existing` 单独存在时会制造一个
+  更隐蔽的问题：调试时改了代码却复用 `0.1.0`，上传被静默跳过，`verify` 装下来的是第一次上传
+  的旧包并绿着通过。两条一起才成立——`skip-existing` 让 tag 重跑可行，`.devN` 让调试跑不会
+  复用版本号。
+
+**另加的一道闸门**：tag 路径在构建前检查 **tag 与 `pyproject.toml` 的 `version` 逐字一致**。
+不查的话，打 `v0.2.0` 但忘改 `pyproject.toml` 会走完整个 TestPyPI 上传，然后在 `verify` 里
+花 100 秒重试一个永远装不到的版本才失败，而报错指向索引延迟、完全看不出真实原因。
+
+**本地已验证的部分**（不需要真跑 Actions 就能确认的）：把 `build` job 里那两段 shell/python
+原样抽出来在本地执行，三条分支的行为都对 —— tag 与 pyproject 一致时输出
+`version=0.1.0 is_release=true`，不一致时报 `::error::tag 0.2.0 != pyproject version 0.1.0`
+并以退出码 1 中止，手动触发时输出 `version=0.1.0.dev13 is_release=false`；版本重写那一步能把
+`pyproject.toml` 的 `version` 行正确改写成 `.devN` 且恰好替换一处。另外用真实的
+`build_payload` 构造了一份 dry-run 输出，确认 `verify` 里那两条 `grep` 判据都能命中
+（含中文 docstring 那一条）。**未验证**：TestPyPI 上传、索引传播延迟的重试、干净 venv 里的
+entry point 加载——这三段只有实际发布时才会被执行到。
+
+### 7.6.1 P4 后续增量：快速登记接口（2026-08-30）
+
+用户验收后反馈的两件事之一：仓库模式的覆盖分母是已登记接口，而仓库模式团队把接口写在
+代码里、本来就不进平台——为了统计再录入一遍，接入成本被这最后一步吃掉。同轮的另一件
+（覆盖基数没按 path 去重）是缺陷，修法记 `issue_fix/问题记录-P4覆盖统计基数未去重.md`，
+不在此展开；但它带出一个口径决定需要记下：`/repo-cases` 的分子分母按**形状**
+（`coverageShapeKey`，method + 占位符无名化路径）去重计数，树上的接口行仍是行口径——
+重复登记时行数 ≥ 形状数，两处对不上是登记侧该清理的信号。
+
+**两个入口，同一套「最小接口」语义**（仓库模式平台不执行请求，这批接口的职责就是进
+覆盖分母；headers/body/auth 全空，要调试时在接口管理页补全）：
+
+- **未匹配区一键登记**（`POST /ingest-unmatched/register`，修订边界 20）：单行显式动作。
+  url 记 `{{baseUrl}}` + 模板，守住「绝对地址或含 `{{`」的 URL 契约。历史归位按**匹配
+  语义**筛——用新模板建单形状匹配器逐条试未匹配记录的 `path_raw`（与 ingest 同一条
+  代码路径），所以模板可以从 `/users/abc` 改成 `/users/{username}`：通用归一只认
+  「长得像 id」的段，改模板正是补它的盲区，否则下一轮 `/users/bob` 又掉回未匹配。
+  同形（同 method + 归一形状）已登记时 409，让人改用「关联」。被前缀规则静默的记录
+  一并归位：静默只是显示规则，登记是一次显式决定。
+- **接口导入弹窗第三格式「路径清单」**（前端 `parsePaths` → 既有 `/endpoints/import`）：
+  每行 `METHOD /path [名称]`，`#` 注释；解析严格，认不出的行抛行号与原文而不是悄悄
+  丢掉（悄悄丢掉的行不会出现在任何计数里）。冲突判定沿用 import 的精确 `(method, url)`
+  ——清单生成的 url 形状一致，精确串即同形。
+
+**刻意不做的**：批量补登记 /「全部处理」——清空未匹配列表的形状，边界 20 否掉的正是它，
+这次没有翻案；登记完整定义（headers/body 等）——那是接口模式的场景，不在未匹配区顺带做。
+
+### 7.6.2 P4 后续增量：参数化场景维度最小可见（2026-08-30）
+
+用户提出讨论：「case 做了参数化、场景不一样，是不是就拿不到 case 的名称了」。结论：
+**用例名（函数级）拿得到**，且是边界 7 的刻意设计（参数表一改不能让树换一批用例）；
+真正缺的是**场景维度**——per-param 结果在 SDK collector 里按 failed 优先合并成一条
+（验收门槛 4 写的「两个子结果」实际落成了合并结果），场景名只以 pytest param id 的
+形式存在于 records，且 param id 质量参差（非字符串参数是 `scene0` 这类自动 id）。
+
+本次只做两个纯增益小修；**结构化子结果（Spec 原案的 `IngestCaseResult`，按
+`(run, case_key, param_id)` 存结果）明确推迟**，等第一个真实仓库抱怨「找不到哪个
+场景挂了」再做——现在做是在猜需求。场景**命名**（`@case` 扩展 param_names 之类）
+同样不做：约定性强，容易变成没人填的字段。
+
+- 上报记录 run 明细的请求表加「场景」列（`records[].param_id` 显示成 `[vip]`）：
+  数据本就在 API 里（`mapIngestRecord` 一直带 `paramId`），纯展示补齐。
+- SDK `describe()` 兜底名从 `item.name` 改为 case_key 的函数名段：参数化子项的
+  `item.name` 带 `[param]` 后缀而 inventory 只登记一次，名字会被第一个参数污染
+  （缺陷记录见 `issue_fix/问题记录-SDK参数化用例兜底名污染.md`）。
+
+### 7.6.3 P4 后续增量：用例详情抽屉（2026-08-30）
+
+用户确认的形态：**抽屉**而非独立路由（原交互文档路由表预留过 `repo-cases/:caseId`）——
+点树上的用例行就地打开，不打断树的浏览/折叠状态。同轮确认三件事：场景级红绿结果
+（IngestCaseResult）**继续推迟**；上报的幂等 commit 语义澄清为「执行时所在 git 工作树的
+HEAD」（monorepo 各系统共享同一 commit，无目录级 commit 概念；跨项目幂等键按各自的
+repository 行隔离，本地无 ci_run_id 的两系统上报互不顶掉）；**pytest-xdist 当前不支持**
+——每个 worker 各自上报，records 的 seq 从各自 0 起而互相冲突被丢（case/结果仍对），
+修复方向是 controller 汇总（worker 落临时文件 + `pytest_configure_node` 传 run id +
+合并重排 seq 后单次上报），未排期。
+
+- 内容两轮定版（2026-08-30 同日第二轮：用户看过后砍掉请求步骤与涉及接口——树本身已
+  回答「在哪个接口下」，请求记录 run 明细页已有；用户想要的步骤是 allure 式用例内
+  步骤，桩挂传输层看不见 `allure.step`，**明确不采**，留作将来 SDK 的独立采集项）：
+  身份事实一块（case_key/文件/标签/最近执行，`.detail-facts` 清单式布局）+ **参数化
+  场景**（records 里 distinct `param_id`，后端 `GET /repo-cases/:caseId` 聚合返回，
+  只有参数化用例显示这一行）。
+- 配套缺陷修复：树表列宽随展开跳动（auto 布局下 colSpan 的接口行与子行一起参与列宽
+  计算）→ `grid-fixed`（table-layout: fixed + colgroup 显式宽度）；截断单元格补 title
+  悬停（记录见 `issue_fix/问题记录-仓库用例树列宽跳动.md`）。
+- 全量上报的负担边界同轮澄清（无代码变更）：每次上报 = 逐条 upsert 全量 case
+  （`upsertCases` 为单条循环，可优化为分块多行 INSERT——尚未做）+ 本轮请求数的 records
+  分块插入；长期增长点是 `ingest_records` 只增不减（不可变日志，回收显式拒绝 ingest），
+  保留策略是将来的独立设计题。monorepo 无关目录变更是否重报由 CI path filter 决定，
+  平台侧可做 inventory 指纹短路（未做）。
+
+### 7.6.4 P4 后续增量：上报记录降噪过滤（2026-08-30，两处口径）
+
+用户要的是**run 展开后的记录明细**只看有变动的（首轮实现成了筛 run 列表，用户纠正；
+列表过滤保留不删）：
+
+- **run 明细过滤（`GET /ingest-runs/:runId?changes=1`，用户确认的语义）**：记录只留
+  未匹配（`endpoint_id IS NULL`）+ **本轮新增的覆盖**（`repo_case_endpoints.
+  first_seen_run_id = 本 run` 的关系对应的记录——新用例挂上接口、或老用例第一次挂上
+  这个接口）。绝大多数记录是既有关系的重复，「有变动」是扫明细时唯一值得看的。
+  **消失（−N）在记录层没有行**——那些请求没发生，由 diff 列汇总。过滤后为空显示专门
+  空态；截断提示改用当前过滤口径的 total（meta），不再拿 `run.requestCount` 比。
+- **run 列表过滤（`changed`/`unmatched`，OR 语义）**：只看「用例有变动（新增或消失
+  > 0）」或「有未匹配」的 run；`updated`（~N）刻意不算变动——改名也会推高它。
+
+同轮 UI 修复：截断单元格的原生 `title` 悬停换成 antd Tooltip（`ui.tsx` 的 `Tip` 原语，
+100ms 出现）——原生 title 延迟 ~1 秒且不可调，用户嫌慢（记录见
+`issue_fix/问题记录-悬停提示延迟过长.md`）。
+
+### 7.7 验收门槛
+
+1. **零改动接入**：一个既有 pytest 仓库只做「装包 + 两个环境变量」，`pytest` 命令不变，
+   跑完后用例出现在树上，`name` 取自 docstring 首行、`description` 取自其后、`file_path`
+   是仓库相对路径；没有 `conftest.py` 改动，没有 `-p` 参数。
+2. **不影响执行**：同一仓库接入前后的 `pytest` 墙钟耗时差在噪声范围内；`APITRACK_TOKEN`
+   未设时不打桩；把上报地址改成一个黑洞端口后测试仍然全绿、退出码不变、只多一条 warning。
+3. **流不被吃**：一个用 `stream=True` 逐块读响应的用例，接入后读到的内容与接入前逐字节相同。
+4. **一对多**：一个用例先 `POST /login` 再 `POST /orders`（登录在 fixture 里），结果是
+   `POST /orders` 下挂着这条用例、`POST /login` 显示「已覆盖但无专属用例」；参数化用例
+   `[vip]` / `[normal]` 在树上是**一条**用例、两个子结果。
+5. **幂等**：同一份 payload 重投三次，`ingest_runs` 只有一行，`ingest_records` 不翻倍，
+   用例的 `last_result` 不变。
+6. **范围级对账（边界 11）**：
+   - `pytest tests/order/` 全量跑，删掉 `tests/order/` 下缺失的用例，**`tests/user/` 下的
+     用例一个都不动**；上报记录页显示这次的 scope 与对账范围。
+   - `pytest tests/order/ -m smoke` **不删**任何用例（`reconciled=false`，记录页标「不参与
+     对账」）。
+   - 一个被 `@pytest.mark.skip` 的用例在全量跑后**仍是 `active`**、接口关系保留上一轮的
+     （对账只看 inventory，不看 records）。
+   - 软删的用例历史与最后结果仍可读，下次再出现自动回 `active`。
+   - 非跟踪分支上的全量跑不对账。
+7. **越权**：拿 A 项目的 Token 报 B 仓库的 `git_url` 得到 409 且消息说清已绑的是哪个；
+   吊销后的 Token 立即 401。
+8. **未匹配诊断视图（边界 20）**：上报一个未登记的路径后，它出现在诊断视图而**不自动建
+   endpoint**；页面上**没有**待处理计数、红点与「全部处理」，**也没有**「补登记接口」按钮；
+   每行能看到频次、`phase` 分布与「别的项目登记过此路径」的项目名；标一条 `/api/v2/user/`
+   前缀规则后同类记录从列表消失，而**覆盖率数字前后完全不变**；删掉规则后它们重新出现
+   （静默是读时算的，历史记录未被改写）。
+9. **未归位用例（边界 21）**：一个只调用了外部系统接口的用例出现在「未归位用例」分组里，
+   且「上报了 N 条用例」与「树上各接口用例数之和 + 未归位数」对得上。
+10. **脱敏**：带 `Authorization` 与 `X-Api-Token` 的请求，平台侧存的 `request_summary` 里
+    只有键名没有值；`APITRACK_BODY_CAPTURE` 未开时不存任何 body。
+11. **归一与口径**：执行记录页能按来源筛出仓库上报并点进详情；`reports/trend` 默认**不**
+    含它，打开开关后才含；`/dashboard` 的覆盖率数字**保持不变**（边界 2）。
+12. **取消/重跑/回收**对一条 `ingest` 索引返回明确的 400，不是静默无操作。
+13. **PyPI**：从干净虚拟环境 `pip install apitrack-sdk` 后，插件**自动生效**且未安装
+    `httpx` 的环境不报错。判据不看 `--trace-config` 的输出文本（那里本来就有安装路径里的
+    `apitrack` 字样，且措辞随 pytest 版本变），而是两条行为判据：`--apitrack-dry-run` 出现在
+    `pytest --help` 里，且 dry-run 的 payload 里那条探针用例的 `name` 取自 docstring 首行。
+
+**验收结论**：2026-08-31 用户验收**通过**（P4-1 ~ P4-12 全量，含 7.6.1–7.6.4 四个
+验收后增量与 SDK 首轮 TestPyPI 校验修复）。门槛 13 的 PyPI 实际发布已于同日完成：tag
+`v0.1.0` 触发全流水线（test ×3 → build → TestPyPI → verify ×3 → pypi）全绿，
+`pip install apitrack-sdk` 生效（`pypi.org/project/apitrack-sdk/0.1.0`）。验收期间发现
+的缺陷已全部修复并归档至 `issue_fix/`（索引见 `issue_fix/README.md`：P4 覆盖统计基数
+未去重、SDK 参数化用例兜底名污染、仓库用例树列宽跳动、悬停提示延迟过长、P4 仓库模式
+SDK 首轮校验）。
 
 ---
 
@@ -2599,7 +3461,7 @@ POST /worker/complete   (任务完成)
 
 **链路**: 树行勾选 → 「触发 CI 任务」→ 校验(仓库已绑 + 有任务 + 有在线 Worker) → 选任务
 (默认推荐「最近成功跑过并上报过这些 case_key 的任务」，其次默认任务) → 触发 run，
-JobSpec 携带 `case_filter: { case_keys: [] }` → Runner 注入 env `APITEST_CASE_KEYS` + CLI 参数
+JobSpec 携带 `case_filter: { case_keys: [] }` → Runner 注入 env `APITRACK_CASE_KEYS` + CLI 参数
 → 用户脚本只跑选中 → SDK/报告回传 → 树上 `last_result` 刷新，未报的标 `not_run`。
 
 **支持 (平台侧开箱即用)**:
@@ -2612,7 +3474,7 @@ JobSpec 携带 `case_filter: { case_keys: [] }` → Runner 注入 env `APITEST_C
 - 触发时可顺带填任务 `parameters`。
 
 **依赖用户侧 (平台传参，效果取决于脚本)**:
-- 「只跑选中」本身需脚本调用 SDK `apitest.select(case_keys)` / `--apitest-case-keys`；无视筛选 = 全量跑，
+- 「只跑选中」本身需脚本调用 SDK `apitrack.select(case_keys)` / `--apitrack-case-keys`；无视筛选 = 全量跑，
   平台以 `not_run` 兜底，不误报成功。
 - case_key ↔ 可执行单元映射: SDK 装饰器天然带 key；裸 pytest 等需用户适配。
 - 前置条件 (依赖/数据/登录态) 用户侧保证；`cache_config` 命中才「快」。
@@ -2732,7 +3594,7 @@ mcp_tool_calls     (id, flow_execution_id, tool_name, args JSONB, result JSONB)
 | M1     | P1      | Flow 编排 + 测试用例     | 可创建 DAG 并执行, 结果可查                      |
 | M2     | P2      | 数据源 + 流程节点补全 + 套件 + Mock | 数据源可连可跑命名 SQL；流程支持脚本/条件/数据库节点与并行；可批量执行 + 模拟响应 |
 | M3     | P3      | 套件调度 + Webhook 触发 + 套件执行报告 + 告警 + 趋势 | 定时执行（漏跑不补但留痕）+ HMAC 触发 + 报告名 `套件名_日期` 且带触发源与耗时 + 失败通知 + 趋势图 |
-| M4     | P4      | SDK 上报                 | Python SDK 可安装使用                            |
+| M4     | P4      | 仓库用例上报 + `apitrack-sdk` | 既有 pytest 仓库「装包 + 两个环境变量 + 原样跑」即可让用例挂上覆盖树；范围级对账不误删 |
 | M5     | P4.5    | Runner                   | 可拉取代码执行并查看结果                         |
 | M6     | P5      | 平台 MCP 对外暴露        | 外部可通过 MCP 创建接口/用例/DAG (统一上线) |
 | M7     | P6      | 性能 + 插件              | 支持 1000+ 并发执行                              |

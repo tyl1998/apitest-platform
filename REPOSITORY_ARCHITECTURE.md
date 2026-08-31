@@ -1,8 +1,10 @@
 # 接口自动化平台 — 代码仓库划分与跨仓协议
 
-> 版本: v1.0
+> 版本: v1.1
 > 状态: Draft
-> 基于: API_AUTOMATION_SPEC.md v1.2 / FRONTEND_INTERACTION_DESIGN.md v1.2
+> 基于: API_AUTOMATION_SPEC.md v1.9 / FRONTEND_INTERACTION_DESIGN.md v2.0
+>
+> **v1.1（P4 落地）**：2.3 的 SDK 仓改名 `apitrack-sdk-python`（分发名 `apitrack-sdk`，导入名 `apitrack`，环境变量前缀 `APITRACK_`）并重写为零改动接入的形状（pytest 插件 + 传输层打桩 + 零依赖）；3.4 上报协议冻结为 v1.0，相对初版草图增补 `run.scope`、`run.sdk`、`records[].phase`、`inventory[].result` 四个字段，并补齐平台侧的双闸门对账、关系表归属与响应码表。
 
 ---
 
@@ -14,7 +16,7 @@
 |---|------|----------|--------|---------|
 | 1 | **apitest-server** | Node.js + TypeScript (monorepo) | 容器镜像 | **P0** |
 | 2 | **apitest-web** | React 18 + TypeScript | 静态资源 (CDN) | **P0** |
-| 3 | **apitest-sdk-python** | Python | PyPI 包 | P4 |
+| 3 | **apitrack-sdk-python** | Python | PyPI 包 (分发名 `apitrack-sdk`) | P4 ✅ 已建仓 |
 | 4 | **apitest-runner** | Node.js + 容器 | 容器镜像 (可自托管) | P4.5 |
 
 > **P0 只需建 1、2 两个仓**。3、4 分别在「仓库用例(上报式)」与「自研 Runner」阶段才需要。
@@ -25,7 +27,7 @@
 
 | 边界 | 说明 | 对应仓库 |
 |------|------|---------|
-| **语言/生态不同** | 无法共享构建与依赖体系 | `apitest-sdk-python` |
+| **语言/生态不同** | 无法共享构建与依赖体系 | `apitrack-sdk-python` |
 | **发布渠道不同** | PyPI / CDN / 镜像仓库，各自版本节奏 | 3、2、4 |
 | **使用者不同** | 外部开发者依赖 or 客户自托管部署 | 3、4 |
 | **团队/权限不同** | 前后端分离协作，代码可见性隔离 | 1、2 |
@@ -46,7 +48,7 @@
               上报协议 ▲  │       │  ▲ Worker 协议
                        │  │       │  │
         ┌──────────────┴┐ │       │ ┌┴──────────────┐
-        │apitest-sdk-   │ │       │ │apitest-runner │
+        │apitrack-sdk-  │ │       │ │apitest-runner │
         │python         │ │       │ │               │
         │(用户测试仓库内)│ │       │ │(可部署客户内网)│
         └───────────────┘ │       │ └───────────────┘
@@ -54,7 +56,7 @@
                     PostgreSQL / Redis / Object Store
 ```
 
-- **箭头方向 = 谁主动发起连接**。`apitest-runner` 与 `apitest-sdk-python` 均**主动外连平台**，平台永不反向连接它们。
+- **箭头方向 = 谁主动发起连接**。`apitest-runner` 与 `apitrack-sdk-python` 均**主动外连平台**，平台永不反向连接它们。
 - 因此 Runner 与 SDK 都可运行在 NAT/内网之后，**无需开放任何入站端口**。
 
 ---
@@ -154,36 +156,47 @@ apitest-web/
 
 ---
 
-### 2.3 `apitest-sdk-python` — 采集 SDK
+### 2.3 `apitrack-sdk-python` — 采集 SDK
 
 **定位**: 发布到 PyPI，由**外部开发者**安装在**他们自己的测试仓库**中，用于上报仓库用例。
 
+**命名 (P4 落地时定稿)**：仓库 `apitrack-sdk-python`，分发名 **`apitrack-sdk`**，导入名 `apitrack`，pytest 插件注册名 `apitrack` (于是关掉它就是 `-p no:apitrack`)。环境变量前缀 `APITRACK_`。**只发这一个分发包**：曾计划另注册占位包 `pytest-apitrack` 以防同名不同物的包被误装进接入方 CI，但它的代价是每次发版多一处版本号要同步，权衡后撤销 (2026-08-30)，该名字不再占用。
+
 ```
-apitest-sdk-python/
-├── apitest_sdk/
-│   ├── client.py         # 包装的 HTTP 客户端 (自动采集 endpoint/状态码/耗时)
-│   ├── case.py           # @case 装饰器 (用例名 / tags / case_key)
-│   ├── collector.py      # 进程内缓冲 + 用例清单(inventory) 收集
-│   ├── reporter.py       # 运行结束批量 POST 上报
-│   └── config.py         # Token / base_url / CI 元数据自动探测
+apitrack-sdk-python/
+├── apitrack/
+│   ├── plugin.py         # pytest 插件: hook + contextvar 当前用例 + phase 标记
+│   ├── patch/
+│   │   ├── requests_patch.py  # HTTPAdapter.send
+│   │   └── httpx_patch.py     # HTTPTransport.handle_request / async 版
+│   ├── collector.py      # 内存缓冲 + inventory 收集 + 上限降级
+│   ├── case.py           # @case 装饰器 (可选的显式覆盖)
+│   ├── reporter.py       # sessionfinish 一次性 POST (标准库 urllib)
+│   ├── masker.py         # 头部脱敏
+│   ├── config.py         # 环境变量 + CI 元数据探测
+│   └── cli.py            # 非 pytest 备用入口 (python -m apitrack) + doctor
 ├── tests/
-└── pyproject.toml
+└── pyproject.toml        # [project.entry-points.pytest11] apitrack = "apitrack.plugin"
 ```
 
 **核心职责**
 
 | 职责 | 说明 |
 |------|------|
-| 用例标记 | `@case("创建订单-正常", tags=[...], key=...)` |
-| 请求采集 | endpoint (method + path 模板)、请求摘要、状态码、耗时、断言结果 |
-| 清单收集 | 枚举全部用例形成 inventory，标记 `is_full_inventory` |
-| CI 元数据探测 | 自动读取 commit / branch / ci_run_id (GitHub Action 等) |
-| 批量上报 | 运行结束一次性 POST 到平台唯一上报接口 |
+| 零改动接入 | 装包 + 两个环境变量 + 原样跑 `pytest`。插件靠 `pytest11` entry point 自动加载 |
+| 请求采集 | **传输层打桩** (`requests`/`httpx`)，采 method、raw path、状态码、耗时、脱敏后的头键名、`phase` |
+| 用例身份 | `case_key` = nodeid 去掉 `[...]`；`name` = docstring 首行；两者分开 |
+| 清单收集 | collect 之后即定 inventory，并按 pytest 参数推出 `scope` 与「范围内是否有过滤」 |
+| CI 元数据探测 | commit / branch / ci_run_id (GitHub Actions、GitLab CI、Jenkins) |
+| 批量上报 | `pytest_sessionfinish` 一次性 POST 到平台唯一上报接口 |
 
 **关键约束**
-- **必须向后兼容**：用户安装的 SDK 版本平台无法控制，老版本 SDK 不得因平台升级而失效。
-- 上报失败**不得中断用户测试流程**（降级为警告日志）。
-- 未来多语言扩展预留：`apitest-sdk-js` / `apitest-sdk-java`。
+- **必须向后兼容**：用户安装的 SDK 版本平台无法控制，老版本 SDK 不得因平台升级而失效。协议版本与包版本**分开**：包可以随便发，协议只增不改。
+- **不影响用例执行**：桩体只往内存 list 追加一条 dict，全程零网络；**绝不读响应 body** (`stream=True` 与 httpx 的未读流被读一次就被吃掉了)；延迟用桩自己的 `perf_counter` 差。
+- 上报失败**不得中断用户测试流程**：5 秒超时 + 一次重试，失败只 warning，**不动退出码**。桩自身连续失败 3 次自我卸载。
+- **零依赖**：`requests` / `httpx` / `pytest` 都不进 `dependencies` (声明依赖会在用户环境里触发一次不必要的版本解析，甚至升级掉他们钉住的版本)；两个 HTTP 库靠 `importlib.util.find_spec` 探测，上报本身用标准库 `urllib`。
+- `APITRACK_TOKEN` 缺失时**完全 no-op**，连桩都不打——否则第一个在自己机器上跑全量的人就会误报一次「全量快照」并触发删除对账。
+- 未来多语言扩展预留：`apitrack-sdk-js` / `apitrack-sdk-java`。
 
 ---
 
@@ -320,51 +333,77 @@ timeout_sec:   int
 
 ### 3.4 上报协议 (server ↔ sdk)
 
-**平台只暴露一个入口**: `POST /ingest`，项目级 API Token 鉴权。
+**平台只暴露一个入口**: `POST /ingest`，项目级 API Token 鉴权 (`Authorization: Bearer apitrack_<token>`)。
 
-**请求结构**
+**请求结构 (协议 v1.0，P4 落地时冻结)**
 
 ```yaml
 protocol_version: "1.0"          # 显式版本, 平台据此路由解析逻辑
 run:
   repo:              { git_url, provider }
   commit_sha:        string
-  branch:            string
-  ci_run_id:         string       # 幂等键组成部分
+  branch:            string       # 空串 = 无法探测；平台侧于是永不对账
+  ci_run_id:         string       # 幂等键组成部分；本地跑用空串 (不是 null)
   ci_run_url:        string
-  is_full_inventory: bool         # ★ 决定是否触发删除对账
-inventory:                        # 该 commit 下存在的全部用例
-  - case_key:  string             # 默认 模块/文件::用例名
-    name:      string
-    file:      string
-    tags:      [string]
-    endpoint:  "POST /orders"     # 显式声明, 用于归位
+  scope:             [string]     # ★ 本次跑的范围, 相对仓库根；空数组 = 全仓
+  is_full_inventory: bool         # ★ 含义是「这个范围内没有过滤」
+  sdk:               { name, version }   # ★ 平台回 warnings 提示升级时要知道对方是谁
+  started_at:        string       # ISO-8601, 可选
+  finished_at:       string
+inventory:                        # 该 commit 下存在的全部用例 (范围内)
+  - case_key:    string           # pytest nodeid 去掉 [...]；@case(key=…) 可覆盖
+    name:        string           # 显示名: @case("…") > docstring 首行 > 函数名
+    description: string           # docstring 首行之后全部
+    file:        string           # 仓库根的相对路径, 对账按 scope 裁剪时用它
+    tags:        [string]
+    result:      passed|failed|skipped|unknown   # ★ 用例级结果
 records:                          # 本次实际执行的请求记录
-  - case_key:    string
+  - case_key:    string           # 空串 = 没有归属用例 (session 级 fixture)
     param_id:    string           # 参数化子项
+    phase:       setup|call|teardown   # ★ 只有 call 阶段建立用例关系
+    seq:         int              # 批次内幂等键: UNIQUE(run_id, seq)
     method:      string
     path_raw:    string           # 实际路径, 平台侧归一为模板
     status_code: int
     latency_ms:  int
-    passed:      bool
+    passed:      bool             # **这一个请求**的结果, 不是用例的结果
     error:       string
+    request_summary: object       # 脱敏后的头键名 / 响应大小 / 可选的截断 body
 ```
+
+**★ 标记的四个字段是相对本节初版草图的增补，全部必须进 v1.0**：
+
+- `run.scope` 与 `records[].phase`：协议只增不改 (3.1 最严格一档)，首版漏掉之后再加，就要面对「老 SDK 报上来的没有 scope，那它算全仓全量吗」——这个问题的两个答案一个会误删用例、一个会让对账永久失效，没有安全解。
+- `inventory[].result`：草图只有 `records[].passed`，那是**每个请求**的结果，而用例结果不能由它推出来 —— 一条被 `skip` 的用例、或一条只断言了本地计算的用例，records 里是空的，按「没有失败的请求就算通过」会把它算成绿的；一条断言「404 是预期行为」的用例反过来会被算成红的。
+- `run.sdk`：平台要把升级提示回给具体的谁。
 
 **平台侧处理约定**
 
 | 环节 | 规则 |
 |------|------|
-| **鉴权** | 项目级 Token；首次上报绑定唯一仓库，此后校验 `git_url`，不一致直接拒绝 |
-| **幂等** | `(repository_id, commit_sha, ci_run_id)`；重投是合并不是新增 |
-| **合并** | 按 `(project_id, case_key)` upsert，更新 `last_seen_commit` / `last_result` |
-| **去重** | run 内同 `case_key` 归并按 `param_id` 存子结果；批次重投用 `(run_id, record_seq)` |
-| **删除对账** | 仅 `is_full_inventory=true` 且在跟踪分支时执行，缺失者软删 `removed` |
-| **path 归一** | `/users/123` → `/users/{id}`，匹配不到进「未匹配」区 |
+| **鉴权** | 项目级 Token，**scrypt 哈希**比对 (只需比对就不该加密，与 Webhook 密钥的 AES-GCM 刻意不同)；首次上报绑定唯一仓库，此后校验 `git_url`，不一致直接拒绝 (409，消息说清绑的是哪个) |
+| **幂等** | `(repository_id, commit_sha, ci_run_id)`；重投是合并不是新增。批次内再叠 `(run_id, seq)` |
+| **合并** | 按 `(project_id, case_key)` upsert，更新 `last_seen_commit` / `last_result`。`last_result` 只在这一轮真跑了它 (passed/failed) 时才更新——被 skip 的用例不该把昨天的 passed 冲成 unknown |
+| **归属** | 一个用例挂它实际打过的**每一个**接口 (关系表，非单列外键)；关系**累积**、不每轮重建；只有 `phase='call'` 的记录建立关系 |
+| **删除对账** | 双闸门：`is_full_inventory=true` **且** `branch = repositories.tracking_branch`。只删 `file` 在 `scope` 之内、且本次 inventory 里缺失的用例。**只看 inventory，绝不看 records** |
+| **path 归一** | `/users/123` → `/users/{id}`，规则留在平台侧 (SDK 只报 raw path)；匹配不到进「未匹配诊断」区，**绝不自动登记 endpoint** |
+| **归一进统一记录** | 写一行 `execution_index(kind='ingest', trigger_source='ci')`，但趋势与通过率默认排除它 (客户端耗时与平台墙钟耗时不是一个口径) |
+| **上限** | `INGEST_MAX_RECORDS` (413) + Fastify `bodyLimit` (解析前拒掉)；不做项目级配额 |
+
+**响应**
+
+```
+200 { runId, indexId, matched, unmatched, unplaced, reconciled, warnings[] }
+401 token 无效或已吊销
+409 git_url 与已绑定仓库不一致
+413 超过记录数或请求体上限
+422 protocol_version 未知 / inventory 与 records 的 case_key 不自洽
+```
 
 **兼容要求 (最严格)**
 - `protocol_version` 必填，平台需**长期支持历史版本**
 - **只增不改**：新增字段必须可选，禁止修改既有字段语义
-- 平台返回 `warnings[]` 提示 SDK 升级，但**不得因版本旧而拒绝上报**
+- 平台返回 `warnings[]` 提示 SDK 升级，但**不得因版本旧而拒绝上报** (拒的只有平台不认识的**未来**版本，那时字段语义可能已经不同，猜着解析会把错误数据写成事实)
 
 ---
 
@@ -403,7 +442,7 @@ records:                          # 本次实际执行的请求记录
 |------|---------|------|
 | **P0** | `apitest-server` + `apitest-web` | 同时搭建 OpenAPI codegen 流水线 |
 | P1–P3 | — | 仅在既有两仓迭代 |
-| **P4** | `apitest-sdk-python` | 需先冻结上报协议 v1.0 |
+| **P4** | `apitrack-sdk-python` | 需先冻结上报协议 v1.0 |
 | **P4.5** | `apitest-runner` | 需先冻结 Worker 协议 v1.0 |
 
 ### 4.2 前后端拆仓的取舍

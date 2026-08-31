@@ -2,7 +2,9 @@
 # 后续新增的代码仓库一律加在这里。
 apitest-server/
 apitest-web/
-
+apitrack-sdk-python/
+apitest-e2e-python/
+apitest-e2e-python/
 # 运行时产物
 .dev-logs/
 .dev-pids
