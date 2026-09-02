@@ -178,6 +178,7 @@ def test_list_projects_project_ids_filter(api):
     assert ids == {a["id"], b["id"]}
 
 
+@allure.title("项目列表返回包络且 total 与行数一致")
 def test_list_projects_returns_envelope(api):
     """项目列表返回 200 + code 0，data 为项目数组，meta.total 与行数一致。"""
     with allure.step("请求项目列表"):
@@ -196,6 +197,7 @@ def test_list_projects_returns_envelope(api):
         log.info("projects list total=%d", body["meta"]["total"])
 
 
+@allure.title("keyword 无命中时列表为空且 total=0")
 def test_list_projects_keyword_no_match_returns_empty(api):
     """keyword 无命中时列表为空、total 为 0（纯读，不建样本）。"""
     with allure.step("用不可能命中的 keyword 请求列表"):
@@ -211,6 +213,7 @@ def test_list_projects_keyword_no_match_returns_empty(api):
         log.info("keyword no-match -> empty, total=0")
 
 
+@allure.title("pageSize 越界被钳制到 [1, 100]")
 def test_list_projects_page_size_is_clamped(api):
     """pageSize 越界被服务端钳制到 [1, 100]，仍返回 200。"""
     with allure.step("pageSize=0 应钳制为 1"):
@@ -228,6 +231,7 @@ def test_list_projects_page_size_is_clamped(api):
         log.info("pageSize=9999 -> clamped to 100")
 
 
+@allure.title("projectIds 非法 UUID 被忽略且结果为空")
 def test_list_projects_project_ids_drops_invalid(api):
     """projectIds 里的非法 UUID 被忽略，不报错、不匹配任何项目。"""
     with allure.step("projectIds 只传非法 UUID 请求列表"):
@@ -243,6 +247,7 @@ def test_list_projects_project_ids_drops_invalid(api):
         log.info("projectIds=not-a-uuid -> empty, total=0")
 
 
+@allure.title("不存在的项目 id 返回 404 / 2001")
 def test_get_project_not_found(api):
     """不存在的项目 id 返回 404 + code 2001。"""
     with allure.step("请求一个随机 UUID 的项目详情"):
@@ -255,6 +260,7 @@ def test_get_project_not_found(api):
         log.info("get project random uuid -> 404 code=2001")
 
 
+@allure.title("无 token 访问项目列表返回 401")
 def test_list_projects_requires_token(api_host):
     """无 token 访问项目列表返回 401。"""
     with allure.step("不带 token 请求项目列表"):

@@ -11,6 +11,7 @@ from req.http_req import login
 log = logging.getLogger("apitest.auth")
 
 
+@allure.title("登录成功返回 JWT 与用户信息")
 def test_login_success_returns_token_and_user():
     """正确账密登录，返回 JWT 与用户信息。"""
     with allure.step("发起登录请求"):
@@ -30,6 +31,7 @@ def test_login_success_returns_token_and_user():
         log.info("login ok user=%s id=%s", data["user"]["email"], data["user"]["id"])
 
 
+@allure.title("错误密码登录被拒（401 / 1002）")
 def test_login_wrong_password_is_rejected():
     """错误密码返回 401 + code 1002，data 为 null。"""
     with allure.step("用错误密码发起登录"):
@@ -44,6 +46,7 @@ def test_login_wrong_password_is_rejected():
         log.info("wrong password rejected -> HTTP %s code=%s", resp.status_code, body["code"])
 
 
+@allure.title("未知邮箱登录被拒（401 / 1002）")
 def test_login_unknown_email_is_rejected():
     """不存在的邮箱同样 401，不泄露账号是否存在。"""
     with allure.step("用不存在的邮箱发起登录"):
@@ -56,6 +59,7 @@ def test_login_unknown_email_is_rejected():
         log.info("unknown email rejected -> HTTP %s", resp.status_code)
 
 
+@allure.title("无 token 访问 /auth/me 返回 401")
 def test_auth_me_requires_token(api_host):
     """无 token 访问 /auth/me 返回 401。"""
     with allure.step("不带 token 访问 /auth/me"):
@@ -68,6 +72,7 @@ def test_auth_me_requires_token(api_host):
         log.info("auth/me without token -> HTTP %s (expected 401)", resp.status_code)
 
 
+@allure.title("带 token 访问 /auth/me 返回当前用户")
 def test_auth_me_returns_current_user(api):
     """带 token 的 /auth/me 返回当前登录用户。"""
     with allure.step("带 token 访问 /auth/me"):

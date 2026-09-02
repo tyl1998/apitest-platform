@@ -22,6 +22,8 @@ log = logging.getLogger("apitest.auth")
 )
 def test_login_invalid_credentials_are_rejected(email, password):
     """各类无效账密统一 401 + code 1002，不泄露具体原因。"""
+    allure.dynamic.title(f"无效登录被拒：email={email!r} password={password!r}")
+
     with allure.step("发起登录请求"):
         resp = login(email, password)
         log.info("login request (email=%r) -> HTTP %s", email, resp.status_code)

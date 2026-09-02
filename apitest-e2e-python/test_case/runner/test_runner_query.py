@@ -13,6 +13,7 @@ from data.constant import CODE_INVALID_CREDENTIALS, CODE_SUCCESS
 log = logging.getLogger("apitest.runner")
 
 
+@allure.title("无 token 访问 runner 池返回 401")
 def test_runner_pool_requires_token(api_host):
     """无 token 访问 runner 池返回 401。"""
     with allure.step("不带 token 请求 runner 池"):
@@ -25,8 +26,11 @@ def test_runner_pool_requires_token(api_host):
         log.info("runner-pool without token -> HTTP %s (expected 401)", resp.status_code)
 
 
+@allure.title("runner 池返回聚合统计")
 def test_runner_pool_returns_pool_stats(api):
     """runner 池返回聚合统计：标签列表 + 数字，不泄露机器信息。"""
+    allure.dynamic.title(f"runner 池聚合统计（target={api.host}）")
+
     with allure.step("请求 runner 池聚合统计"):
         resp = api.get("/api/v1/system/runner-pool")
         log.info("GET /api/v1/system/runner-pool -> HTTP %s", resp.status_code)
@@ -54,6 +58,7 @@ def test_runner_pool_returns_pool_stats(api):
             assert isinstance(data[field], int)
 
 
+@allure.title("无 token 访问 Runner 清单返回 401")
 def test_runners_requires_token(api_host):
     """无 token 访问 Runner 清单返回 401。"""
     with allure.step("不带 token 请求 Runner 清单"):
@@ -66,6 +71,7 @@ def test_runners_requires_token(api_host):
         log.info("runners without token -> HTTP %s (expected 401)", resp.status_code)
 
 
+@allure.title("Runner 清单（管理员）返回 runners 列表")
 def test_runners_returns_pool(api):
     """Runner 清单（管理员）返回 runners 列表与容量数字。"""
     with allure.step("请求 Runner 清单"):
@@ -92,6 +98,7 @@ def test_runners_returns_pool(api):
             assert isinstance(runner["capacity"], int)
 
 
+@allure.title("无 token 访问 Runner token 列表返回 401")
 def test_runner_tokens_requires_token(api_host):
     """无 token 访问 Runner token 列表返回 401。"""
     with allure.step("不带 token 请求 Runner token 列表"):
@@ -104,6 +111,7 @@ def test_runner_tokens_requires_token(api_host):
         log.info("runner-tokens without token -> HTTP %s (expected 401)", resp.status_code)
 
 
+@allure.title("Runner token 列表返回 data 与 meta.total 一致")
 def test_runner_tokens_returns_list(api):
     """Runner token 列表（管理员）返回 data 与 meta.total 一致。"""
     with allure.step("请求 Runner token 列表"):
