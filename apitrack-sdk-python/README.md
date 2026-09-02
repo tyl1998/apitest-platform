@@ -48,6 +48,38 @@ python -m apitrack doctor     # 看探测到的 git/commit/branch/CI 信息
 | `APITRACK_BODY_CAPTURE` | `1` 时带截断后的请求体，默认不带 |
 | `APITRACK_TIMEOUT` | 上报超时秒数，默认 5 |
 | `APITRACK_GIT_URL` / `APITRACK_COMMIT` / `APITRACK_BRANCH` | 覆盖自动探测（浅克隆、非 git 工作树时用） |
+| `APITRACK_CASE_KEYS` | 只跑这些 `case_key`（逗号分隔）。平台从用例树勾选执行时由 Runner 注入 |
+
+## 勾选执行：只跑选中的用例
+
+平台上在用例树里勾几条 → 触发 CI 任务 → Runner 把选中的 key 以 `APITRACK_CASE_KEYS`
+注入你的脚本环境。**这个包会据此 deselect**，所以你的 `pytest` 命令仍然一个字都不用改。
+
+三个来源，优先级从高到低：
+
+```bash
+pytest --apitrack-case-keys "tests/test_order.py::test_create,tests/test_user.py::test_login"
+export APITRACK_CASE_KEYS="tests/test_order.py::test_create"     # 平台/Runner 注入的形态
+```
+
+```python
+# conftest.py — 需要自己算出要跑哪些时用。必须在 collect 之前调。
+from apitrack import select
+
+select(["tests/test_order.py::test_create"])
+```
+
+规则：
+
+- key 就是 `case_key`（nodeid 去掉 `[...]`，`@case(key=…)` 覆盖后以覆盖值为准）。勾一条
+  参数化用例 = 跑它的**全部场景**。
+- 一条都没匹配上时**仍然一条都不跑**，只多一条 warning。回落成全量跑会让平台收到一份
+  「全都报到了」的上报，于是一次 key 失配（勾的是别的仓库 / 别的 ref）被显示成一次成功。
+- 有筛选就是非全量，因此平台侧**不会**执行删除对账。
+- 平台侧还会算差集：勾了却没报到结果的用例标成 **未执行**，不会被算成通过。所以即使脚本
+  没有装这个包、完全无视筛选参数（全量跑），结论也不会错。
+
+`python -m apitrack doctor` 会打印这一轮读到了几条 key（只打条数，不打 key 列表）。
 
 ## 用例身份与显示名
 
@@ -84,7 +116,8 @@ def test_create_order():
 | `pytest tests/order/ -m smoke` | `tests/order` | 否 | 不对账 |
 | `pytest tests/order/test_a.py` | 该文件 | 是 | 只该文件 |
 
-`-k` / `-m` / `--lf` / `--ff` / `-x` / `--deselect` 与收集报错一律判为非全量。平台侧还要求
+`-k` / `-m` / `--lf` / `--ff` / `-x` / `--deselect`、勾选执行（`--apitrack-case-keys` /
+`APITRACK_CASE_KEYS` / `select()`）与收集报错一律判为非全量。平台侧还要求
 分支等于仓库配置的跟踪分支才真正执行删除，所以一次 feature 分支上的全量跑不会删任何东西。
 
 ## 本地跑测试

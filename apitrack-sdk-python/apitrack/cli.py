@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from .config import load
 from .reporter import PROTOCOL_VERSION, report
+from .selection import CASE_KEYS_ENV, parse_case_keys
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,6 +42,7 @@ def _doctor(_args: argparse.Namespace) -> int:
     **Token 只打印它在不在**，不打印值——这条命令的输出会被贴进工单和聊天窗口。
     """
     config = load()
+    case_keys = parse_case_keys(os.environ.get(CASE_KEYS_ENV))
     print(f"protocol_version : {PROTOCOL_VERSION}")
     print(f"enabled          : {config.enabled}")
     print(f"url              : {config.url or '(unset)'}")
@@ -49,6 +52,9 @@ def _doctor(_args: argparse.Namespace) -> int:
     print(f"branch           : {config.branch or '(not detected)'}")
     print(f"ci_run_id        : {config.ci_run_id or '(local run)'}")
     print(f"capture_body     : {config.capture_body}")
+    # 勾选执行（计划 8.3）：只打条数，不打 key 列表——最多 500 条，doctor 的输出要能贴进
+    # 工单。为零时说「全量」而不是「0」，那才是它的语义。
+    print(f"case_keys        : {len(case_keys) if case_keys else '(none — full run)'}")
     return 0 if config.enabled else 1
 
 

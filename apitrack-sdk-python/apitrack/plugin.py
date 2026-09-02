@@ -27,6 +27,7 @@ from .collector import CaseEntry, Collector, current_case, current_param, curren
 from .config import BODY_LIMIT, load
 from .patch import install_all, uninstall_all
 from .reporter import build_payload, report
+from .selection import CASE_KEYS_ENV, resolve_case_keys, split as split_by_keys, warn_no_match
 
 try:  # 包已安装时取真实版本；从源码树直接跑时退到 0.0.0
     from importlib.metadata import version as _version
@@ -82,6 +83,20 @@ def split_nodeid(nodeid: str) -> tuple[str, str | None, str]:
     return key, param_id, file_path
 
 
+def case_key_of(item) -> str:  # noqa: ANN001 - pytest Item
+    """一个 item 的有效 ``case_key``（``@case(key=…)`` 覆盖优先）。
+
+    单独抽出来是因为它有**三个**消费者：inventory 登记（``describe``）、执行阶段的
+    contextvar（``_enter``）、勾选执行的 deselect（``pytest_collection_modifyitems``）。
+    三处各写一遍 override 逻辑的话，一个带 ``@case(key=…)`` 的用例会出现「树上是覆盖后的
+    key、筛选却按 nodeid 比」这种只在部分用例上复现的失配。
+    """
+    key, _, _ = split_nodeid(item.nodeid)
+    function = getattr(item, "function", None)
+    override = read_case_override(function) if function is not None else {}
+    return override.get("key") or key
+
+
 def describe(item) -> CaseEntry:  # noqa: ANN001 - pytest Item
     """一条用例的 inventory 条目。
 
@@ -114,7 +129,7 @@ def describe(item) -> CaseEntry:  # noqa: ANN001 - pytest Item
             tags.append(tag)
 
     return CaseEntry(
-        case_key=override.get("key") or key,
+        case_key=case_key_of(item),
         name=override.get("name") or doc_name or key.split("::")[-1],
         description=description,
         file_path=file_path,
@@ -196,12 +211,37 @@ class ApitrackPlugin:
     # ── collect ────────────────────────────────────────────────────
 
     def pytest_collection_modifyitems(self, items) -> None:  # noqa: ANN001
-        """inventory 在 collect 之后就定下来（边界 11）。
+        """勾选执行的 deselect（P4.5-9）+ inventory 登记（边界 11）。
+
+        **顺序是先摘后登记**，而不是登记全部再摘：inventory 的语义在这里就是「平台侧
+        『本次实际报到的集合』」，而平台算 `not_run` 差集正是拿 `case_filter.case_keys`
+        减去它（边界 16）。若把被摘掉的用例也登记进去，它们会带着本次 `ingest_run` 的 id
+        落库，差集恒为空——勾了没跑的用例会一直显示上一轮的 `passed`，也就是这一批要修的
+        那个问题。
+
+        这样做不会误删任何用例：被摘掉 = 有过滤 = 非全量（`pytest_deselected` 把
+        `"deselected"` 记进 `self.filters`），平台侧的删除对账两道闸门都不会开
+        （`is_full_inventory=false` → `reconciled=false`）。
 
         **存在性看 inventory，绝不看 records**：被 skip 的用例、这一轮没打到任何接口的
         用例，records 里是空的；按「没报到就算消失」去删，一次全量跑就会把所有 skip 的
         用例判成消失。
         """
+        selected = resolve_case_keys(self.pytest_config)
+        if selected is not None:
+            kept, dropped = split_by_keys(items, case_key_of, selected)
+            if dropped:
+                items[:] = kept
+                # 走 pytest 自己的钩子而不是静默改 items：终端摘要里的 "N deselected"
+                # 与我们自己的 `pytest_deselected`（记非全量）都挂在这一个通知上。
+                self.pytest_config.hook.pytest_deselected(items=dropped)
+                if not kept:
+                    # 一条都没匹配上 = 接入失配（key 来自别的仓库 / 别的 ref / 改过目录）。
+                    # 这时**仍然一条都不跑**：回落成全量跑会让平台收到一份「全都报到了」
+                    # 的上报，差集为空，于是一次失配被显示成一次成功。
+                    # 条件挂在 `dropped` 里面：collect 本来就是零条（空目录 / 全部 import
+                    # 失败）时不该怪筛选，那种情况 pytest 自己已经报了。
+                    warn_no_match(selected, len(dropped))
         for item in items:
             self.collector.register_case(describe(item))
 
@@ -229,10 +269,8 @@ class ApitrackPlugin:
         self._enter(item, "teardown")
 
     def _enter(self, item, phase: str) -> None:  # noqa: ANN001
-        key, param_id, _ = split_nodeid(item.nodeid)
-        function = getattr(item, "function", None)
-        override = read_case_override(function) if function is not None else {}
-        current_case.set(override.get("key") or key)
+        _, param_id, _ = split_nodeid(item.nodeid)
+        current_case.set(case_key_of(item))
         current_param.set(param_id)
         current_phase.set(phase)  # type: ignore[arg-type]
 
@@ -311,6 +349,19 @@ def pytest_addoption(parser) -> None:  # noqa: ANN001
         default=False,
         # 「先看一眼再开」是让人敢装一个拦截全部 HTTP 流量的包的前提（计划 7.4）。
         help="Print what apitrack would report instead of sending it.",
+    )
+    group.addoption(
+        "--apitrack-case-keys",
+        dest="apitrack_case_keys",
+        default=None,
+        metavar="KEYS",
+        # 勾选执行（计划 8.3）。默认 None（不是空串）才能区分「没给」与「给了个空的」：
+        # 后者读作没有选择，不是「一条都不跑」。
+        help=(
+            "Run only these case keys (comma-separated). Overrides the "
+            f"{CASE_KEYS_ENV} environment variable, which the platform's runner sets when "
+            "a run is triggered from a selection in the case tree."
+        ),
     )
 
 

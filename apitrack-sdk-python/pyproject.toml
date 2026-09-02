@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "apitrack-sdk"
-version = "0.1.0"
+version = "0.1.1"
 description = "Report existing pytest results to an ApiTrack platform without changing a line of test code."
 readme = "README.md"
 # 下界 3.9 是刻意的：接入方常常正是那些最不愿意动的老仓库，而「零改动接入」这条硬指标对

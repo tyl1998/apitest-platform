@@ -135,6 +135,78 @@ def test_keyword_filter_is_not_full_inventory(tmp_path: Path):
     assert _dry_run_payload(result)["run"]["is_full_inventory"] is False
 
 
+# ── 勾选执行（P4.5-9，计划 8.3）──────────────────────────────────────────────
+
+
+def test_case_keys_option_runs_only_the_selected_cases(tmp_path: Path):
+    """`--apitrack-case-keys` 只跑选中的，且 **inventory 里只有跑了的那些**。
+
+    inventory 必须跟着收窄，否则平台侧算不出 `not_run` 差集（边界 16）：被摘掉的用例若也
+    登记进 inventory，它们会带着本次 ingest_run 的 id 落库，差集恒为空——勾了没跑的用例
+    会一直显示上一轮的 `passed`。
+    """
+    result = _run_pytest(
+        tmp_path,
+        "--apitrack-dry-run",
+        "--apitrack-case-keys",
+        "tests/test_sample.py::test_passes,tests/test_sample.py::test_parametrized",
+        "tests/",
+    )
+    payload = _dry_run_payload(result)
+    keys = sorted(entry["case_key"] for entry in payload["inventory"])
+    assert keys == ["tests/test_sample.py::test_parametrized", "tests/test_sample.py::test_passes"]
+    # 有筛选 → 非全量 → 平台侧不对账删除。
+    assert payload["run"]["is_full_inventory"] is False
+    # 走 pytest 自己的 deselect 通知，所以终端摘要里数得出来。
+    assert "deselected" in result.stdout
+
+
+def test_case_keys_env_is_consumed(tmp_path: Path):
+    """Runner 注入的形态：`APITRACK_CASE_KEYS`，逗号分隔（P4.5-5 冻结的线上形状）。"""
+    result = _run_pytest(
+        tmp_path,
+        "--apitrack-dry-run",
+        "tests/",
+        env={"APITRACK_CASE_KEYS": "tests/test_sample.py::test_fails"},
+    )
+    payload = _dry_run_payload(result)
+    assert [entry["case_key"] for entry in payload["inventory"]] == ["tests/test_sample.py::test_fails"]
+
+
+def test_selecting_a_parametrized_case_keeps_every_scenario(tmp_path: Path):
+    """勾一条参数化用例 = 跑它的全部场景（case_key 不含 `[...]`）。"""
+    result = _run_pytest(
+        tmp_path,
+        "--apitrack-dry-run",
+        "--apitrack-case-keys",
+        "tests/test_sample.py::test_parametrized",
+        "tests/",
+    )
+    payload = _dry_run_payload(result)
+    assert [entry["case_key"] for entry in payload["inventory"]] == ["tests/test_sample.py::test_parametrized"]
+    # 两个场景都跑了，所以结果是 passed 而不是「没跑」。
+    assert payload["inventory"][0]["result"] == "passed"
+    assert "2 passed" in result.stdout
+
+
+def test_unmatched_case_keys_run_nothing_and_warn(tmp_path: Path):
+    """一条都没匹配上时不回落成全量跑，只警告。
+
+    回落会让平台收到「全都报到了」的上报、差集为空，于是一次 key 失配（勾的是别的仓库 /
+    别的 ref）被显示成一次成功——那是这条性质存在的全部理由。
+    """
+    result = _run_pytest(
+        tmp_path,
+        "--apitrack-dry-run",
+        "--apitrack-case-keys",
+        "tests/test_other.py::test_nothing",
+        "tests/",
+    )
+    payload = _dry_run_payload(result)
+    assert payload["inventory"] == []
+    assert "apitrack selected 0 of" in result.stdout + result.stderr
+
+
 @pytest.mark.skipif(
     __import__("importlib.util", fromlist=["util"]).find_spec("requests") is None,
     reason="requests is not installed in this environment",

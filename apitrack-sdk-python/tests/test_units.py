@@ -22,7 +22,8 @@ from apitrack.case import case  # noqa: E402
 from apitrack.collector import CaseEntry, Collector  # noqa: E402
 from apitrack.masker import mask_headers, truncate_body  # noqa: E402
 from apitrack.patch.common import content_length, path_of  # noqa: E402
-from apitrack.plugin import describe, split_nodeid  # noqa: E402
+from apitrack.plugin import case_key_of, describe, split_nodeid  # noqa: E402
+from apitrack.selection import parse_case_keys, resolve_case_keys, select, split  # noqa: E402
 
 
 class FakeMarker:
@@ -219,3 +220,77 @@ def test_describe_strips_the_param_suffix_from_the_name_fallback():
     assert entry.name == "test_create_order"
     # case_key 同样剥掉 [...]（边界 7）：参数化的多个子项是同一条用例。
     assert entry.case_key == "tests/test_d.py::test_create_order"
+
+
+# ── 勾选执行的 key 选择（P4.5-9，计划 8.3）──────────────────────────────────
+
+
+def test_case_keys_parse_from_comma_and_newline():
+    """两种分隔都收：Runner 注入的是逗号分隔，人手粘贴常常是一行一条。"""
+    assert parse_case_keys("a, b\nc,,  ") == frozenset({"a", "b", "c"})
+    assert parse_case_keys(["a", " b "]) == frozenset({"a", "b"})
+
+
+def test_empty_case_keys_read_as_no_selection():
+    """空串读作「没有选择」而不是「一条都不跑」。
+
+    一个误设成 `APITRACK_CASE_KEYS=` 的变量（CI 里 secret 没注入到就长这样）不该让整轮
+    测试静默跑成零条。
+    """
+    assert parse_case_keys("") is None
+    assert parse_case_keys("  , ,") is None
+    assert parse_case_keys(None) is None
+
+
+class FakeConfig:
+    """`resolve_case_keys` 只用到 `getoption`。"""
+
+    def __init__(self, value: str | None) -> None:
+        self._value = value
+
+    def getoption(self, name: str, default=None):  # noqa: ANN001, ANN201
+        return self._value if name == "apitrack_case_keys" else default
+
+
+def test_cli_option_beats_environment(monkeypatch):
+    monkeypatch.setenv("APITRACK_CASE_KEYS", "from_env")
+    assert resolve_case_keys(FakeConfig("from_cli")) == frozenset({"from_cli"})
+    assert resolve_case_keys(FakeConfig(None)) == frozenset({"from_env"})
+
+
+def test_select_beats_both_and_can_be_cleared(monkeypatch):
+    """`select()` 是运行时的决定，优先级最高；传 None 撤销，回落到 CLI / env。"""
+    monkeypatch.setenv("APITRACK_CASE_KEYS", "from_env")
+    try:
+        select(["explicit"])
+        assert resolve_case_keys(FakeConfig("from_cli")) == frozenset({"explicit"})
+        select(None)
+        assert resolve_case_keys(FakeConfig("from_cli")) == frozenset({"from_cli"})
+    finally:
+        # 模块级状态：不还原会污染后面的测试。
+        select(None)
+
+
+def test_split_keeps_every_scenario_of_a_selected_case():
+    """勾一条参数化用例 = 跑它的全部场景（case_key 已经剥掉了 [...]）。"""
+    items = [
+        FakeItem("tests/test_a.py::test_x[vip]", _sample_bare),
+        FakeItem("tests/test_a.py::test_x[normal]", _sample_bare),
+        FakeItem("tests/test_a.py::test_y", _sample_bare),
+    ]
+    kept, dropped = split(items, case_key_of, frozenset({"tests/test_a.py::test_x"}))
+    assert [item.nodeid for item in kept] == ["tests/test_a.py::test_x[vip]", "tests/test_a.py::test_x[normal]"]
+    assert [item.nodeid for item in dropped] == ["tests/test_a.py::test_y"]
+
+
+def test_split_matches_the_decorator_overridden_key():
+    """筛选比的是**有效** key：`@case(key=…)` 覆盖后以覆盖值为准。
+
+    树上存的是覆盖后的 key，所以平台勾选传下来的也是它。这里若按 nodeid 比，带装饰器的
+    用例会永远匹配不上——而那类用例恰恰是最可能被显式勾选的（key 稳定才好点）。
+    """
+    items = [FakeItem("tests/test_b.py::test_decorated", _sample_decorated)]
+    kept, dropped = split(items, case_key_of, frozenset({"order.create.vip"}))
+    assert len(kept) == 1 and not dropped
+    kept, dropped = split(items, case_key_of, frozenset({"tests/test_b.py::test_decorated"}))
+    assert not kept and len(dropped) == 1
