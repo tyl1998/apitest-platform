@@ -52,7 +52,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
       # requests 是可选的：`test_plugin_session.py` 里验「stream 不被吃」的那条需要它，
       # 装上才不会被 skip 掉——那条恰好是最重要的行为保证之一。
-      - run: pip install pytest requests
+      #
+      # pytest-xdist 同理，但理由更硬：「一次运行只上报一份」那一组集成测试没装它就整组
+      # skip，而它守的是一个已经在真实仓库上发生过的缺陷（一次 run 打 5 个 `/ingest`，
+      # records 撞 seq 被整批静默丢弃）。可选依赖 + skip 的组合能让一条性质在 CI 上永远
+      # 绿着却从未被执行。
+      - run: pip install pytest requests pytest-xdist
       - run: python -m pytest tests -q
 
   build:

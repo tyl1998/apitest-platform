@@ -20,6 +20,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from apitrack.case import case  # noqa: E402
 from apitrack.collector import CaseEntry, Collector  # noqa: E402
+from apitrack.distributed import (  # noqa: E402
+    HANDOFF_KEY,
+    SEQ_BLOCK,
+    hand_off,
+    is_controller,
+    seq_offset,
+    take_slice,
+    worker_id,
+)
 from apitrack.masker import mask_headers, truncate_body  # noqa: E402
 from apitrack.patch.common import content_length, path_of  # noqa: E402
 from apitrack.plugin import case_key_of, describe, split_nodeid  # noqa: E402
@@ -152,6 +161,188 @@ def test_record_seq_is_dense_and_zero_based():
         collector.add_record(RecordEntry(case_key="k", phase="call", method="GET", path_raw=path))
     _, records = collector.payload_sections()
     assert [record["seq"] for record in records] == [0, 1, 2]
+
+
+def test_seq_base_shifts_the_whole_batch():
+    """降级路径（每个 worker 各发一份）下 seq 整批平移，批内仍然密集。
+
+    平移量由 `seq_offset` 给，段宽远大于本地记录上限，所以两个 worker 的段不可能交叠——
+    交叠就意味着后到的那批被平台按 `UNIQUE (ingest_run_id, seq)` 整批 DO NOTHING 掉。
+    """
+    collector = Collector(max_records=10)
+    collector.register_case(CaseEntry(case_key="k", name="n"))
+    from apitrack.collector import RecordEntry
+
+    for path in ("/a", "/b"):
+        collector.add_record(RecordEntry(case_key="k", phase="call", method="GET", path_raw=path))
+    collector.seq_base = seq_offset("gw3")
+    _, records = collector.payload_sections()
+    assert [record["seq"] for record in records] == [3 * SEQ_BLOCK, 3 * SEQ_BLOCK + 1]
+
+
+# ── xdist 交接（见 distributed.py）─────────────────────────────────────────────
+
+
+class FakeXdistConfig:
+    """`worker_id` / `hand_off` 只用到 `workerinput` / `workeroutput` 两个属性。"""
+
+    def __init__(self, *, workerinput=None, workeroutput=None, plugins=()) -> None:  # noqa: ANN001
+        if workerinput is not None:
+            self.workerinput = workerinput
+        if workeroutput is not None:
+            self.workeroutput = workeroutput
+        self.pluginmanager = FakePluginManager(plugins)
+
+
+class FakePluginManager:
+    def __init__(self, plugins) -> None:  # noqa: ANN001
+        self._plugins = set(plugins)
+
+    def hasplugin(self, name: str) -> bool:
+        return name in self._plugins
+
+
+def test_worker_id_reads_workerinput_not_the_environment(monkeypatch):
+    """身份只认 `config.workerinput`，**不认** `PYTEST_XDIST_WORKER`。
+
+    环境变量会被**测试自己起的子进程**继承（这个仓库的集成测试就是这么跑的），于是那个
+    子进程会把自己当成 worker、尝试交接、失败、然后按降级路径把一次本该正常的单进程上报
+    报成非全量。`workerinput` 是进程内独有的，不会被继承。
+    """
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw2")
+    assert worker_id(FakeXdistConfig()) is None
+    assert worker_id(FakeXdistConfig(workerinput={"workerid": "gw2"})) == "gw2"
+    # 空 workerid（xdist 内部的 "?" 兜底之前）读作「不是 worker」。
+    assert worker_id(FakeXdistConfig(workerinput={"workerid": ""})) is None
+
+
+def test_controller_is_only_the_process_that_distributes():
+    """判据是 `dsession` 在不在，而不是 `-n` 的取值。
+
+    `-n0` / `--dist no` / `--collect-only` 下 xdist 装着但不分发，那时这个进程就是普通的
+    单进程 pytest，行为必须与没装 xdist 完全一致——xdist 只在真要分发时才注册 `dsession`。
+    """
+    assert is_controller(FakeXdistConfig(plugins=("dsession",))) is True
+    assert is_controller(FakeXdistConfig()) is False
+    # worker 进程里也有 dsession 这个名字的可能性要排掉：worker 永远不是 controller。
+    assert is_controller(FakeXdistConfig(workerinput={"workerid": "gw0"}, plugins=("dsession",))) is False
+
+
+def test_seq_offset_gives_each_worker_a_disjoint_block():
+    assert seq_offset(None) == 0
+    assert seq_offset("gw0") == 0
+    assert seq_offset("gw1") == SEQ_BLOCK
+    assert seq_offset("gw11") == 11 * SEQ_BLOCK
+    # 取不出数字时回 0：宁可与 gw0 撞号（平台侧丢一批），也不要抛异常影响用例。
+    assert seq_offset("popen") == 0
+
+
+def test_hand_off_and_take_slice_round_trip():
+    output: dict = {}
+    config = FakeXdistConfig(workerinput={"workerid": "gw0"}, workeroutput=output)
+    assert hand_off(config, {"cases": [], "records": []}) is True
+    # 键名带包名前缀：`workeroutput` 是全仓库共享的，pytest-cov 等插件也往里写。
+    assert HANDOFF_KEY in output
+
+    class FakeNode:
+        workeroutput = output
+
+    assert take_slice(FakeNode()) == {"cases": [], "records": []}
+
+
+def test_hand_off_fails_when_there_is_no_channel():
+    """老版本 xdist 没有 `workeroutput`：交接失败要让调用方退回自己上报，而不是抛异常。"""
+    assert hand_off(FakeXdistConfig(workerinput={"workerid": "gw0"}), {}) is False
+
+
+def test_take_slice_is_none_for_a_crashed_worker():
+    """worker 崩了（errordown）时 `workeroutput` 根本没送到。"""
+
+    class Crashed:
+        pass
+
+    assert take_slice(Crashed()) is None
+
+    class Empty:
+        workeroutput: dict = {}
+
+    assert take_slice(Empty()) is None
+
+
+def test_absorb_merges_a_worker_slice_through_the_existing_rules():
+    """合并走 register_case / set_result / add_record，不另写一套。
+
+    两个 worker 各跑同一条参数化用例的一个场景时，「一个子项失败就是整条失败」必须仍然
+    成立——而那条规则只写在 `set_result` 里。
+    """
+    from apitrack.collector import RecordEntry
+
+    gw0 = Collector(max_records=10)
+    gw0.register_case(CaseEntry(case_key="k", name="用例", tags=["smoke"]))
+    gw0.set_result("k", "passed")
+    gw0.add_record(RecordEntry(case_key="k", phase="call", method="GET", path_raw="/a", param_id="vip"))
+
+    gw1 = Collector(max_records=10)
+    gw1.register_case(CaseEntry(case_key="k", name="用例", tags=["slow"]))
+    gw1.set_result("k", "failed")
+    gw1.add_record(RecordEntry(case_key="k", phase="call", method="GET", path_raw="/b", param_id="normal"))
+
+    controller = Collector(max_records=10)
+    controller.absorb(gw0.export_slice(filters=[]))
+    controller.absorb(gw1.export_slice(filters=["deselected"]))
+
+    inventory, records = controller.payload_sections()
+    # 一条用例，不是两条；标签取并集；失败优先级最高。
+    assert len(inventory) == 1
+    assert inventory[0]["result"] == "failed"
+    assert sorted(inventory[0]["tags"]) == ["slow", "smoke"]
+    # 两个进程的 records 合成一批、统一从 0 密集编号，于是平台侧一条都不会被去重掉。
+    assert [record["seq"] for record in records] == [0, 1]
+    assert sorted(record["param_id"] for record in records) == ["normal", "vip"]
+    # filters 由插件读，collector 只负责原样带过来。
+    assert gw1.export_slice(filters=["deselected"])["filters"] == ["deselected"]
+
+
+def test_absorb_ignores_unknown_results():
+    """xdist 的每个 worker 都 collect 全量，没跑到的用例结果是 `unknown`。
+
+    让它进 `set_result` 会让答案取决于 worker 的到达顺序（`unknown` 可以覆盖 `skipped`）。
+    跳过它，答案就只由真的跑过它的那个进程给出。
+    """
+    gw0 = Collector(max_records=10)
+    gw0.register_case(CaseEntry(case_key="k", name="n"))
+    gw0.set_result("k", "passed")
+
+    gw1 = Collector(max_records=10)
+    gw1.register_case(CaseEntry(case_key="k", name="n"))  # 没跑到 → unknown
+
+    controller = Collector(max_records=10)
+    controller.absorb(gw1.export_slice())   # 先并「没跑到」的那份
+    controller.absorb(gw0.export_slice())
+    assert controller.payload_sections()[0][0]["result"] == "passed"
+
+    controller = Collector(max_records=10)
+    controller.absorb(gw0.export_slice())   # 反过来的顺序，答案必须一样
+    controller.absorb(gw1.export_slice())
+    assert controller.payload_sections()[0][0]["result"] == "passed"
+
+
+def test_absorb_carries_over_the_worker_side_cap():
+    """worker 那侧撞了本地上限时，条数必须出现在合并后的 warnings 里。
+
+    不带过来的话「上报的条数比实际发的少」就是一件无痕的事。
+    """
+    from apitrack.collector import RecordEntry
+
+    gw0 = Collector(max_records=1)
+    gw0.register_case(CaseEntry(case_key="k", name="n"))
+    gw0.add_record(RecordEntry(case_key="k", phase="call", method="GET", path_raw="/a"))
+    gw0.add_record(RecordEntry(case_key="k", phase="call", method="GET", path_raw="/b"))
+
+    controller = Collector(max_records=10)
+    controller.absorb(gw0.export_slice())
+    controller.payload_sections()
+    assert any("dropped" in warning for warning in controller.warnings)
 
 
 # ── describe()：用例元数据映射（边界 7）─────────────────────────────────────

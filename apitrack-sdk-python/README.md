@@ -120,15 +120,33 @@ def test_create_order():
 `APITRACK_CASE_KEYS` / `select()`）与收集报错一律判为非全量。平台侧还要求
 分支等于仓库配置的跟踪分支才真正执行删除，所以一次 feature 分支上的全量跑不会删任何东西。
 
+## pytest-xdist（`-n auto`）
+
+**照常跑，命令不用改。** 一次运行仍然只上报一份：worker 把自己采到的东西通过 xdist 自己的
+`workeroutput` 通道交回 controller，controller 合并成一份再发。
+
+这一段不是可选的优化，而是协议要求：平台按 `(仓库, commit, ci_run_id)` 把同一次 CI 的多份
+上报合并进同一行，而请求记录的幂等键是 `(那一行, seq)`。如果每个进程各发一份、各自从
+`seq = 0` 编号，后到的整批就会被当成「重投」静默丢弃——症状是 36 个用例的 e2e 只留下 9 条
+请求记录，且用例总数被最后一份覆盖成 0。
+
+| 情形 | 行为 |
+|---|---|
+| `-n 2` / `-n auto` | worker 交给 controller，**一次 `/ingest`** |
+| `-n 0`、`--dist no` | 与没装 xdist 完全一致（xdist 此时不分发） |
+| 某个 worker 崩了 | controller 少收一份 → 这一轮报为**非全量**，平台不删用例 |
+| worker 里 deselect（`-k`、勾选执行） | 一并带回 controller → 非全量 |
+| 交接不可用（很老的 xdist） | 退回「每个 worker 各发一份」，seq 按进程分段错开，一条不丢 |
+
 ## 本地跑测试
 
 ```bash
-pip install pytest requests
-python -m pytest tests -q          # 19 条
+pip install pytest requests pytest-xdist
+python -m pytest tests -q          # 48 条
 ```
 
-`requests` 不是必需的，但装上才不会 skip 掉「`stream=True` 的响应不被桩吃掉」那一条——它是
-最重要的行为保证之一。
+`requests` 与 `pytest-xdist` 都不是必需的，但装上才不会 skip 掉两组最重要的行为保证：
+「`stream=True` 的响应不被桩吃掉」，以及「xdist 下一次运行只上报一份、records 一条不丢」。
 
 > 在有企业 CA 的机器上 pip 可能报 `CERTIFICATE_VERIFY_FAILED`，加
 > `--trusted-host pypi.org --trusted-host files.pythonhosted.org` 即可。

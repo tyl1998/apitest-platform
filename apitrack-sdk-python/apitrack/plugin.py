@@ -8,6 +8,11 @@
 2. 用 contextvar 标出「现在跑的是哪条用例、在哪个阶段」，给传输层的桩用（边界 10）；
 3. 判断本次跑的**范围**与**这个范围内有没有过滤**（边界 11），并在 sessionfinish 时上报。
 
+**一次 CI 只发一个 ``/ingest``**，pytest-xdist 下也一样：``pytest11`` 会在 controller 与每个
+worker 里各加载一次本插件，各自上报的话平台按 ``(repository, commit, ci_run_id)`` 合并进同一
+行 run，而 records 的 seq 各自从 0 起，后到的整批被当成重投丢弃。所以 worker 把自己那份交回
+controller、由 controller 合并成一份再发（见 ``distributed.py``）。
+
 **取 ``case.py`` 里的符号一律直接导入**（``from .case import read``），不要写
 ``from . import case``：``apitrack/__init__.py`` 的 ``from .case import case`` 把包属性
 ``case`` 重新绑定成了那个装饰器函数，于是 ``from . import case`` 拿到的是函数而不是模块。
@@ -22,9 +27,15 @@ import os
 import warnings
 from datetime import datetime, timezone
 
+# 只为了 `@pytest.hookimpl(optionalhook=True)`（xdist 的 `pytest_testnodedown`）。这个模块
+# 本来就只可能在 pytest 进程里被 import——它是 pytest 插件——所以这不引入新的运行期依赖，
+# `pytest` 也仍然不在 `dependencies` 里。
+import pytest
+
 from .case import read as read_case_override
 from .collector import CaseEntry, Collector, current_case, current_param, current_phase
 from .config import BODY_LIMIT, load
+from .distributed import hand_off, is_controller, seq_offset, take_slice, worker_id
 from .patch import install_all, uninstall_all
 from .reporter import build_payload, report
 from .selection import CASE_KEYS_ENV, resolve_case_keys, split as split_by_keys, warn_no_match
@@ -195,6 +206,20 @@ class ApitrackPlugin:
         self.collect_error = False
         self.scope = detect_scope(config)
         self.filters = detect_filters(config)
+        #: xdist 里这个进程的身份（见 ``distributed.py``）。``None`` = 单进程或 controller。
+        self.worker = worker_id(config)
+        #: controller 侧：收到 / 丢掉的 worker 交接份数。
+        self.slices_taken = 0
+        self.slices_lost = 0
+
+    def _note_filter(self, name: str) -> None:
+        """记一项过滤，同名只记一次。
+
+        `filters` 只被当成「空 / 非空」用，重复项无害，但它会原样出现在诊断输出里——同一个
+        原因列四遍读起来像四个不同的问题。
+        """
+        if name not in self.filters:
+            self.filters.append(name)
 
     # ── 生命周期 ───────────────────────────────────────────────────
 
@@ -255,7 +280,38 @@ class ApitrackPlugin:
         这一钩子是那些情况的兜底：只要有用例被摘掉，这一轮就不是范围内的全量。
         """
         if items:
-            self.filters.append("deselected")
+            self._note_filter("deselected")
+
+    # ── xdist 交接（见 distributed.py）─────────────────────────────
+
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_testnodedown(self, node, error) -> None:  # noqa: ANN001 - xdist WorkerController
+        """controller 侧：一个 worker 结束了，把它交回来的那份并进来。
+
+        ``optionalhook=True`` 是必需的，不是保险：这是 xdist 自己加的 hookspec
+        （``xdist/newhooks.py``），没装 xdist 的环境里它不存在，而 pytest 在 collect 结束时
+        会调 ``pluginmanager.check_pending()`` 把「实现了一个没人声明的钩子」判成
+        ``PluginValidationError``——那会让**每一个没装 xdist 的用户**装上这个包后 pytest
+        直接起不来。
+
+        取不到那份（worker 崩了、或它走了降级路径自己上报）只记数：那意味着 controller 手上
+        的 inventory 不完整，``sessionfinish`` 会据此放弃「全量」的声明。
+        """
+        slice_ = take_slice(node)
+        if slice_ is None:
+            self.slices_lost += 1
+            return
+        self.collector.absorb(slice_)
+        # worker 侧的过滤也要并过来：xdist 让每个 worker 自己 collect、自己 deselect，
+        # controller 身上永远不会触发 `pytest_deselected`。只认 controller 自己的 CLI 选项的话，
+        # 一个只在 worker 里生效的第三方 deselect 插件会让这一轮被报成范围内的全量，平台侧
+        # 照它把被摘掉的用例全判成消失。
+        for name in slice_.get("filters") or []:
+            self._note_filter(str(name))
+        self.slices_taken += 1
+        # collect 报错不用在这里传：xdist 自己把 worker 的失败 collectreport 转发给
+        # controller 的 `pytest_collectreport`（`_failed_worker_collectreport`），
+        # `self.collect_error` 已经被那条路径置上了。
 
     # ── 执行阶段 ───────────────────────────────────────────────────
 
@@ -297,15 +353,64 @@ class ApitrackPlugin:
         ``-x`` 中断、CI 超时、OOM 会让这个钩子不执行，那一次运行就**整份不上报**——这是
         有意的（边界 12）：宁可界面上「昨晚那次没有记录」，也不要半份数据被当成全量去
         对账。落盘补投是二期。
+
+        xdist 下这个钩子在 N+1 个进程里各跑一次，但**只有一个进程会发请求**：worker 把
+        自己那份交回 controller 就返回（``hand_off``），controller 在自己的 sessionfinish 里
+        已经通过 ``pytest_testnodedown`` 收齐了所有 worker 的数据（controller 的
+        ``pytest_runtestloop`` 要等全部节点 down 才退出，所以次序是有保证的）。
         """
         uninstall_all()
+
+        # 停用状态下这里没有任何事可做。提前返回而不是走到最后那个 `if not enabled: return`
+        # ——xdist 下再往下走就会为每个 worker 白跑一次 execnet 序列化，把一份没人会读的
+        # inventory 送回 controller。本地不配 Token 跑 `-n auto` 正是最常见的情形。
+        if not self.config.enabled and not self.dry_run:
+            return
+
+        # worker：交给 controller，自己不发。交接不成才退回「自己发一份」，并给 seq 加进程
+        # 偏移——那时同一次 CI 会有多份上报落进同一行 run，各自从 0 编号会让后到的整批被
+        # 平台按 `UNIQUE (ingest_run_id, seq)` 当成重投丢弃（这次要修的缺陷本体）。
+        if self.worker is not None:
+            if hand_off(self.pytest_config, self.collector.export_slice(filters=self.filters)):
+                return
+            self.collector.seq_base = seq_offset(self.worker)
+            # 一个 worker 手上只有 inventory 的**全量**（xdist 让每个 worker 都 collect 全部
+            # 再各跑一部分）但只有自己那一份 records。它单独报上去时不能声明全量：平台
+            # 按 scope 对账时会看到一份「用例都在、但结果多半是 unknown」的清单——那份清单
+            # 用来删用例是安全的（用例都在里面），可 `case_total`、通过失败数会被最后到达的
+            # 那一份覆盖成只有它自己跑的那些，读起来像「36 条用例只跑了 9 条」。
+            self._note_filter("xdist-worker")
+
         inventory, records = self.collector.payload_sections()
+
+        # controller 一份都没收到（worker 全崩、或它们都走了降级路径自己上报）：这个进程
+        # 手上什么都没有——controller 不 collect、不跑用例。**这时一个字都不发**。
+        #
+        # 发一份空 payload 的代价是实打实的：平台按 `(repository, commit, ci_run_id)` 合并进
+        # 同一行 run，而 `case_total` / 通过失败数 / 未归位数是「每次重算」的列，于是这份空的
+        # 会把 worker 刚报上去的 33 条计数覆盖成 0（这正是这次要修的第二个症状）。空 payload
+        # 换不来任何信息，却能抹掉真数据。
+        if is_controller(self.pytest_config) and not self.slices_taken:
+            print(
+                "[apitrack] nothing to report from the xdist controller "
+                f"({self.slices_lost} worker slice(s) missing); the workers reported for themselves"
+            )
+            return
 
         # 全量 = 这个范围内没有过滤（边界 11）。宁可少报一次全量（本该删的用例多留一天），
         # 不可多报一次（跑个 smoke 删掉 90% 的树）。
         # `-x` 落在 `maxfail` 上，已由 FILTER_OPTIONS 覆盖：它中断在第三个用例时 inventory
         # 是完整的（collect 已跑完），但用户显然没跑完这个范围。
         is_full = not self.filters and not self.collect_error
+
+        # controller 手上的 inventory 完全来自 worker 的交接，所以「有没有丢」直接决定它能
+        # 不能声明全量：丢了一份就意味着少一批用例，照它对账会把那批用例判成消失。
+        if self.slices_lost:
+            is_full = False
+            self.collector.note(
+                f"{self.slices_lost} xdist worker(s) did not hand their results back; "
+                "this run is reported as a partial inventory"
+            )
 
         payload = build_payload(
             config=self.config,

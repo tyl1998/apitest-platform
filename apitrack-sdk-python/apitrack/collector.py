@@ -5,6 +5,12 @@
 
 另一条贯穿全文的分工：**存在性看 inventory，归属看 records**。inventory 是「这一轮
 collect 到了哪些用例」，records 是「它们打过谁」——平台侧的删除对账只看前者。
+
+pytest-xdist 下每个进程各有一个 Collector，worker 把自己那份（``export_slice``）交回
+controller，controller 用 ``absorb`` 合并成一份再上报（见 ``distributed.py``）。合并规则
+刻意不新写一套：``absorb`` 走的是 ``register_case`` / ``set_result`` / ``add_record`` 这三个
+已有入口，于是「一个子项失败就是整条用例失败」这类判断在单进程与多进程下由同一段代码
+决定——两套实现迟早会在某个组合上给出不同答案。
 """
 
 from __future__ import annotations
@@ -65,6 +71,10 @@ class Collector:
         #: bug 而变红。
         self.patch_failures = 0
         self.dropped_records = 0
+        #: records 的 seq 起点。只有 xdist 的**降级**路径会把它设成非 0：那时每个 worker
+        #: 各发一份上报，而 seq 是平台侧 ``UNIQUE (ingest_run_id, seq)`` 的幂等键，各进程
+        #: 都从 0 编号会让后到的整批被当成重投丢弃（见 ``distributed.py``）。
+        self.seq_base = 0
 
     # ── inventory ──────────────────────────────────────────────────
 
@@ -142,7 +152,11 @@ class Collector:
                     "phase": record.phase,
                     # seq 由这里给（不是让平台按数组下标补）：分批重投时批次内的幂等键
                     # 必须稳定，而下标会随分批方式变。
-                    "seq": index,
+                    #
+                    # ``seq_base`` 只在 xdist 的降级路径下非 0（见 ``distributed.py``）：
+                    # 那时同一次 CI 会有多份上报合并进同一行 run，而 seq 在那一行里必须
+                    # 唯一。正常路径（含 controller 合并后的那一份）仍是 0 起的密集序列。
+                    "seq": self.seq_base + index,
                     "method": record.method,
                     "path_raw": record.path_raw,
                     "status_code": record.status_code,
@@ -156,3 +170,103 @@ class Collector:
         if self.dropped_records:
             self.note(f"{self.dropped_records} record(s) dropped after reaching the local cap")
         return inventory, records
+
+    # ── xdist 交接（见 distributed.py）─────────────────────────────
+
+    def export_slice(self, *, filters: list[str] | None = None) -> dict:
+        """worker 侧：这个进程采到的全部东西，一份可经 execnet 序列化的纯数据。
+
+        只用 dict / list / str / int / bool / None——execnet 的序列化不认 dataclass，
+        送一个 ``CaseEntry`` 过去会在 ``workeroutput`` 那一跳直接抛 ``DumpError``，而那时
+        用例都跑完了，症状是「一次成功的运行末尾多一个看不懂的错误」。
+
+        **records 不带 seq**：编号是 controller 合并完之后才能定的事（各 worker 的批内
+        下标必然互相碰撞），这里送原始顺序，由 ``absorb`` 追加进 controller 的 list、
+        ``payload_sections`` 统一编号。
+
+        ``filters`` 一并带回：deselect 发生在 worker 自己的 collect 里，controller 身上
+        不会触发 ``pytest_deselected``，不带过去的话「这一轮有没有过滤」在 controller 那边
+        就答错了——而那个答案直接决定平台侧要不要删用例。
+        """
+        with self._lock:
+            return {
+                "cases": [
+                    {
+                        "case_key": entry.case_key,
+                        "name": entry.name,
+                        "description": entry.description,
+                        "file_path": entry.file_path,
+                        "tags": list(entry.tags),
+                        "result": entry.result,
+                    }
+                    for entry in self._cases.values()
+                ],
+                "records": [
+                    {
+                        "case_key": record.case_key,
+                        "param_id": record.param_id,
+                        "phase": record.phase,
+                        "method": record.method,
+                        "path_raw": record.path_raw,
+                        "status_code": record.status_code,
+                        "latency_ms": record.latency_ms,
+                        "passed": record.passed,
+                        "error": record.error,
+                        "request_summary": dict(record.request_summary),
+                    }
+                    for record in self._records
+                ],
+                "filters": [str(name) for name in (filters or [])],
+                "warnings": list(self.warnings),
+                "dropped_records": self.dropped_records,
+            }
+
+    def absorb(self, slice_: dict) -> None:
+        """controller 侧：把一个 worker 交回来的那份并进自己。
+
+        走 ``register_case`` / ``set_result`` / ``add_record`` 三个已有入口，不直接改内部
+        结构：合并语义（同 case_key 只留一条、标签取并集、失败优先级最高、超上限只丢
+        records）因此在单进程与多进程下由同一段代码决定。自己写一套 merge 的话，「``[vip]``
+        在 gw0 失败、``[normal]`` 在 gw1 通过」这类跨进程组合迟早会给出与单进程不同的答案。
+
+        **``unknown`` 不参与结果合并**：一条参数化用例的场景被分到不同 worker 时，没跑到
+        它的那个进程仍会把它登记进 inventory（xdist 的每个 worker 都 collect 全量再各跑
+        一部分），结果是 ``unknown``。让它进 ``set_result`` 会撞上「skipped 不覆盖已有的
+        passed/failed，但 unknown 之后可以被覆盖」那条规则的边界——按 worker 的到达顺序
+        决定胜负。跳过它则无论顺序如何，答案都由真的跑过它的那个进程给出。
+        """
+        for entry in slice_.get("cases") or []:
+            case_key = str(entry.get("case_key") or "")
+            if not case_key:
+                continue
+            self.register_case(CaseEntry(
+                case_key=case_key,
+                name=str(entry.get("name") or ""),
+                description=str(entry.get("description") or ""),
+                file_path=str(entry.get("file_path") or ""),
+                tags=[str(tag) for tag in (entry.get("tags") or [])],
+            ))
+            result = entry.get("result")
+            if result in {"passed", "failed", "skipped"}:
+                self.set_result(case_key, result)  # type: ignore[arg-type]
+        for entry in slice_.get("records") or []:
+            self.add_record(RecordEntry(
+                case_key=str(entry.get("case_key") or ""),
+                phase=entry.get("phase") or "call",  # type: ignore[arg-type]
+                method=str(entry.get("method") or ""),
+                path_raw=str(entry.get("path_raw") or ""),
+                param_id=entry.get("param_id"),
+                status_code=entry.get("status_code"),
+                latency_ms=entry.get("latency_ms"),
+                passed=entry.get("passed"),
+                error=entry.get("error"),
+                request_summary=dict(entry.get("request_summary") or {}),
+            ))
+        for message in slice_.get("warnings") or []:
+            self.note(str(message))
+        dropped = slice_.get("dropped_records")
+        if isinstance(dropped, int) and dropped > 0:
+            # worker 自己那一侧撞了本地上限。加到 controller 的计数上，
+            # `payload_sections` 会把总数写成一条 warning——不然「上报的条数比实际发的少」
+            # 就成了一件无痕的事。
+            self.dropped_records += dropped

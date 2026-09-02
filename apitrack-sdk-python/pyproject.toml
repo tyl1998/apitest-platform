@@ -37,7 +37,9 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "requests>=2.25"]
+# 仓库自己跑测试用的。`pytest-xdist` 在这里不是为了并行跑我们这 48 条，而是因为「xdist 下
+# 一次运行只上报一份」那一组集成测试没装它就整组 skip——而它守的缺陷已经在真实仓库上发生过。
+dev = ["pytest>=7.0", "requests>=2.25", "pytest-xdist>=2.5"]
 
 [project.urls]
 Homepage = "https://github.com/apitrack/apitrack-sdk-python"
