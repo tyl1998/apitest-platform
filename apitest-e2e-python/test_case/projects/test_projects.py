@@ -6,6 +6,7 @@
 import logging
 import uuid
 
+import allure
 import pytest
 import requests
 
@@ -179,65 +180,88 @@ def test_list_projects_project_ids_filter(api):
 
 def test_list_projects_returns_envelope(api):
     """项目列表返回 200 + code 0，data 为项目数组，meta.total 与行数一致。"""
-    resp = api.get("/api/v1/projects")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["code"] == CODE_SUCCESS
-    assert isinstance(body["data"], list)
-    assert body["meta"]["total"] == len(body["data"])
-    for project in body["data"]:
-        assert project["id"]
-        assert project["name"]
-    log.info("projects list total=%d", body["meta"]["total"])
+    with allure.step("请求项目列表"):
+        resp = api.get("/api/v1/projects")
+        log.info("GET /api/v1/projects -> HTTP %s", resp.status_code)
+
+    with allure.step("校验响应包络与列表形状"):
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == CODE_SUCCESS
+        assert isinstance(body["data"], list)
+        assert body["meta"]["total"] == len(body["data"])
+        for project in body["data"]:
+            assert project["id"]
+            assert project["name"]
+        log.info("projects list total=%d", body["meta"]["total"])
 
 
 def test_list_projects_keyword_no_match_returns_empty(api):
     """keyword 无命中时列表为空、total 为 0（纯读，不建样本）。"""
-    resp = api.get("/api/v1/projects", params={"keyword": f"no-such-{uuid.uuid4().hex}"})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["code"] == CODE_SUCCESS
-    assert body["data"] == []
-    assert body["meta"]["total"] == 0
-    log.info("keyword no-match -> empty, total=0")
+    with allure.step("用不可能命中的 keyword 请求列表"):
+        resp = api.get("/api/v1/projects", params={"keyword": f"no-such-{uuid.uuid4().hex}"})
+        log.info("GET /api/v1/projects?keyword=no-such-* -> HTTP %s", resp.status_code)
+
+    with allure.step("校验空结果与 total=0"):
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == CODE_SUCCESS
+        assert body["data"] == []
+        assert body["meta"]["total"] == 0
+        log.info("keyword no-match -> empty, total=0")
 
 
 def test_list_projects_page_size_is_clamped(api):
     """pageSize 越界被服务端钳制到 [1, 100]，仍返回 200。"""
-    resp = api.get("/api/v1/projects", params={"pageSize": 0})
-    assert resp.status_code == 200
-    meta = resp.json()["meta"]
-    assert meta["pageSize"] == 1
-    assert meta["page"] == 1
+    with allure.step("pageSize=0 应钳制为 1"):
+        resp = api.get("/api/v1/projects", params={"pageSize": 0})
+        assert resp.status_code == 200
+        meta = resp.json()["meta"]
+        assert meta["pageSize"] == 1
+        assert meta["page"] == 1
+        log.info("pageSize=0 -> clamped to %s", meta["pageSize"])
 
-    resp = api.get("/api/v1/projects", params={"pageSize": 9999})
-    assert resp.status_code == 200
-    assert resp.json()["meta"]["pageSize"] == 100
-    log.info("pageSize 0 -> 1, 9999 -> 100")
+    with allure.step("pageSize=9999 应钳制为 100"):
+        resp = api.get("/api/v1/projects", params={"pageSize": 9999})
+        assert resp.status_code == 200
+        assert resp.json()["meta"]["pageSize"] == 100
+        log.info("pageSize=9999 -> clamped to 100")
 
 
 def test_list_projects_project_ids_drops_invalid(api):
     """projectIds 里的非法 UUID 被忽略，不报错、不匹配任何项目。"""
-    resp = api.get("/api/v1/projects", params={"projectIds": "not-a-uuid"})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["code"] == CODE_SUCCESS
-    assert body["data"] == []
-    assert body["meta"]["total"] == 0
-    log.info("projectIds=not-a-uuid -> empty, total=0")
+    with allure.step("projectIds 只传非法 UUID 请求列表"):
+        resp = api.get("/api/v1/projects", params={"projectIds": "not-a-uuid"})
+        log.info("GET /api/v1/projects?projectIds=not-a-uuid -> HTTP %s", resp.status_code)
+
+    with allure.step("校验非法 UUID 被丢弃、结果为空"):
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == CODE_SUCCESS
+        assert body["data"] == []
+        assert body["meta"]["total"] == 0
+        log.info("projectIds=not-a-uuid -> empty, total=0")
 
 
 def test_get_project_not_found(api):
     """不存在的项目 id 返回 404 + code 2001。"""
-    resp = api.get(f"/api/v1/projects/{uuid.uuid4()}")
-    assert resp.status_code == 404
-    assert resp.json()["code"] == CODE_NOT_FOUND
-    log.info("get project random uuid -> 404 code=2001")
+    with allure.step("请求一个随机 UUID 的项目详情"):
+        resp = api.get(f"/api/v1/projects/{uuid.uuid4()}")
+        log.info("GET /api/v1/projects/<random-uuid> -> HTTP %s", resp.status_code)
+
+    with allure.step("校验 404 与 code 2001"):
+        assert resp.status_code == 404
+        assert resp.json()["code"] == CODE_NOT_FOUND
+        log.info("get project random uuid -> 404 code=2001")
 
 
 def test_list_projects_requires_token(api_host):
     """无 token 访问项目列表返回 401。"""
-    resp = requests.get(f"{api_host}/api/v1/projects", timeout=15)
-    assert resp.status_code == 401
-    assert resp.json()["code"] == CODE_INVALID_CREDENTIALS
-    log.info("projects without token -> %s (expected 401)", resp.status_code)
+    with allure.step("不带 token 请求项目列表"):
+        resp = requests.get(f"{api_host}/api/v1/projects", timeout=15)
+        log.info("GET /api/v1/projects (no token) -> HTTP %s", resp.status_code)
+
+    with allure.step("校验 401 与 code 1002"):
+        assert resp.status_code == 401
+        assert resp.json()["code"] == CODE_INVALID_CREDENTIALS
+        log.info("projects without token -> HTTP %s (expected 401)", resp.status_code)
