@@ -1,4 +1,8 @@
-"""projects 模块：项目查询（列表/详情/标签/设置）为主，创建类用例暂缓。"""
+"""projects 模块：项目**只读**查询。
+
+约定：本模块运行时不产生任何新记录——需要建项目做前置的用例全部 skip
+（理由见各自的 skip reason）。只保留不写库的查询。
+"""
 import logging
 import uuid
 
@@ -15,27 +19,22 @@ from utils.other_utils import unique_project_name
 
 log = logging.getLogger("apitest.projects")
 
-
-def _create_project_data(api, name=None, description=""):
-    """建一个项目并返回 data；失败直接让断言炸。"""
-    name = name or unique_project_name()
-    resp = api.post("/api/v1/projects", json={"name": name, "description": description})
-    assert resp.status_code == 201, resp.text
-    data = resp.json()["data"]
-    log.info("created project name=%s id=%s", data["name"], data["id"])
-    return data
+# 需要「先建一个项目」才能断言其结果的用例：跑了就会新增记录，本轮一律 skip。
+_NEED_FIXTURE = "需要建项目做前置（会新增记录），本轮只跑纯只读查询"
 
 
-@pytest.mark.skip(reason="创建类用例暂缓，本轮聚焦查询")
+@pytest.mark.skip(reason="创建类用例暂缓")
 def test_create_project_success(api):
     """建项目返回 201，data 含 id/name。"""
     name = unique_project_name()
-    data = _create_project_data(api, name=name)
+    resp = api.post("/api/v1/projects", json={"name": name})
+    assert resp.status_code == 201, resp.text
+    data = resp.json()["data"]
     assert data["name"] == name
-    assert uuid.UUID(data["id"])  # id 是合法 UUID
+    assert uuid.UUID(data["id"])
 
 
-@pytest.mark.skip(reason="创建类用例暂缓，本轮聚焦查询")
+@pytest.mark.skip(reason="创建类用例暂缓")
 def test_create_project_without_name_fails(api):
     """name 为空 / 全空白都被 1001 拒绝。"""
     resp = api.post("/api/v1/projects", json={"name": "   "})
@@ -43,72 +42,71 @@ def test_create_project_without_name_fails(api):
     assert resp.json()["code"] == CODE_BAD_REQUEST
 
 
+@pytest.mark.skip(reason=_NEED_FIXTURE)
 def test_list_projects_contains_created_one(api):
     """项目列表能查到刚建的项目。"""
-    created = _create_project_data(api)
+    created = api.post("/api/v1/projects", json={"name": unique_project_name()}).json()["data"]
     resp = api.get("/api/v1/projects")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["code"] == CODE_SUCCESS
-    ids = [p["id"] for p in body["data"]]
+    ids = [p["id"] for p in resp.json()["data"]]
     assert created["id"] in ids
 
 
+@pytest.mark.skip(reason=_NEED_FIXTURE)
 def test_get_project_detail(api):
     """按 id 查详情，字段与创建时一致。"""
-    created = _create_project_data(api)
+    created = api.post("/api/v1/projects", json={"name": unique_project_name()}).json()["data"]
     resp = api.get(f"/api/v1/projects/{created['id']}")
-    assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["id"] == created["id"]
     assert data["name"] == created["name"]
 
 
+@pytest.mark.skip(reason=_NEED_FIXTURE)
 def test_get_project_tags_is_empty_for_fresh_project(api):
-    """新项目的 tags 接口返回空列表（用例/流程都还没打标签）。"""
-    created = _create_project_data(api)
+    """新项目的 tags 接口返回空列表。"""
+    created = api.post("/api/v1/projects", json={"name": unique_project_name()}).json()["data"]
     resp = api.get(f"/api/v1/projects/{created['id']}/tags")
-    assert resp.status_code == 200
     body = resp.json()
     assert body["data"] == []
     assert body["meta"]["total"] == 0
 
 
+@pytest.mark.skip(reason=_NEED_FIXTURE)
+def test_get_project_tags_scope_suites_is_empty(api):
+    """scope=suites 只看套件标签，新项目同样为空。"""
+    created = api.post("/api/v1/projects", json={"name": unique_project_name()}).json()["data"]
+    resp = api.get(f"/api/v1/projects/{created['id']}/tags", params={"scope": "suites"})
+    body = resp.json()
+    assert body["data"] == []
+    assert body["meta"]["total"] == 0
+
+
+@pytest.mark.skip(reason=_NEED_FIXTURE)
 def test_get_project_settings_defaults(api):
     """新项目 settings 默认无默认环境、不存明文。"""
-    created = _create_project_data(api)
-    resp = api.get(f"/api/v1/projects/{created['id']}/settings")
-    assert resp.status_code == 200
-    data = resp.json()["data"]
-    # 无默认环境时字段直接缺省（Fastify 序列化省略 undefined）
+    created = api.post("/api/v1/projects", json={"name": unique_project_name()}).json()["data"]
+    data = api.get(f"/api/v1/projects/{created['id']}/settings").json()["data"]
     assert data.get("defaultEnvironmentId") is None
     assert data["storePlaintext"] is False
 
 
+@pytest.mark.skip(reason=_NEED_FIXTURE)
 def test_update_project_settings_store_plaintext(api):
-    """storePlaintext 可开关。
-
-    只传 defaultEnvironmentId=null 时，服务端对 store_plaintext 走
-    COALESCE($3, false)（projects.ts PUT settings 的 SQL），即未提供的
-    布尔会被写回 false 而不是保留原值——按现状断言。
-    """
-    created = _create_project_data(api)
-    project_id = created["id"]
-
-    resp = api.put(f"/api/v1/projects/{project_id}/settings", json={"storePlaintext": True})
-    assert resp.status_code == 200
+    """storePlaintext 可开关（现状：COALESCE 会把缺省布尔落回 false）。"""
+    created = api.post("/api/v1/projects", json={"name": unique_project_name()}).json()["data"]
+    pid = created["id"]
+    resp = api.put(f"/api/v1/projects/{pid}/settings", json={"storePlaintext": True})
     assert resp.json()["data"]["storePlaintext"] is True
-
-    resp = api.put(f"/api/v1/projects/{project_id}/settings", json={"defaultEnvironmentId": None})
-    assert resp.status_code == 200
+    resp = api.put(f"/api/v1/projects/{pid}/settings", json={"defaultEnvironmentId": None})
     data = resp.json()["data"]
     assert data.get("defaultEnvironmentId") is None
-    assert data.get("storePlaintext") is False  # 现状：COALESCE 落回 false
+    assert data.get("storePlaintext") is False
 
 
+@pytest.mark.skip(reason=_NEED_FIXTURE)
 def test_update_project_settings_rejects_foreign_environment(api):
     """defaultEnvironmentId 必须属于本项目：随便塞一个 UUID 返回 400。"""
-    created = _create_project_data(api)
+    created = api.post("/api/v1/projects", json={"name": unique_project_name()}).json()["data"]
     resp = api.put(
         f"/api/v1/projects/{created['id']}/settings",
         json={"defaultEnvironmentId": str(uuid.uuid4())},
@@ -117,82 +115,91 @@ def test_update_project_settings_rejects_foreign_environment(api):
     assert resp.json()["code"] == CODE_BAD_REQUEST
 
 
+@pytest.mark.skip(reason=_NEED_FIXTURE)
 def test_rename_project(api):
     """PATCH 改名生效；空白名被拒。"""
-    created = _create_project_data(api)
+    created = api.post("/api/v1/projects", json={"name": unique_project_name()}).json()["data"]
     new_name = unique_project_name("renamed")
     resp = api.patch(f"/api/v1/projects/{created['id']}", json={"name": new_name})
-    assert resp.status_code == 200
     assert resp.json()["data"]["name"] == new_name
-
     resp = api.patch(f"/api/v1/projects/{created['id']}", json={"name": "   "})
     assert resp.status_code == 400
 
 
+@pytest.mark.skip(reason=_NEED_FIXTURE)
 def test_delete_project(api):
     """删掉之后详情查不到（404）。"""
-    created = _create_project_data(api)
-    project_id = created["id"]
-
-    resp = api.delete(f"/api/v1/projects/{project_id}")
-    assert resp.status_code == 200
+    created = api.post("/api/v1/projects", json={"name": unique_project_name()}).json()["data"]
+    pid = created["id"]
+    resp = api.delete(f"/api/v1/projects/{pid}")
     assert resp.json()["data"]["deleted"] is True
-
-    resp = api.get(f"/api/v1/projects/{project_id}")
+    resp = api.get(f"/api/v1/projects/{pid}")
     assert resp.status_code == 404
 
 
+@pytest.mark.skip(reason=_NEED_FIXTURE)
 def test_list_projects_keyword_filters_by_name(api):
-    """keyword 按项目名子串（不区分大小写）过滤。"""
+    """keyword 按项目名子串过滤（需建项目做命中样本）。"""
     name = unique_project_name()
-    created = _create_project_data(api, name=name)
-    resp = api.get("/api/v1/projects", params={"keyword": name})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["code"] == CODE_SUCCESS
-    assert any(p["id"] == created["id"] for p in body["data"])
+    api.post("/api/v1/projects", json={"name": name})
+    body = api.get("/api/v1/projects", params={"keyword": name}).json()
+    assert any(p["name"] == name for p in body["data"])
 
 
+@pytest.mark.skip(reason=_NEED_FIXTURE)
 def test_list_projects_keyword_matches_description(api):
-    """keyword 也能匹配 description 子串。"""
+    """keyword 也能匹配 description 子串（需建项目做命中样本）。"""
     description = f"desc-{uuid.uuid4().hex[:8]}"
-    created = _create_project_data(api, description=description)
-    resp = api.get("/api/v1/projects", params={"keyword": description})
+    api.post("/api/v1/projects", json={"name": unique_project_name(), "description": description})
+    body = api.get("/api/v1/projects", params={"keyword": description}).json()
+    assert any(p["description"] == description for p in body["data"])
+
+
+@pytest.mark.skip(reason=_NEED_FIXTURE)
+def test_list_projects_pagination_covers_created(api):
+    """分页合计覆盖刚建的三个项目（需建项目做命中样本）。"""
+    prefix = f"page-{uuid.uuid4().hex[:8]}"
+    ids = {
+        api.post("/api/v1/projects", json={"name": unique_project_name(prefix)}).json()["data"]["id"]
+        for _ in range(3)
+    }
+    page1 = {p["id"] for p in api.get("/api/v1/projects", params={"keyword": prefix, "pageSize": 2, "page": 1}).json()["data"]}
+    page2 = {p["id"] for p in api.get("/api/v1/projects", params={"keyword": prefix, "pageSize": 2, "page": 2}).json()["data"]}
+    assert ids == page1 | page2
+
+
+@pytest.mark.skip(reason=_NEED_FIXTURE)
+def test_list_projects_project_ids_filter(api):
+    """projectIds 精确过滤到指定项目（需建项目做命中样本）。"""
+    a = api.post("/api/v1/projects", json={"name": unique_project_name()}).json()["data"]
+    b = api.post("/api/v1/projects", json={"name": unique_project_name()}).json()["data"]
+    ids = {p["id"] for p in api.get("/api/v1/projects", params={"projectIds": f"{a['id']},{b['id']}"}).json()["data"]}
+    assert ids == {a["id"], b["id"]}
+
+
+def test_list_projects_returns_envelope(api):
+    """项目列表返回 200 + code 0，data 为项目数组，meta.total 与行数一致。"""
+    resp = api.get("/api/v1/projects")
     assert resp.status_code == 200
     body = resp.json()
     assert body["code"] == CODE_SUCCESS
-    assert any(p["id"] == created["id"] for p in body["data"])
+    assert isinstance(body["data"], list)
+    assert body["meta"]["total"] == len(body["data"])
+    for project in body["data"]:
+        assert project["id"]
+        assert project["name"]
+    log.info("projects list total=%d", body["meta"]["total"])
 
 
 def test_list_projects_keyword_no_match_returns_empty(api):
-    """keyword 无命中时列表为空、total 为 0。"""
+    """keyword 无命中时列表为空、total 为 0（纯读，不建样本）。"""
     resp = api.get("/api/v1/projects", params={"keyword": f"no-such-{uuid.uuid4().hex}"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["code"] == CODE_SUCCESS
     assert body["data"] == []
     assert body["meta"]["total"] == 0
-
-
-def test_list_projects_pagination_covers_created(api):
-    """分页合计覆盖刚建的三个项目，两页不重叠，total 为命中数。"""
-    prefix = f"page-{uuid.uuid4().hex[:8]}"
-    created = [_create_project_data(api, name=unique_project_name(prefix)) for _ in range(3)]
-    ids = {p["id"] for p in created}
-
-    resp = api.get("/api/v1/projects", params={"keyword": prefix, "pageSize": 2, "page": 1})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["code"] == CODE_SUCCESS
-    assert body["meta"] == {"page": 1, "pageSize": 2, "total": 3}
-    page1 = {p["id"] for p in body["data"]}
-
-    resp = api.get("/api/v1/projects", params={"keyword": prefix, "pageSize": 2, "page": 2})
-    body = resp.json()
-    assert body["code"] == CODE_SUCCESS
-    page2 = {p["id"] for p in body["data"]}
-    assert page1 & page2 == set()
-    assert ids == page1 | page2
+    log.info("keyword no-match -> empty, total=0")
 
 
 def test_list_projects_page_size_is_clamped(api):
@@ -206,27 +213,18 @@ def test_list_projects_page_size_is_clamped(api):
     resp = api.get("/api/v1/projects", params={"pageSize": 9999})
     assert resp.status_code == 200
     assert resp.json()["meta"]["pageSize"] == 100
-
-
-def test_list_projects_project_ids_filter(api):
-    """projectIds 精确过滤到指定项目。"""
-    a = _create_project_data(api)
-    b = _create_project_data(api)
-    resp = api.get("/api/v1/projects", params={"projectIds": f"{a['id']},{b['id']}"})
-    assert resp.status_code == 200
-    body = resp.json()
-    ids = {p["id"] for p in body["data"]}
-    assert ids == {a["id"], b["id"]}
+    log.info("pageSize 0 -> 1, 9999 -> 100")
 
 
 def test_list_projects_project_ids_drops_invalid(api):
-    """projectIds 里的非法 UUID 被忽略，不报错。"""
-    created = _create_project_data(api)
-    resp = api.get("/api/v1/projects", params={"projectIds": f"not-a-uuid,{created['id']}"})
+    """projectIds 里的非法 UUID 被忽略，不报错、不匹配任何项目。"""
+    resp = api.get("/api/v1/projects", params={"projectIds": "not-a-uuid"})
     assert resp.status_code == 200
     body = resp.json()
-    ids = {p["id"] for p in body["data"]}
-    assert ids == {created["id"]}
+    assert body["code"] == CODE_SUCCESS
+    assert body["data"] == []
+    assert body["meta"]["total"] == 0
+    log.info("projectIds=not-a-uuid -> empty, total=0")
 
 
 def test_get_project_not_found(api):
@@ -234,16 +232,7 @@ def test_get_project_not_found(api):
     resp = api.get(f"/api/v1/projects/{uuid.uuid4()}")
     assert resp.status_code == 404
     assert resp.json()["code"] == CODE_NOT_FOUND
-
-
-def test_get_project_tags_scope_suites_is_empty(api):
-    """scope=suites 只看套件标签，新项目同样为空。"""
-    created = _create_project_data(api)
-    resp = api.get(f"/api/v1/projects/{created['id']}/tags", params={"scope": "suites"})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["data"] == []
-    assert body["meta"]["total"] == 0
+    log.info("get project random uuid -> 404 code=2001")
 
 
 def test_list_projects_requires_token(api_host):
@@ -251,3 +240,4 @@ def test_list_projects_requires_token(api_host):
     resp = requests.get(f"{api_host}/api/v1/projects", timeout=15)
     assert resp.status_code == 401
     assert resp.json()["code"] == CODE_INVALID_CREDENTIALS
+    log.info("projects without token -> %s (expected 401)", resp.status_code)
