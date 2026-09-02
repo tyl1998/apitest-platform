@@ -1,4 +1,5 @@
 """projects 模块：项目查询（列表/详情/标签/设置）为主，创建类用例暂缓。"""
+import logging
 import uuid
 
 import pytest
@@ -12,13 +13,17 @@ from data.constant import (
 )
 from utils.other_utils import unique_project_name
 
+log = logging.getLogger("apitest.projects")
+
 
 def _create_project_data(api, name=None, description=""):
     """建一个项目并返回 data；失败直接让断言炸。"""
     name = name or unique_project_name()
     resp = api.post("/api/v1/projects", json={"name": name, "description": description})
     assert resp.status_code == 201, resp.text
-    return resp.json()["data"]
+    data = resp.json()["data"]
+    log.info("created project name=%s id=%s", data["name"], data["id"])
+    return data
 
 
 @pytest.mark.skip(reason="创建类用例暂缓，本轮聚焦查询")

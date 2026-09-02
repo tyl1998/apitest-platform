@@ -3,9 +3,13 @@
 只打 GET、不建任何新记录——Runner 协议（/runner/*）全是 POST 写接口，查询侧在
 系统管理端点：runner 池聚合、Runner 清单、Runner 注册 Token 列表。
 """
+import logging
+
 import requests
 
 from data.constant import CODE_INVALID_CREDENTIALS, CODE_SUCCESS
+
+log = logging.getLogger("apitest.runner")
 
 
 def test_runner_pool_requires_token(api_host):
@@ -13,6 +17,7 @@ def test_runner_pool_requires_token(api_host):
     resp = requests.get(f"{api_host}/api/v1/system/runner-pool", timeout=15)
     assert resp.status_code == 401
     assert resp.json()["code"] == CODE_INVALID_CREDENTIALS
+    log.info("runner-pool without token -> %s (expected 401)", resp.status_code)
 
 
 def test_runner_pool_returns_pool_stats(api):
@@ -22,6 +27,11 @@ def test_runner_pool_returns_pool_stats(api):
     body = resp.json()
     assert body["code"] == CODE_SUCCESS
     data = body["data"]
+    log.info(
+        "runner-pool labels=%d online=%d/%d capacity=%d inflight=%d queued=%d",
+        len(data["labels"]), data["online"], data["total"],
+        data["capacity"], data["inflight"], data["queued"],
+    )
     assert data["offlineAfterSeconds"] > 0
     assert isinstance(data["labels"], list)
     for entry in data["labels"]:
@@ -40,6 +50,7 @@ def test_runners_requires_token(api_host):
     resp = requests.get(f"{api_host}/api/v1/system/runners", timeout=15)
     assert resp.status_code == 401
     assert resp.json()["code"] == CODE_INVALID_CREDENTIALS
+    log.info("runners without token -> %s (expected 401)", resp.status_code)
 
 
 def test_runners_returns_pool(api):
@@ -49,6 +60,10 @@ def test_runners_returns_pool(api):
     body = resp.json()
     assert body["code"] == CODE_SUCCESS
     data = body["data"]
+    log.info(
+        "runners total=%d online=%d capacity=%d",
+        data["total"], data["online"], data["capacity"],
+    )
     assert isinstance(data["runners"], list)
     assert data["offlineAfterSeconds"] > 0
     for field in ("capacity", "online", "total"):
@@ -65,6 +80,7 @@ def test_runner_tokens_requires_token(api_host):
     resp = requests.get(f"{api_host}/api/v1/system/runner-tokens", timeout=15)
     assert resp.status_code == 401
     assert resp.json()["code"] == CODE_INVALID_CREDENTIALS
+    log.info("runner-tokens without token -> %s (expected 401)", resp.status_code)
 
 
 def test_runner_tokens_returns_list(api):
@@ -73,6 +89,7 @@ def test_runner_tokens_returns_list(api):
     assert resp.status_code == 200
     body = resp.json()
     assert body["code"] == CODE_SUCCESS
+    log.info("runner-tokens total=%d", body["meta"]["total"])
     assert isinstance(body["data"], list)
     assert body["meta"]["total"] == len(body["data"])
     for token in body["data"]:

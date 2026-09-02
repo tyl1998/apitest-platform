@@ -1,9 +1,13 @@
 """auth 模块：参数化的无效登录场景（验证 apitrack 参数化上报）。"""
+import logging
+
 import pytest
 
 from data.config import BASE_CONFIG
 from data.constant import CODE_INVALID_CREDENTIALS
 from req.http_req import login
+
+log = logging.getLogger("apitest.auth")
 
 
 @pytest.mark.parametrize(
@@ -20,3 +24,4 @@ def test_login_invalid_credentials_are_rejected(email, password):
     resp = login(email, password)
     assert resp.status_code == 401
     assert resp.json()["code"] == CODE_INVALID_CREDENTIALS
+    log.info("invalid login rejected -> %s (email=%r)", resp.status_code, email)

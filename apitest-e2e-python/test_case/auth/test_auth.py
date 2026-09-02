@@ -1,9 +1,13 @@
 """auth 模块：登录与 /auth/me。"""
+import logging
+
 import requests
 
 from data.config import BASE_CONFIG
 from data.constant import CODE_INVALID_CREDENTIALS, CODE_SUCCESS
 from req.http_req import login
+
+log = logging.getLogger("apitest.auth")
 
 
 def test_login_success_returns_token_and_user():
@@ -16,6 +20,7 @@ def test_login_success_returns_token_and_user():
     assert data["token"]
     assert data["user"]["email"] == BASE_CONFIG.email
     assert data["user"]["id"]
+    log.info("login ok user=%s id=%s", data["user"]["email"], data["user"]["id"])
 
 
 def test_login_wrong_password_is_rejected():
@@ -25,6 +30,7 @@ def test_login_wrong_password_is_rejected():
     body = resp.json()
     assert body["code"] == CODE_INVALID_CREDENTIALS
     assert body["data"] is None
+    log.info("wrong password rejected -> %s code=%s", resp.status_code, body["code"])
 
 
 def test_login_unknown_email_is_rejected():
@@ -32,6 +38,7 @@ def test_login_unknown_email_is_rejected():
     resp = login("nobody@local.test", BASE_CONFIG.password)
     assert resp.status_code == 401
     assert resp.json()["code"] == CODE_INVALID_CREDENTIALS
+    log.info("unknown email rejected -> %s", resp.status_code)
 
 
 def test_auth_me_requires_token(api_host):
@@ -39,6 +46,7 @@ def test_auth_me_requires_token(api_host):
     resp = requests.get(f"{api_host}/api/v1/auth/me", timeout=15)
     assert resp.status_code == 401
     assert resp.json()["code"] == CODE_INVALID_CREDENTIALS
+    log.info("auth/me without token -> %s (expected 401)", resp.status_code)
 
 
 def test_auth_me_returns_current_user(api):
@@ -48,3 +56,4 @@ def test_auth_me_returns_current_user(api):
     data = resp.json()["data"]
     assert data["email"] == BASE_CONFIG.email
     assert data["id"]
+    log.info("auth/me user=%s id=%s", data["email"], data["id"])
