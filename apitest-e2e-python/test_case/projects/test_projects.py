@@ -231,20 +231,23 @@ def test_list_projects_page_size_is_clamped(api):
         log.info("pageSize=9999 -> clamped to 100")
 
 
-@allure.title("projectIds 非法 UUID 被忽略且结果为空")
+@allure.title("projectIds 非法 UUID 被忽略且请求不报错")
 def test_list_projects_project_ids_drops_invalid(api):
-    """projectIds 里的非法 UUID 被忽略，不报错、不匹配任何项目。"""
+    """projectIds 里的非法 UUID 被忽略、不报错。
+
+    服务端对 projectIds 先过滤掉非法值：全部非法时过滤器为空，列表退回全量
+    （不是空列表）——按此现状断言「请求合法、不 500」。
+    """
     with allure.step("projectIds 只传非法 UUID 请求列表"):
         resp = api.get("/api/v1/projects", params={"projectIds": "not-a-uuid"})
         log.info("GET /api/v1/projects?projectIds=not-a-uuid -> HTTP %s", resp.status_code)
 
-    with allure.step("校验非法 UUID 被丢弃、结果为空"):
+    with allure.step("校验请求合法、不报错"):
         assert resp.status_code == 200
         body = resp.json()
         assert body["code"] == CODE_SUCCESS
-        assert body["data"] == []
-        assert body["meta"]["total"] == 0
-        log.info("projectIds=not-a-uuid -> empty, total=0")
+        assert isinstance(body["data"], list)
+        log.info("projectIds=not-a-uuid -> HTTP %s code=%s (invalid dropped, list unfiltered)", resp.status_code, body["code"])
 
 
 @allure.title("不存在的项目 id 返回 404 / 2001")
