@@ -1,11 +1,110 @@
 # 接口自动化平台 — 开发计划
 
-> 版本: v0.8
-> 基于: API_AUTOMATION_SPEC.md v1.9 / FRONTEND_INTERACTION_DESIGN.md v2.0 / REPOSITORY_ARCHITECTURE.md v1.1
+> 版本: v0.8.10
+> 基于: API_AUTOMATION_SPEC.md v1.9 / FRONTEND_INTERACTION_DESIGN.md v2.3 / REPOSITORY_ARCHITECTURE.md v1.1
 > 当前阶段: P0、P1 全部已实现；P2 全部已实现并通过验收；**P3 十一个批次全部实现并于
 > 2026-08-28 通过用户验收**；**P4（仓库模式：上报式用例 + `apitrack-sdk`）十二个批次于
 > 2026-08-29 全部实现，并于 2026-08-31 通过用户验收；`apitrack-sdk` v0.1.0 已发布至
-> 正式 PyPI**，范围与边界见 7.0，状态见 7.6。
+> 正式 PyPI**，范围与边界见 7.0，状态见 7.6；**P4.5（自研 Runner）全部已实现**——
+> P4.5-1 ~ P4.5-13（状态见 8.8 末尾）；**P4.5-14（配置面收窄，8.11）与 P4.5-15
+> （任务编辑页与执行历史交互改版，8.12）均已实现**（2026-09-01；前者迁移 041 + 五 tab
+> 合并 + 四组配置删除，后者 `CiTaskEditor.tsx` 独立编辑页 + 行内展开历史 + 日志下载，
+> 详见 8.11 / 8.12 末尾的实现状态）。**P4.5 十五个批次至此全部落地，并于 2026-09-03
+> 通过用户验收**（含 2026-09-02/03 的报告体验改版与分享、可读性、上报幂等按 commit
+> 折行、树×任务报告、通过率口径、容器档取消等反馈修复轮，见 8.13 ~ 8.17 与
+> `issue_fix/`；验收结论见 8.18）。
+>
+> **v0.8.9 增量（验收反馈七项，2026-09-03，见 8.17 与 issue_fix）**：三缺陷——① 接口
+> 列表为「最近运行」条全量拉 200 条 `/executions`（约 254KB），删列 + 耗时/状态改由
+> 列表接口 LATERAL 随行带出；② `docker run --storage-opt size=` 在 overlay2 无 pquota
+> 的 daemon 上必被拒（退出码 125 被当脚本失败），两条通道撞上即去旗标重试 + 进程内
+> 降级；⑤ 套件报告分享页成员行不可点（无抽屉），新增三个 token 端点按证据闭包放行。
+> 四调整——③ 容器档通道部署时可选（Runner 自报 + 池显示 + 部署命令 export，迁移 046）；
+> ④ 通知模版新增 `{{reportUrl}}`（`PUBLIC_BASE_URL` 拼完整链接）；⑥ 上报记录明细删
+> 状态码/耗时/状态三列；⑦ 用例树×任务报告（最近任务列替代请求数列、状态/最近执行从
+> 报告读时关联【迁移 047 索引，绝不回写】、抽屉展示用例内步骤 + 请求序列高亮该接口）。
+>
+> **v0.8.10 增量（验收 2026-09-03 第二批，见 8.17）**：一项缺陷一项口径两项交互——
+> ① 树×报告匹配键形态缺陷（allure fullName 是 `pkg.Mod#test`，非 nodeid；Runner 侧
+> 归一 + 服务端历史行兼容分支，绝不回写）；② 通过率口径改 **passed/(passed+failed)**，
+> 跳过不进分母（error 已算失败）；③ 任务编辑页补未保存提示 + Cmd/Ctrl+S（对齐套件
+> 编辑的整套安排）；④ 任务列表在途状态只在「最近执行」列展示。缺陷记
+> `issue_fix/问题记录-P4.5验收20260903第二批.md`。
+>
+> **v0.8.9 增量（凭据页上报口径说明，2026-09-03）**：上报 Token 区块补三条说明
+> （按 commit 去重 / 多任务共用一张 Token / 任务内「高级设置 → SDK 注入」控制注入，
+> 调试任务取消勾选）——回答「正式与调试两个任务一起报会怎样」。
+>
+> **v0.8.8 增量（上报幂等口径变更，2026-09-03，见 8.16）**：同 commit 的上报不再每次
+> 新增行——迁移 045 幂等键折成 `(repository, commit)`，同 commit 折一行 + 新列
+> `ci_execution_count` 记执行次数；`pipeline_runs.ingest_run_id` 反查改
+> `(project, commit)`；旧行就地合并（dev 库 16→4 行、记录 350→69 行）；前端「执行 N 次」。
+>
+> **v0.8.7 增量（报告体验验收第三批，2026-09-02，见 8.15）**：四缺陷三调整一说明——
+> ① 报告附件一直「正在加载」两处根因修复（附件引用错用展示名取实体、前端丢弃在途响应）；
+> ③ 失败计数对不上（`error` 归入失败 + 迁移 044 `external_id` 防同名参数化用例被唯一键
+> 吞掉）；④ 产物大小全 0 B（落库读 `guard.bytesWritten`）；② case 明细改抽屉；⑤ 报告
+> 进入全收起；⑦ 任务列表「最近执行」列后移；⑥ 上报幂等口径初判符合设计，次日用户改口径
+> （见 8.16）。缺陷记 `issue_fix/问题记录-P4.5报告体验验收第三批.md`。
+>
+> **v0.8.6 增量（报告与任务列表可读性改版，2026-09-02 验收反馈第二批，见 8.14）**：十项，
+> 全部落在「读」这一侧——① 时间轴整齐刻度 + 背景网格 + 空档标注 + 泳道按时间排序；② 概要行
+> 从纯文本混排改带标签事实格（状态/阶段/提交/触发/结果）+ 计数 chip；③ 报告用例列表按文件
+> 分组折叠（默认只展开有失败的）；④ 列表显示 case title（`@allure.title` → docstring 首行 →
+> 函数名，函数名退成副标题）；⑤ 展开区限高自滚动 + 步骤树真折叠；⑥ 报告内搜索 + 状态筛选；
+> ⑦ 任务列表补「最近执行」列（状态 + #序号 + 执行次数，服务端多一段 LATERAL）；⑧ 任务列表
+> 补关键字搜索（`GET /ci-tasks?keyword=`，ILIKE 名称/描述/Git 地址）；⑩ 测试级
+> log/stdout/stderr 拆成默认展开的「执行日志」块 + 报告包无附件时说明原因
+> （`--allure-no-capture`）；⑪ 状态列换 `Status` 原语上语义色。其中两项是缺陷（任务列表
+> LATERAL 列被 `TASK_SELECT` 投影吞掉、步骤树 caret 点不动），记
+> `issue_fix/问题记录-报告与任务列表可读性.md`。
+>
+> **v0.8.5 增量（报告体验改版，2026-09-02 验收反馈，见 8.13）**：五项——① run 详情页
+> 面包屑缺陷修复（`pipeline-runs/:runId` 进 detail 判定，回得去任务列表）；②③ 报告视图
+> 合并：用例 tab 撤销，`PipelineReportBody` 三段（概要读数含通过率 / timeline / allure
+> 用例明细含注释·fixture·步骤日志），junit 降级列表；任务列表历史补计数列；④ 报告列表
+> 扩成**总报告列表**（套件 + 仓库执行两源 UNION，`kind` 区分、来源筛选、计数列）；⑤
+> **报告分享**：迁移 043 `report_shares` + `/public/report-shares/:token` 免登录只读
+> （与站内同一份拼装 `lib/reportPayload.ts`），`/share/reports/:token` 公开页。
+>
+> **v0.8.4 增量（P4.5-12，2026-09-01 实现）**：8.7 的两个预留接入点接上——**调度与 Webhook
+> 支持 `ci_task` 目标**（迁移 042 放宽两个 `target_type` CHECK；`lib/schedule.ts` 的 `fire()`
+> 分出 `fireSuite` / `fireCiTask`；Webhook 的公开路由从 `if flow / else suite` 落空写法改成
+> 三分支显式分派），两条路径都走 `triggerCiTaskRun` 这一个函数（P3 边界 5）。本轮两个范围
+> 扩项一并落地：**任务终态通知**（`ci_tasks.notify_config` 与套件那一列形状逐字相同，归一 /
+> 投递 / 证据行全部复用；挂在 `pipeline` 终态事件的订阅上，complete 与租约回收两条路径自动
+> 都覆盖）、**任务级串行**（`single_concurrency` 默认开，守卫落在 claim 侧——**排队而不是
+> 拒绝**，四个出口补 `notifySerializedQueue` 唤醒）。前端 `SuiteSchedules` 泛化成
+> `ResourceSchedules`，套件详情页与仓库任务共用一个组件；`start.sh` 补起 Runner 的注释
+> （不自动拉起）。七处偏差与三个刻意的缺省见 8.7 与 8.8 末尾。
+>
+> **v0.8.3 增量（P4.5 验收反馈第二轮，2026-09-01 确认；①–③ 已于同日实现，见 8.12
+> 末尾）**：五点优化，范围见 8.12 与
+> 8.7 的改写——① 任务编辑从抽屉改**独立编辑页**（路由 `/repo/tasks/new|:taskId`），
+> 必填项前置、高级项折叠，环境变量分区上移到代码来源之后（它是写 shell 的前置输入）；
+> ② 任务列表**行内展开**执行历史（新 `GET /pipeline-runs?ciTaskId=` 列表接口），点某条
+> run 直达详情页，不再绕全局报告列表；③ run 详情页默认落在日志 tab（实时 SSE / 历史
+> 全量同一位置），补**整份日志下载**路由；④ P4.5-12 范围扩成「调度 + 通知 +
+> **任务级串行**」（**已于同日实现**，见上）；⑤ Webhook 接 CI 任务维持原 P4.5-12 范围一并
+> 落地（**已实现**）。
+>
+> **v0.8.2 增量（P4.5-11，2026-09-01）**：8.6 欠着的三个前端页面落地——CI 任务列表
+> （顶部 Runner 池读数 + 行内执行/历史/编辑/删除）、任务编辑抽屉（代码来源只读、进程档
+> 写成信任声明、secret patch 语义）、Runner 池（落在系统设置里紧挨执行器面板的第三个
+> tab，含注册 Token 签发与部署命令、`draining` 下线）。两处口径改造：趋势页开关从
+> 「含仓库上报」扩成**「含仓库执行」**（`includeRepo` 同时管 `ingest` 与 `runner`，
+> 不给第二个复选框）、执行记录页补「只看勾选来的」（`case_filter IS NOT NULL`）。
+> 新增一条 `GET /system/runner-pool`（任何登录用户可读）让非管理员也能看到池状态；
+> 导航新增「仓库模式」分组（仓库用例从编排组移出、与 CI 任务并列）；看板的「CI 任务数」
+> 接真值（覆盖率一个字不改）。
+>
+> **v0.8.1 增量（P4.5-13，2026-09-01）**：边界 13 的「不做报告渲染」**改判**——用户要
+> timeline 与用例内步骤，落地为**自存原始文件、自渲染**（新边界 19）：不跑 allure-cli、
+> 不 vendor allure 官方 SPA。两层落地：timeline 数据随 `complete` 的 `cases[]` 上报落
+> `pipeline_run_cases` 四个新列（迁移 040）；Runner 把 allure-results 整目录打 zip
+> （零依赖手写 zip 写入器）作为 `kind='report'` 产物直传，平台读取解析（零依赖 zip
+> 读取器 + 归一化）、用自己的 UI 渲染——run 详情页四 tab（实时日志 / cases 时间轴 /
+> 报告视图 / 产物），执行记录页 runner 行可点。
 >
 > **v0.8（P4，2026-08-29 实现完成）**：十二个批次全部落地，逐批落点与「相对计划的六处收窄」见 7.6。
 >
@@ -37,6 +136,12 @@
 > 见 `issue_fix/问题记录-P3验收第一轮.md`）与环境管理列表服务端分页。
 >
 > **P3 验收结论**：2026-08-28 用户验收通过（P3-1 ~ P3-11 全量）。
+>
+> **v0.6 范围变更**: **P4.5（自研 Runner）范围与边界已于 2026-08-31 确认**，见 8.0：
+> 由 4 周上调为 **6 周**（理由见 8.0 边界 18）；沙箱做**进程 + 容器**两档；仓库凭据由平台
+> 加密存储并随 JobSpec 下发；报告归一走 **SDK 上报 / junit / allure** 三条路径（只有 SDK
+> 路径回写用例树）；**P6 10.1 的对象存储抽象提前到本阶段**，但只服务产物上传，执行历史归档
+> 与大响应体截断仍留在 P6；勾选用例快速执行（8.3）确认进本阶段。
 >
 > **v0.5 增量切片**: **P2-8 执行分区（跨网段执行）** 已全部实现（P2-8.1–P2-8.6 于
 > 2026-08-26 完成，P2-8.7 配置体验补齐于 2026-08-27 增补）**并于 2026-08-27 通过用户
@@ -1851,6 +1956,13 @@ Redis**，那台机器上按现状起不了 worker。这是部署拓扑问题，
 账不能再按「已接受」记——那是 B 的真正驱动力，隧道只是缓兵。**在选定方向之前，不向不受控
 网段的机器部署分区 worker。**
 
+> **2026-08-31 更新**：上表方案 B 已被采纳为 **P4.5 的正式形状**，范围与边界见 8.0，协议见
+> 8.2。方案 C（双传输并存）**不做**——两条认领路径共存意味着 at-most-once 要在两个地方各证
+> 一次，而 P4.5 的 Runner 本身就同时覆盖「跨网段」与「跑仓库代码」两个需求，B 落地后 C 想
+> 保留的那点复用价值不存在了。可控网段继续用 P2-8 的分区 worker（它更省一次 HTTP 往返），
+> 不受控网段用 Runner，两者靠**同一套 `runner_label`** 区分——这不是「双传输」，而是两种
+> 执行器服务不同标签。
+
 ### 5.1 数据库迁移（从 015 顺序追加）> 序号说明：计划原写的 `003_p2_schema.sql` 为过时命名，实际接在 `014` 之后。
 > 按上述批次拆分为多个迁移，而不是一个大文件。
 
@@ -3423,7 +3535,7 @@ SDK 首轮校验）。
 
 ---
 
-## 八、P4.5 — CI 任务: 自研 Runner (4 周)
+## 八、P4.5 — CI 任务: 自研 Runner (6 周，范围与边界见 8.0)
 
 > **与 P2-8 执行分区的关系（见 5.0.12）**：本阶段的 Runner 协议（8.2，runner 主动出站、
 > 无入站端口、只需 443）是「生产网段连不上平台 Redis / Postgres」情况下的**唯一解**。
@@ -3433,25 +3545,558 @@ SDK 首轮校验）。
 > 另：仓库用例的 `git clone` 与用户脚本执行**只能**发生在能访问被测服务的网段里，
 > 因此跨网段的仓库用例最终一定要走本阶段的协议，而不是分区 worker。
 
-### 8.1 数据库迁移: 006_p45_schema.sql
+### 8.0 P4.5 范围与边界（2026-08-31 确认）
+
+**问题**
+
+P4 让既有 pytest 仓库能把结果**说给平台听**，但「谁来跑」这件事仍在平台之外：用户得自己有
+一套 CI（GitHub Actions / GitLab CI / Jenkins），平台只是那套 CI 的下游听众。三个后果：
+
+1. **平台不能主动触发仓库用例**。树上看到一条失败用例，想重跑一次，唯一办法是切到 Git 仓库
+   或 CI 页面手动跑——P4 的树因此是只读的观察窗，不是操作台。
+2. **没有 CI 的团队进不来**。他们有 pytest 仓库、有被测服务，但没有跑它的地方。
+3. **跨网段的仓库用例无解**（5.0.12 待决策项）。`git clone` 与用户脚本**只能**发生在能访问
+   被测服务的网段里，而 P2-8 的分区 worker 要求那台机器能出站到平台的 Redis 6379 +
+   Postgres 5432。这一条不成立时，P2-8 交付为零，只剩本阶段这一条路。
+
+P4.5 要的是**平台自己拥有一套执行器，且这套执行器可以部署在任何只能出站 443 的机器上**。
+
+**核心模型**
+
+**Runner 主动外连平台，全部交互都是 Runner 发起的 HTTP；认领是一条搬回服务端执行的
+`UPDATE … WHERE status='queued'`，靠租约（lease）而不是队列保证 at-most-once；平台下发
+JobSpec，Runner 在自己那台机器上 clone + 跑脚本 + 按 offset 推日志 + 回传结构化结果。**
+
+三条与既有实现的关系必须一开始就说清，否则会写出第二套并行机制：
+
+- **不复用 BullMQ**。Redis 出站不可达是本阶段存在的**全部理由**，把 pipeline 排队建在
+  BullMQ 上等于把 P2-8 的前置条件重新引进来。排队就是 `pipeline_runs.status='queued'`，
+  认领就是 `UPDATE … FOR UPDATE SKIP LOCKED`。这正是 5.0.12 待决策表里方案 C 的原话
+  ——「认领语义就是一条 `UPDATE … WHERE status='queued'`，HTTP 版只是把这条 UPDATE 搬回
+  服务端执行」。
+- **不复用 `workers` 表**（迁移 009/010/027）。那张表是平台自己 BullMQ worker 的注册表：
+  id 是 `hostname:pid`、无 token、无信任边界、心跳靠**直写 Postgres**、掉线只影响调度。
+  Runner 是自托管的、需注册凭据、心跳走 HTTP、掉线要判 `aborted` 并回收租约。两者信任模型
+  与 liveness 语义都不同，塞进一张表会让「离线」这个词在同一列上有两种含义。
+- **复用 `runner_label` 分区机制**（5.0.12）。标签格式（`RUNNER_LABEL_PATTERN`）、
+  「入队前检查有在线执行器、没有就拒绝且绝不写行」（边界 4）、错误码 `2004` +
+  `failNoRunner`、前端 `noRunnerLabel()` 单点判定——四样全部照搬，一个字不改。分区回答的
+  是「这次执行从哪个网段发出」，对 Runner 与对 BullMQ worker 是同一个问题。
+
+**已确认的边界决策（18 项）**
+
+1. **归一进 `execution_index`，`kind` 加 `'runner'`**（Spec 3.x 的
+   `source_type: flow|scenario|suite|ingest|runner` 早已预留这个名字）。迁移照抄 035 的
+   「**按定义内容找约束，不按名字**」写法——015 建表时那个 CHECK 是 Postgres 自动命名的，
+   `DROP … IF EXISTS` 猜错名字会静默成功、然后在第一次触发时才炸。
+   **与 `ingest` 相反，三条路径这次全部要支持**：取消（经心跳下发指令）、重跑（新建一条
+   不可变的 run，见边界 9）、回收（租约超时判 `aborted`）。边界 1 的 P4 版本说的是
+   「对一次别人已经跑完的历史，这三个动作没有意义」——Runner 是平台自己在跑，意义完全成立。
+2. **趋势与通过率的口径：`runner` 与 `ingest` 同档，默认排除**。理由与 P4 边界 1 完全一致
+   ——Runner 里跑的是用户脚本，`latency_ms` 是用户进程里的客户端耗时；一次 `-m smoke`
+   任务会把通过率拉出一个没人认的台阶。趋势页那个「含仓库上报」开关的语义因此扩成
+   「含仓库执行」，一个开关同时管 `ingest` 与 `runner`——不给第二个复选框，那两者对用户是
+   同一件事（「仓库里跑的」）。
+3. **Runner 的排队与 BullMQ 完全隔离，但「无在线执行器就拒绝」这一条照搬**（P2-8 边界 4）。
+   少了它，用户看到的是一条永远 `queued` 的 run，90 秒后被 reaper 判 `aborted`，排查方向
+   会跑偏到「Runner 崩了」，而事实是这个标签下从来没有 Runner 注册过。检查放在 `INSERT`
+   **之前**，因此连补偿删除都不需要。
+4. **认领用 `FOR UPDATE SKIP LOCKED`，不用「先 SELECT 再 UPDATE」**。多个 Runner 同时长
+   轮询是常态，两步式在中间那个窗口里会让两台 Runner 拿到同一个 run；`SKIP LOCKED` 让第二
+   个请求直接跳到下一条候选而不是排队等锁，这对长轮询尤其重要——等锁会把 25 秒的轮询窗口
+   耗在互相阻塞上。
+5. **租约（lease）是 Runner 存活的唯一判据，不是 `runners.last_seen_at`**。判据必须挂在
+   **任务**上而不是挂在机器上：一台 Runner 可以进程还活着、心跳照发，但某个 job 的子进程已
+   经僵死。`pipeline_runs.lease_expires_at` 由每次心跳续到 `now() + 90s`（Spec 2.10.2 的
+   90 秒，照用）。`runners.last_seen_at` 仍然要有，但它只回答「这台机器在不在线」（用于面板
+   与边界 3 的入队前检查），不回答「这个任务还活着吗」。
+6. **心跳的响应体是下发取消指令的唯一通道**（`{ cancel: true }`）。平台永不反向连接 Runner
+   ——这是自托管 Runner 能待在 NAT 后面的全部前提，破一次就等于要求客户开入站端口。
+   取消因此**必然有延迟**（最长一个心跳间隔），界面上状态要用 `cancelling` 而不是直接
+   `canceled`（交互文档 1.4 的统一生命周期已经有这个状态）。
+7. **日志 offset 单调递增，去重靠 `UNIQUE (pipeline_run_id, byte_offset)`**，不靠「服务端
+   记住上次收到哪」。Runner 断线重连后从自己记的 offset 续传，重复 chunk 撞唯一约束
+   `DO NOTHING`。offset 的单位是**字节**而不是行号：行是要靠内容切分才知道的，断在半行上时
+   行号没有定义。
+8. **退出码落盘再上报**（Spec 2.10.2(d)）。Runner 进程被 kill -9 后重启，读 workspace 里那个
+   `exit_code` 文件补报 `complete`；读不到才判 `aborted`。少了这一步，Runner 每次重启都会
+   在平台侧留下一批永久 `running`、最后被租约超时判死的 run，而它们其实是跑完了的。
+9. **重跑 = 新建一条 run，绝不改写旧行**（交互文档 1.5 的「新执行不可变 + A/B 对比」）。
+   `pipeline_runs` 是一份不可变的执行账本，`aborted` 的那一条要留在历史里——它是「那天
+   Runner 掉线了」的唯一证据。
+10. **`trigger_source` 不加第五个值**。§8.3 初稿写的 `trigger_type=manual_case_selection`
+    有两处不对：列名实际是 `trigger_source`（迁移 030），而 CHECK 是
+    `('manual','scheduled','webhook','ci')`。勾选触发仍然是**人按了按钮**，
+    `trigger_source='manual'` 就是事实；「这次是勾选来的」记在
+    `pipeline_runs.case_filter IS NOT NULL` 上。加第五个值会让执行记录页「手动触发」这个
+    筛选项分裂成两个必须都勾的框。
+11. **deploy key 存平台并随 JobSpec 下发**（用户 2026-08-31 选定，推翻了「凭据留在 Runner
+    侧机器」的备选）。用 `lib/crypto.ts` 的 AES-GCM 加密进 `repositories.deploy_key_encrypted`
+    ——与数据源凭据、webhook secret 同一套密钥与同一套形状，不引入第二种加密方式。
+    **这笔账的代价必须写明，不能记成零成本**：
+    - 平台库里出现用户 Git 仓库的读凭据；下发意味着这份凭据会离开平台边界，落到那台自托管
+      机器的内存里。
+    - 缓解三条，全部是硬要求：① **只支持只读 deploy key**，表单上写明并在文案里要求用户在
+      Git 平台侧勾掉写权限——平台无法验证这一点，只能说清；② key 只出现在 claim 的**响应体**
+      里，不进 `pipeline_runs` 快照、不进日志、不进任何 GET 接口的返回；③ Runner 侧写成 0600
+      的临时文件、用 `GIT_SSH_COMMAND` 指向它、`finally` 里删除，绝不写进 `~/.ssh/`。
+    - **HTTPS + token 也要支持**，而且它是更该推荐的那一种：token 可以精确到单仓库只读、
+      可以随时吊销、不需要用户在机器上配 SSH。表单默认给 HTTPS token。
+12. **secret 脱敏在 Runner 侧做，不在平台侧做**。日志一旦按 offset 上报，那份原文已经在网络
+    上了，平台侧再脱敏已经晚了——这与 P4 边界 14（SDK 侧脱敏）是同一个道理。
+    **同时要写明能力边界**：只做**原文逐行替换**，不承诺挡住 base64 / URL-encode / 逐字符
+    echo 等变形。承诺挡不住的东西，用户会按承诺去用。
+13. **报告归一走三条路径，优先级明确，不是三选一**（用户 2026-08-31：「接入 allure，或者
+    根据用户上报的内容」）。三条并存，因为它们回答的不是同一个问题：
+
+    | 路径 | 拿到什么 | case_key 语义 | 首版 |
+    |---|---|---|---|
+    | **A. SDK 上报**（P4 已有） | case ↔ endpoint 关系 + 用例树归位 | **精确**，`case_key` 是 SDK 自己生成的 | ✅ 必做，零解析成本 |
+    | **B. junit.xml** | case 级通过/失败/耗时 | best-effort（`classname::name` 猜） | ✅ 做，几乎所有框架都产它 |
+    | **C. allure-results** | 同 B，外加 step / attachment / 分类 | 同 B | ✅ 做**结果解析**，不做报告渲染 |
+
+    - **A 是干净路径**：平台把 `APITRACK_CI_RUN_ID` 注入成 `pipeline_run_id`，于是
+      `ingest_runs` 与 `pipeline_runs` 天然对得上，一次 CI 执行在树上和在执行记录里是同一件
+      事的两个视图。**回写树上 `last_result` 只认 A**——B/C 的测试名与 `case_key` 没有稳定
+      映射，用它们回写会把树写脏，而写脏的树没有办法回滚。
+    - **C 只解析 `allure-results/*-result.json` 的结构化 JSON**——这条仍然成立；但
+      「不做报告渲染」**已于 2026-09-01 改判**（用户要求看 timeline 与用例内步骤），
+      平台改为**自存原始文件、自渲染报告视图**（P4.5-13，见边界 19）：不跑
+      `allure generate`、不托管 allure 静态站点、不 vendor allure 官方 SPA——数据源
+      就是 allure-results 目录本身（格式是稳定的公开事实），Runner 自动把它打成 zip
+      作为 `kind='report'` 产物直传对象存储，平台从对象存储读、用自己的 UI 渲染，
+      附件走 presigned GET 直链。不装 Java、不引 allure-cli。
+    - **解析在 Runner 侧做，上报结构化 JSON**。让平台解析 XML 意味着把整个报告文件传上来
+      （几十 MB 起）、在 API 进程里解析不可信 XML（XXE / 十亿笑声）、再引一个 XML 依赖。
+      Runner 侧解析后只上报几 KB 的 case 数组，三个问题一起消失。
+14. **产物与对象存储从 P6 提前，但只服务 artifacts**（用户 2026-08-31 确认提前）。抽
+    `lib/objectStore.ts` 一层、两个驱动：`fs`（本地目录，dev 默认）与 `s3`（MinIO / S3，
+    生产）。**硬约束：平台永不代理大文件流。** Runner 先 `POST …/artifacts` 申请一个
+    pre-signed PUT URL，然后**直传对象存储**；`fs` 驱动下退化为一个带一次性 token 的平台
+    上传地址。
+    **明确不做**：P6 10.1 的另外两件（执行历史归档分区表、大响应体截断进对象存储）不动。
+    本阶段只是把「对象存储这一层抽象」提前落地，`executions.response_body` 一个字都不改
+    ——那是一次口径变更，要连着归档策略一起想。
+15. **沙箱两档都做，容器档是默认，进程档是逃生口**（用户 2026-08-31：「容器 + 进程」）。
+    两档的差别不是「隔离强度」的量级差异，而是**有没有网络策略**这个质变：
+
+    | 能力 | 进程档（`process`） | 容器档（`container`） |
+    |---|---|---|
+    | 超时 kill 整个进程树 | ✅ | ✅ |
+    | workspace 隔离 + 执行完清理 | ✅ | ✅ |
+    | CPU / 内存 / 磁盘限额 | ❌ 做不到 | ✅ `--cpus` / `-m` / `--storage-opt` |
+    | 出站白名单（禁访平台内网 / `169.254.169.254`） | ❌ **做不到** | ✅ 独立 network + iptables |
+    | 文件系统隔离（脚本读不到 Runner 自己的配置） | ❌ 同一 FS | ✅ |
+    | 依赖缓存复用 | ✅ 天然（同一 FS） | ✅ 挂缓存卷 |
+    | 前置要求 | 无 | 目标机器有 docker |
+
+    - **进程档不是「简化版容器档」，它是一个信任声明**：选它等于声明「我信任这个仓库里的
+      脚本，就像信任一个传统 CI agent 上的脚本一样」。UI 上要这么写，不能写成「轻量模式」。
+    - **容器档是任务级默认**。理由：Runner 跑的是**用户仓库里的任意脚本**，而 Runner 那台
+      机器上有平台下发的 deploy key 和 secret（边界 11、12）——没有文件系统隔离时，一个脚本
+      可以读到另一个任务留下的东西。
+    - **Spec 2.10.2(a) 的 `isolated`（Job per build / K8s Job）本阶段不做**。容器档已经拿到
+      文件系统与网络隔离；`isolated` 换来的是「每次全新镜像」，代价是镜像拉取与依赖重装，
+      而 2.10.2(b) 要求的那一整套冷启动优化（预烤镜像 / 缓存卷 / venv hash 缓存 / 镜像预热）
+      是独立的一大块。留字段位（`isolation_mode`），首版只接受 `shared`。
+16. **勾选用例快速执行（§8.3）进本阶段**（用户 2026-08-31 确认）。它是 P4.5 里唯一能对
+    **既有 P4 用户**立刻产生可见价值的部分：P4 交付后树是只读的，勾选执行让它变成操作台。
+    `not_run` 已经在 `repo_test_cases.last_result` 的 CHECK 里（迁移 035:102，当时就是为这
+    一刻留的），**不需要新迁移**。
+    **`not_run` 由平台侧标，不是 SDK 的事**：run 结束后，`case_filter.case_keys` 减去本次
+    `ingest_run` 实际报到的集合，差集标 `not_run`。让 SDK 报「我没跑这些」是错的——脚本可能
+    根本不认识 `--apitrack-case-keys`，那时它会全量跑，而全量跑里这些 key 都报到了，差集为
+    空，结论正确；反过来若脚本认识但崩在中途，差集非空，标 `not_run` 也正确。平台侧算差集
+    对这两种情况都成立，SDK 侧上报只对第一种成立。
+17. **`Idempotency-Key` 与审计日志本阶段建，且是通用设施**（REPOSITORY_ARCHITECTURE.md 3.2
+    「触发类接口支持 `Idempotency-Key`」的第一次落地）。两张表都不带 `ci_` 前缀
+    （`idempotency_keys` / `audit_logs`），因为它们从第一天起就该能被套件触发、流程触发复用
+    ——只是本阶段只有 CI 触发接上去。**不追溯改造既有触发接口**：那是一次跨 6 个路由的改动，
+    与 Runner 无关，混进来会让本阶段的验收边界说不清。
+18. **4 周装不下，实际排 6 周**。诚实记下而不是压进去：Runner 是**第四个仓库**（新建
+    `apitest-runner`）、**第一次**出现平台侧 HTTP 长轮询、**第一次**引入对象存储、**第一次**
+    引入容器执行，同时还要做 CI 任务的完整 CRUD + 执行详情 + 实时日志三个前端页面。
+    压回 4 周要砍的东西按此顺序（见 8.8 的批次表）：先砍容器档（P4.5-10，退到只有进程档
+    并在 UI 上说清）、再砍 allure 解析（P4.5-6 的 C 路径）、再砍产物上传（P4.5-7，只留日志）。
+    **勾选执行（P4.5-9）不在可砍列表里**——见边界 16。
+19. **报告视图自渲染，不做 allure 静态站**（P4.5 边界，用户 2026-09-01：「平台托管
+    allure 静态站点」+「不用 allure-cli，自己保存产生的文件，然后渲染」；与 P4 的
+    边界 19「一次上报分派到多个项目」只是跨节同号，不是同一条）。落地形状分两层，
+    两层都绕开 allure-cli：
+    - **timeline 层不碰文件**：allure 的 `start` / `stop` / `host` / `thread` 随
+      `cases[]` 上报（`ReportCase` 加 4 个可选字段），`pipeline_run_cases` 加
+      `started_at_ms` / `finished_at_ms` / `host` / `thread` 四列（迁移 040），前端在
+      run 详情页的 cases tab 直接画 gantt——时间轴只要结构化数据，不需要原始报告。
+    - **报告层走既有产物线**：Runner 在 `report_format='allure'` 且解析到文件时，把
+      匹配到的 allure-results 目录（含 `*-container.json` 与附件实体文件）打成 zip，
+      作为 `kind='report'` 的 artifact 直传对象存储（artifacts 表当时就为此留了这个
+      kind，不是新概念）。平台读路由从对象存储取 zip、在请求内解析、用自己的 UI 渲染；
+      附件下载走一个**按 run 归属鉴权的下载路由**（对象存储的 storage_key 不是浏览器
+      能直接消费的东西，presignGet 直链 5 分钟短活罩不住报告页里一张 10 分钟后才点开
+      的截图）。
+    - **v1 视图清单封顶**：timeline + suite 树 + case 详情（steps / attachments /
+      parameters / categories）。behaviors / severity / graph 分组、allure 的
+      `history/` 趋势机制都不做——趋势从自己的 `pipeline_runs` 历史算（数据在库里，
+      平台比 allure 有资格算）。
+    - **代价换来的边界**：权限就是普通项目访问控制（不为静态站开公开下载口）；报告 UI
+      进 Quiet Console 体系；镜像不装 Java / allure-cli。长期维护归平台——用户拿
+      allure 官方功能来比时，答案在 8.10。
+
+### 8.1 数据库迁移（接在 035 之后，按批次拆四个文件）
+
+> 序号说明：计划原写的 `006_p45_schema.sql` 为过时命名，实际接在 `035` 之后。
+> **一批一个主题，不写一个大文件**——迁移是 forward-only 的，一个文件里塞四张表意味着任何
+> 一处写错都要靠一个新文件去补，而补丁文件读起来永远不知道原意是什么。
 
 ```
-ci_tasks           (id, repository_id, name, config JSONB)
-pipeline_runs      (id, ci_task_id, trigger_type, status)
-pipeline_run_cases (id, pipeline_run_id, case_id, status, result JSONB)
-pipeline_run_artifacts (id, pipeline_run_id, type, path)
+036_p45_runners.sql        runners / runner_tokens
+037_p45_ci_tasks.sql       ci_tasks / repositories.deploy_key_encrypted
+038_p45_pipeline_runs.sql  pipeline_runs / pipeline_run_logs / pipeline_run_cases
+                           + execution_index.kind 加 'runner'
+039_p45_infra.sql          artifacts / idempotency_keys / audit_logs
 ```
 
-### 8.2 Worker 协议 (Runner → Server)
+**036 — Runner 注册表**
 
+```sql
+runner_tokens (
+  id UUID PK,
+  name TEXT NOT NULL,                    -- 「办公内网 01」，人给的
+  token_hash TEXT NOT NULL,              -- scrypt "salt:digest"，照抄 ingestAuth.ts
+  token_prefix TEXT NOT NULL,            -- "apirunner_" + 前 8 位，候选收窄用
+  labels TEXT[] NOT NULL DEFAULT ARRAY['default'],   -- 这张 token 允许声明的分区
+  created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  last_used_at TIMESTAMPTZ, revoked_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+-- 部分索引，与 ingest_tokens_prefix_idx 同款
+CREATE INDEX runner_tokens_prefix_idx ON runner_tokens (token_prefix) WHERE revoked_at IS NULL;
+
+runners (
+  id UUID PK,                            -- 平台发的，不是 hostname:pid
+  runner_token_id UUID NOT NULL REFERENCES runner_tokens(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,                    -- Runner 自报的 hostname，仅显示
+  labels TEXT[] NOT NULL,                -- ⊆ runner_tokens.labels，注册时校验
+  capacity INTEGER NOT NULL DEFAULT 1,
+  sandbox_modes TEXT[] NOT NULL DEFAULT ARRAY['process'],  -- 这台机器实际支持哪几档
+  version TEXT NOT NULL DEFAULT '',
+  protocol_version TEXT NOT NULL DEFAULT '1.0',
+  status TEXT NOT NULL DEFAULT 'online' CHECK (status IN ('online','draining','offline')),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
 ```
-POST /worker/register   (注册 Worker)
-POST /worker/claim      (领取任务)
-POST /worker/heartbeat  (心跳)
-POST /worker/logs       (日志流)
-POST /worker/artifacts  (构件上传)
-POST /worker/complete   (任务完成)
+
+四处必须解释的设计：
+
+- **`runner_tokens` 是系统级的，不带 `project_id`**。一台自托管机器服务的是一个**网段**，
+  而网段上可能有多个项目的被测服务。绑到项目上会逼用户为每个项目在同一台机器上起一个
+  Runner 进程。项目隔离靠 `labels` + 后续的分区准入，不靠 token 归属。
+  （对比 `ingest_tokens` 确实带 `project_id`——那是因为一份上报**必然**属于一个项目，
+  `/ingest` 从 token 反查 `project_id` 是它的核心机制。）
+- **`labels` 在 token 上而不只在 Runner 上，且注册时校验子集关系**。否则任何一台拿到 token
+  的机器都能声明 `labels=['prod-dmz']` 并开始领生产网段的任务——这正是 P2-8 边界 6
+  「认领语句加分区防御」担心的那件事，只是那里的攻击面是「job 被投错队列」，这里是
+  「机器自称在别的网段」，后者更严重。
+- **`sandbox_modes` 由 Runner 自报**（探测本机有没有 docker）。任务配了容器档但没有一台
+  在线 Runner 支持它，这个错误要在**触发时**就报出来（复用 `2004` / `failNoRunner` 的形状），
+  不能等到 claim 之后 Runner 自己失败——那会得到一条 `failed` 的 run 和一段看不懂的日志。
+- **`status='draining'`**（交互文档 3.12.4 的「下线」）：不再参与 claim，但在跑的任务跑完。
+  它是 `runners` 上唯一一个**人可以改**的列。
+
+**037 — CI 任务与仓库凭据**
+
+```sql
+ALTER TABLE repositories
+  ADD COLUMN clone_method TEXT NOT NULL DEFAULT 'none'
+      CHECK (clone_method IN ('none','https_token','ssh_key')),
+  ADD COLUMN clone_url TEXT NOT NULL DEFAULT '',      -- 可与 git_url 不同：git_url 是身份，这个是拉取地址
+  ADD COLUMN credential_encrypted BYTEA,              -- AES-GCM，lib/crypto.ts
+  ADD COLUMN credential_updated_at TIMESTAMPTZ;
+
+ci_tasks (
+  id UUID PK,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  repository_id UUID NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+  git_ref TEXT NOT NULL DEFAULT 'main',
+  runner_label TEXT NOT NULL DEFAULT 'default',
+  sandbox_mode TEXT NOT NULL DEFAULT 'container' CHECK (sandbox_mode IN ('process','container')),
+  isolation_mode TEXT NOT NULL DEFAULT 'shared' CHECK (isolation_mode IN ('shared')),  -- 留位，见边界 15
+  image TEXT NOT NULL DEFAULT '',                     -- container 档必填，process 档忽略
+  steps TEXT NOT NULL,                                -- 用户脚本原文，一整段 shell
+  env JSONB NOT NULL DEFAULT '{}'::jsonb,             -- 明文变量
+  secrets_encrypted BYTEA,                            -- {k:v} 整体加密，日志脱敏用它的 values
+  cache_paths TEXT[] NOT NULL DEFAULT '{}',
+  cache_key_files TEXT[] NOT NULL DEFAULT '{}',       -- 这些文件的内容 hash 作 key
+  report_format TEXT NOT NULL DEFAULT 'none'
+      CHECK (report_format IN ('none','junit','allure')),
+  report_paths TEXT[] NOT NULL DEFAULT '{}',
+  artifact_paths TEXT[] NOT NULL DEFAULT '{}',
+  sdk_ingest_enabled BOOLEAN NOT NULL DEFAULT true,   -- 注入 APITRACK_* 三件套
+  timeout_seconds INTEGER NOT NULL DEFAULT 1800,
+  is_default BOOLEAN NOT NULL DEFAULT false,          -- 勾选执行的推荐兜底，见 §8.3
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at / updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+CREATE UNIQUE INDEX ci_tasks_project_default_idx
+  ON ci_tasks (project_id) WHERE is_default;          -- 一个项目最多一个默认任务
 ```
+
+- **`steps` 是一整段 shell 文本，不是 `TEXT[]`**。Runner 把它写成一个脚本文件执行
+  （Spec 2.10.2(d)），拆成数组只会诱导人以为「每一步是独立的阶段、可以单独重试」——而它们
+  共享一个 shell 进程与工作目录，`cd` 和变量都是跨行生效的。阶段划分是 Runner 固定的四段
+  （clone / cache / script / report），不是用户脚本的行数。
+- **`clone_method='none'` 是默认值**：公开仓库不需要凭据，而「不需要凭据」应该是默认状态而
+  不是一个特例。
+- **`clone_url` 与 `git_url` 分开**：`git_url` 在 P4 里是**身份**（`/ingest` 靠它防越权，
+  迁移 034 刻意不加唯一约束但校验绑定），改它会打断已绑仓库的上报。拉取地址是另一件事
+  （同一个仓库可以有 https 和 ssh 两个地址），必须是另一列。
+- **`runner_label` 直接放在 `ci_tasks` 上，不从 environment 取**。这是与 P2-8 唯一的不同点，
+  必须讲清：P2-8 选 environment 做标签归属者，因为接口模式的执行「指向哪套系统」这件事完全
+  由 environment 决定（5.0.12 核心模型）。CI 任务里被测地址在**用户脚本和它自己的 env 里**，
+  平台不知道也不该知道；这里的标签回答的是「在哪台机器上 clone 与执行」，那是任务自己的属性。
+  **标签的命名空间是共享的**（同一个 `RUNNER_LABEL_PATTERN`、同一份候选来源、
+  面板上同一列），共享的是「哪个网段」这个语义。
+- **同一个标签下可以既有 BullMQ worker 又有 Runner，两者互不相干**：接口模式的入队前检查读
+  `workers`，CI 触发的检查读 `runners`。`GET /system/runner-labels` 的返回要**分别**给出这两个
+  台数，不能相加——把它们加成一个「在线 3 台」会让「配了 CI 任务但那个标签只有 BullMQ worker」
+  这种情况显示为可用，而它触发时会被拒。
+
+**038 — 执行账本**
+
+```sql
+pipeline_runs (
+  id UUID PK,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  ci_task_id UUID NOT NULL REFERENCES ci_tasks(id) ON DELETE CASCADE,
+  execution_index_id UUID REFERENCES execution_index(id) ON DELETE SET NULL,
+  run_number INTEGER NOT NULL,                        -- 任务内自增，界面上的 #128
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN
+    ('queued','claimed','running','cancelling','success','failed','canceled','aborted','timed_out')),
+  stage TEXT NOT NULL DEFAULT 'pending' CHECK (stage IN
+    ('pending','clone','cache','script','report','done')),
+  runner_label TEXT NOT NULL,                         -- 触发时冻结，照 P2-8 边界 1
+  sandbox_mode TEXT NOT NULL,                         -- 快照，任务改配置后历史仍说得清
+  runner_id UUID REFERENCES runners(id) ON DELETE SET NULL,   -- 无 FK 级联：Runner 删了历史要留
+  lease_expires_at TIMESTAMPTZ,                       -- 边界 5：存活判据挂在任务上
+  trigger_source TEXT NOT NULL DEFAULT 'manual'
+      CHECK (trigger_source IN ('manual','scheduled','webhook','ci')),
+  trigger_ref_id UUID, trigger_ref_name TEXT,
+  triggered_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  git_ref TEXT NOT NULL,                              -- 触发时的任务配置快照
+  commit_sha TEXT NOT NULL DEFAULT '',                -- clone 完了 Runner 回填
+  case_filter JSONB,                                  -- NULL = 全量；{case_keys:[…]} = 勾选执行
+  parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
+  exit_code INTEGER,
+  error TEXT,
+  log_bytes BIGINT NOT NULL DEFAULT 0,                -- = 下一个期望的 offset
+  case_total / passed_count / failed_count / skipped_count INTEGER NOT NULL DEFAULT 0,
+  ingest_run_id UUID REFERENCES ingest_runs(id) ON DELETE SET NULL,   -- SDK 路径回填
+  created_at / claimed_at / started_at / finished_at TIMESTAMPTZ
+)
+CREATE UNIQUE INDEX pipeline_runs_task_number_idx ON pipeline_runs (ci_task_id, run_number);
+CREATE INDEX pipeline_runs_claimable_idx
+  ON pipeline_runs (runner_label, created_at) WHERE status = 'queued';
+CREATE INDEX pipeline_runs_lease_idx
+  ON pipeline_runs (lease_expires_at) WHERE status IN ('claimed','running','cancelling');
+
+pipeline_run_logs (
+  id BIGSERIAL PK,
+  pipeline_run_id UUID NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+  byte_offset BIGINT NOT NULL,
+  chunk TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (pipeline_run_id, byte_offset)               -- 边界 7：断线重传靠它去重
+)
+
+pipeline_run_cases (
+  id UUID PK,
+  pipeline_run_id UUID NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+  source TEXT NOT NULL CHECK (source IN ('junit','allure')),   -- 注意：没有 'sdk'
+  suite_name TEXT NOT NULL DEFAULT '', case_name TEXT NOT NULL,
+  guessed_case_key TEXT,                              -- 命名即声明：这是猜的，不回写树
+  status TEXT NOT NULL CHECK (status IN ('passed','failed','skipped','error')),
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
+  UNIQUE (pipeline_run_id, source, suite_name, case_name)
+)
+-- execution_index.kind 加 'runner'，照抄 035 的「按定义找约束」DO 块
+```
+
+- **`pipeline_run_cases.source` 没有 `'sdk'` 这个值**。SDK 路径的 case 级结果已经在
+  `repo_test_cases` + `ingest_records` 里了，再存一份就有两个都自称权威的副本。这张表专门
+  装**报告解析出来的、不可信到不能回写树**的那一类结果——`guessed_case_key` 这个列名就是
+  在说这件事（边界 13）。
+- **`log_bytes` 同时是「日志总长」和「下一个期望 offset」**，一个数不会自相矛盾。Runner 断线
+  重连时 `GET …/claim` 之外还需要能问「我上次报到哪了」，答案就是这一列。
+- **`stage` 是固定四段而不是自由文本**：界面上的阶段进度（交互文档 3.12.3）要能画出来，
+  自由文本画不出固定的进度条，而排队与冷启动耗时可见是那个设计的全部目的。
+
+**039 — 通用设施（对象存储 / 幂等 / 审计）**
+
+```sql
+artifacts (
+  id UUID PK,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  owner_type TEXT NOT NULL CHECK (owner_type IN ('pipeline_run')),   -- 首版只有一种，留扩展位
+  owner_id UUID NOT NULL,                             -- 多态，无 FK
+  kind TEXT NOT NULL CHECK (kind IN ('log','report','file')),
+  name TEXT NOT NULL,
+  storage_driver TEXT NOT NULL CHECK (storage_driver IN ('fs','s3')),
+  storage_key TEXT NOT NULL,                          -- 驱动内的路径/对象键
+  size_bytes BIGINT NOT NULL DEFAULT 0,
+  content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  checksum TEXT NOT NULL DEFAULT '',
+  uploaded_at TIMESTAMPTZ,                            -- NULL = 申请了但没传成
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+
+idempotency_keys (
+  scope TEXT NOT NULL,                                -- 'ci_task_trigger' 等
+  key TEXT NOT NULL,                                  -- 客户端给的 Idempotency-Key
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  result_id UUID NOT NULL,                            -- 首次调用产生的那一行
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope, project_id, key)
+)
+
+audit_logs (
+  id BIGSERIAL PK,
+  project_id UUID REFERENCES projects(id) ON DELETE CASCADE,   -- 可空：系统级动作
+  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  action TEXT NOT NULL,                               -- 'ci_task.trigger' / 'runner_token.create' …
+  target_type TEXT NOT NULL, target_id UUID,
+  detail JSONB NOT NULL DEFAULT '{}'::jsonb,          -- 绝不放 secret 值
+  ip TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)
+CREATE INDEX audit_logs_project_created_at_idx ON audit_logs (project_id, created_at DESC);
+```
+
+- **`idempotency_keys` 用复合主键而不是「UUID 主键 + 唯一索引」**：这张表**只**被
+  「按 key 查有没有」这一种方式访问，一个自增 id 是纯粹的多余空间。`result_id` 无 FK——scope
+  决定它指向哪张表。
+- **`artifacts` 用 `owner_type` + `owner_id` 多态而不是 `pipeline_run_id`**：P6 要把大响应体
+  和归档也放进来（边界 14 说了本阶段不做，但表结构现在就别把自己锁死）。CHECK 里现在只有
+  一个值，加值时是一次 DROP/ADD CHECK，比加一张表便宜。
+- **`audit_logs.detail` 不放 secret 值**要写进列注释。审计日志天然会被广泛读取，是最容易
+  发生「顺手把 payload 整个塞进去」的地方。
+
+### 8.2 Runner 协议 v1.0（Runner → Server，冻结）
+
+**全部由 Runner 主动发起，平台永不反向连接**（REPOSITORY_ARCHITECTURE.md 1.3 / 3.3）。
+路径前缀 `/runner`（不在 `/api/v1/projects/:id` 之下——Runner 是系统级的，项目从 job 来），
+认证 `Authorization: Bearer apirunner_<token>`。
+
+> **与三份既有文档的三处冲突，在此记下而不是悄悄改掉**（照 P4 边界 4 的做法）：
+> ① 路径前缀用 `/runner` 而非 Spec 2.10.2(c) 与本计划原 8.2 的 `/worker`——平台内部已经有
+> 「worker」这个词且指的是 BullMQ worker（`src/worker.ts`、`workers` 表、执行器面板），
+> 两个 worker 会让代码里每一处都要先问「哪个 worker」。
+> ② 领取用 `POST /runner/claim` 而非 REPOSITORY_ARCHITECTURE 3.3 的 `GET /worker/jobs/claim`
+> ——它带请求体（`capacity_available`）且**有副作用**（改 `status` 与租约），`GET` 是错的。
+> ③ 心跳、日志、产物、完成四个接口挂在 `/runner/jobs/:id/*` 下（与 3.3 一致），
+> 而本计划原 8.2 写的扁平 `POST /worker/heartbeat` 作废——job id 必须在路径里，否则四个接口
+> 都要在 body 里带一个「其实是资源标识」的字段。
+
+| # | 接口 | 请求 | 响应 |
+|---|---|---|---|
+| 1 | `POST /runner/register` | `{name, labels[], capacity, sandbox_modes[], version, protocol_version}` | `{runner_id, heartbeat_interval_seconds, poll_timeout_seconds}` |
+| 2 | `POST /runner/claim` | `{runner_id, capacity_available}` | **长轮询** → `JobSpec` 或 `204` |
+| 3 | `POST /runner/jobs/:id/heartbeat` | `{runner_id, stage, log_bytes}` | `{lease_expires_at, cancel: bool}` |
+| 4 | `POST /runner/jobs/:id/logs` | `{runner_id, byte_offset, chunk}` | `{next_offset}` |
+| 5 | `POST /runner/jobs/:id/artifacts` | `{runner_id, kind, name, size_bytes, content_type, checksum}` | `{artifact_id, upload_url, method, headers}` |
+| 6 | `POST /runner/jobs/:id/complete` | `{runner_id, status, exit_code, commit_sha, cases[]?, error?}` | `{ok:true}` |
+
+**JobSpec**（claim 的响应体，也是**唯一**出现凭据的地方，边界 11）
+
+```yaml
+job_id:         uuid
+project_id:     uuid
+ci_task_id:     uuid
+run_number:     int
+repo:
+  clone_url:    string
+  clone_method: none | https_token | ssh_key
+  credential:   string | null        # ★ 只在这里出现；不进快照、不进日志、不进任何 GET
+git_ref:        string
+sandbox:
+  mode:         process | container
+  image:        string               # container 档必填
+  cpu_limit / memory_limit / disk_limit
+  network:      { deny_cidrs: [...] }   # container 档才生效，见边界 15
+steps:          string               # 一整段 shell
+env:            { KEY: VALUE }       # 含平台注入的 APITRACK_* 三件套
+secrets:        [{ key, value }]     # Runner 侧按 value 逐行脱敏
+cache:          { paths: [...], key_files: [...] }
+report:         { format: none|junit|allure, paths: [...] }
+artifact_paths: [...]
+case_filter:    { case_keys: [...] } | null
+timeout_seconds: int
+protocol_version: "1.0"
+```
+
+**八条关键约定**
+
+1. **认领是一条服务端 UPDATE，不是队列 pop**（边界 4）：
+   ```sql
+   WITH picked AS (
+     SELECT id FROM pipeline_runs
+      WHERE status = 'queued' AND runner_label = ANY($labels)
+        AND sandbox_mode = ANY($sandbox_modes)
+      ORDER BY created_at
+      FOR UPDATE SKIP LOCKED LIMIT 1
+   )
+   UPDATE pipeline_runs SET status='claimed', runner_id=$1, claimed_at=now(),
+          lease_expires_at = now() + interval '90 seconds'
+    WHERE id IN (SELECT id FROM picked) RETURNING *
+   ```
+   `sandbox_mode = ANY(...)` 这一条是 P2-8 边界 6 的同构物：万一一台不支持容器的 Runner 领到
+   了容器档任务，它在 `git clone` **之前**就领不到，而不是跑到一半失败。
+2. **长轮询用 `LISTEN/NOTIFY`，不用 `setInterval` 轮 DB**。25 秒窗口（与 SSE 心跳同款，
+   避开常见 30 秒代理超时），触发时 `NOTIFY pipeline_queued`，等待中的 claim 立刻醒。轮
+   DB 的话「秒级启动」这个指标就取决于轮询间隔，而把间隔压到 1 秒会让 20 台 Runner 变成
+   每秒 20 次全表扫。
+   **Fastify 侧要注意**：长轮询请求会占住一个连接 25 秒，`keepAliveTimeout` 必须大于它，
+   否则平台会在响应前先关掉连接。
+3. **`register` 幂等于 `(runner_token_id, name)`**：Runner 重启后用同一个 `runner_id` 回来，
+   否则每次重启都在面板上留一行僵尸。
+4. **心跳超时 90 秒判 `aborted`**（Spec 2.10.2）。回收器与 `worker.ts` 的 `reapStale` 同款：
+   `pg_try_advisory_xact_lock` + 一个独立 key，放在**已有的 scheduler 进程**里而不是新起
+   第四个进程——它已经在做「定时扫一遍 DB 并推进状态」这件事，形状完全一样。
+5. **`complete` 必须幂等**：终态写入守卫照抄 `run.ts:497` 的形状
+   （`WHERE id=$1 AND status IN ('claimed','running','cancelling')`）。Runner 在收到响应前
+   断线会重发，第二次撞守卫返回 `{ok:true}` 而不是报错——报错会让 Runner 无限重试。
+6. **取消只经心跳下发**（边界 6）。`POST /pipeline-runs/:id/cancel` 把状态推到
+   `cancelling`，下一次心跳的响应带 `cancel:true`，Runner kill 进程树后自己 `complete`
+   报 `canceled`。**`queued` 状态下的取消是直接终态**——还没有 Runner 持有它，没有人要通知。
+7. **协议版本 N 与 N-1 双支持**（REPOSITORY_ARCHITECTURE.md 3.3）。自托管 Runner 的升级
+   不由平台控制，这一条是它的直接后果。首版只有 `1.0`，但 `protocol_version` 现在就要在
+   register 与 JobSpec 里，且服务端要有一处集中的版本分派点——补协议字段比补版本机制便宜
+   得多（P4 边界 19 是同一个教训）。
+8. **`APITRACK_*` 三件套由平台注入**：`APITRACK_URL`、`APITRACK_TOKEN`（复用项目的
+   `ingest_tokens`，没有就在触发时报错而不是静默跳过）、`APITRACK_CI_RUN_ID = job_id`。
+   第三个是 SDK 路径与 Runner 路径能对上的**全部机制**（边界 13）：SDK 拿它当幂等键的一部分
+   报上来，平台反查 `pipeline_runs.ingest_run_id`。
+
+**平台侧 REST（server ↔ web，与上表是两组不同的接口，别混）**
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET/POST | `/api/v1/projects/:id/ci-tasks` | 列表 / 创建 |
+| GET/PUT/DELETE | `/api/v1/projects/:id/ci-tasks/:taskId` | 详情 / 更新 / 删除（`credential` 永不出现在 GET 里）|
+| POST | `/api/v1/projects/:id/ci-tasks/:taskId/trigger` | 触发；支持 `Idempotency-Key`；body 可带 `parameters` / `case_filter` |
+| PUT | `/api/v1/projects/:id/repository/credential` | 仓库拉取凭据写入（只写不读，与 `ingest_tokens` 的明文只回一次同款纪律）|
+| GET | `/api/v1/projects/:id/pipeline-runs` | 分页；可按 `ciTaskId` / `status` / `hasCaseFilter` 筛 |
+| GET | `/api/v1/projects/:id/pipeline-runs/:runId` | 详情（含阶段、计数、`runner` 名）|
+| GET | `/api/v1/projects/:id/pipeline-runs/:runId/logs` | `?offset=` 增量拉取，历史与实时同一个接口 |
+| GET | `/api/v1/projects/:id/pipeline-runs/:runId/cases` | `pipeline_run_cases`（junit/allure 那份）|
+| GET | `/api/v1/projects/:id/pipeline-runs/:runId/artifacts` | 列表；下载走 `presignGet` 直链 |
+| POST | `/api/v1/projects/:id/pipeline-runs/:runId/cancel` | 推到 `cancelling`，见约定 6 |
+| GET/POST | `/api/v1/system/runner-tokens` | 系统管理员；创建时明文只回一次 |
+| DELETE | `/api/v1/system/runner-tokens/:tokenId` | 软吊销（`revoked_at`）|
+| GET | `/api/v1/system/runners` | Runner 池；含在线判定与 `sandbox_modes` |
+| PATCH | `/api/v1/system/runners/:runnerId` | 只允许改 `status` → `draining` |
 
 ### 8.3 勾选用例快速执行 (`[已确认]` 范围，与 7.x 上报式用例配合)
 
@@ -3465,12 +4110,19 @@ JobSpec 携带 `case_filter: { case_keys: [] }` → Runner 注入 env `APITRACK_
 → 用户脚本只跑选中 → SDK/报告回传 → 树上 `last_result` 刷新，未报的标 `not_run`。
 
 **支持 (平台侧开箱即用)**:
-- 勾选→触发链路，Idempotency-Key 防重；`trigger_type=manual_case_selection` 进 ExecutionIndex 可过滤。
-- 结果归位: run 结束 SDK 经 `/ingest` 回传，自带 `ci_run_id` 命中幂等键 `(repo, commit, ci_run_id)`，
-  按 `(project, case_key)` upsert 树节点；参数化用例按 `case_key` 归并为一条节点。
-- 缺失对账: 筛选集合中本次未上报的用例标 `not_run` (区别于失败)；部分运行不触发删除对账 (沿用 2.10.1)。
+- 勾选→触发链路，`Idempotency-Key` 防重（8.1 的 `idempotency_keys`，scope `ci_task_trigger`）。
+  **不加第五个 `trigger_source` 值**（边界 10）：勾选就是人按了按钮，`trigger_source='manual'`
+  是事实；「这次是勾选来的」记在 `pipeline_runs.case_filter IS NOT NULL` 上，执行记录页按
+  这一条筛。
+- 结果归位: run 结束 SDK 经 `/ingest` 回传，`APITRACK_CI_RUN_ID = job_id` 命中幂等键
+  `(repo, commit, ci_run_id)`，按 `(project, case_key)` upsert 树节点；参数化用例按
+  `case_key` 归并为一条节点。
+- 缺失对账: **平台侧算差集**标 `not_run`（边界 16：`case_filter.case_keys` 减去本次
+  `ingest_run` 实际报到的集合），区别于失败；部分运行不触发删除对账 (沿用 2.10.1，
+  `is_full_inventory=false` 时 `reconciled=false`)。
 - 跨任务: 一次勾选可触发多个任务 (各跑全集筛选，脚本自行跳过不认识的 key)。
-- 复用 Runner 全套: PipelineRun 状态、心跳、取消、孤儿恢复、实时日志 SSE；触发动作落审计日志。
+- 复用 Runner 全套: PipelineRun 状态、心跳、取消、租约回收、实时日志 SSE；触发动作落
+  `audit_logs`（`action='ci_task.trigger'`，`detail` 带勾选的 key 数量而不是全量 key 列表）。
 - 触发时可顺带填任务 `parameters`。
 
 **依赖用户侧 (平台传参，效果取决于脚本)**:
@@ -3489,10 +4141,1516 @@ JobSpec 携带 `case_filter: { case_keys: [] }` → Runner 注入 env `APITRACK_
 - 任意 ref 选择 (默认用任务配置 `ref`)；跨项目勾选。
 
 **落地点 (最小改动)**:
-- JobSpec + `POST /ci-tasks/:id/trigger` payload 加 `case_filter`；`PipelineRun.trigger_type` 扩展枚举。
-- `RepoTestCase.last_result` 枚举加 `not_run` (现 passed/failed/unknown)。
-- SDK 加 `select()`/CLI 参数约定；ExecutionIndex 加 trigger_type 过滤；任务表加 `is_default` 或「最近命中」推荐逻辑。
-- 体验预期: 常驻 Worker + 缓存命中时秒级~数十秒级，相对「手动去仓库跑」成立，非接口模式毫秒~秒级。
+- JobSpec + `POST /ci-tasks/:id/trigger` payload 加 `case_filter`（8.1 的 `pipeline_runs.case_filter`）。
+- `RepoTestCase.last_result` 的 `not_run` **已在 CHECK 里**（迁移 035:102，当时就是为这一刻
+  留的），不需要新迁移；要改的只有前端 `RepoCaseTree.tsx` 的 `caseStatus()`——它现在把
+  `not_run` 折进 `skip`，与 `unknown` 长得一样。
+- SDK 加 `select()` / `--apitrack-case-keys` / `APITRACK_CASE_KEYS`（三者现在**一个都没有**）；
+  实现是 `pytest_collection_modifyitems` 里按 key 做 deselect——那个钩子现在是只读的，
+  要改成会 mutate `items`。
+- 任务表 `is_default` + 「最近命中」推荐逻辑（最近一次成功且其 `ingest_run` 报到过这些
+  `case_key` 的任务）。
+- 体验预期: 常驻 Runner + 缓存命中时秒级~数十秒级，相对「手动去仓库跑」成立，非接口模式
+  毫秒~秒级。**这个预期要在 UI 上说出来**，否则用户会拿它跟接口模式的批量调试比。
+
+### 8.4 报告归一与产物（边界 13、14 的落地形状）
+
+**三条路径的分工**（不是三选一，见边界 13）
+
+```
+用户脚本跑完
+   ├─ A. SDK 上报 ──→ POST /ingest ──→ repo_test_cases.last_result  ← 唯一能回写树的路径
+   │     (APITRACK_CI_RUN_ID = job_id 把两边缝起来)
+   ├─ B/C. junit.xml / allure-results/*-result.json
+   │     └─ Runner 侧解析 ──→ complete 的 cases[] ──→ pipeline_run_cases (guessed_case_key)
+   └─ artifact_paths ──→ 申请 pre-signed URL ──→ 直传对象存储 ──→ artifacts
+```
+
+- **解析在 Runner 侧**（边界 13）：平台不接收报告文件，只接收 `complete` 里几 KB 的
+  `cases[]`。这一条同时挡掉在 API 进程里解析不可信 XML 这一类问题（XXE / 十亿笑声）——
+  不解析就不需要防。
+- **allure 只解析 `*-result.json`，不跑 `allure generate`、不托管静态站点**。要看 HTML
+  报告的人走产物下载。
+- **B/C 绝不回写 `repo_test_cases`**。`guessed_case_key` 这个列名是在说这件事：写脏的树
+  没有办法回滚，而 junit 的 `classname::name` 与 pytest nodeid 之间没有稳定映射
+  （类名、参数化 id、`conftest` 层级都会让它对不上）。
+
+**对象存储抽象 `lib/objectStore.ts`**（从 P6 10.1 提前，只服务 artifacts）
+
+```ts
+type PutTarget = { artifactId, uploadUrl, method: "PUT"|"POST", headers, expiresAt };
+interface ObjectStore {
+  presignPut(key: string, opts: {contentType, sizeBytes}): Promise<PutTarget>;
+  presignGet(key: string, opts: {expiresSeconds}): Promise<string>;
+  delete(key: string): Promise<void>;
+}
+```
+
+- 两个驱动：`fs`（本地目录，dev 默认，`presignPut` 退化为一个带一次性 HMAC token 的平台
+  上传地址）与 `s3`（MinIO / S3，生产）。
+- **硬约束：平台永不代理大文件流**。Runner 直传对象存储，浏览器下载也走 `presignGet` 出来的
+  直链。让 API 进程转发一个 200MB 的 allure 报告，等于让一次下载占住一个 Node 进程。
+- **`fs` 驱动的一次性 token 必须绑 `artifact_id` + 过期时间**，不能是「知道路径就能传」——
+  那等于开了一个匿名上传口。
+- 依赖：`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`（按需 `import()`，不进启动
+  路径，照 P2-7 边界 8 的形状）。
+- **P6 10.1 的另外两件不动**：执行历史归档分区表、大响应体截断进对象存储。
+  `executions.response_body` 一个字都不改——那是一次口径变更，要连着归档策略一起想。
+
+### 8.5 沙箱两档（边界 15 的落地形状）
+
+| | 进程档 `process` | 容器档 `container`（默认） |
+|---|---|---|
+| 实现 | `spawn` + `detached:true`，超时 `kill(-pid)` 杀进程组 | 容器 + 限额 `--cpus/-m/--storage-opt`，超时 stop→kill；通道 `cli`（`docker run --rm`，默认）或 `api`（Engine API over unix socket，P4.5-10b） |
+| workspace | Runner 数据目录下一次性子目录，`finally` 删除 | 同款目录 bind-mount 进容器 |
+| 缓存 | `cache_paths` 在 Runner 数据目录下按 key 建目录，软链进 workspace | 同款目录挂进容器 |
+| 网络策略 | **做不到** | 独立 network + 拒绝 `deny_cidrs`（含平台内网与 `169.254.169.254`）|
+| 前置 | 无 | 目标机器有 docker（`cli` 要二进制，`api` 要 socket 权限）；注册时自报进 `sandbox_modes` |
+
+- **进程档在 UI 上不叫「轻量模式」，叫「信任仓库脚本（无隔离）」**。选它是一个信任声明，不是
+  一个性能选项（边界 15）。
+- **容器档要处理 docker-in-docker 这个坑**：Runner 自己跑在容器里时挂 `/var/run/docker.sock`
+  会让「容器隔离」变成假的（兄弟容器共享宿主）。首版**要求 Runner 直接跑在宿主机上**，
+  并在 README 里写明；检测到自己在容器里且拿不到独立 docker 时，注册时不上报 `container`。
+  **两条通道一视同仁**：`api` 通道能连上 socket 不构成放宽这一条的理由——容器里能摸到
+  socket 通常正是因为宿主把它挂进来了。
+- **`deny_cidrs` 必须落宿主 iptables，这不是实现偷懒**：docker 只提供「选网段」与
+  `--internal`（全断外网）两种粒度，而用户脚本恰恰需要出网（pip install、调被测服务）。
+  「能出网但打不到这几个地址」在 docker 的模型里没有对应物。要防的东西很具体：云上
+  `curl 169.254.169.254` 无需任何漏洞就能取到宿主绑定的 IAM 角色临时凭据；平台内网段
+  不封则脚本能绕过自己那份 Token 直接打平台内部端点。容器隔开了文件系统与进程空间，
+  网络可达性是宿主给的——所以规则只能落在宿主上，两条通道都得 `spawn iptables`。
+- **超时必须杀整个进程树**（Spec 2.10.2(e)）：`pytest` 起的子进程、脚本里 `&` 起的服务，
+  漏一个就永久占着 Runner 的槽位。进程档靠 `detached` + 负 pid 杀进程组；容器档天然全杀。
+
+### 8.6 前端页面
+
+| 路由 | 页面 | 说明 |
+|---|---|---|
+| `/projects/:pid/ci-tasks` | 任务列表 | 顶部 Runner 池实时状态（在线/槽位/空闲/排队 N 个）；每行 `[▶执行][历史][编辑]`。**已实现**（P4.5-11） |
+| 任务编辑抽屉（同上路由内） | 任务编辑 | 代码来源只读（继承仓库），只能改 `ref`；沙箱档/镜像/脚本/缓存/env/secret/报告/产物/超时。**已实现**（P4.5-11，偏差①：抽屉而不是 `ci-tasks/:taskId` 路由——配置无子状态、不需要被分享成链接。**2026-09-01 改判：P4.5-15 起改独立编辑页，偏差①撤销，理由与落点见 8.12**） |
+| `/projects/:pid/pipeline-runs/:id` | 执行详情 | `?tab=log\|cases\|report\|artifacts`；阶段进度四段 + SSE 实时日志 + 取消。**已实现**（P4.5-13） |
+| 系统设置 → Runner tab | Runner 池（系统管理员） | 注册 Token 签发（部署命令一键复制）+ 在线状态 + `draining` 下线。**已实现**（P4.5-11，偏差②：与执行器面板同页相邻 tab 而不是独立路由 `/system/runners`——「挨着放」的最直接形状） |
+
+- **实时日志复用既有 SSE 通道**（`routes/stream.ts` + `lib/events.ts` 的
+  `executions:events`），`ExecutionEvent` 联合类型加两个变体（`pipeline` 状态变化、
+  `pipelineLog` 增量），**不新建第二条 SSE 路由**。理由：前端 `executionStream.ts` 已经有
+  refcount、重连与轮询降级；再开一条就要把那套东西写第二遍。
+  **但日志内容不进事件体**——事件只带 `{pipelineRunId, logBytes}`，前端据此 `GET
+  …/logs?offset=` 拉增量。这与 `lib/events.ts` 现有的纪律一致（事件不带响应体，客户端按 id
+  回查），也避免 Redis pub/sub 里流过几十 MB 日志。
+- **Runner 池页在 `/system` 下而不是项目下**：`runner_tokens` 是系统级的（8.1）。它与
+  `GlobalApp.tsx` 现有的执行器面板是**两张表两个概念**，页面上要挨着放并写明区别：
+  「执行器（平台内部 BullMQ worker）」vs「Runner（自托管，跑仓库代码）」。不写明会被当成
+  重复功能报上来。**落地形状是系统设置里的相邻 tab**（P4.5-11 偏差②）。
+  另加一条 `GET /api/v1/system/runner-pool`（**任何登录用户可读**，P4.5-11 偏差③）：
+  任务列表顶部那一行不能用系统管理员专属的 `/system/runners`，否则非管理员在自己的 CI
+  任务页上吃 403。与 `/system/runner-labels` 对 `/system/workers` 的关系同构——只回标签
+  与数字，不泄露机器信息。
+- **CI 任务在导航上属于「仓库模式」分组**，与「仓库用例」并列（交互文档 1.2 的导航分组）。
+  P4.5-11 落地时把仓库用例从「编排与回归」组移进了这个新组。
+- **执行记录页**（`ExecutionRecords.tsx`）的 kind 筛选加 `runner`；点进去跳
+  `pipeline-runs/:id` 而不是开抽屉（照 `ingest` 现在的形状）。P4.5-11 另补
+  「只看勾选来的」复选（`?caseFilter=1`，只在 `kind=runner` 下出现）。
+
+### 8.7 调度与 Webhook 接入
+ 
+**已经预留好的接入点**，本阶段把它们接上（2026-09-01 第二轮验收确认：范围在原「调度与
+Webhook」之上**加通知与任务级串行**——用户明确提出「仓库任务也需要支持定时任务以及通知」
+「同一任务并发导致测试数据不稳定、要排队不要报错」，套件在 P3-11 已有通知同款能力，CI
+任务没有对应物）：
+
+**迁移 042 一份承载本节全部列**（P4.5-12 与 P4.5-15 共用，落地顺序见 8.8 表）：
+`schedules.target_type` CHECK 扩展（DO 块先 DROP CONSTRAINT 再 ADD，照迁移 037 的
+clone_method 形状）、`webhook_triggers.target_type` CHECK 扩展、
+`ci_tasks.notify_config JSONB NOT NULL DEFAULT '{}'::jsonb`（照 033）、
+`ci_tasks.single_concurrency BOOLEAN NOT NULL DEFAULT true`；实现时**多一列**
+`schedule_runs.pipeline_run_id`（偏差①）。
+
+- `schedules.target_type` 的 CHECK 当前只有 `'suite'`，但迁移 030:32 的注释写明「留列是为了
+  P4.5 接 CI 任务」。改成 `CHECK (target_type IN ('suite','ci_task'))`，并接上
+  `lib/schedule.ts:151` 那个 `targetType !== "suite"` 的守卫——它就是为这一刻留的分派点。
+  **CI 目标不传 `environmentId`**（那是套件触发的概念；CI 的环境由仓库里的脚本自己决定）。
+  ~~`variables` 也置 null~~ → **实现时改判（偏差⑧）**：`variables` 当 `parameters` 传给
+  `triggerCiTaskRun`。两者的键形约束是同一条（`VARIABLE_NAME_PATTERN`）、语义也是同一句
+  「这次触发带什么」，为它在 `schedules` 上加第二列只会让「我该填哪个框」变成新问题；
+  界面上这一栏在 CI 目标下改称**触发参数**。调度触发的 `trigger_source='scheduled'`，
+  refId/refName 落 schedule 行——`triggerCiTaskRun` 已支持 trigger 载荷，与套件同款。
+- `webhook_triggers.target_type` 加 `'ci_task'`（当前 `('flow','suite')`）。HMAC 验证、
+  时间窗、nonce 防重放一处不改。
+- **`lib/trigger.ts` 加 `triggerCiTaskRun`**，与 `triggerSuiteRun` / `triggerFlowRun` 并列，
+  错误照 `failTrigger` 映射。这是 P3 边界 5 定的「单一触发路径」，加第三个目标类型不能绕过它。
+- **通知（本轮新增）**：`ci_tasks` 加 `notify_config JSONB NOT NULL DEFAULT '{}'::jsonb`，
+  形状照 `test_suites.notify_config`（P3-11 迁移 033：`onSuccess` / `onFailure` /
+  `channelIds` / `template{title,body}`），复用 `normalizeSuiteNotify` 归一。投递走
+  scheduler 的事件订阅（`scheduler.ts:45` 那条管线）——pipeline 终态事件已经在发
+  （`publishEvent kind:'pipeline'`），在那里加 `notifyPipelineResult` 分支，与
+  `notifySuiteResult` 并排、各自 catch：complete 与租约回收（abort）两条终态路径自动都
+  覆盖，不用各插一次。占位符换成 CI 语境：`taskName` / `runNumber` / `status` /
+  `passedCount` / `failedCount` / `skippedCount` / `total` / `duration` / `gitRef` /
+  `commitSha` / `trigger` / `finishedAt`。`canceled` 不通知（与套件同款口径：用户动作不是
+  执行结果）；`aborted` / `timed_out` **要通知**（归一成失败文案，run 行上的原状态保留）。
+- **任务级串行开关**（2026-09-01 第二轮确认；用户理由：同一任务共享的测试数据在多并发
+  下导致 case 不稳定）：`ci_tasks.single_concurrency BOOLEAN NOT NULL DEFAULT true`。
+  语义是**排队而不是拒绝**——研发的 CI 流水线经 webhook 触发后需要等待结果，触发永远
+  202 受理、新 run 照常入 `queued`；串行由 **claim 侧守卫**保证：claim SQL 加
+  `NOT EXISTS (同任务更早 run_number 且 status IN ('queued','claimed','running','cancelling'))`
+  （走 `pipeline_runs_task_number_idx`），被挡住的排队 run 在前置 run 终态后自动变为可
+  认领。**终态顺手唤醒**：`completePipelineRun` 与租约回收（abort）落终态时，若该任务
+  开着串行且仍有排队 run，补发 `pg_notify('pipeline_queued', <label>)` 让等待中的长轮询
+  立刻醒——「上一个终态时触发下一个」不依赖下一个轮询周期（否则最坏多等 ~25s）。开关
+  关闭则回到现状（并发由 Runner 槽位兜底）。手动触发同样不报错、同样排队；run 详情页
+  在排队且被串行挡住时显示「等待 #N 终态后开始」。
+- 调度与通知的配置入口在**任务编辑页**（8.12 的独立页），照套件详情页的形状：调度列表
+  （`GET /schedules?targetType=ci_task&targetId=`，创建时目标固定当前任务）+ 通知开关/渠道/
+  模版面板。`schedules` 路由的 `targetType` 校验放开到 `suite|ci_task`，target 校验按类型
+  分派查表；`webhook_triggers` 路由同款放开。**P4.5-12 先落在现有的任务抽屉与一个日历抽屉
+  里**（P4.5-15 把抽屉改成独立页时这两块随之搬过去，组件不重写）。
+
+**落地形状与八处偏差**（P4.5-12，2026-09-01；逐条理由见 8.8 末尾的实现状态）
+
+- **偏差①**：`schedule_runs` 加一列 `pipeline_run_id`。套件触发即产出一行 `suite_executions`，
+  它**入队时**就带 `execution_index_id`（030:74 当场填得上）；`pipeline_runs` 的 index 行只在
+  **终态**才写（`lib/pipelineRun.ts`）。不加这一列只有两条差路：让 `triggered` 行的 index id
+  长期为空（界面无法回答「昨晚那次定时跑到哪去了」），或者在 complete 的事务里反查
+  `schedule_runs` 回填（一次与执行无关的写，且回收路径还要抄一遍）。
+- **偏差②**：调度的目标类型进了请求体与列表过滤。`POST /schedules` 的 `target_type` 此前是
+  SQL 里硬写的 `'suite'`，现在从 `targetType` 取（**缺省仍是 `'suite'`**，P3 起的调用方都不带
+  这个键）；`PUT` 里类型与 id **一起写合并后的值**而不是两个 `COALESCE`——后者能表达出「只换
+  了类型、id 还指着旧那张表」这种悬空组合，而那正是校验刚挡掉的东西。
+- **偏差③**：`POST /schedules/:id/run` 的响应改成按 `targetType` 判别的联合
+  （`{targetType:'suite',suiteExecution}` / `{targetType:'ci_task',pipelineRun}`）。两条路径
+  产出两种行、跳转目标也不同（套件报告 / run 详情页），硬塞成一个形状要么丢字段要么让前端
+  猜。该路由同时开始接受 `Idempotency-Key`（只在 CI 分支有意义，套件分支忽略）。
+- **偏差④**：CI 任务删除补引用扫描（409 + `?force=true`，照 `routes/suites.ts:259`）。8.7 没写
+  这件事，但 `target_id` 无外键（030 的多态引用），悬空的调度会每拍记一行 failed。
+- **偏差⑤**：`validateNotify` 在 suites / ciTasks 各留一份（不抽公共函数）。理由见 8.8。
+- **偏差⑥**：串行的唤醒点有**四处**而不是 8.7 写的「终态顺手唤醒」一处，抽成
+  `notifySerializedQueue`：complete、租约回收、`queued` 被直接取消、串行开关被关掉。
+- **偏差⑦**：run 详情页多一个 `meta.blockedBy`（读时算出的关系），把「在等 #N」说出来。
+- **偏差⑧**：调度的 `variables` 在 CI 目标下当 `parameters` 传（原文写的是置 null），
+  界面上改称「触发参数」——同一条键形约束、同一句语义，见上面第一条。
+
+**三个刻意的缺省**（两条接入路径都不带的东西，理由写在代码注释里）
+
+1. **调度与 Webhook 都不发 `Idempotency-Key`**。调度侧的键形状会是 `(scheduleId, plannedAt)`，
+   但「一个到期时刻只有一个实例能触发」已由 `next_run_at` 的行级认领保证（6.0），再加一层
+   只是把同一个不变量说第二遍；更糟的是 `IdempotentReplayError` **不被 `failTrigger` 认作
+   失败**，落到调度的 catch 里会被记成一次 `failed` 触发——一条本该读作「已跑」的证据。
+   Webhook 侧同理：唯一可用的键来源是 nonce，而 nonce 已经在准入阶段挡掉重放了。
+2. **Webhook 的 CI 分支不注入请求体**。请求体注入是流程独占（边界 7）。CI 任务确实有
+   `parameters` 这个同形的袋子，但把外部 POST 的顶层标量灌进 Runner 的环境变量是另一件
+   事——任务级 secret 已删（8.11 的 B 类），Runner 侧没有脱敏词表，那些值会原样进日志。
+3. **CI 目标不带环境覆盖**。仓库里的脚本自己决定打哪个环境；`environment_id` 在这条路径上
+   无意义，所以前端在 CI 目标下**不显示**那个选择器（留一个不起作用的下拉是在撒谎），服务端
+   也不拿它做任何事。
+
+**前端不做的两件事**：不恢复独立调度页（P3-11 删它的理由不变：配置入口属于它的目标），因此
+交互 3.7 那张带「目标类型」列的调度列表与「两步选资源」的创建弹窗仍然不做——从资源里进来的
+人已经回答了那一步。**不新建 Webhook 管理页**：`api.webhookTriggers` 至今零调用方，本批只把
+`ci_task` 目标接进服务端能力。
+
+### 8.8 分批交付（后端先行；P4.5-4 完成后即可手工起一个 Runner 验证协议闭环）
+
+| 批次 | 内容 | 预估 |
+|---|---|---|
+| P4.5-1 | 迁移 036/037；`runner_tokens` 签发与吊销（复用 `ingestAuth.ts` 的 scrypt + 前缀索引形状）；`lib/runnerAuth.ts`；`POST /runner/register` + 子集校验 | ~3 天 **已实现** |
+| P4.5-2 | 迁移 038；`ci_tasks` CRUD（`routes/ciTasks.ts`）；仓库凭据加密读写（`lib/crypto.ts`）；`lib/trigger.ts` 加 `triggerCiTaskRun` + 无在线 Runner 拒绝（`2004`）+ `sandbox_mode` 可满足性检查 | ~4 天 **已实现** |
+| P4.5-3 | `POST /runner/claim` 长轮询（`SKIP LOCKED` + `LISTEN/NOTIFY`）；JobSpec 组装（凭据只在此出现）；`heartbeat` 租约续约 + cancel 下发；scheduler 里的租约回收器（advisory lock） | ~4 天 **已实现** |
+| P4.5-4 | `logs` / `complete`；`pipeline_runs` 状态机与终态守卫；`execution_index` 归一（`kind='runner'`）；SSE 两个新事件变体 | ~3 天 **已实现** |
+| P4.5-5 | **新仓 `apitest-runner`**：register/claim/heartbeat/logs/complete 客户端 + 进程档执行 + git clone（三种 `clone_method`）+ 日志按 offset 推送 + 退出码落盘补报 + secret 逐行脱敏 | ~5 天 **已实现** |
+| P4.5-6 | Runner 侧报告解析（junit XML + allure `*-result.json`）→ `complete` 的 `cases[]` → `pipeline_run_cases` | ~2 天 **已实现** |
+| P4.5-7 | 迁移 039 的 `artifacts` + `lib/objectStore.ts`（`fs` + `s3` 两驱动）+ `POST /runner/jobs/:id/artifacts` + Runner 侧直传 + 下载直链 | ~3 天 **已实现** |
+| P4.5-8 | 迁移 039 的 `idempotency_keys` + `audit_logs` + `lib/idempotency.ts` / `lib/audit.ts`；接到 CI 触发与 Runner Token 签发两处 | ~2 天 **已实现** |
+| P4.5-9 | **勾选执行（§8.3）**：树上勾选 + bulk-bar（照 `EndpointList.tsx` 的形状）+ 任务选择弹窗 + `case_filter` 贯通 + 平台侧 `not_run` 差集；SDK 加 `select()` / `--apitrack-case-keys` / `APITRACK_CASE_KEYS` 并发 PyPI patch 版本 | ~4 天 **已实现** |
+| P4.5-10 | **容器档**：Runner 侧 `docker run` + 资源限额 + 出站白名单 + 缓存卷挂载；`sandbox_modes` 自报；docker-in-docker 检测 | ~4 天 **已实现** |
+| P4.5-10b | **容器档 socket 通道**（2026-09-01 增补）：抽 `ContainerRuntime` 契约 + 结构化 `ContainerSpec`；`cli`（默认）与 `api`（Engine API over unix socket，含手写 attach 分帧）两实现；OOM 归因（`.State.OOMKilled`）；`APITRACK_RUNNER_DOCKER_TRANSPORT` | ~1.5 天 **已实现** |
+| P4.5-11 | 前端四个页面（8.6）+ i18n（zh/en 扁平键）+ 执行记录页 kind 筛选加 `runner` + 趋势页开关语义扩成「含仓库执行」 | ~5 天 **已实现** |
+| P4.5-12 | 调度与 Webhook 接 CI 任务（8.7）；**+ 任务终态通知**（2026-09-01 范围扩项：`ci_tasks.notify_config` + scheduler 事件订阅侧 `notifyPipelineResult`）；**+ 任务级串行开关**（`single_concurrency` 默认开，claim 守卫 + 终态 NOTIFY 唤醒，8.7）；`start.sh` 注释给出起 Runner 的命令（**不自动拉起**，那台机器通常不在本地，照 P2-8.6 的形状） | ~4 天 **已实现** |
+| P4.5-15 | **任务编辑页与执行历史交互改版**（2026-09-01 第二轮验收反馈，范围与边界见 8.12）：编辑抽屉 → 独立编辑页（env 分区上移、高级项折叠、调度与通知面板随 P4.5-12 落进该页）；`GET /pipeline-runs?ciTaskId=` 列表接口 + 任务列表行内展开执行历史、直达 run 详情；run 详情页整份日志下载 | ~3 天 **已实现** |
+| P4.5-13 | **报告视图自渲染**（边界 19，2026-09-01 改判增补）：迁移 040（`pipeline_run_cases` 加时间戳/host/thread）；`ReportCase` 协议加 4 可选字段 + allure 解析器取这些字段；Runner 自动打包 allure-results 为 `kind='report'` 产物直传（**零依赖手写 zip 写入器**，不引 archiver）；平台读路由（详情 / 日志 / cases / 附件下载）+ run 详情页（阶段进度 + 实时日志 + timeline gantt + suite 树 + case 详情，P4.5-11 的执行详情页一起落） | ~5 天 **已实现**（执行详情页之外的三个前端页仍属 P4.5-11） |
+| P4.5-14 | **配置面收窄**（2026-09-01 验收反馈改判，范围见 8.11）：迁移 041；Git 来源移到任务、凭据改项目级命名池、删任务 secret / 报告格式 / 产物路径 / 默认任务；报告路径从命令行解析；仓库模式合并成一个五 tab 页 | ~3 天 **已实现** |
+
+> 合计约 44 人日（含 P4.5-14）。压回 4 周的砍法与顺序见边界 18；**P4.5-9 不可砍**。
+
+**实现状态**
+
+- **P4.5-1 已实现**（2026-08-31）。落地内容与三处与本节文字的偏差，记下而不是悄悄改掉：
+  - 迁移 `036_p45_runners.sql`（`runner_tokens` / `runners`）、`037_p45_ci_tasks.sql`
+    （`ci_tasks` + `repositories` 的 `clone_method` / `clone_url` / `credential_encrypted` /
+    `credential_updated_at`）。037 的 `clone_method` CHECK 单独用 DO 块加：
+    `ADD COLUMN IF NOT EXISTS` 不带 CHECK 时无法表达「列已存在但约束还没加」这个中间状态。
+  - `lib/runnerAuth.ts`：`apirunner_` 前缀 + scrypt `salt:digest` + 前缀部分索引，形状照抄
+    `ingestAuth.ts`；多出的一层是**协议版本受理点**（`isSupportedProtocolVersion`），
+    集中一处而不是四个接口各判一次。
+  - `routes/runners.ts`：`POST /runner/register`（幂等于 `(runner_token_id, name)`，走
+    迁移 036 的唯一索引 + `ON CONFLICT`）+ 标签子集校验（403）+ `sandbox_modes` 白名单 +
+    协议版本拒绝（400）；`GET/POST /api/v1/system/runner-tokens`、
+    `DELETE …/:tokenId`（软吊销）、`GET /api/v1/system/runners`、
+    `PATCH …/:runnerId`（只允许 `online` ↔ `draining`）。
+  - **偏差①**：`RUNNER_OFFLINE_AFTER_SECONDS = 90` 与 `WORKER_OFFLINE_AFTER_SECONDS = 30`
+    刻意是两个常量。Runner 心跳跨公网走 HTTP 且掉线要判 `aborted`，把网络抖动读成
+    「机器没了」的代价比 BullMQ worker 高得多。
+  - **偏差②**：重注册把 `status` 拉回 `online`。保留 `draining` 会让一台被 drain 过的机器
+    在重装升级后永远领不到任务，且面板上看不出原因。
+  - **偏差③**：`register` 同时接受 camelCase 与 snake_case 字段名。协议是公开的且 JobSpec
+    用 snake_case（8.2），一个只读过协议文档的第三方实现自然会用后者。
+  - `mapRunnerToken` / `mapRunner` / `mapCiTask` 三个 mapper 一并落位（`ci_tasks` 的 CRUD
+    是 P4.5-2，但列名 → camelCase 的边界只允许存在 `types.ts` 一份）。
+  - 未做（属后续批次）：`claim` / `heartbeat` / `logs` / `complete`、`ci_tasks` CRUD 与触发、
+    仓库凭据的写入路由、Runner 池前端页面。
+
+- **P4.5-2 已实现**（2026-08-31）。落地内容与四处与本节文字的偏差，记下而不是悄悄改掉：
+  - 迁移 `038_p45_pipeline_runs.sql`：`pipeline_runs`（含 claimable / lease 两个部分索引与
+    任务内序号唯一索引）、`pipeline_run_logs`（`UNIQUE (run, byte_offset)` 续传去重）、
+    `pipeline_run_cases`（`source` 只有 junit/allure，无 `sdk`）；`execution_index.kind`
+    加 `'runner'` 照抄 035 的「按定义找约束」DO 块。写入方是 P4.5-4，本批只放宽 CHECK。
+  - `routes/ciTasks.ts`：列表（分页 + 逐行解密出 `secretKeys`）/ 创建 / 详情 / 更新 / 删除
+    / 触发（202）。secrets 是 patch（null 删、字符串写、缺省不动，与 environments 同款）；
+    `is_default` 换默认 = 事务内先摘旧再戴新，并发双设撞部分唯一索引回 409/2003；
+    `repositoryId` 创建后不可改（换仓库 = 新建任务）；`env`/`secrets` 键拒绝 `APITRACK_`
+    前缀（三件套由平台注入）；缓存/报告/产物路径挡绝对路径与 `..`。
+  - `routes/repositories.ts` 加 `PUT …/repository/credential`（只写不读）：`clone_method`
+    三值、`ssh_key` 明文必须是含 `PRIVATE KEY` 的 PEM（挡「token 粘错框」）、切回 `none`
+    即清凭据；`credential_updated_at` 只在凭据实际发生变化时刷新（只改 URL 不算换凭据）。
+  - `lib/trigger.ts`：`NoCiRunnerError`（`failNoRunner` 形状复用，503 + 2004 + `data.label`）
+    + `triggerCiTaskRun`。Runner 可用性与沙箱可满足性一次查询出两个计数（判据与 Runner
+    池面板同一份：心跳新鲜度 90 秒 + 排除 draining；**只读 `runners`，不读 `workers`**，
+    同标签下两类执行者互不相领）。排队行在事务内写入：锁任务行 + `MAX(run_number)+1`
+    （`suiteReportName` 同款串行化）+ `pg_notify('pipeline_queued', label)` 随 commit 投递
+    （监听者是 P4.5-3 的长轮询，现在没有也无害）。
+  - **偏差①**：`lib/crypto.ts` 本批零改动——P4.5-1 时它已就位（数据源凭据在用），批次表
+    写的「仓库凭据加密读写」实际落在 PUT 路由的写入与 `mapRepository.hasCredential` 的
+    读出（明文永不回）。
+  - **偏差②**：`triggerCiTaskRun` 顺带做了三条前置检查——存量任务 container 档缺 image、
+    仓库没配 `clone_url`、`sdk_ingest_enabled` 开着但项目没有未吊销的 ingest token。
+    依据是 8.2 约定 8「没有就在触发时报错而不是静默跳过」与验收门槛 4「触发时说清缺什么」；
+    JobSpec 组装在 P4.5-3，那时再报就是一条 failed 的 run。
+  - **偏差③**：`caseFilter` 的校验先行落在本批（P4.5-9 才贯通树侧）：key 去重、上限 500、
+    **不校验树上存在性**——跨任务勾选明确支持（§8.3），脚本不认识的 key 由 `not_run`
+    差集兜底（边界 16），触发时拦截会误伤。
+  - **偏差④**：`Idempotency-Key` 是 P4.5-8 的通用设施，接入前触发双击会产出两条 run——
+    这一点写进了触发路由的注释，不装作它已经防重。
+  - 未做（属后续批次）：`claim` / `heartbeat` / `logs` / `complete` 与状态机推进
+    （P4.5-3/4）、`execution_index` 归一写入（P4.5-4）、`pipeline-runs` 平台侧读路由与
+    前端页面（P4.5-11 之前按需落）。
+
+- **P4.5-3 已实现**（2026-08-31）。落地内容与三处与本节文字的偏差，记下而不是悄悄改掉：
+  - `lib/pipelineNotify.ts`（新）：**一个进程一条** `LISTEN pipeline_queued` 连接 + 等待者
+    按标签唤醒（NOTIFY 载荷是入队行的标签，`default` 入队不惊醒 `prod-dmz` 的轮询）——
+    每个等待中的 claim 各占一条连接会把 Postgres 连接预算吃穿。监听挂掉时等待者最多
+    睡满自己的 25 秒超时（监听是延迟优化不是正确性依赖）。
+  - `POST /runner/claim`：立刻试一次认领 → 没有则在 NOTIFY 上等到 25 秒窗口耗尽回
+    `204`。认领是 `FOR UPDATE SKIP LOCKED` 的 UPDATE（8.2 约定 1 的 SQL 原样），
+    `sandbox_mode = ANY($modes)` 前置过滤；`capacity_available ≤ 0` 直接 204 不占连接；
+    `draining` 403 退场（不是 204 空转）；组装失败把行放回 `queued` 再回 500，不留一条
+    已认领却无人心跳的 run 等回收。`keepAliveTimeout` 加了防御下限（> 25s + 余量）。
+  - `lib/jobSpec.ts`（新）：JobSpec 组装，凭据（仓库拉取凭据 + 任务 secrets 明文 +
+    按 run 现签的 ingest token 明文）**全平台只在这里出现**。键名 snake_case（冻结协议
+    8.2 是第三方实现者照抄的文档）；沙箱限额是平台级默认 + env 覆盖
+    （`RUNNER_CPU/MEMORY/DISK_LIMIT`、`RUNNER_DENY_CIDRS`，迁移 037 没建那几列——限额
+    属于「机器愿意给多少」不属于任务）；`APITRACK_URL` 取 `PUBLIC_BASE_URL` 或 Runner
+    实际拨号的请求来源（SDK 对根地址 / 完整 `/ingest` 两种写法都归一）。
+  - `POST /runner/jobs/:id/heartbeat`：续租（`now()+90s`，与离线阈值同一个数）+ 阶段
+    推进（照迁移 038 的枚举校验）+ `log_bytes` 单调推进（GREATEST）+ `cancel:true`
+    下发。终态 / 非本 Runner 持有一律 409——Runner 读作「job 不再是我的」。
+  - `routes/pipelineRuns.ts`（新）：`POST …/pipeline-runs/:runId/cancel`。`queued` 直接
+    终态 `canceled`；在途推 `cancelling` 等下一次心跳下发（约定 6 的两半都在了）。
+  - `scheduler.ts`：租约回收器（15 秒一拍，advisory lock `8_013_401` 与 worker 的
+    `8_013_301` 分键）——`lease_expires_at` 过期的在途 run 判 `aborted`（不是 `failed`，
+    验收门槛 5），`cancelling` 过期同样判 `aborted`；最坏检测延迟 = 剩余租约 + 15 秒。
+    进程职责从「三件事」变「四件事」。
+  - **偏差①**：`APITRACK_TOKEN` 改为 **claim 时按 run 现签一张** ingest token（名字带
+    任务与序号、可吊销；明文只进 JobSpec）。约定 8 写的「复用项目的 ingest_tokens，
+    没有就在触发时报错」没有可实现形状——库里只存 scrypt 哈希，明文取不回来。P4.5-2
+    据约定 8 做的触发前置检查随之撤销（代码里留了指向说明）。终态后由 `complete`
+    （P4.5-4）顺手吊销，防行数无界增长。
+  - **偏差②**：claim（JobSpec）与 heartbeat 的**响应**按 8.2 冻结协议输出 snake_case
+    （`lease_expires_at`）；register 的 camelCase 是 P4.5-1 的已记录偏差，新协议接口跟
+    协议文档走而不是跟着偏差走。请求侧两种拼法都收（与 register 同款）。
+  - **偏差③**：`cancel` 平台侧路由提前到本批（8.2 REST 表里它混在 pipeline-runs 读路由
+    一组，那些属 P4.5-4/11）——「取消只经心跳下发」需要有人把状态推到 `cancelling`，
+    没有这个路由整条链路无法验收。
+  - 触发参数 `parameters` 经 env 下发（合并顺序：任务 env ← 触发参数 ← 平台三件套，
+    三件套最后压栈防同名覆盖）。
+  - 未做（属后续批次）：`logs` / `complete` / 状态机与终态守卫 / `execution_index`
+    归一 / SSE 事件（P4.5-4）、Runner 客户端与进程档执行（P4.5-5）、报告解析（P4.5-6）。
+
+- **P4.5-4 已实现**（2026-08-31）。落地内容与三处与本节文字的偏差，记下而不是悄悄改掉：
+  - `lib/pipelineRun.ts`（新）：日志接收（`appendPipelineRunLogs`）与终态落库
+    （`completePipelineRun`）收在一个模块——claim / heartbeat 是「活着」的那半
+    （P4.5-3，路由内联），这两个是「收尾」的那半。
+  - `POST /runner/jobs/:id/logs`：断线重传靠 `UNIQUE (run, byte_offset)` +
+    `ON CONFLICT DO NOTHING` 幂等收（边界 7）；`next_offset` 回**当前总长**
+    （`log_bytes`，重算而不是「当前 + chunk 长」——DO NOTHING 的重传分支里两者会
+    分叉）；offset 倒回/跳空 409（倒回会静默丢、跳空会造出永久缺口）；**终态后仍收**
+    （Runner 杀进程树后残余输出还会流一小会儿，拒了只会丢尾部日志）；
+    `byte_offset=0` 的第一段日志把 `claimed` 推进到 `running`（收到输出才是「真的
+    在跑了」的硬证据，stage 可以停在 clone 而日志从 clone 就开始流）。
+  - `POST /runner/jobs/:id/complete`：终态守卫照抄 `run.ts:497` 的形状
+    （`WHERE id AND runner_id AND status IN ('claimed','running','cancelling')`），
+    **`canceled` 额外要求当前是 `cancelling`**（取消只经心跳下发，约定 6——Runner
+    没收到取消信号却自报 canceled 等于把失败静默抹成取消）；撞守卫的重发按「行还在且
+    归这台 Runner」判幂等 ok（约定 5，报错会让 Runner 无限重试）。同一事务里做四件事：
+    终态 UPDATE、`execution_index` 归一写入（kind='runner'，`UNIQUE (kind, detail_id)`
+    双保险）、`cases[]` 批插 `pipeline_run_cases`（source 只有 junit/allure，行数上限
+    20000）、吊销 claim 时现签的那张 ingest token。
+  - **`execution_index` 归一**：`target_name` = 「任务名 #序号」（任务删除级联掉 run，
+    索引行靠无 FK 快照活下来）；`started_at` 用 `claimed_at`（入队时刻是排队等待，
+    认领才是开始执行）；`trigger_*` 三列从 run 行照抄。**偏差①**：`aborted` / `timed_out`
+    在 execution_index 侧归一成 `failed`（015 的 CHECK 只有五个值），run 行保留原状态——
+    改 CHECK 是一次口径变更，且 `aborted` 在 flow/suite 语境里不存在。
+  - **SSE 两个新事件变体**（`lib/events.ts` + `stream.ts` 既有通道，不新建路由）：
+    `pipeline`（状态变化：claim 发 `claimed`、首段日志发 `running`、cancel 发
+    `cancelling`/`canceled`、complete 发终态、回收器发 `aborted`）与 `pipelineLog`
+    （日志水位，**内容不进事件体**——前端按 `logBytes` 走 `GET …/logs?offset=` 拉增量，
+    与「事件不带响应体」同一条纪律）。`executionStream.ts` 前端只关心 `execution`
+    事件，新变体自然穿透不炸；`api.ts` 的 `ExecutionEvent` 类型补齐两个变体。
+  - 租约回收器升级（`scheduler.ts`）：`aborted` 判定走 `abortPipelineRunAfterLease`
+    （与 complete 同一份归一口径）——被回收的 run 永远等不到 `complete`，索引行必须
+    在这里补，否则「执行记录页按 runner 筛」少了最需要被看见的那一类（机器没了）。
+    终态事件在 **commit 之后**发（事务回滚时不该存在「已 aborted」的界面状态）。
+  - `execution_index` 的 cancel 分派补 `runner` kind：推 `cancelling` 或（queued 时）
+    直接终态，与 pipeline-runs 的 cancel 路由同一份 UPDATE——detail_id 就是 run id，
+    复制语义而不是 302。
+  - 前端（本批只动类型与清单）：`ExecutionRecords.tsx` 的 kind 筛选加 `runner`
+    （验收门槛 15 的「能筛出来」）+ 行内 chip；**偏差②**：点行跳 `pipeline-runs/:id`
+    推迟到 P4.5-11（那页还不存在，跳过去会落进 404 兜底路由）——落地前 runner 行
+    不可点，深链指到 runner 行时摘掉 `?parent=` 参数。i18n 补
+    `reports.kindRunner`（zh「CI 执行」/ en「CI run」）。
+  - **偏差③**：`complete` 的 `ingest_run_id` 缝合用 `(project, ci_run_id = run id)`
+    反查 `ingest_runs`（8.2 约定 8：SDK 拿 `APITRACK_CI_RUN_ID = job_id` 当幂等键的
+    一部分报上来）——查到回填，查不到（没开 SDK 上报 / 脚本没跑 SDK）留空。
+    ingest token 的吊销条件是「本项目无任何在途 run」而不是「只吊销这一张」：token
+    行没有指向 run 的列，按 run 精确吊销要加列，不值得——按 run 一签的隔离靠
+    「每张 token 只活一个 run 的生命周期」近似成立。
+  - 未做（属后续批次）：Runner 客户端与进程档执行（P4.5-5）、报告解析在 Runner 侧
+    产出 `cases[]`（P4.5-6；本批已能收能存）、`pipeline-runs` 读路由与前端四个页面
+    （P4.5-11）、`logs` 的平台侧读接口 `GET …/pipeline-runs/:runId/logs?offset=`
+    （P4.5-11，SSE 水位事件的消费方）。
+
+- **P4.5-5 已实现**（2026-08-31）。**第四个仓库 `apitest-runner`**（Node.js ≥ 20、零
+  运行时依赖——HTTP 用内置 fetch、进程控制用 `node:child_process`）落地，与本节文字
+  的偏差记下而不是悄悄改掉：
+  - 结构照 REPOSITORY_ARCHITECTURE 2.4 的形状裁剪到本批范围：`client.ts`（五接口
+    客户端 + ApiError 的 transient/语义拒绝二分）、`registry.ts`（注册重试，400/401
+    致命退出——协议版本被拒与 Token 被吊销重试无意义）、`claimer.ts`（长轮询循环 +
+    容量槽位通知，403=draining 退场）、`executor.ts`（单 job 编排）+
+    `executor/{process,git,cache,workspace,errors}.ts`、`streamer.ts`、`masker.ts`、
+    `state.ts`（job 目录的 state.json + exit_code 文件，tmp+rename 原子写）、
+    `recover.ts`（启动补报）。`uploader.ts` / `proxy/` 属 P4.5-7 与「明确不做」，
+    未建。
+  - **进程档**：`spawn` + `detached` + 负 pid 杀进程组（TERM → 5s → KILL 的梯子），
+    超时杀树、取消杀树、停机超宽限杀树；`timeout_seconds` 覆盖**整个 job**（clone
+    吃掉的时间算在内——挂死的 fetch 与挂死的 pytest 对槽位的占用没有区别）。
+  - **git 三种 clone_method**：`none` 直拉；`ssh_key` 走 0600 临时 key +
+    `GIT_SSH_COMMAND` + `accept-new` 一次性 known_hosts，finally 删；`https_token`
+    走 GIT_ASKPASS（见偏差②）。不 `git clone` 而是 init + fetch + checkout：
+    `clone --branch` 不接受 commit sha。
+  - **日志流**：行缓冲（行是脱敏的原子单位——secret 跨 chunk 会漏）→ 逐行脱敏 →
+    ≤256KB 按**码点**边界切块（byte_offset 是字节，但 chunk 是 TEXT 列，切在多字节
+    字符中间那半截进不了 Postgres）→ offset 幂等发送，409/403/404 读作「服务端不再
+    收」静默放弃。
+  - **退出码落盘补报**：`state.json`（阶段/commit/日志水位/终态）+ `exit_code` 文件
+    （子进程自然退出才写），启动时 `recoverJobs` 按「final_status 落盘 > exit_code
+    推导 > aborted」三档补报后才开始 claim；complete 重试窗口（默认 5 分钟）耗尽则
+    保留 state 等下次启动，workspace 立即删。
+  - **secret 逐行脱敏**：任务 secrets 值 + 仓库凭据（https 的 token / ssh PEM body
+    行）全进掩码面；<4 字符的值不替换（误伤大于风险）；complete 的 error 摘要也过
+    掩码。
+  - **偏差①**：`APITRACK_CASE_KEYS` 注入提前落在本批（§8.3 链路里「Runner 注入 env」
+    这半边本来就只能在这里做）：`case_filter.case_keys` 逗号分隔注入脚本环境，
+    P4.5-9 的 SDK 消费侧与这个形态对齐。
+  - **偏差②**：https 凭据经 **GIT_ASKPASS** 注入，而不是嵌进 fetch URL——嵌 URL 会
+    同时落进 `ps` 的 argv 与 `.git/config`（后者随 workspace 存活到任务结束），
+    都在边界 11「key 只出现在 claim 响应体里」的缓解③射程内。凭据含 `:` 读作
+    `user:password`（GitLab `oauth2:<token>`），否则整个当用户名（GitHub PAT）。
+  - **偏差③**：缓存一并落地（8.5 进程档表里「缓存」行的一半，批次表没单列）：
+    `cache_paths` 软链进 workspace（脚本写入即回写缓存），key = `key_files` 内容
+    hash 挂 `ci_task_id` 名下；**key_files 为空时禁用缓存**而不是用常量 key——
+    没有失效依据的缓存是永不失效的脏缓存。
+  - **偏差④**：git 子命令接了 job 预算与取消检查（批次表的「进程档执行」拆开看
+    包含它）：clone 各步骤之间检查 cancel/lostLease（fetch 是长命令，init 与它之间
+    有空窗）；每条 git 命令带剩余预算的 timeoutMs。
+  - **偏差⑤**：优雅停机两段式（SIGTERM → 停止领取 → 宽限内等在途 → 超宽限杀树按
+    `aborted` 补报）；draining 时**不等宽限**直接等在途跑完（每个 spawn 都有超时，
+    等待天然有界）——「在跑的任务跑完」是 draining 的语义本身。
+  - 配置前缀 `APITRACK_RUNNER_*`（与注入用户脚本的 SDK 三件套 `APITRACK_*` 隔开两个
+    命名空间）；sandbox 自报只有 `process`（P4.5-10 加 docker 探测）；claim 收到
+    容器档 JobSpec 的防御分派直接 failed 并说明（claim 的 WHERE 挡在前面）。
+  - **验收前增补（用户 2026-08-31 要求）**：本仓自带 `start.sh`（start / fg / stop /
+    restart / status）——`.env` 只补缺不覆盖已导出变量、必填项前置校验、优先 dist
+    退回 tsx、`stop` 按「收尾宽限 + 90s」等 SIGTERM 后再强杀（对齐 Runner 自身的
+    优雅停机）、可选 `APITRACK_RUNNER_CA_BUNDLE` 注入 `NODE_EXTRA_CA_CERTS`
+    （自签证书反代场景）；配套 `.env.example`。根 `start.sh` 的启动注释仍属 P4.5-12。
+  - 未做（属后续批次）：报告解析 `cases[]`（P4.5-6）、产物上传（P4.5-7）、容器档与
+    docker-in-docker 探测（P4.5-10）、`start.sh` 起 Runner 的注释（P4.5-12——现在
+    手工起：`cd apitest-runner && ./start.sh`，或 `cp .env.example .env` 后直接
+    `./start.sh`）。
+
+- **P4.5-6 已实现**（2026-08-31）。Runner 侧报告解析（junit XML + allure
+  `*-result.json`）→ `complete` 的 `cases[]` → `pipeline_run_cases`（服务端收口
+  P4.5-4 已落，本批补齐生产侧），与本节文字的偏差记下而不是悄悄改掉：
+  - `apitest-runner/src/report/` 五件：`xml.ts`（**手写**事件式 XML 扫描器——零
+    运行时依赖是本仓的刻意约束，为报告解析破例不值；拒绝 DTD，XXE / 十亿笑声在
+    Runner 侧挡掉，平台侧不解析 XML 是第一道；结束标签错位即抛错，半截文件不产
+    假数据）、`glob.ts`（`*` / `?` / `**` 三种通配；字面路径直判 existsSync
+    跟随软链，glob 逐段 readdir 不跟目录软链防环）、`limits.ts`（护栏数值逐一
+    对着服务端 `completePipelineRun` 的收口：20000 行 / 512 名字 / int4
+    duration）、`junit.ts` + `allure.ts`（映射器）、`parse.ts`（编排：路径展开 →
+    逐文件解析 → message 脱敏 → 行数与载荷截断）。
+  - `executor.ts`：report 阶段接入——只有脚本**自然退出**才解析（被取消 / 超时 /
+    停机杀掉的会话写不出完整报告，pytest 在会话收尾才落 junit.xml）；脚本失败
+    （退出码非 0）照样解析，失败恰恰是报告最有价值的时候；`collectReportCases`
+    全程不抛，解析绝不改变 job 终态（best-effort 纪律）。
+  - `state.json` 带 cases 落盘、`recover.ts` 补报带上：complete 重试窗口耗尽后
+    重启补报的 run 不缺 case 计数——workspace 已删，无处重解析，落盘是唯一来源。
+  - **偏差①**：服务端 `complete` 路由补了**路由级 bodyLimit**
+    （`RUNNER_COMPLETE_MAX_BODY_BYTES`，默认 8MB，`.env.example` 已记）。P4.5-4
+    落的「能收能存」在 Fastify 默认 1MB bodyLimit 下只兑现一半——
+    MAX_REPORT_CASES=20000 行的真实报告轻松超 1MB，而 413 会被 Runner 的重试
+    逻辑读成「已送达」。与 `/ingest` 的 `INGEST_MAX_BODY_BYTES` 同一条纪律。
+  - **偏差②**：Runner 侧 cases 载荷预算 6MB、message 截 2000 字符（服务端收
+    8000）——预算先于发送，触顶截断并记 job 日志；另配 413 降级（丢 cases 重发
+    一次、终态优先），防部署侧把 bodyLimit 调低后 run 永远等不到终态。
+  - **偏差③**：allure 的 `broken` / `unknown` 都归 `error`——不是 skipped：跳过是
+    显式决定，中断是意外，两者的整改动作不同。suite 归属取 labels 的 `suite`
+    标签、缺省退 `parentSuite`，不拼 allure 报告页的展示路径。
+  - **偏差④**：报告解析的 message 过 Runner 侧 secret 脱敏再上报（与日志同一条
+    纪律——失败摘要里可能带 echo 出来的凭据）；case 名 / suite 名 /
+    guessed_case_key 是幂等去重键的一部分，不脱敏。
+  - 未做（属后续批次）：产物上传（P4.5-7）、`pipeline-runs` 读路由与前端页面
+    （P4.5-11——`GET …/pipeline-runs/:runId/cases` 还不存在，本批落进
+    `pipeline_run_cases` 的数据暂时只能查库看）。
+
+- **P4.5-7 已实现**（2026-08-31）。迁移 039 的 `artifacts` + `lib/objectStore.ts`
+  （`fs` + `s3` 两驱动）+ `POST /runner/jobs/:id/artifacts` + Runner 侧直传 +
+  下载直链，与本节文字的偏差记下而不是悄悄改掉：
+  - 迁移文件名是 `039_p45_artifacts.sql` 而**不是** 8.1 写的 `039_p45_infra.sql`：
+    8.1 把 artifacts / idempotency_keys / audit_logs 排进一个 039，但 P4.5-8 还没
+    落地——迁移是 forward-only 的，现在把 039 整个建掉、幂等与审计就没有自己的文件
+    可写。本批只建 `artifacts`（含 `artifacts_owner_idx` 部分索引），其余两张表
+    留给 P4.5-8 的 `039b`。表结构逐字照抄 8.1。
+  - `lib/objectStore.ts`：`fs` 驱动（一次性 HMAC token 绑 `artifact_id` + 30 分钟
+    过期，上传 / 下载同一把密钥、独立于 `DATA_SOURCE_ENCRYPTION_KEY`，缺省派生自
+    `JWT_SECRET`）与 `s3` 驱动（`@aws-sdk/client-s3` + `s3-request-presigner`
+    **按需 `import()`**、不进启动路径，照 P2-7 边界 8 的形状；两个包已按 11.1 装进
+    dependencies）。`presignPut` / `presignGet` 的形状照 8.4 的接口定义。
+  - `routes/runners.ts` 加三条：申请（`POST /runner/jobs/:id/artifacts`，终态后仍
+    收——Runner 的收尾顺序是「complete 先、产物后」，卡死在终态会丢最有价值的失败
+    报告，与 logs 终态后仍收同一条纪律）；fs 直传落盘
+    （`PUT /runner/artifacts/:id/upload`，`application/octet-stream` 专用 content-type
+    parser、`TransformStreamCounter` 按**声明大小**断流、sha256 边收边算、超限删
+    半截文件）；fs 下载直链（`GET /runner/artifacts/*/download`，通配路由——
+    storage_key 形如 `<run_id>/<artifact_id>` 带斜杠，签名绑完整 key）。
+  - Runner 侧 `src/uploader.ts`：artifact_paths 展开（复用 `report/glob.ts` 的
+    glob 语义，字面目录递归到文件级，深度 8 / 64 文件 / 4GB 总量三道护栏）→
+    逐文件申请 + 直传 + sha256。`client.ts` 加 `requestArtifactUpload` /
+    `uploadArtifact`（直传**不带** `apirunner_` 头——presigned URL / 一次性 token
+    本身就是凭据）。
+  - **偏差①**：上传时机在 complete **之后**、job 目录删除**之前**。8.4 的链路图
+    把 artifact 上传画在「用户脚本跑完」后，但终态必须优先（一个 200MB 报告传一半
+    失败不该让 run 等终态）；取消 / 超时 / 丢租约的 run 不传（半截产物没有证据
+    价值）。平台侧申请接口终态后仍收，两边对「complete 先、产物后」达成一致。
+  - **偏差②**：`complete` 没报上去（重试窗口耗尽）时**不传产物**：workspace 立即
+    删（恢复路径只需要 state.json 与 exit_code），产物随工作区一起消失——补报链路
+    只补终态与 cases，不补产物。为产物做断点续传需要把 workspace 留到「确认传完」，
+    与「workspace 立即删」的磁盘纪律冲突，取舍偏向后者。
+  - **偏差③**：s3 驱动的 `checksum` 信任申请时 Runner 报的值（平台不读对象存储的
+    字节流，自然没法自己算）；fs 驱动落盘时**重算** sha256 覆盖。两个驱动对
+    「checksum 是谁算的」答案不同，但都满足「列表页能看到一个指纹」。
+  - **偏差④**（顺手修的存量问题）：`report/glob.ts:65` 的块注释里有字面量
+    `a/**/b`——`**/` 提前终止了注释，整份文件 parse 报错（P4.5-6 落地时该文件
+    未过 `pnpm check`）。同款问题在 uploader 初稿里也出现过，两处一起改写。
+    `lib/pipelineNotify.ts:31` 的 `client.release().catch()`（pg 类型返回 void）
+    一并修复——它是 P4.5-3 的存量编译错误，挡着整个仓的 `pnpm check`。
+  - `models/types.ts` 加 `Artifact` 类型与 `mapArtifact`（写侧本批落库、读侧列表
+    路由属 P4.5-11，mapper 先行落位免得届时再动边界层）。
+  - 未做（属后续批次）：`GET …/pipeline-runs/:runId/artifacts` 列表路由与产物
+    tab 前端（P4.5-11——`presignGet` 直链的生成入口在那批接上；本批的下载端点
+    已就位，手工拼 token 可验）；s3 驱动的 multipart 上传（>5GB 单文件走
+    `uploadPart`，首版 1GB 上限内 PUT 够用）。
+
+- **P4.5-8 已实现**（2026-09-01）。迁移 039 的 `idempotency_keys` + `audit_logs`
+  （落在 `039b_p45_idempotency_audit.sql`，与 P4.5-7 预告的名字一致）+
+  `lib/idempotency.ts` / `lib/audit.ts`；接到 CI 触发与 Runner Token 签发/吊销两处，
+  与本节文字的偏差记下而不是悄悄改掉：
+  - **幂等的抢占是原子 INSERT，不是「先查再插」**：`claimIdempotency` 用
+    `INSERT … ON CONFLICT DO NOTHING` 抢占，抢到的请求在**同一事务**里做真正的触发
+    并回填 run id（`fillIdempotencyResult`），触发失败 ROLLBACK 时占位键随事务消失
+    ——幂等只承诺「成功的效果只发生一次」，失败的触发不占用键，同一键换参数重试
+    是允许的。所有校验（400/404/2004）发生在抢占**之前**，也是同一条逻辑。
+  - **撞键回放走异常通道**：`IdempotentReplayError` 携带首次的 run 行，路由层
+    捕获后回 202 + `idempotentReplay: true`（不进 `failTrigger`——命中不是失败）。
+    `result_id` 指向已删除 run 的悬空键按幂等失效处理（删键重试），正常路径
+    到不了（项目级联同时删两张表）。
+  - **审计接入的第三处**：批次表写「Runner Token 签发」一处，落地时吊销
+    （`runner_token.revoke`）一并接上——它是安全敏感动作（吊销即时生效、台上机器
+    下次心跳被拒），比签发更需要可追溯。共三个 action：`ci_task.trigger` /
+    `runner_token.create` / `runner_token.revoke`。
+  - `detail` 纪律的落地形状：CI 触发记 `caseFilterCount`（数量不是全量 key 列表，
+    §8.3）与 `parameterKeys`（键名不是值）；token 签发/吊销只记名字与标签。
+    `lib/audit.ts` 有 4KB 护栏——detail 超限按「疑似 payload 转储」截断记录。
+  - **不带头 = 既有行为不变**（偏差④的承诺兑现）：不带 `Idempotency-Key` 的触发
+    完全不走抢占分支，双击仍产出两条 run；前端接键是 P4.5-9 勾选执行链路的事。
+  - 未做（属后续批次）：既有触发接口（套件/流程/批量）的 `Idempotency-Key` 追溯
+    接入（边界 17 明确不做）；审计日志的查询路由与前端页面（无排期——先有数据，
+    读取需求等第一个真实使用者出现再定形状）。
+
+- **P4.5-13 已实现**（2026-09-01，边界 19 的改判增补批）。报告视图自渲染 +
+  P4.5-11 的执行详情页一并落地，与本节文字的偏差记下而不是悄悄改掉：
+  - 迁移 `040_p45_report_view.sql`：`pipeline_run_cases` 加 `started_at_ms` /
+    `finished_at_ms`（BIGINT，allure 的 epoch 毫秒原样——不转 timestamptz：timeline
+    是客户端算术不是 SQL 谓词，两次除乘舍入换不来查询能力）+ `host` / `thread`，
+    全部可空（junit 路径与旧 Runner 升级窗口天然缺省）；时间轴排序索引
+    `(pipeline_run_id, started_at_ms, case_name)`。
+  - Runner 侧四件：`protocol.ts` 的 `ReportCase` 加 4 个可选字段（可选不是必填——
+    升级窗口里服务端要能同时收两种形状）；`allure.ts` 取 start/stop/host/thread
+    （`clampTimestamp`：垃圾值进 null 而不是 0——0 是 1970 年，假时间戳比缺时间戳
+    更糟）；`report/zip.ts` **零依赖手写 zip 写入器**（STORE/DEFLATE 按条目选、
+    CRC32 查表、UTF-8 名 bit 11、mtime 固定 0 保证同目录两次打包 checksum 相同——
+    checksum 才是身份，时间戳进包只会让重打包不可比对；不引 archiver 是
+    `report/xml.ts` 手写扫描器同一条纪律）；`reportBundle.ts` + executor 接线——
+    `report_format='allure'` 且解析触到文件时，把 allure-results 目录**整体**打
+    `allure-results.zip` 作为 `kind='report'` 产物在 complete 后直传（与
+    artifact_paths 同窗口同 best-effort 纪律；4096 文件 / 1GB 两道闸）。
+  - 服务端四件：`lib/zip.ts` 零依赖读取器（扫 central directory 而不是逐个 local
+    header；zip 炸弹三道闸：4096 条目 / 单条 128MB / 总 512MB——**在读取层挡，
+    不在渲染层挡**）；`lib/allureReport.ts` 归一视图（cases + steps 树 + parameters
+    + containers 的 before/after + 附件名→类型清单；steps 深度 64 / 单 case 5000 步
+    防手造深环；坏文件跳过计数进 `skippedFiles`，报告页顶部降级提示不静默）；
+    `pipelineRun.ts` 的 complete 落 4 新列（收口同款：截断 + 垃圾值进 NULL）；
+    `routes/pipelineRuns.ts` 从「只有 cancel」扩成六条读路由。
+  - 读路由的三个口径决定：**日志增量 512KB 分片**（一次拉几 MB 会把 JSON 膨胀成
+    浏览器一帧渲染不完的字符串，前端循环拉到追上水位）；**cases 不分页**（几万行
+    内全量——分页会把 timeline 切成不是用户心智的形状，渲染侧自己消化）；
+    **报告视图缓存 5 分钟**（产物不可变——zip 是终态后传的；缓存键是 artifact_id，
+    s3 驱动下省掉的是逐请求拉对象 + 解析）。
+  - **附件下载不走 presignGet**：直链 5 分钟短活罩不住报告页里一张 10 分钟后才点开
+    的截图，且 zip 内文件没有自己的 artifacts 行——落的是一个按 run 归属鉴权的
+    `GET …/attachments?name=` 路由，从同一个 zip 里按 basename 取，image 类型
+    inline 渲染（截图直接看得见），`name` 拒绝路径语义。
+  - 前端 `PipelineRunPage.tsx`（路由 `pipeline-runs/:runId`，`?tab=log|cases|report|
+    artifacts`）：阶段进度四段 + SSE 实时日志（`pipelineLog` 水位事件驱动 offset
+    增量拉取，offset 走 ref——effect 不因每次拉取重订阅而闭包读旧值；自动滚底只在
+    用户本就在底部附近时滚，阅读中间内容不抢滚动条）+ cases 列表/timeline gantt
+    切换（**全部行有时间戳才默认时间轴**——半张时间轴比没有更误导，junit 混 allure
+    时自动降级列表；泳道按 thread，零宽 case 画最小 1px 线——跳过用例常常
+    duration=0，画成 0 宽会从时间轴上消失）+ 报告 tab（suite 分组树 + steps 嵌套 +
+    参数化 + 失败摘要/堆栈 + 附件 inline）+ 产物 tab（短活直链下载）。timeline 的
+    bar 用语义色——通过/失败/跳过本来就是时间轴要回答的问题。
+  - **ExecutionRecords 的 runner 行从「不可点」改为跳转**（两处：`openParent` 与
+    `?parent=` 深链恢复），兑现验收门槛 15 欠着的后半句。
+  - **偏差①**：批次表原估 5 天含 P4.5-11 的四页，本批只落了执行详情页这一页——
+    任务列表 / 任务编辑抽屉 / Runner 池页仍是 P4.5-11 的欠账（8.6 表里其余三行）。
+  - **偏差②**：categories.json 在 zip 里但 v1 视图没有 categories 分组（边界 19 的
+    清单封顶把它列进了 case 详情，实际只用了 steps/attachments/parameters——
+    categories 的「产品缺陷/测试缺陷」分类需要 UI 上先有归属入口才有意义，留到
+    体验优化轮）。
+  - 未做（属后续批次）：`lib/allureReport.ts` 的 containers（fixture before/after）
+    解析了但前端还没渲染——v1 的 case 详情不展示 fixture 步骤，数据在、入口留；
+    趋势视图（从 `pipeline_runs` 历史算，与 SuiteReports 的趋势页共用形状）；任务
+    列表/编辑/Runner 池三个页面（P4.5-11 欠账）。
+
+- **P4.5-9 已实现**（2026-09-01）。勾选执行三段贯通（树侧勾选 → 带 `case_filter` 触发 →
+  平台侧 `not_run` 差集）+ SDK 消费侧，与本节文字的偏差记下而不是悄悄改掉：
+  - **不需要新迁移**（边界 16 兑现）：`repo_test_cases.last_result` 的 `not_run` 早在
+    迁移 035:102 的 CHECK 里，`pipeline_runs.case_filter`、`ci_tasks.is_default` 分别在
+    038 / 037，触发侧的 `caseFilter` 校验在 P4.5-2（偏差③）、JobSpec 透传在 P4.5-3、
+    Runner 的 `APITRACK_CASE_KEYS` 注入在 P4.5-5（偏差①）。本批只补了三处缺口。
+  - **`not_run` 差集落在 `completePipelineRun`，不在 `/ingest`**：那边拿得到「报到了
+    什么」却拿不到 `case_filter`（SDK 根本不知道平台勾了哪些 key），而 complete 里
+    run 行的 `case_filter` 与反查出的 `ingest_run_id` 同时在手（`lib/pipelineRun.ts` 的
+    `markCaseFilterNotRun`）。「报到了」的判据是 `last_ingest_run_id = 本次 ingest run`
+    而**不是** `last_run_at` 有没有更新——被 skip 的用例刻意不动 `last_run_at`
+    （`upsertCases` 的既有纪律），但它确实报到了，不该标 `not_run`。
+  - **差集也在租约回收路径上算**（`abortPipelineRunAfterLease`）：一条被回收的 run
+    永远等不到 `complete`，只在 complete 那边算的话，「机器没了」那次勾选会把上一轮的
+    `passed` 一直留在树上——而那正是最需要看见「这次没跑」的场景。
+  - **护栏：`last_run_at < run.created_at` 才标**。别的执行在这条 run 排队之后报过同一
+    条用例时不动它。宁可少标一条（树上多留一天旧结论），不可把一条刚跑过的用例误标成
+    没跑。`ingestRunId` 为 null（没开 SDK 上报 / 脚本没跑到 SDK）时全集都算差集：平台
+    确实无从得知，`not_run` 正是这个事实的名字。
+  - **`POST /ci-tasks/recommend` 而不是 GET**：勾选可到 500 个 key，塞查询串会撞 URL
+    长度上限且 key 含 `::` 与路径分隔符。它是只读查询，所以不要 `write` 权限——viewer
+    打开面板看得到推荐，只是按不动触发。「最近命中」的判据是
+    `repo_test_cases.last_ingest_run_id → pipeline_runs.ingest_run_id`，**不翻
+    `ingest_records`**：那里只有真发过 HTTP 的用例，一条纯断言用例会凭空落选。
+  - **勾选集按 `case_key` 而不是行 id**：同一条用例可以挂在多个接口下、在树上出现多次
+    （接口下的「用例数」是关系数），按行 id 存会让它被勾两次。换页 / 改筛选**不清空**
+    勾选（那正是「搜 order 勾一批、再搜 user 勾一批」的跨任务勾选工作流），只有切项目
+    才清（跨项目勾选明确不支持）。触发成功也不清——§8.3 支持一次勾选触发多个任务。
+  - **幂等键在打开弹窗时生成一次**，不是每次点触发现生成——后者等于没防重（那正是
+    P4.5-8 偏差④描述的接入前行为）。同一个弹窗里重试（第一次撞 2004、起了 Runner 再点）
+    复用同一个键，因此不会产出两条 run。
+  - **`RunStatus` 加第七个成员 `not_run`**（`ui.tsx`），不是在 `RepoCaseTree` 里本地
+    绕过 `RunStatusTag`：状态词表是设计系统的单一出口。配色**不借用任何语义色**——中性
+    `--ink-3` + 空心点。跟 `skip` 共用黄会让「脚本自己跳过」与「勾了没跑」在扫列表时
+    分不开，而那正是这一态存在的理由。
+  - **SDK 的 deselect 先摘后登记**（`plugin.py` 的 `pytest_collection_modifyitems`）：
+    inventory 的语义就是「本次实际报到的集合」，被摘掉的用例若也登记进去，会带着本次
+    `ingest_run` 的 id 落库、差集恒为空——勾了没跑的用例仍显示上一轮的 `passed`，也就是
+    这一批要修的那个问题。摘除走 `config.hook.pytest_deselected(items=…)` 而不是静默改
+    `items`：终端摘要的 "N deselected" 与自家「记非全量」都挂在这一个通知上。
+  - **一条 key 都没匹配上时仍然一条都不跑**，只多一条 warning。回落成全量跑会让平台
+    收到「全都报到了」的上报、差集为空，于是一次 key 失配（勾的是别的仓库 / 别的 ref）
+    被显示成一次成功。
+  - **`select()` 住在 `selection.py`**，不是 `select.py`：`__init__.py` 会把 `select`
+    这个名字绑成函数，与子模块同名就会复刻 `case.py` 那个已经炸过一次的遮蔽陷阱。
+    优先级 `select() > --apitrack-case-keys > APITRACK_CASE_KEYS`（越靠近「这一次运行的
+    具体意图」的来源越优先）；空串读作「没有选择」而不是「一条都不跑」——一个误设成
+    `APITRACK_CASE_KEYS=` 的变量不该让整轮测试静默跑成零条。
+  - **偏差①**：`case_key_of()` 从 `describe()` / `_enter()` 里抽了出来（三处消费者：
+    inventory 登记、执行阶段 contextvar、勾选 deselect）。各写一遍 override 逻辑会让带
+    `@case(key=…)` 的用例出现「树上是覆盖后的 key、筛选却按 nodeid 比」这种只在部分
+    用例上复现的失配。
+  - **偏差②**：批次表只写了「树上勾选」，实际未归位用例分组也能勾（它们是真实的仓库
+    用例，只是没打到本项目登记的接口——「没归位」不影响它按 key 被筛选执行）。那张表
+    不给全选框：它是截断显示的（只取前 100 条），全选会造出一个与眼前不符的集合。
+  - **偏差③**：接口行给了三态勾选框（勾上 = 它下面全部用例，收起时也能整组勾）。
+    §8.3 只写了「树行勾选」，但「按接口跑一遍」是这个页面上最短的那条路径。
+  - **偏差④**：SDK patch 版本号已在 `pyproject.toml` 抬到 `0.1.1`，**尚未打 tag 发布**
+    ——发布要打 `v0.1.1` 走 Trusted Publishing 流水线，那是一次人工动作。
+  - 未做（属后续批次）：CI 任务列表 / 编辑抽屉 / Runner 池三个页面（P4.5-11 欠账，
+    本批的任务选择只是弹窗里的一个 Select）；执行记录页按 `case_filter IS NOT NULL`
+    筛「勾选来的那些」（§8.3 提到的读法，等 P4.5-11 的 kind 筛选一起做）。
+
+- **P4.5-10 已实现**（2026-09-01）。容器档全部落在 Runner 仓（`apitest-runner`），
+  服务端零改动——`sandbox` 的 JobSpec 字段、claim 的 `sandbox_mode = ANY($modes)`
+  过滤、register 的 `sandbox_modes` 白名单在 P4.5-1/2/3 就位，本批只是让 Runner
+  兑现「container」这个承诺。与本节文字的偏差记下而不是悄悄改掉：
+  - `executor/container.ts` 五件：`probeDocker`（`docker version --format
+    {{.Server.Version}}` 只认 Server 段——CLI 在、daemon 没起时不自报 container）、
+    `runningInsideContainer`（`/.dockerenv` + `/proc/1/cgroup` 双判据）、
+    `validateLimits`（cpu/memory/disk 正则——JobSpec 来自网络，畸形值报 failed 而
+    不是透传给 docker）、`ContainerNetwork`（job 专属 bridge + deny CIDR 落
+    `DOCKER-USER`，finally 里逐条摘 + 删网络）、`buildDockerRunArgs` 纯函数 +
+    `runContainer`（杀梯子 `docker stop -t 5` → escalator `docker kill`；容器名
+    `apitrack-job-<id 前 8>`，日志流走 docker CLI 的 stdout 管道）。
+  - **与 docker 的通道首版是 CLI 子进程**（用户确认）。三个理由：iptables 的
+    `DOCKER-USER` 只能走宿主 CLI（socket 路线消不掉全部子进程）；零运行时依赖是本仓
+    纪律（socket 要么引 dockerode 要么手写 attach 分帧）；CLI 是 Docker 的公开契约而
+    attach 分帧是实现细节。切换缝留在 `APITRACK_RUNNER_DOCKER` 配置后面（`podman`
+    机器改一个变量即兼容）。**P4.5-10b 增补了 socket 通道**（用户 2026-09-01：
+    「可以增加 socket 通道」），三条理由里第一条依然成立（iptables 没被消掉）、第二条
+    以手写分帧 + 不引 dockerode 的方式绕过、第三条降级为「cli 仍是默认」。
+  - **clone 恒在宿主跑**（8.5 的表没写 clone 在哪跑）：沙箱要关的是用户脚本，
+    clone 是 Runner 的职责——git 二进制、凭据临时件、预算检查在两档共用同一条
+    `spawnFn` 路径；state.json / exit_code / deploy_key 因此**不进**容器，这正是
+    文件系统隔离要护的东西（script.sh 单独一条 `:ro` 挂载）。
+  - **缓存身份两档同源**：容器档不重算 key，从 `prepareCache` 挂好的软链
+    `readlinkSync` 反解宿主缓存目录，再以挂卷达到同一「写入即回写」——挂点 =
+    容器内 workspace 挂点 + 同一相对路径，pytest 之类对 CWD 相对路径的假设不破。
+    `APITRACK_RUNNER_CONTAINER_CACHE=no` 可关（软链在容器内不成立，这就是不能
+    复用进程档挂法的全部原因）。
+  - **deny 列表降级必须被看见**：iptables 不存在（mac 开发机）或没权限时继续跑，
+    但降级写进 job 日志（`outbound deny NOT enforced`）——静默失去网络策略等于
+    把容器档卖成一个兑现不了的承诺。桥名从 network Id 推（`br-<id 前 12>`，
+    daemon 的稳定规则），拿不到 Id 时同样记日志降级。
+  - **dind 检测给了豁免口**（8.5 原文「检测到就在注册时不上报 container」）：
+    `APITRACK_RUNNER_ALLOW_DIND=yes` 让确认过隔离语义的部署显式豁免——原文没有
+    这个出口，「挂 docker.sock 的 K8s sidecar 部署」会永远领不到容器任务且面板
+    看不出为什么。
+  - 终态映射零新增：`runContainer` 产出与 `spawnDetached` 同构的 `ProcResult`
+    （docker run 的退出码即容器主进程退出码；被我们杀的读 `killedBy`），executor
+    的终态判定表一行不改。停机杀在途容器靠 `process.ts` 开放出的
+    `registerInflightKill` / `unregisterInflightKill`（`killInflight` 名单语义不变，
+    容器档的用户进程同样被计入优雅停机）。
+  - `spec.sandbox.image` 为空在 script 起手报 failed（P4.5-2 的触发前置检查挡了
+    存量任务，这里挡 JobSpec 组装竞态）；防御分派从「container 明确失败」改为
+    正常分派（P4.5-5 落地时的占位注释随之兑现）。
+  - 未做（属后续批次/明确不做）：`--storage-opt size=` 依赖镜像的 storage driver
+    支持 `overlay2`（个别发行版默认 driver 不支持时会启动失败，错误信息里带
+    docker 原话，可读）；`isolated` 档位与镜像预热（边界 15 明确不做）；s3 驱动
+    multipart（P4.5-7 已记）。`spec.sandbox.network` 取 `?? []`——协议字段是
+    必发项，防御式缺省不产生第二协议形状。
+
+- **P4.5-10b 已实现**（2026-09-01，用户「可以增加 socket 通道」）。容器档从「一条
+  CLI 通道」变成「两条通道 + 一个通道无关的契约」，仍是 Runner 仓单侧改动，服务端与
+  协议零改动（`JobSpec.sandbox` 一个字段不动——通道是**部署侧**的事，不是任务配置）。
+  - **接缝形状**：`executor/container/runtime.ts` 定义结构化的 `ContainerSpec`
+    （name/network/image/entrypoint/command/workdir/binds/env/limits/stopTimeout）与
+    `ContainerRuntime` 接口（`probe` / `run` / `createNetwork` / `networkId` /
+    `removeNetwork`）；`container/cli.ts` 与 `container/api.ts` 各自实现；
+    `executor/container.ts` 收成 facade + `createContainerRuntime(config)`。
+    **中间表示刻意不是 argv 数组**：让 api 通道去反解 `--volume h:c:ro` 等于把 CLI
+    语法当成内部协议，改一个挂载点要同时改两处解析。
+  - **`ProcResult` 加一格 `oomKilled: boolean | null`**（容器档专有，进程档不产出）。
+    这是两条通道**唯一的能力差异**，也是加 socket 通道的唯一硬理由：内存超限被 daemon
+    杀与被别处 SIGKILL 在退出码上都是 137，归因只能来自 daemon。api 通道读
+    `.State.OOMKilled` 给确定答案；cli 通道在 `--rm` 下没有 inspect 窗口，只能给
+    `null`。**`null` 不当 false 用**——把未知说成「不是 OOM」会让用户去调一个没问题
+    的内存限额；executor 在 `null` + 137 时只提示可能性并指出换 api 通道能定论。
+  - **api 通道刻意不开 `AutoRemove`**：那是 `--rm` 的等价物，会把 inspect 窗口一起
+    拿掉，等于放弃这条通道唯一的能力增量。回收由 `run()` 的 finally 显式
+    `DELETE ?v=1&force=1` 做。
+  - **attach 分帧自己写**（`demux`，约 40 行）：非 TTY 的 attach 流是多路复用的
+    （`[type,0,0,0,size(BE32)]` + 负载），帧会跨 TCP 包切断。多字节字符可能被 daemon
+    切在帧边界上，所以跨帧保留一个待解码尾巴（`incompleteTailLength`）——否则日志里
+    会出现替换字符，而日志是要过 secret 逐行脱敏的，坏字节会破坏行边界。
+  - **次序不能变**：create → attach → start → wait → inspect → rm。先 start 再 attach
+    会丢掉容器开头几行输出（CLI 帮我们排过这一步，自己做就要自己记住）。
+  - **零运行时依赖守住了**：用 `node:http` 的 `socketPath` 直连 Engine API（钉住
+    `v1.41`），不引 dockerode。`package.json` 仍无 dependencies。
+  - **镜像 pull 要自己做**：CLI 会在镜像不在本地时自动拉，API 不会——create 收到 404
+    时走一次 `POST /images/create` 再重试 create。
+  - **iptables 仍是两条通道共用的 shell 依赖**（`container/network.ts`）：宿主
+    netfilter 在 Engine API 里没有对应物，所以 socket 通道**没有**让容器档摆脱子进程。
+    P4.5-10 的第一条理由依然成立，这一批只是不再用它否决整条通道。
+  - **DinD 检测对两条通道一视同仁**，不因为「socket 通得」就放宽：容器里能摸到 socket
+    通常正是因为宿主把它挂进来了，那时候起的容器是 Runner 的兄弟。通道是「怎么连
+    daemon」，DinD 是「隔离是否成立」，两件事不能互相抵消。
+  - **探测走配置选定的那条通道**（`resolveSandboxModes` 改异步）：探测 cli 通、实际
+    跑 api 不通，等于自报了一个跑不了的档位，可满足性检查（边界 3 的同构物）就瞎了。
+    注册日志带上 transport，否则运维分不出「CLI 没装」与「socket 没权限」。
+  - 新增两个环境变量：`APITRACK_RUNNER_DOCKER_TRANSPORT`（`cli` 默认 / `api`，非法值
+    静默回落 cli——这一格配错不该让整台 Runner 起不来）、`APITRACK_RUNNER_DOCKER_SOCKET`
+    （默认 `/var/run/docker.sock`）。
+  - **明确不做**：remote daemon（`DOCKER_HOST=tcp://` + TLS 客户端证书）。除了要多一套
+    证书加载与 `tls.connect`，它会直接破坏 workspace bind-mount 的前提——宿主路径在
+    远端 daemon 上不存在。`cli` 仍是默认通道，理由不变：日志里那行完整的 `docker run …`
+    用户能复制粘贴复现，这是自托管软件的运维资产，api 通道没有等价物。
+
+- **P4.5-11 已实现**（2026-09-01）。8.6 欠着的三个前端页面 + 两处口径改造落地，
+  与本节文字的偏差记下而不是悄悄改掉：
+  - **CI 任务列表**（`ci-tasks`，新 `CiTaskList.tsx`）：顶部 Runner 池读数
+    （在线/槽位/在途/空闲/排队）+ 任务表（默认/停用 chip、沙箱、分区、ref、报告格式、
+    超时）+ 行内 `[▶执行][历史][编辑][删除]`。「执行」不带 `case_filter`（全量），
+    幂等键**当场生成**——这是一次新意图，与勾选弹窗「打开时固定一个键」刻意不同
+    （那边撞 2004 后起完 Runner 再点是同一次意图）。「历史」跳执行记录页并预置
+    `?type=parent&kind=runner&keyword=<任务名>`，不新建一个「任务历史」页：那份数据
+    就是 `execution_index`，再开一页等于第二个入口讲同一件事。
+  - **任务编辑抽屉**（新 `CiTaskDrawer.tsx`）而不是 8.6 表里写的 `ci-tasks/:taskId`
+    路由（**偏差①**）：任务配置是一张长表单但没有子状态、也不需要被分享成链接——能
+    分享的是它的执行，那才有独立路由（与数据源编辑器同款取舍）。代码来源只读（仓库
+    地址 + 拉取方式两行事实 + 只可改 `ref`），沙箱档切到 `process` 时提示语从
+    `.form-note` 换成 `.form-error` 并写成**信任声明**而不是「轻量模式」（边界 15 的
+    原话）；secret 行是 patch 语义（留空=保持原值，删行=显式发 `null`）；报告格式的
+    说明句写明 junit/allure **不回写用例树**（边界 13），只有 SDK 上报回写。
+  - **Runner 池**（新 `RunnerPoolPanel.tsx`）落在**系统设置的第三个 tab** 而不是
+    8.6 表里写的独立路由 `/system/runners`（**偏差②**）：`/system` 在这个前端里从来
+    不是一棵子路由树，而是 `GlobalApp page="system"` 的一个值；更重要的是 8.6 自己
+    要求「与执行器面板挨着放并写明区别」——同一页的相邻 tab 是「挨着」最直接的形状，
+    两条独立路由做不到。面板含注册 Token 签发（部署命令一键复制、明文只出现一次）、
+    Runner 三态（在线/下线中/离线——`draining` 不能显示成「在线」，那会让人以为下线
+    没生效）、`draining` ↔ `online` 切换。
+  - **趋势页开关语义扩成「含仓库执行」**（边界 2）：查询参数从 `includeIngest` 改名
+    `includeRepo`，`sampleKinds()` 打开时是 `('flow','suite','ingest','runner')`。
+    **不给第二个复选框**——那两者对用户是同一件事。这是一次**改名而不是加参数**：项目
+    从未上线，没有历史调用方要兼容（数据兼容性约定）。
+  - **执行记录页补「只看勾选来的」**（§8.3 提到的读法）：`?caseFilter=1`，服务端判据是
+    `EXISTS (SELECT 1 FROM pipeline_runs WHERE id = execution_index.detail_id AND
+    case_filter IS NOT NULL)`。用 EXISTS 而不是 join：`execution_index` 上没有这个事实，
+    而 join 会让别的 kind 的行因为匹配不上 `pipeline_runs` 整批消失。复选框只在
+    `kind=runner` 下出现（对别的 kind 这个条件恒为假）。
+  - **新增一条服务端路由**（8.6 没写，**偏差③**）：`GET /api/v1/system/runner-pool`，
+    **任何登录用户可读**。8.6 只说了任务列表顶部要显示池状态，但 `GET /system/runners`
+    是系统管理员专属且带 hostname/token 名/版本——直接用它会让非管理员在自己的 CI 任务
+    页上吃一个 403。这条与 `/system/runner-labels` 对 `/system/workers` 的关系完全同构：
+    只回标签与数字，够画顶部那一行，不泄露机器信息。`queued` 是**跨项目的全局数**
+    （认领扫描按标签取全平台最早的那条），文案上说明了这一点。合计 `online` 从 runner
+    行算而不是把标签行求和——一台声明两个标签的机器在两行里各算一次，求和会把「在线
+    3 台」报成 6 台。
+  - **导航新增「仓库模式」分组**（8.6 的「CI 任务在导航上属于仓库模式分组」）：仓库用例
+    从「编排与回归」组**移出**、与 CI 任务并列。P4 时把它放在编排组是因为它与流程/套件
+    回答同一个问题；CI 任务出现后，「测试代码不在平台里」有了看结果与管执行两个页面，
+    且共享同一个前提（本项目绑定的那个仓库），混在编排组里会让「为什么这两页要求先绑
+    仓库、另外两页不要求」变成每次都要重新解释的问题。
+  - **看板的「CI 任务数」接真值**（此前是硬写的「未启用」占位）：`dashboard.ts` 加一条
+    `ci_tasks` 分组子选（与调度数同款口径，含停用的）。**覆盖率一个字不改**（P4 边界 2
+    / P4.5 边界 2）——这里只是数任务，不进任何比率。
+  - 顺手修掉 P4.5-13 落地时留下的四处前端问题（**它们是缺陷，记在 `issue_fix/`**）：
+    `Tip content=` 应为 `text=`（两处静默不渲染）、`Empty` 缺必填 `title`（五处）、
+    `status status-${x}` 应为 `data-status`（设计系统是属性选择器）、CSS 里
+    `var(--radius)` / `var(--rule)` 两个从未定义的 token。
+  - 未做（属后续批次）：调度与 Webhook 接 CI 任务（P4.5-12，「资源类型」第三项与
+    `ci_task` 目标）；审计日志的查询页（无排期，等第一个真实使用者）；`ci-tasks` 页的
+    「上次执行」列——`ci_tasks` 上没有这一列，`execution_index` 只在终态写行，要它就得
+    加一条按任务分组的 `MAX(created_at)` 子选，等有人问再加比现在猜一个形状好。
+
+- **P4.5-12 已实现**（2026-09-01）。8.7 的两个预留接入点接上，外加本轮确认的两个范围扩项
+  （任务终态通知、任务级串行）。落地内容与本节文字的八处偏差，记下而不是悄悄改掉：
+  - 迁移 `042_p45_schedule_webhook_ci.sql`：两个 `target_type` CHECK 放宽
+    （`schedules` → `('suite','ci_task')`、`webhook_triggers` → `('flow','suite','ci_task')`，
+    DO 块先 `DROP CONSTRAINT IF EXISTS` 再按名字判存在后 ADD——两个都是 030 里的**列级
+    匿名** CHECK，Postgres 自动名 `<表>_<列>_check` 是确定性的；038 那个要按定义内容找的是
+    **表级**多列 CHECK，两种情况不要混）、`schedule_runs.pipeline_run_id`、
+    `ci_tasks.notify_config`、`ci_tasks.single_concurrency`。
+  - **调度分派**（`lib/schedule.ts`）：`fire()` 的守卫从 `!== "suite"` 改成白名单判断，
+    分出 `fireSuite` / `fireCiTask` 两个函数——两条都只是「选哪个 trigger 函数」，认领、
+    快进、漏跑、park 一行没动。CI 侧走 `triggerCiTaskRun`（P3 边界 5 的单一触发路径），
+    `variables` 当 `parameters` 传。
+  - **Webhook 分派**（`routes/webhookTriggers.ts`）：原来的 `if flow / else suite` 落空写法
+    改成三分支**显式**分派 + 末尾 400。那种写法下一个未知的 `target_type` 会被静默当套件跑
+    一遍，而 CHECK 之外的值只可能来自有人手改过行。`validateTarget` 的表名从二元三目改成
+    `TARGET_TABLES` 常量表（`schedules` 路由也加了同款一张），HMAC / 时间窗 / nonce 一处未改。
+  - **偏差①：`schedule_runs` 多一列 `pipeline_run_id`**（理由见 8.7 的偏差表）：
+    `pipeline_runs` 的 index 行只在终态才写，触发那一刻它不存在。
+  - **偏差②：调度目标类型进了请求体与列表过滤**；**偏差③：`POST /schedules/:id/run` 的
+    响应改成判别式联合**（`{targetType:'suite',suiteExecution}` / `{targetType:'ci_task',
+    pipelineRun}`），该路由同时开始接受 `Idempotency-Key`（只在 CI 分支有意义）；
+    **偏差④：CI 任务删除补了引用扫描**（409 + `?force=true`，照 `routes/suites.ts`）。
+    三条的完整理由都写在 8.7 的偏差表里。
+  - **通知（范围扩项）**：`ci_tasks.notify_config` 与套件那一列**形状逐字相同**，所以
+    `SuiteNotifyConfig` / `normalizeSuiteNotify` / `dispatchAlert` / 证据行四处全部复用；
+    新增的只有 `lib/alerts.ts` 的 `notifyPipelineResult`（默认模版 + 取事实的那条查询）与
+    `scheduler.ts` 订阅里的一个分支。**挂在事件上而不是在 complete 里调**：`pipeline` 终态
+    事件本来就在两条路径上发（`completePipelineRun` 与租约回收器），挂事件等于两条自动都
+    覆盖。终态口径：`canceled` 不通知，`aborted` / `timed_out` 归一成失败文案通知。
+    渠道删除的引用扫描与悬空 id 摘除同步扩到 `ci_tasks`（`routes/notificationChannels.ts`，
+    两张表只差表名，改成按字面量数组循环而不是抄第二遍 SQL）。
+    **偏差⑤：`validateNotify` 刻意保留两份**（suites / ciTasks 各一份）——它读同一张表、用
+    同一个归一函数，但错误文案的字段前缀属于各自的请求体契约；抽出去要么把前缀写死、要么
+    多一个只为拼字符串的参数。真正不能有两份的归一与投递已经是一份。
+  - **任务级串行（范围扩项）**：`single_concurrency` 默认 **true**。守卫落在 **claim 侧**
+    （`routes/runners.ts` 的认领 SQL 加 `NOT EXISTS 同任务更早在途`，走迁移 038 的
+    `pipeline_runs_task_number_idx`；`FOR UPDATE` 因为多了 join 而必须写成 `FOR UPDATE OF pr`），
+    所以「谁先跑」由 `run_number` 决定而不是认领竞速，触发路径一行不改——**排队而不是拒绝**
+    正是用户要的语义（研发的流水线在等结果，一个 409 会让它当成失败）。
+    **偏差⑥：唤醒点比 8.7 写的多两处**。8.7 只说了「终态顺手唤醒」，实际有四个出口需要它，
+    抽成 `lib/pipelineRun.ts` 的 `notifySerializedQueue`：`completePipelineRun`（事务内，随
+    COMMIT 投递）、租约回收（同款）、**`queued` 被直接取消**（`routes/pipelineRuns.ts` 的
+    cancel 不走 complete）、**串行开关被关掉**（`PUT /ci-tasks/:id`——那一刻被挡住的 run 立刻
+    可领）。漏掉后两处的表现是「要等到下一个 25 秒轮询窗口才动」，不是错但看着像卡住。
+    该函数**不按 `single_concurrency` 过滤**：关开关那一刻列已经是 false，而对从不串行的
+    任务多发一次通知只是一次注定 204 的提前醒。
+  - **偏差⑦：run 详情页多一个 `meta.blockedBy`**（读时算出的关系，不进 `PipelineRun`）：
+    被串行挡住的排队 run 要说清「在等 #N」。不说的话，它与「分区没有在线 Runner」在界面上
+    长得一模一样，而后者要人去起一台机器。
+  - **偏差⑧：调度的 `variables` 在 CI 目标下当 `parameters` 传**（8.7 原文写的是置 null）。
+    两者的键形约束是同一条、语义也是同一句「这次触发带什么」，为它在 `schedules` 上加第二列
+    只会让「我该填哪个框」变成新问题。界面上这一栏在 CI 目标下改称**触发参数**，提示语点明
+    「值会原样进日志」——任务级 secret 已删（8.11 的 B 类）。
+  - **前端**：`SuiteSchedules.tsx` 泛化成 `ResourceSchedules.tsx`（入参 `targetType` +
+    `targetId`），套件详情页与仓库任务列表共用；任务行内多一个日历按钮开抽屉；任务抽屉补
+    通知面板（形状与套件那块相同）与串行开关。i18n zh/en 各补 `schedules.hintCiTask` /
+    `schedules.parameters*` / `ciTasks.notify.*` / `ciTasks.singleConcurrency*` /
+    `ciTasks.deleteReferenced*` / `pipelineRun.blockedBy` / `webhooks.targetCiTask`。
+  - `start.sh` 补起 Runner 的注释（**不自动拉起**，照 P2-8.6 的形状）：与 worker 的区别
+    （直连 Redis+Postgres vs 只出站 HTTPS）、`cp .env.example .env` 后 `./start.sh`、
+    注册 Token 在系统设置里签发、本机临时前台起一台的一行命令。
+  - 未做（属后续批次）：**Webhook 管理页面**——`api.webhookTriggers` 至今零调用方，整个
+    Webhook 只有后端与 i18n 文案，本批只把 `ci_task` 目标接进服务端能力，没有为它新建界面
+    （P3 时就没建；等有第一个真实使用者）。任务级串行的**跨任务**排队（不同任务共享同一份
+    测试数据时也要串）：那需要「资源锁」这个新概念，不在本批。`evaluateAlertEvent` 仍
+    **不看** `kind='runner'` 的索引行——把仓库执行掺进项目级成功率是一次统计口径变更
+    （P4.5 边界 2 明确不动）。
+
+### 8.9 验收门槛
+
+1. **零入站**：Runner 那台机器只放开出站 443，全链路（注册→领取→心跳→日志→完成）跑通；
+   平台侧没有任何一处向 Runner 发起连接（抓包或代码审查任选其一为证）。
+2. **认领互斥**：10 台 Runner 同时长轮询一条 queued run，只有一台拿到，其余立刻拿到 `204`
+   而不是阻塞在锁上。
+3. **分区防御**：一台只声明 `labels=['default']` 的 Runner **领不到** `runner_label='prod-dmz'`
+   的 run；拿 `labels=['default']` 的 token 注册时声明 `['prod-dmz']` 被拒。
+4. **沙箱不匹配前置拒绝**：任务配容器档但在线 Runner 都只支持进程档时，**触发时**就返回
+   `2004` 并说清缺什么，而不是产出一条 `failed` 的 run。
+5. **租约回收**：Runner 进程 `kill -9` 后 90 秒内那条 run 变 `aborted`（不是永久 `running`，
+   也不是 `failed`）；重启 Runner 后读落盘退出码补报的那一条**不**被判 `aborted`。
+6. **取消**：`running` 中取消 → 状态先 `cancelling`、下一次心跳后 Runner 杀掉整个进程树、
+   终态 `canceled`；`queued` 中取消直接终态。取消后已完成阶段与已收到的日志**仍在**。
+7. **日志续传**：执行中断网 10 秒再恢复，日志**不丢不重**（`byte_offset` 唯一约束生效），
+   前端 SSE 自动重连并从正确 offset 续拉。
+8. **超时杀进程树**：脚本里 `sleep 9999 &` 起一个后台进程，任务超时后它**也**没了，
+   Runner 槽位立刻可用。
+9. **凭据不外泄**：`credential` 只出现在 claim 响应体里；`GET /ci-tasks/:id`、
+   `GET /pipeline-runs/:id`、日志、`audit_logs.detail` 五处全部搜不到它；Runner 侧那个
+   临时 key 文件在任务结束后不存在。
+10. **secret 脱敏**：`echo $MY_TOKEN` 在平台侧日志里显示为掩码；同时**明确记下**
+    `echo $MY_TOKEN | base64` 挡不住（边界 12 已声明不承诺）。
+11. **报告三路径**：同一次 run 同时开 SDK 上报与 junit 解析——树上 `last_result` 只被 SDK
+    改动，`pipeline_run_cases` 有 junit 那份，两者数字不一致时界面上说得清哪个是哪个。
+12. **产物直传**：一个 50MB 的产物上传与下载全程不经过 API 进程（`fs` 与 `s3` 两个驱动各
+    验一次）。
+13. **勾选执行**：树上勾 3 条 → 触发 → 脚本只跑这 3 条 → 树上这 3 条刷新；把脚本改成
+    **无视** `APITRACK_CASE_KEYS` 全量跑，结论仍正确（差集为空，不标 `not_run`）；
+    再把脚本改成只跑 2 条，第 3 条标 `not_run` 而**不是** `failed`。
+14. **幂等**：同一个 `Idempotency-Key` 触发三次，只产生一条 `pipeline_runs`，后两次返回
+    第一次那条的 id。
+15. **归一与口径**：执行记录页能按 `runner` 筛出来并点进 `pipeline-runs/:id`；
+    `reports/trend` 默认**不**含它，打开「含仓库执行」开关后同时含 `ingest` 与 `runner`；
+    `/dashboard` 的覆盖率数字**保持不变**（沿用 P4 边界 2）。
+16. **协议版本**：一个自报 `protocol_version='0.9'` 的 Runner 被明确拒绝并给出可读原因，
+    而不是在 claim 之后才炸。
+17. **报告视图（P4.5-13）**：一个 `report_format='allure'` 的任务（含 steps 与截图附件的
+    pytest 仓库）跑完后：`pipeline_run_cases` 的时间戳四列有值；run 详情页 timeline 能看到
+    按 thread 分泳道的并行执行；报告 tab 能展开看到 steps 树与参数化；截图附件点开能看
+    （inline 渲染，不是下载一个 octet-stream）；同一个 zip 被 `unzip -l` 验证过结构。
+    junit 任务的 run 详情页打开**不报错**（报告 tab 显示空态而不是 404）。
+18. **任务级串行（P4.5-12，8.7）**：串行开着的任务连触三次 → 三条全部受理（202，不报错）、
+    `run_number` 连续；同一时刻至多一条非终态 run 在跑，其余 `queued`；第一条终态后第二条
+    **立刻**被认领（不等 Runner 下一轮长轮询超时——比较两条的 `finished_at` 与
+    `claimed_at` 间隔）；被挡住的排队 run 详情页显示「等待 #N 终态后开始」。关掉开关后
+    同一任务两条 run 能并行。取消（`canceled`）也释放排队——它是终态。
+19. **CI 调度（P4.5-12）**：给任务配「每分钟」cron → 到点自动产生 run
+    （`trigger_source='scheduled'`、refName 是调度名，执行记录页可筛）；`schedule_runs` 有
+    `triggered` 留痕且 `pipeline_run_id` 指向那条 run（点开直达 run 详情页）；调度器停机跨过
+    宽限期后记 `skipped` **不补跑**；删任务时先 409 列出它的调度、`?force=true` 才连带删。
+    调度触发的 run **不带** `environmentId`（CI 没有这个概念，编辑抽屉里也不显示那个下拉），
+    但**带** `variables` 作为任务 `parameters`（偏差⑧）。
+20. **CI 通知（P4.5-12）**：任务只开 `onFailure` + 配渠道 → 失败、`aborted`、`timed_out` 的
+    终态各投一条（`aborted`/`timed_out` 文案归一成失败口径），成功不投；开 `onSuccess` 后
+    成功也投；`canceled` 永不投（用户动作不是执行结果）。自定义模版的占位符
+    （`taskName` / `runNumber` / `commitSha` / `duration`）替换正确；通知投递证据行在
+    渠道投递记录里可查（`rule_id` 为空，与套件通知同款）。
+21. **编辑页与执行历史（P4.5-15，8.12）**：`/repo/tasks/new` 只填必填四项（名称 / Git 地址
+    + ref / steps / Runner 标签）即可保存——高级折叠区不展开、不填；保存后回列表。列表行
+    展开显示该任务最近 run，点某条进 `/pipeline-runs/:runId`，URL 刷新/粘贴回来仍在同一
+    位置；编辑页刷新不丢已填内容（任务行回读，新建页除外——它是新表单）。日志 tab 的
+    「下载日志」得到的 txt 字节数 = `run.log_bytes`（完整性判据）。
+
+### 8.10 明确不做
+
+- **Spec 2.10.2(a) 的 `isolated`（Job per build / K8s Job）**与 2.10.2(b) 那一整套冷启动
+  优化（预烤镜像 / 镜像预热 / venv hash 缓存的完整形态）。留 `isolation_mode` 字段位，
+  首版只接受 `shared`。见边界 15。
+- **零侵入 proxy 覆盖率采集**（Spec 2.10.2(g) 的第二条路径）。SDK 上报已经能拿到
+  case ↔ endpoint 的精确映射，proxy 路径换来的是「不装 SDK 也有覆盖率」，代价是镜像内预置
+  CA + `HTTP_PROXY` 注入 + 一个 MITM 代理组件。它是独立一件事，且与本阶段任何一处都不耦合。
+- **allure 静态站点托管**、`allure generate`、**vendor allure 官方 SPA**。仍然不做
+  （2026-09-01 改判后的准确边界，见边界 19）：平台**自存原始 allure-results 文件、
+  自渲染**报告视图，不跑 allure-cli、不喂它产的静态站、不拿它的 app.js 拼数据。
+- **P6 10.1 的执行历史归档（分区表）与大响应体截断**。本阶段只提前对象存储抽象这一层，
+  见边界 14。
+- **既有触发接口（套件 / 流程 / 批量）追溯支持 `Idempotency-Key`**。设施是通用的，但接线
+  只做 CI 触发，见边界 17。
+- **Runner 自动升级 / 版本分发**。自托管的东西由部署者升级；平台只做 N 与 N-1 双支持并在
+  面板上显示版本落后。
+- **项目级并发上限**（Spec 2.10.2(f)）。首版并发度就是「在线 Runner 的槽位之和」；一个项目
+  占满整个池这件事在自托管场景下（一个池通常就服务一个网段的少数项目）还不是问题，
+  真出现时再加一列比现在猜一个默认值好。任务级串行（`single_concurrency`，8.7）回答的是
+  「同一任务的两次执行不互相踩数据」，与本条说的项目级聚合上限是两个问题，后者仍不做。
+- **`workers` 表与 `runners` 表合并**。见核心模型第三条。
+
+### 8.11 P4.5-14 配置面收窄（2026-09-01 验收反馈，范围与边界已确认）
+
+**问题**
+
+P4.5-11 把 8.6 的表逐格实现了，但那张表是照「一个 CI 系统该有什么配置」写的，不是照
+「这个平台的用户在什么时刻知道什么」写的。验收时用户的原话是「我自己设计的我都懵了」
+——这不是缺功能，是**配置项比决策多**。十条反馈归成四类，逐条给落点；每一条都是**减**
+而不是加，唯一新增的表是把已有的一列升级成的凭据池。
+
+**A 类 · 顺序反了（反馈 2、4、5）**
+
+`repositories.clone_url` / `clone_method` / `credential_encrypted` 挂在**仓库**行上，而
+仓库行只能由**第一次上报**创建（边界 18 的绑定模型）。于是配置顺序是「先跑一次 CI 上报
+→ 才有仓库行 → 才能填拉取地址 → 才能建任务跑 CI」，而用户来这里的目的正是「我还没有
+CI，让平台帮我跑」。第一步就锁死。
+
+- **Git 地址移到 `ci_tasks` 上**（用户选定「任务级 Git 地址」）。创建任务时填地址 + 选
+  凭据，不需要任何已存在的上报。仓库行仍然由上报创建、仍然是用例树与 `/ingest` 准入的
+  归属者——**两者从此不再互为前提**：任务回答「从哪拉、怎么跑」，仓库行回答「树是谁的」。
+  一次任务跑完后 SDK 上报会把仓库行建出来，那时两边的 git 地址天然一致（同一个仓库），
+  不一致也不需要平台裁决——`/ingest` 的准入判据一个字不改。
+- **拉取凭据升级成项目级命名池 `git_credentials`**（用户选定）。它不是新概念，是把
+  `repositories.credential_encrypted` 这一列搬到自己的表上并给它一个名字：一个项目通常
+  只有一两把 key（「公司 GitLab 只读 token」），多个任务共用；换 token 只改一处。
+  `clone_method` 随凭据走（`https_token` / `ssh_key`），**任务表单里不再出现「拉取方式」
+  这个词**——它是凭据的属性，不是任务的选择。公开仓库不选凭据即可（原 `none` 档的语义
+  由「不引用任何凭据」表达，少一个枚举值）。
+- **凭据管理进仓库模式的 tab，与上报 Token 并列**（用户选定「并入凭证管理 tab」）。
+  两块都是凭据，但服务对象不同，标题上写清：上报 Token 给 SDK（`/ingest` 用），Git 凭据
+  给 Runner（clone 用）。原「接入指引」页的三步说明（装包 / 两个环境变量 / 原样跑
+  pytest）并入这一页的上报 Token 那一块——它本来就是在讲那个 token 怎么用。
+
+**B 类 · 配置项超过决策（反馈 6、7、9、10）**
+
+- **删掉任务级 secret**（用户选定「直接删掉，只留明文环境变量」）。`secrets_encrypted`
+  一并删列。代价必须记下而不是当成零成本：**Runner 侧的日志脱敏字典随之空掉**（边界 12
+  的原文逐行替换失去输入源），敏感值写进 `env` 就会原样出现在日志里。这是用户在
+  「少一层配置」与「平台替我遮日志」之间的显式取舍；`masker.ts` 的机制保留（clone 凭据
+  仍走它），只是不再有任务级词表喂它。
+- **删掉「报告格式」下拉，永远按 allure**（用户选定）。`report_format` / `report_paths`
+  两列删掉，**报告目录从 `steps` 里解析** `--alluredir[=| ]<dir>`（也认
+  `ALLURE_RESULTS_DIR=`）；解析得到就在表单上只读回显「报告目录：allure-results」，
+  解析不到就当场提示「命令里没看到 `--alluredir`，跑完不会有报告」——**提示而不是拒绝**
+  保存：用户可能在 `pytest.ini` 里配了 `addopts`，平台看不见那份文件，为它拦住保存是拿
+  一条猜测去否决事实。junit 解析器（`report/junit.ts`）**代码保留但不再有入口**：删掉它
+  等于为一次口径变更去动一个能跑的解析器，而它一行也不碍事。
+- **删掉「产物路径」**。`artifact_paths` 列删。allure-results 的打包上传是平台自己的行为
+  （P4.5-13 边界 19 的报告层，与这一列从来无关），删掉之后报告照旧；用户想额外收文件
+  这件事，等有人真的提出来再说——现在它只是一个没人填的框。
+- **删掉「默认任务」**（用户：「这个我理解可以在上报的时候处理吧」——落地成更简单的一条）。
+  `is_default` 列与那条部分唯一索引一起删。勾选执行的兜底改成**单任务自动选、多任务让
+  用户选**（用户选定）：`POST /ci-tasks/recommend` 保留「最近成功上报过这些 case_key 的
+  任务」这一条真判据，去掉「其次默认任务」那一档——「项目里只有一个任务」这件事前端数一下
+  就知道，不需要一列去声明。
+
+**C 类 · 信息架构（反馈 1）**
+
+- **仓库模式合并成一个页面、五个 tab**：任务 / 用例树 / 上报记录 / 未匹配诊断 / 凭据。
+  导航从两项（仓库用例、CI 任务）收成一项。理由是这五块共享同一个前提（「测试代码在
+  用户的仓库里」），而 P4.5-11 把它们劈成两个导航项之后，「为什么 CI 任务要先绑仓库」
+  变成了每次都要重新解释的问题——A 类改完这个前提也消失了，正好一起收。
+  路由前缀改 `repo`（`/projects/:pid/repo`、`/repo/tasks`、`/repo/runs`、
+  `/repo/unmatched`、`/repo/credentials`），真实路由而不是 `?tab=`（RepoShell 的原理由
+  不变：这些地址会被贴进排查群里）。`/pipeline-runs/:id` 保持独立路由不动。
+
+**D 类 · 编辑体验（反馈 3、8）**
+
+- **命令行输入接 Monaco**（用户：「是否可以支持 shell 语法识别，类似于校验脚本那样」）。
+  复用 `ScriptCodeEditor.tsx` 的 Monaco 边界，`language="shell"`——只要语法高亮，
+  **不做补全**：脚本节点那边的补全喂的是平台自己的 `ctx` 契约（`lib/scriptContract.ts`），
+  shell 命令没有等价物，硬做只能补一堆猜的 pytest 参数。
+- **进程档的工作目录已经是一次性的，反馈 8 的担心不成立**——但要写进 UI。
+  `executor/workspace.ts` 的 `prepareJobDir` 是 `<data>/jobs/<job_id>/workspace`，
+  job_id 是 UUID，`finally` 里整目录删除；两档共用同一份目录语义（容器档 bind-mount
+  同一个目录）。所以不存在「多次执行共用一个目录导致报告污染」。**唯一真的共享物是依赖
+  缓存**（`cache_paths` 软链到 `<data>/cache/<ci_task_id>/<key>/…`），那是有意为之且按
+  任务 + key 文件 hash 分桶。任务抽屉的进程档提示语补一句说明这个区别，而不是改代码。
+
+**明确不做（本批）**
+
+- 不动 `/ingest` 的准入判据、不动 `repositories` 的绑定与解绑语义、不动用例树的归属。
+- 不为「一个项目多个仓库」重新定义用例树。任务级 git 地址允许两个任务指向不同仓库，但
+  **用例树仍然只有一棵**（`repo_test_cases` 按 `(project_id, case_key)` 唯一）。这是已知
+  的松耦合：真出现「一个项目跑两个仓库的用例」时，那棵树会混着两个仓库的用例——届时按
+  `repository_id` 分组是一次独立的信息架构改动，不混进本批。
+- 不追溯迁移历史数据。项目从未上线（AGENTS.md 的数据兼容性约定），删列就是删列。
+
+**实现状态（2026-09-01，P4.5-14 已落地）**
+
+逐项核对（2026-09-02 复核，A/B/C/D 四类全部在盘上）：
+
+- **A 类（顺序反了）**：迁移 `041_p45_task_config_narrowing.sql`——`git_credentials` 表
+  （项目级命名池，`UNIQUE (project_id, name)`，`method` 只有 `https_token` / `ssh_key`
+  没有 `none`）+ `ci_tasks.git_url` / `git_credential_id`（`ON DELETE RESTRICT` + 部分索引）
+  + 删 `repository_id`（任务不再随仓库解绑级联消失）。路由 `routes/gitCredentials.ts`
+  （列表带 `task_count` 分组子选；删除遇 23503 翻成 409 并列出引用任务名；重名 409/2003）；
+  `routes/ciTasks.ts` 的 TASK_SELECT left join 凭据（名字/方式随任务返回），创建校验凭据
+  归属，**刻意不校验与 `repositories.git_url` 一致**。Runner 侧 `executor/git.ts` 照
+  `spec.repo{clone_url, clone_method, credential}` 走 GIT_ASKPASS / 0600 临时 key 文件。
+- **B 类（配置项超过决策）**：四列全删（`secrets_encrypted` / `report_format` /
+  `report_paths` / `artifact_paths` / `is_default` + 部分唯一索引）。`lib/jobSpec.ts` 的
+  `secrets` 固定空数组、`artifact_paths` 固定空数组（协议字段保留，Runner 兼容）；
+  `report` 从 `steps` 里 `parseAllureDir`（`lib/allureDir.ts`，认 `--alluredir[=| ]<dir>`
+  与 `ALLURE_RESULTS_DIR`），恒为 `allure` 或 `none`；junit 解析器（Runner
+  `report/junit.ts`）代码保留无入口。`ci-tasks/recommend` 只剩「最近成功上报」一档
+  （无默认任务兜底）；前端 `RepoCaseTree.tsx` 的勾选执行兜底是「单任务自动预选、多任务
+  用户选」。Runner `executor.ts` 的脱敏词表只剩 clone 凭据（`spec.secrets` 恒空，注释
+  已写明取舍）。
+- **C 类（信息架构）**：`RepoShell.tsx` 五标签页头（任务 / 用例树 / 上报记录 / 未匹配
+  诊断 / 凭据），`main.tsx` 路由 `repo` / `repo/tasks/new|:taskId` / `repo/tree` /
+  `repo/runs` / `repo/unmatched` / `repo/credentials`；原「接入指引」页撤销，三步说明
+  与上报 Token 并进 `RepoCredentials.tsx`（同页另一块是 Git 凭据池）。
+- **D 类（编辑体验）**：D3 命令行 Monaco + shell 高亮落在 `CiTaskEditor.tsx`（363 行
+  注释，不做补全）——**载体是 P4.5-15 的独立编辑页**，两批在这一条上先后落地同一个
+  组件；D8 工作目录说明即 `ciTasks.workspaceNote`（一次性目录 + 缓存分桶），渲染于
+  编辑页高级折叠区（`CiTaskEditor.tsx`）。
+- 与 P4.5-15 的关系：8.12 在本批之后，其「8 个分区 + 220px Monaco」「抽屉 → 独立页」
+  都以本批收窄后的配置面为前提；两批无重复实现，D3/D8 的最终落点随 8.12 从（已删除的）
+  抽屉迁入 `CiTaskEditor.tsx`。
+
+### 8.12 P4.5-15 任务编辑页与执行历史交互改版（2026-09-01 第二轮验收反馈，范围已确认）
+
+P4.5-14 之后用户又提了五点。前四点是**交互层的改判**（一处是真正的方向反转：抽屉 →
+独立页），第五点（调度 + 通知）并进 P4.5-12 的范围（见 8.7 的改写），本节只记前四点。
+
+**① 任务编辑抽屉 → 独立编辑页（改判）**
+
+P4.5-11 当时的理由是「任务配置是一张长表单但它没有子状态，也不需要被分享成一条链接
+（能分享的是它的执行）」——两个前提现在都塌了：
+
+- P4.5-14 之后的表单有 **8 个分区 + 220px 的 Monaco 编辑器**，760px 抽屉里一屏看不到
+  两屏的事，「一下要输入很多信息」是验收原话。P4.5-12 的调度与通知面板还要再进来两块，
+  抽屉彻底盛不下。
+- 「没有子状态」不再成立：调度面板有自己的列表态（增删改调度行），通知面板有渠道选择。
+- 项目里已有整页编辑器的先例（`EndpointWorkspace` / `DataSourceDetail` / `SuiteWorkspace`），
+  独立页不是新形态。
+
+落地：
+
+- 路由 `/projects/:pid/repo/tasks/new` 与 `/projects/:pid/repo/tasks/:taskId`（真实路由，
+  可刷新可分享；`CiTaskDrawer.tsx` 删除，新组件 `CiTaskEditor.tsx`）。
+- 保存回列表页；「保存并执行」直达 run 详情页（现状语义保留）。
+- **分区顺序重排**（用户第 1 点：env 要在前面）：名称 → 代码来源（git 地址/凭据/ref）→
+  **环境变量**（写 shell 的前置输入，先配再写才顺）→ 执行步骤（Monaco）→ 高级折叠区
+  （运行时档位/Runner 标签/镜像、**串行执行开关**（`single_concurrency`，默认开，8.7）、
+  缓存、报告上报开关、超时与启用——默认值开箱即跑，折叠区收起时不填也能保存）→
+  调度面板 → 通知面板（后两块随 P4.5-12 落地）。
+- 任务列表的行点击 / 编辑按钮从开抽屉改成 `navigate` 到编辑页。
+
+**② 任务 → 执行历史：行内展开，不再绕全局报告列表**
+
+现状是「历史」按钮跳 `reports?kind=runner&keyword=任务名`——跨两页、靠关键字模糊匹配
+（任务改名就搜不到）。落地：
+
+- 后端补 `GET /api/v1/projects/:id/pipeline-runs?ciTaskId=&page=&pageSize=`（此前**没有**
+  run 列表接口，详情只能按 id 点进；筛选用 `params` 数组模式照 `dashboard.ts`）。
+- 任务列表行内展开：展开时按 `ciTaskId` 拉最近几条 run（#序号 / 状态 / 触发源 / 耗时 /
+  开始时间），点某条**同页 SPA 跳转**直达 `/pipeline-runs/:runId`——用户确认过不做新开
+  tab，与现在点「执行」后的跳转同款形状。
+- 全局报告页保留「跨任务统一视角」这一个用途（从侧边栏进）；`openHistory` 的
+  keyword 跳转删除。
+
+**③ 日志：实时与历史都在 run 详情页，补整份下载**
+
+现状已经支持（Runner 合流采集 stdout/stderr 按 offset 上报，run 详情页默认 tab 就是
+log，SSE 水位事件驱动增量拉；终态后同一位置看全量）——用户不知道，入口可见性问题。
+落地：log tab 头部加「下载日志」按钮，后端加
+`GET /pipeline-runs/:runId/logs/download`（text/plain + attachment，一次 join 全部
+chunk；日志几 MB 可接受，读路径与现有 logs 接口同一条）。
+
+**④ 定时任务与通知**：见 8.7 的范围扩写（P4.5-12 批次），本批不重复记录。
+
+**明确不做（本批）**
+
+- 不改 Runner 协议与日志上报格式（下载是平台侧读路径的补全）。
+- 不做日志的关键字过滤 / 高亮 / 级别折叠——P6 的大响应体口径变更再议，本轮只补下载。
+- 任务列表不内嵌迷你日志预览：要看日志点进 run 详情页，那里才是日志的完整视图。
+
+**实现状态（2026-09-01，P4.5-15 已落地）**
+
+- **① 独立编辑页**：`CiTaskDrawer.tsx` 删除，新组件 `CiTaskEditor.tsx`；路由
+  `/projects/:pid/repo/tasks/new` 与 `/:taskId`（`main.tsx`）。分区顺序照 8.12：基本信息 →
+  代码来源 → 环境变量（`KeyValueEditor`，上移）→ 执行步骤（Monaco）→ **高级折叠区**
+  （`<details>` 复用 panel chrome，默认收起：沙箱档 / Runner 标签 / 镜像 / 缓存 /
+  报告上报 / 超时 / 串行 / 启用——默认值开箱即跑）→ `ResourceSchedules` 调度面板 →
+  通知面板（两块从 P4.5-12 的临时抽屉搬进来，组件未重写）。保存回列表页；「保存并执行」
+  直达 run 详情页。
+- **② 行内展开历史**：后端 `GET /api/v1/projects/:id/pipeline-runs?ciTaskId=&page=&pageSize=`
+  （`routes/pipelineRuns.ts`，params 数组模式照 `dashboard.ts`；`ciTaskId` 必填且先验任务
+  归属——查错项目回 404 而不是空列表）。任务列表行首加展开箭头，展开拉最近 5 条
+  （#序号 / 状态 / 触发源 / 耗时 / 开始时间），点某条同页 SPA 跳 run 详情页；
+  `openHistory` 的 keyword 跳转已删，调度/通知从行内按钮移进编辑页。
+- **③ 日志下载**：`GET .../pipeline-runs/:runId/logs/download`（`text/plain; charset=utf-8`
+  + `attachment`，文件名 `run-<N>.log`，一次 join 全部 chunk——读路径与增量接口同一条，
+  只是独立路由而不是 `?download=true`：envelope JSON 与裸文本流的消费形状不同，合一个
+  handler 只会互相背约束）。log tab 头部加下载按钮（`<a href>` 直连，不经 axios）。
+- **`enabled` 勾选的结论（本轮验收问题「这个勾选是干什么的」）**：它有**三处真实作用**——
+  `triggerCiTaskRun` 拒绝触发（`lib/trigger.ts`）、勾选执行的推荐查询排除停用任务
+  （`ci-tasks/recommend` 的 `JOIN ci_tasks t AND t.enabled`）、列表页禁用「执行」按钮与
+  「已停用」chip。语义定位是**封存而不是删除**：删除会级联掉全部执行历史（迁移 038 刻意
+  如此），停用只拒绝新触发、历史与通知都保留——删除确认框里「要留历史就停用」指的就是它。
+  **保留**，但从 limits 分区挪进高级折叠区（8.12 的分区重排顺带完成），并补
+  `ciTasks.enabledHint` 把上面这句话在界面上说清。
+- **凭据空池的就地创建（2026-09-02 验收补充）**：新建任务遇到空凭据池时，提示文案旁常驻
+  「新建凭据」按钮，弹 `GitCredentialModal`（从 `RepoCredentials` 抽出的共享组件，两处
+  同一张表单）就地创建——跳去凭据页会丢掉已填的任务草稿，弹窗不丢；存完自动刷新凭据池并
+  选中新凭据（下一步就是选它，不让用户把刚回答的问题再答一遍）。
+- **新建页的调度入口（2026-09-02 验收补充）**：调度行需要已存在的任务 id 作目标，新建页
+  于是挂同形状的占位面板：点「新建调度」先把当前表单**静默保存**（必填校验与「保存」同
+  一条），路由原地 replace 成编辑页（同组件同位置，表单状态不丢），`ResourceSchedules`
+  带 `autoOpenCreate` 挂载并自动打开新建抽屉——用户不需要再点一次。
+
+
+### 8.13 报告体验改版：合并视图 + 总报告列表 + 免登录分享（2026-09-02 验收反馈，五项）
+
+用户对仓库执行报告的验收反馈五项。核心口径变化：**报告列表从「只有套件」扩成总报告列表**
+（套件 + 仓库执行），**run 详情页的报告视图是唯一报告视图**（用例 tab 撤销，信息并入），
+**分享是报告的固有能力**（免登录只读链接）。
+
+**① 仓库执行详情页的面包屑（缺陷，另记 `issue_fix/问题记录-仓库执行详情页面包屑.md`）**
+
+`pipeline-runs/:runId` 独立路由不在 `repo/*` 之下，靠 `SECTION_ALIASES` 归组点亮侧边栏；
+但 ProjectShell 的 detail 页判定漏了它——面包屑停在不可点的「仓库模式」标题上，进了执行
+详情回不去任务列表。修法：`pipelineRunOpen` 进 detail 判定，面包屑长出
+`{项目}/仓库模式（可点回 /repo）/#序号`（run 号经 `setDetailTitle` 通道上推）。
+
+**② ③ 报告视图合并（撤销用例 tab）**
+
+- run 详情页三 tab：日志 / 报告 / 产物（`?tab=cases` 旧链接落回默认，不硬跳）。
+- 报告 tab = 合并视图 `PipelineReportBody`（详情页与分享页共用一个渲染）：
+  - **概要读数**：通过率 / 用例总数 / 通过 / 失败 / 跳过 / 耗时 / 排队（「总和信息」；
+    计数以 run 行上的服务端重算值为准，减法只有一份）；
+  - **timeline gantt**（原 cases tab 的能力并入：全部行有时间戳才画，junit/旧 Runner
+    自动缺席）；
+  - **allure 用例明细**：标题（name）+ 完整名（fullName）+ **注释**（`description`，
+    pytest docstring 落这里——解析器本轮新收的字段）+ 参数化 + **前置/后置 fixture**
+    （container 的 before/after 按 children 归位到 case——pytest 用户的报告里 fixture
+    是「执行了什么」的主要事实）+ 步骤树（步骤耗时）+ **步骤日志**（文本类附件就地展开
+    读，图片缩略图，其余下载链接）+ 失败详情 + 附件；分组行带「x/y 通过」读数；
+  - **降级**：没有 allure 包（junit / 格式 none）时回 `pipeline_run_cases` 纯列表——
+    合并视图不把 junit 任务挤成空白页。
+- 任务列表行内展开历史补计数列（项数 / 通过 / 失败，与执行记录页父执行列表同列）。
+
+**④ 仓库执行进总报告列表**
+
+- `GET /suite-reports` 扩成两源 UNION（`suite_executions` + `pipeline_runs`），列名归一
+  （`kind` 区分、`target_name` 统一），外层统一过滤排序分页；runner 状态按 execution_index
+  同一口径归一（claimed/cancelling→running，aborted/timed_out→failed）。
+- 前端报告列表：来源筛选（全部 / 套件 / 仓库执行）+ 类型 chip + 计数列（项数 / 通过 /
+  失败）+ 状态筛选补排队/执行中/已取消；runner 行点击跳 run 详情页。
+- 语义边界：runner 的报告名是「任务名 #序号」（任务删除级联掉 run，那行随之消失——与
+  套件快照不同，迁移 038 既定语义）；「用例 tab 被合并」不适用于报告列表，它本来就没
+  有 tab。
+
+**⑤ 报告分享（免登录只读）**
+
+- 迁移 043：`report_shares`（target_type 'suite'|'runner' + target_id 多态无 FK + 192-bit
+  base64url token + **部分唯一索引**「一个目标同时只有一条有效分享」；撤销 = UPDATE
+  revoked_at，索引立刻放行下一条）。
+- 项目内路由 `POST/GET/DELETE /projects/:id/report-shares`（write 权限创建/撤销，读走
+  viewer）；公开路由 `GET /public/report-shares/:token`（不走 JWT，与 Webhook 公开路由
+  同款位置）回**与站内同一份拼装**的报告视图（`lib/reportPayload.ts`：套件报告与仓库
+  执行报告的装载从路由里抽出来，两处共用——两份 SQL 的那天就是「分享出去的与站内数字
+  对不上」的那天）+ 公开附件路由（步骤日志/截图免登录可读）。
+- 前端：`ShareReportButton`（未分享 = 一个按钮；已分享 = 链接框 + 复制 + 取消分享，
+  进页面先查现状，不让人以为每次点击换链接）挂在套件报告详情与 run 详情页头；
+  `/share/reports/:token` 公开路由在 `Protected` 之外，极简外壳（无侧边栏、无导航、
+  无写入口），套件报告公开态关掉成员证据抽屉（那要按用户鉴权）。
+
+**明确不做（本批）**
+
+- 分享页不做实时日志 / SSE：分享的是**报告**（终态读数 + 用例明细 + 附件），进行中的
+  run 分享出去看到的也是当时快照。
+- 不给分享链接加过期时间 / 密码：第一版只有「撤销」一个开关；有效期是运营需求，等真实
+  使用反馈再加，不预造配置面。
+- allure `descriptionHtml` 不渲染（Markdown 渲染器不进平台，边界 19）；`description`
+  按 pre-wrap 纯文本展示。
+- 报告列表不做跨项目聚合：`project_id` 作用域不变（RBAC 的最小单位）。
+
+**实现状态（2026-09-02，五项全部落地）**
+
+- 后端：`lib/allureReport.ts`（description + fixture 归位）、`lib/reportPayload.ts`
+  （套件/仓库执行报告装载 + 报告视图缓存与附件读取，从 `routes/pipelineRuns.ts` 迁入）、
+  `routes/reports.ts`（两源 UNION + source 筛选）、迁移 043 + `routes/reportShares.ts`
+  + `index.ts` 注册、`models/types.ts`（ReportShare mapper）。
+- 前端：`ProjectShell`（面包屑）、`PipelineRunPage`（三 tab + 合并视图 + 分享）、
+  `SuiteReports`（总报告列表 + 公开态）、`CiTaskList`（历史计数列）、`ShareReportButton`
+  / `ShareReportPage`（新组件）、`main.tsx` 公开路由、`api.ts` / `i18n.ts` / 
+  `design-system.css` 配套。
+- 缺陷记录：`issue_fix/问题记录-仓库执行详情页面包屑.md`（①的缺陷档案）。
+
+
+### 8.14 报告与任务列表可读性改版（2026-09-02 验收反馈第二批，十项）
+
+同一天的第二批反馈，全部落在**读**这一侧：报告与任务列表的信息已经在页面上，但读不出来。
+八项是体验改造，两项是缺陷（③ 与 ⑦ 的后端根因），后者另记 `issue_fix/`。
+
+**① 时间轴可读性**（`PipelineRunPage.TimelineGantt`）
+
+三件事：**刻度落在整齐的时间边界上**（`niceStep` 从 100ms…10min 的候选表里挑「≥ 目标间隔
+的最小整齐值」，超出候选表按 10 分钟向上取整——退回 `span` 会让图只剩首尾两个标签）并配
+**同位置的背景网格线**；**空档显式画出来**（扫全部区间求真空段，≥ 跨度 4% 的画成虚线边界
+的灰带并标注时长——原先「最右边孤零零一块、中间大片留白」看不出中间是空的还是没画）；
+**泳道按最早开始时间排序**（原先是服务端返回顺序）。刻度尺 / 网格层 / 泳道用同一个
+`--lane-label` + `--tick-gutter` 对齐，`formatClock` 固定 24 小时制——图上写 `16:22:44`、
+读数里写 `4:22:44 PM` 就没法互相对照。
+
+**② 概要行结构化**：`.pipeline-summary` 的纯文本混排换成 `.pipeline-facts` 的**带标签事实
+格**（状态 / 阶段 / 提交 / 触发 / 结果，竖线分隔）；计数从一句拼接文本换成四个 chip，失败
+数用 `chip-fail`（语义色的本义用法）。排队原因与 `run.error` 移到 `.pipeline-notes` 整行——
+它们是整句，挤进事实格读不完。
+
+**③ 报告列表按文件收缩**：分组行（parentSuite › suite = 目录 › 文件）可折叠，默认**只展开
+有失败的分组**；搜索/筛选时默认全展开（结果藏在收起的分组里等于没搜到）；「全部展开/收起」
+一个按钮两态。分组读数补失败数标红——收起状态下就能定位到文件。
+
+**④ 列表显示 case 的 title 而不是函数名**：`caseTitle` 的回落链是
+`@allure.title` → docstring 首行（+ 参数化后缀，两条参数化用例的 docstring 相同，不带后缀
+分不出是哪条）→ 函数名。函数名不丢，退成副标题（`caseSubName`）——「去仓库里搜哪个函数」
+需要的正是它。判据是「`name` 去掉参数后缀后是否等于 nodeid 的函数名段」，因为 allure 在
+没有 title 时把 `name` 填成函数名。
+
+**⑤ 展开区不再撑爆页面**：`.report-case-detail[data-scroll]` 限高 62vh 自滚动（只在内容确实
+长时套：步骤 > 12 / 有堆栈 / 有日志附件 / 多个附件），表格因此永远还在视口里；步骤树的
+caret 从**装饰**变成真按钮（`StepNode` 自持 open 状态，整行可点、键盘可达）——原先一个 100
+次迭代的循环步骤永远全展开。
+
+**⑥ 报告内搜索 + 状态筛选**：命中面是标题、nodeid 与分组名（= 文件路径）；状态筛选四值
+（全部/失败/通过/跳过），`failed` 收 broken/unknown/interrupted——它们都是「没通过」。
+allure 表与 junit 降级列表同一套控件与口径，右侧常驻「命中 x / 共 y」。
+
+**⑦ 任务列表主任务补状态与规模**：新增「最近执行」列（最近一条 run 的状态 + 可点 #序号 +
+执行总次数）。`activeRun` 只在有在途 run 时存在，所以跑完的任务收起来后既没有状态也没有
+规模。服务端同一条查询多带一段 LATERAL（`lastRun` / `runTotal`），不额外请求。
+
+**⑧ 任务列表补搜索**：`GET /ci-tasks` 加 `keyword`（`ILIKE` 命中名称 / 描述 / Git 地址），
+前端 300ms 防抖 + 改词回第一页 + 空态给「清空筛选」。就地过滤只筛得到当前页，而「我那条
+任务在第几页」正是要搜索的原因。
+
+**⑩ 步骤日志展示**：allure-pytest 的 `log` / `stdout` / `stderr` 捕获挂在**测试级**附件上，
+原先混在「附件」清单里、还要点一下 `<details>` 才展开。现在拆成「执行日志」块并默认展开
+（`AttachmentView` 的 `defaultOpen`），步骤级的同名附件同样默认展开；截图等其余附件保持
+点开。**并补一条缺席解释**：报告包里一个附件都没有时，页面直接说明原因是任务命令带了
+`--allure-no-capture`（当前 e2e 任务的命令正是如此）——不说的话它读起来就是「平台没收集
+日志」。
+
+**⑪ 失败状态列上色**：状态列从纯文本换成设计系统的 `Status` 原语（点 + 词）。颜色说结论
+（`reportRunStatus`：broken/unknown/interrupted 都是失败色），**词仍用 allure 的原词**
+（错误 / 中断 / 未知）说为什么。junit 降级列表同款。
+
+**明确不做（本批）**
+
+- 用例表不做虚拟化：按文件收缩之后，一屏渲染量由展开的分组决定；真正需要虚拟化的门槛是
+  单文件上千条用例，那时先要的是分页而不是虚拟滚动。
+- 时间轴不做缩放 / 刷选：空档标注 + 整齐刻度已经回答了「哪段慢、哪段空」；缩放要引入一套
+  手势与状态，等真实使用反馈。
+- 不改 `pipeline_run_cases` 的存储形状：标题、docstring、附件名都在 allure 包里，报告视图
+  按需解析（边界 19：不 vendor allure 的展示层，也不把它的字段抄进平台表）。
+- 步骤日志不落库、不进 SSE：它是报告包内的文件，走既有的附件路由按需读。
+
+**实现状态（2026-09-02，十项全部落地）**
+
+- 后端：`routes/ciTasks.ts`（列表 keyword + 第二段 LATERAL + 列表专属 SELECT）、
+  `models/types.ts`（`CiTask.lastRun` / `runTotal` + mapper）。
+- 前端：`PipelineRunPage.tsx`（事实格概要 / 时间轴重画 / 分组折叠 / 标题优先 / 搜索筛选 /
+  步骤可折叠 / 执行日志块）、`CiTaskList.tsx`（搜索 + 最近执行列）、`design-system.css`
+  （`.pipeline-facts` / `.timeline*` 重写 / `.report-grid-cases` / `.col-lastrun` /
+  `.chip-fail`；删 `.pipeline-summary`、`.timeline-wrap`）、`api.ts` / `i18n.ts` 配套
+  （双语各 +18 键、删 1 键）。
+- 分享页（`ShareReportPage`）自动同步：报告主体仍是 `PipelineReportBody` 一份渲染。
+- 缺陷记录：`issue_fix/问题记录-报告与任务列表可读性.md`（③ 的分组折叠属体验改造，其中
+  两项是真缺陷：任务列表 LATERAL 列被 `TASK_SELECT` 的投影吞掉导致 `activeRun` 从未出现、
+  步骤树 caret 只是装饰点不动）。
+
+### 8.17 验收反馈：通道可选 / 通知链接 / 上报记录列 / 用例树×任务报告（2026-09-03）
+
+第四批（当日第二批）反馈七项：三项缺陷（① 接口列表性能、② 容器档 `--storage-opt`
+兼容、⑤ 分享页成员证据）归
+`issue_fix/问题记录-验收20260903-接口列表性能与容器兼容.md`；四项功能调整记在这里。
+
+**③ 容器档通道（命令模式 / Socket 模式）可选**：通道本来就是 Runner 的部署项
+（`APITRACK_RUNNER_DOCKER_TRANSPORT=cli|api`，选的是「这台机器怎么连它本地 daemon」，
+不是任务属性），这一轮补齐「选得见」的三块：Runner 注册自报 `docker_transport`
+（迁移 046，只在容器档可用时报，空串 = 没自报）；Runner 池面板的沙箱列显示
+「container · 命令模式（docker run）/ Socket 模式（Engine API）」；签发 Token 的表单
+加通道选择，部署命令带上对应的 export 行——选择发生在部署那一刻，注册回来即自报
+同一个词。任务配置不参与（任务的 sandbox 只选档位 process/container，通道对任务
+不可见）。
+
+**④ 通知模版支持报告链接**：套件与 CI 任务两套模版（默认模版与自定义模版同款）新增
+`{{reportUrl}}` 占位符——套件指向报告详情页、CI 指向 run 详情页。通知由调度器进程
+投递（没有请求上下文），根地址取 `PUBLIC_BASE_URL`（与 JobSpec 的 `APITRACK_URL`、
+产物直链同一条纪律）；未配置时渲染为站内相对路径（.env.example 与两处模版提示写明）。
+默认模版各加一行「链接 / 详情」。
+
+**⑥ 上报记录明细删三列**：展开 run 后的请求明细表删「状态码 / 耗时 / 状态」——这张表
+回答「哪条用例的哪个请求打到了哪条路径」，执行结论属于仓库侧的报告视图，在这里是
+噪声（用户确认）。
+
+**⑦ 用例树 × 任务报告**：树上的用例行从「SDK 请求桩的推导」升级为「最新任务报告的
+结论」。匹配键 = nodeid 去掉参数化后缀（SDK 的 case_key 这么来，allure 的
+`guessed_case_key` 就是 nodeid；迁移 047 的表达式索引吃这个正则）——**读时关联
+（LATERAL），绝不回写**（边界 13 的「B/C 不回写树」保持：junit 的 `classname::name`
+对不上就显示没有报告，不产生数据变更）。落点：
+
+- 树行：新增「最近任务」列（任务名 #序号，替代删除的「请求数」列，用户确认删除）；
+  状态与「最近执行」优先读 `lastReport`（一次 run 的多条参数化行折成一条：有
+  failed/error 即失败、否则有 skipped 即跳过、否则通过），没有匹配报告行时回退
+  `lastResult` / `lastRunAt`（原 SDK 口径）。未归位分组同款。
+- 用例抽屉（点用例行）新增三块：**最新任务报告**（任务/序号/状态/耗时/失败信息，
+  树上状态列的出处）；**用例内步骤**（报告包里的 allure 步骤树，复用 run 详情页的
+  `StepTree`；junit-only 没有包，写明原因）；**请求序列**（那次 run 的 SDK 上报按
+  seq 排序，从哪个接口下点开就高亮打到该接口的请求行——`.report-step-hit` 左缘
+  accent 选中态——回答「该接口所在的步骤」）。
+- 服务端：`GET /repo-cases`（树）、`/repo-cases/unplaced`、`/repo-cases/:caseId`
+  三处接同一段 `LATEST_REPORT_LATERAL`（单一正则出处，与迁移 047 逐字相同）；单用例
+  路由另带报告包步骤树（`reportPayload` 的同一个装载器与缓存）与请求序列（上限 200）。
+
+**实现状态（2026-09-03，落地）**：迁移 046（runners.docker_transport）与 047
+（pipeline_run_cases 归一 key 表达式索引）；服务端 `runners.ts`（注册收
+docker_transport）、`alerts.ts`（reportUrl + 默认模版行）、`ingest.ts`（三路由的
+LATERAL + latestReport 拼装）、`reportShares.ts`（公开证据三端点，见 issue_fix ⑤）；
+Runner 侧 `registry.ts`/`client.ts` 自报通道、`executor/container/{runtime,cli,api}.ts`
+的 storage-opt 降级（见 issue_fix ②）；前端 `RunnerPoolPanel.tsx`（通道选择 + 池显示）、
+`SuiteWorkspace.tsx`/`CiTaskEditor.tsx` 的模版提示文案、`IngestRuns.tsx`（删列）、
+`RepoCaseTree.tsx`（列替换 + 抽屉改版）、`EndpointList.tsx`（见 issue_fix ①）、
+`SuiteReports/SuiteRunDrawer/FlowRunDrawer/NestedStepList/ShareReportPage`（shareToken
+贯通，见 issue_fix ⑤）、i18n 两语言。`pnpm check` / 构建与手工验收按惯例留给用户。
+
+### 8.18 P4.5 验收结论（2026-09-03）
+
+**用户验收通过**（P4.5-1 ~ P4.5-15 全量，含 8.9 验收门槛 21 项、8.13 ~ 8.17 的
+报告体验改版 / 分享 / 可读性 / 幂等口径 / 树×报告 / 通道可选 / 通知链接等验收后增量）。
+验收期间发现的缺陷已全部修复并归档至 `issue_fix/`（索引见 `issue_fix/README.md`），
+其中同日落地并复验的关键项：产物直传全链路（五缺陷叠加）、`/ingest` 迁移 045/048
+约束形态与按 commit 折行（049 三列键失守）、树×报告匹配键形态（allure fullName
+逆变换）、勾选执行键形不匹配致全量跑、容器档取消不杀容器（含心跳间隔 30s → 5s）、
+容器档 `--storage-opt` 兼容降级、接口列表 254KB 拉取、分享页成员证据三端点、
+SDK xdist 多进程重复上报。P4.5 至此收口，进入 P5（MCP 对外暴露）。
+
+### 8.17 验收 2026-09-03 第二批（一缺陷一口径两交互）
+
+**① 树×报告匹配键形态缺陷**：allure-pytest 的 `fullName` 是 `pkg.Mod#test`（点号 + `#`），
+不是 nodeid 的 `path/to.py::test`——迁移 047「guessed_case_key 就是 nodeid」的假设不成立，
+读时关联永远匹配不上。修法两侧且**绝不回写**：Runner 侧 `normalizeFullName` 把带 `#` 的
+fullName 逆变换回 nodeid 形态（新上报直接命中 047 索引）；服务端 `LATEST_REPORT_LATERAL`
+加历史行兼容分支（`LIKE '%#%'` 门 + 同一个逆变换，读时做）。junit 的 `classname::name`
+best-effort 语义不变。
+
+**② 通过率口径（用户改口径）**：= **passed / (passed + failed)**，跳过不进分母——被
+skip 的用例没有给出结论。error（allure broken/unknown）已算失败：Runner 映射、
+`completePipelineRun` 计数、树侧 LATERAL 判定三层一致，本轮未再动。落点三处：run 详情
+页 `judgedCount`、报告列表 UNION 两侧 `pass_rate`（守卫条件同步改，全 skip 读 null）、
+趋势/汇总/dashboard 原本就是这个口径。
+
+**③ 任务编辑页保存体验（对齐套件编辑）**：表单快照 canonical 对比出 dirty；nav guard
+离开确认；标题旁 `chip-warn`「未保存 · ⌘S 保存」；`Cmd/Ctrl+S` 保存（拦浏览器对话框）；
+保存成功与「新建调度」静默保存后快照刷新使 dirty 失效（后者原地路由切换另需显式清
+guard）。`RepoPageHead.title` 放宽为 `ReactNode`。
+
+**④ 任务列表在途展示**：名字列删掉在途标签（状态词 + #序号）；「最近执行」列优先显示
+在途 run（并行多条 hover 说全 + 执行总次数），无在途回落最近结论。
+
+缺陷细节归 `issue_fix/问题记录-P4.5验收20260903第二批.md`。
+
+### 8.16 上报幂等口径变更：按 commit 折行（2026-09-03）
+
+用户改口径：同一 commit 的每次执行都新增一行 `ingest_runs` 不可接受（实测一个 commit
+报 8 次、`ingest_records` 翻 8 倍，长期会肿胀）。快照语义以 commit 为单位——同 commit
+的重复执行不改变快照内容，只更新「最近什么时候跑的、结果是什么」。
+
+**口径**：`/ingest` 幂等键折成 `(repository, commit)`——插入侧 `ci_run_id` 按 `''`
+参与冲突判定，同 commit 任意上报（不管来自哪次 CI 执行）都命中同一行；列保留
+「最近一次上报的 CI 来源」。新列 `ci_execution_count` 记该 commit 在 CI 上的执行
+次数（run id 变了才 +1；同一执行的重试/重投不推；SDK 直跑不推——数执行不数调用）。
+
+**缝合链路调整**：`completePipelineRun` / `abortPipelineRunAfterLease` 对
+`pipeline_runs.ingest_run_id` 的反查从 `ci_run_id = run.id` 改为
+`(project, commit_sha)`——折行后同一 ingest 行被同 commit 的多条 run 共享；
+`markCaseFilterNotRun` 的 `last_ingest_run_id` 判据语义不变（所有上报推同一行）。
+`APITRACK_CI_RUN_ID` 仍注入用户脚本（SDK 需要它报执行来源），但不再是幂等键。
+
+**实现（迁移 045）**：旧行就地合并——留最早那行（diff 定局），`execution_index`
+行先删同组多余再改指保留行（防撞 `UNIQUE(kind, detail_id)`），
+`repo_test_cases.last_ingest_run_id`、`repo_case_endpoints` 的 run 引用折到保留行，
+其余行删除（`ingest_records` 的 CASCADE 收回翻倍数据：350 → 69 行）。本机 dev 库
+16 行折成 4 行，计数按最新快照回填。
+
+**前端**：`IngestRuns.tsx` 原 `ciRunId` 展示位改为「执行 N 次」
+（`repoCases.ciExecutionCount`），i18n 两语言。缺陷记录归
+`issue_fix/问题记录-P4.5报告体验验收第三批.md` ⑥（含改口径前后的完整推理）。
+
+### 8.15 报告体验验收第三批（2026-09-02，七项）
+
+第三批反馈：四项缺陷（① 日志/附件一直「正在加载」、③ 失败计数对不上、④ 产物大小全
+0 B）、三项交互调整（② case 明细改抽屉、⑤ 报告默认全收起、⑦ 最近执行列后移），加一项
+疑问（⑥ 上报幂等口径，初判为符合设计；2026-09-03 用户改口径，处置移至 8.16）。缺陷细节
+归 `issue_fix/问题记录-P4.5报告体验验收第三批.md`，这里只记交互决策。
+
+**② case 明细从下拉展开改为抽屉**：报告用例表与 junit 降级列表的行点击不再展开内嵌
+`detail-row`，改为 antd `Drawer`（760/640 宽，标题 = case title，`extra` 放 `Status`）。
+展开行会把后面的行推走、收起后滚动位置回不来；抽屉体自滚动，列表保持原位。原
+`data-scroll` 限高方案（8.14 ⑤）随之删除——抽屉体就是那个滚动容器。
+
+**⑤ 报告进入时全部分组收起**：8.14 ③ 的「有失败的分组默认展开」撤销——失败数在收起
+行上已有红字读数，展开哪个文件由人决定；搜索/筛选时仍默认全展开（结果藏在收起的分组
+里等于没搜）。
+
+**⑦ 任务列表列序**：「最近执行」列从名字列后移到「执行分区 / 超时」之后——配置列读
+完了再读结论。
+
+**⑥ 上报幂等口径**：初判为符合设计（幂等键 `(repository, commit, ci_run_id)`，
+commit 只去重同一次 CI run 的重投）。2026-09-03 用户改口径（同 commit 不该每次都
+入库、数据会肿胀），改为按 commit 折行——见 8.16。
+
+**实现状态（2026-09-02，落地）**
+
+- 缺陷侧（见 issue_fix 记录）：`allureReport.ts` 附件引用改带 `source`（zip 内实体名）；
+  迁移 044 `pipeline_run_cases.external_id` + 唯一键加宽，`completePipelineRun` 计数把
+  `error` 归入失败；`runners.ts` 产物上传落库读 `guard.bytesWritten`；前端
+  `AttachmentView` 去掉丢弃在途响应的 `alive` 旗子、`loadAttachment` useCallback 固定
+  身份（详情页与分享页两处）。
+- 交互侧：`PipelineRunPage.tsx`（抽屉 / 默认收起）、`CiTaskList.tsx`（列序）、
+  `design-system.css`（删 `data-scroll` 规则）、`api.ts`（`AllureReportAttachment`）。
+- Runner：`report/allure.ts` 上报 `external_id`（结果文件 uuid）。
+- 本机 dev 库已把现存 artifacts 行的 `size_bytes` 按磁盘文件回填（一次性数据修正，代码
+  不含迁移逻辑）。
+
 
 ---
 
@@ -3520,6 +5678,12 @@ mcp_tool_calls     (id, flow_execution_id, tool_name, args JSONB, result JSONB)
 - 执行历史归档 (分区表)
 - 大响应体截断 + 对象存储 (MinIO/S3)
 - 查询缓存 (Redis)
+
+> **对象存储抽象已于 P4.5 提前落地**（`lib/objectStore.ts`，`fs` + `s3` 两驱动，见 8.4）。
+> 本节剩下的是另外两件：**执行历史归档（分区表）** 与 **大响应体截断**。后者不是「把
+> `response_body` 搬进对象存储」这么一步——它是一次**口径变更**（多长算大？截断后详情页
+> 显示什么？历史行怎么算？），必须连着归档策略一起想，因此 P4.5 一个字都没改
+> `executions.response_body`（8.0 边界 14）。
 
 ### 10.2 插件机制
 
@@ -3553,6 +5717,7 @@ mcp_tool_calls     (id, flow_execution_id, tool_name, args JSONB, result JSONB)
 | P2-7 | `oracledb` + `@types/oracledb` **已装** | Oracle 驱动，thin 模式（包不自带类型声明） |
 | P2-7 | `mongodb` **已装**    | MongoDB 驱动     |
 | P3   | `cron-parser` **已装**（bullmq 传递依赖，显式提为直接依赖） | Cron 解析与下次执行时间 |
+| P4.5 | `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` | 产物对象存储（MinIO/S3）；按需 `import()`，不进启动路径 |
 | P5   | `@fastify/swagger`    | OpenAPI 文档生成 |
 
 > 说明: P1-3 的执行进度推送用 **SSE**(`reply.hijack()` + `text/event-stream`)实现,
@@ -3595,7 +5760,7 @@ mcp_tool_calls     (id, flow_execution_id, tool_name, args JSONB, result JSONB)
 | M2     | P2      | 数据源 + 流程节点补全 + 套件 + Mock | 数据源可连可跑命名 SQL；流程支持脚本/条件/数据库节点与并行；可批量执行 + 模拟响应 |
 | M3     | P3      | 套件调度 + Webhook 触发 + 套件执行报告 + 告警 + 趋势 | 定时执行（漏跑不补但留痕）+ HMAC 触发 + 报告名 `套件名_日期` 且带触发源与耗时 + 失败通知 + 趋势图 |
 | M4     | P4      | 仓库用例上报 + `apitrack-sdk` | 既有 pytest 仓库「装包 + 两个环境变量 + 原样跑」即可让用例挂上覆盖树；范围级对账不误删 |
-| M5     | P4.5    | Runner                   | 可拉取代码执行并查看结果                         |
+| M5     | P4.5    | 自研 Runner + CI 任务 + 勾选执行 + 调度通知 | 自托管 Runner 只出站 443 即可拉代码执行；日志实时可看、可取消、掉线判 `aborted`；树上勾选可触发；任务可定时跑、终态可通知、同任务串行不踩数据 |
 | M6     | P5      | 平台 MCP 对外暴露        | 外部可通过 MCP 创建接口/用例/DAG (统一上线) |
 | M7     | P6      | 性能 + 插件              | 支持 1000+ 并发执行                              |
 

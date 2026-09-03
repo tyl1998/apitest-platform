@@ -119,6 +119,22 @@ start_one web       "$WEB" pnpm dev -- --host 0.0.0.0 --port 5173
 #
 #   WORKER_LABELS=default,prod-dmz pnpm worker
 
+# Runner（P4.5，仓库任务的执行端）：**本脚本同样不自动拉起**，理由与上面那段一致 ——
+# Runner 跑的是用户仓库里的脚本，通常部署在另一台机器上（进程档与 Runner 同文件系统，
+# 见计划 8.5 的信任声明）。它与 worker 是两回事：worker 直连 Redis + Postgres 跑平台
+# 内部的接口/流程/套件；Runner **只出站 HTTPS 到本平台的 API**，平台永不反向连接它。
+#
+#   # 那台机器上（只需要能出站访问下面这个 URL，不需要开任何入站端口）
+#   cd apitest-runner
+#   cp .env.example .env    # 填 APITRACK_RUNNER_URL / _TOKEN / _LABELS
+#   ./start.sh              # start | fg | stop | restart | status
+#
+# 注册 Token 在「系统设置 → Runner」页签发（那里也给这份部署命令，可一键复制）。
+# 本机想临时起一台跑通链路（进程档够用；容器档还要本机有 docker）：
+#
+#   cd apitest-runner && APITRACK_RUNNER_URL=http://localhost:3000 \
+#     APITRACK_RUNNER_TOKEN=apirunner_xxx APITRACK_RUNNER_LABELS=default ./start.sh fg
+
 wait_port() {
   local name="$1" port="$2" log="$3" waited=0
   until lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; do

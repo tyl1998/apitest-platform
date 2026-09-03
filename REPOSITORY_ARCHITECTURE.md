@@ -81,6 +81,7 @@ apitest-server/
 │   │   ├── scheduler/    # Cron 调度 (分布式锁 / 单主选举)
 │   │   ├── ingestion/    # 上报接口 + 合并·去重·删除对账 + 覆盖计算
 │   │   ├── orchestrator/ # Runner 任务派发 / 心跳 / 日志流 / 报告归一化
+│   │   │                 # P4.5-13: allure-results 包的读取/解析/缓存 + 附件下载
 │   │   ├── mock/         # Mock 服务
 │   │   └── report/       # ExecutionIndex 查询 / 趋势 / 告警
 │   ├── worker/           # 接口模式执行引擎 (BullMQ Worker)
@@ -90,7 +91,7 @@ apitest-server/
 │   ├── shared/           # 领域类型 / DTO / 错误码 / 枚举
 │   │   └── contracts/    # ★ 跨仓协议契约 (见第 3 章)
 │   ├── db/               # schema + migrations
-│   ├── report-parser/    # JUnit / Allure 解析归一化 (api 与 worker 共用)
+│   ├── report-parser/    # JUnit / Allure 解析归一化 (api 与 worker 共用; P4.5-13 后报告视图解析在 orchestrator 侧)
 │   └── cli/              # api-auto CLI
 └── deploy/               # Dockerfile / K8s manifests / compose
 ```
@@ -105,6 +106,7 @@ apitest-server/
 | 接口模式执行 | DAG 引擎、HTTP/脚本/数据库/MCP 节点、断言 |
 | **上报接收** | 唯一上报接口、Token 鉴权、仓库绑定校验、快照对账 |
 | **Runner 编排** | Worker 注册/心跳/存活判定、任务派发、日志流中转、报告归一化 |
+| **报告视图自渲染** | allure-results 包的读取 (零依赖 zip 解析) / 归一化 / 5 分钟缓存 / 按归属鉴权的附件下载——不跑 allure-cli、不托管其静态站 (P4.5-13 边界 19) |
 | 统一报表 | 维护 `ExecutionIndex`，供报告监控与统计下钻查询 |
 | 覆盖计算 | path 归一匹配、覆盖率与未覆盖清单 |
 
@@ -129,8 +131,8 @@ apitest-web/
 │   │   ├── testcase/     # 用例 / 套件
 │   │   ├── scenario/     # 场景编排
 │   │   ├── flow/         # DAG 编辑器 (React Flow)
-│   │   ├── repo-cases/   # 仓库用例树 / 接入指引 / 上报记录
-│   │   ├── ci-task/      # CI 任务 / 执行详情(SSE 日志) / Worker 池
+│   │   ├── repo/         # 仓库模式一个入口五个标签：任务 / 用例树 / 上报记录 / 未匹配诊断 / 凭据
+│   │   ├── ci-task/      # 仓库任务执行详情(SSE 日志) / Runner 池（任务列表本身在 repo/ 下）
 │   │   ├── datasource/ mock/ mcp/
 │   │   ├── report/       # 报告监控 / 趋势
 │   │   └── schedule/
@@ -216,10 +218,13 @@ apitest-runner/
 │   │   ├── runner.ts     # 写脚本文件 → spawn → 退出码落盘
 │   │   └── sandbox.ts    # 容器隔离 / 资源限额 / kill 进程树
 │   ├── streamer.ts       # stdout/stderr 增量日志上报 (offset)
-│   ├── uploader.ts       # 报告/产物上传 (pre-signed URL)
+│   ├── uploader.ts       # 产物上传 (pre-signed URL)
+│   ├── reportBundle.ts   # allure-results 整目录打 zip → kind='report' 产物 (P4.5-13)
+│   ├── report/           # junit XML / allure JSON 解析 → complete 的 cases[]
+│   │   └── zip.ts        # 零依赖 zip 写入器 (STORE/DEFLATE, CRC32 查表)
 │   ├── masker.ts         # secret 日志脱敏
 │   └── proxy/            # 零侵入覆盖率捕获代理 (HTTP_PROXY + CA)
-├── images/               # 基础运行镜像 (python/node/git/allure)
+├── images/               # 基础运行镜像 (python/node/git)
 └── Dockerfile
 ```
 
@@ -230,6 +235,9 @@ apitest-runner/
 - 执行**不可信用户代码**：rootless 容器、资源限额、出站白名单（禁访平台内网/DB/云元数据 `169.254.169.254`）。
 - **退出码落盘**，保证崩溃重启后可判定任务真实状态。
 - 独立 semver，需维护与平台的**协议兼容矩阵**。
+- **报告渲染在平台侧**（P4.5-13 边界 19）：Runner 只负责解析 allure-results 的结构化
+  JSON（timeline 数据随 `complete` 上报）与整目录打 zip 走产物线，**不装 allure-cli、
+  不跑 `allure generate`**——镜像里没有 Java，报告视图由平台用自己的 UI 渲染。
 
 ---
 

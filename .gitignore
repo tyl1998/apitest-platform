@@ -4,7 +4,7 @@ apitest-server/
 apitest-web/
 apitrack-sdk-python/
 apitest-e2e-python/
-apitest-e2e-python/
+apitest-runner/
 # 运行时产物
 .dev-logs/
 .dev-pids

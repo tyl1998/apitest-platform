@@ -638,6 +638,14 @@ ctx.setVariable("requestNonce", nonce);
 
 > **决策**: 放弃集成 Jenkins，改为平台自研轻量 **Runner (执行 Worker)**。理由：彻底消除 Jenkins 版本/插件差异、能力探测、`config.xml` 镜像、日志接口降级等一整类兼容负担；执行协议由平台自己定义与版本化。
 
+> **P4.5-14 落地修订（2026-09-01，见开发计划 8.11）**：任务在界面与数据模型上叫**仓库任务**，
+> 且**自带 `git_url` 与一个可空的项目级凭据引用**——本节 c) 里 JobSpec 的 `repo{ssh_url, deploy_key}`
+> 落地为 `repo{clone_url, clone_method, credential}`，来源是任务行 + `git_credentials` 表，而不是
+> 仓库绑定行（那张表只由上报创建，拿它当 clone 来源会要求「先跑一次 CI 才能配 CI」）。
+> 同时**收窄了三处配置**：`secrets[]` 平台侧恒为空（任务级 secret 撤销，代价是 e) 的 masking
+> 失去词表输入，只剩 clone 凭据）、`report_paths[]` 由任务命令里的 `--alluredir` 解析而不是
+> 独立配置项、产物路径撤销（allure-results 的打包上传是平台自己的行为）。
+
 **Runner 只需具备四项核心能力**: ① 沙箱运行脚本 ② SSH 拉取代码 ③ 状态回调 ④ 报告/产物上传。
 
 ##### a) 执行模式 (两种，默认常驻)
@@ -1392,6 +1400,10 @@ IngestCaseResult               # 上报式: 某次 run 中某个 case 的结果 
 | GET | /projects/:id/repository | 查看本项目唯一仓库 (未绑定返回空) |
 | PUT | /projects/:id/repository | 绑定/更换仓库 (换绑需项目管理员显式确认) |
 | DELETE | /projects/:id/repository | 解绑仓库 |
+| GET | /projects/:id/git-credentials | 项目级 Git 拉取凭据列表 (P4.5-14；只回名字/方式/更新时间/被引用数) |
+| POST | /projects/:id/git-credentials | 新建凭据 (明文只写不读) |
+| PUT | /projects/:id/git-credentials/:cid | 改名或整条替换凭据 (明文缺省=不换) |
+| DELETE | /projects/:id/git-credentials/:cid | 删除凭据 (被任务引用时 409 并回引用清单，无 force) |
 | GET | /workers | Worker 列表 (在线状态/负载/labels，系统管理员) |
 | POST | /workers | 生成 Worker 注册 Token |
 | DELETE | /workers/:id | 下线/移除 Worker |
