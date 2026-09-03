@@ -95,11 +95,11 @@ export async function notificationChannelRoutes(app: FastifyInstance) {
   });
 
   /**
-   * 引用了这个渠道的告警规则（UUID[] 无外键，靠 containment 查）与套件通知配置
-   * （P3-11：notify_config.channelIds 同样无外键）。
+   * 引用了这个渠道的告警规则（UUID[] 无外键，靠 containment 查）、套件通知配置
+   * （P3-11：notify_config.channelIds 同样无外键）与仓库任务通知配置（P4.5-12，同款形状）。
    *
    * 删除语义与 environments 的 usage 扫描同款：先 409 给清单，?force=true 才执行。
-   * force 顺带把两边配置里的悬空 id 摘掉——留着它，规则页/套件页会显示一个再也
+   * force 顺带把三处配置里的悬空 id 摘掉——留着它，规则页/套件页/任务页会显示一个再也
    * 打不开的渠道。
    */
   app.delete<{ Params: { id: string; channelId: string }; Querystring: { force?: string } }>("/api/v1/projects/:id/notification-channels/:channelId", async (request, reply) => {
@@ -117,28 +117,39 @@ export async function notificationChannelRoutes(app: FastifyInstance) {
           AND (notify_config->>'onSuccess' = 'true' OR notify_config->>'onFailure' = 'true')`,
       [context.project.id, request.params.channelId],
     );
-    if ((referencing.rowCount || referencingSuites.rowCount) && request.query.force !== "true") {
+    /* 仓库任务侧同一条判据（P4.5-12）：`ci_tasks.notify_config` 与套件那一列形状逐字相同。 */
+    const referencingTasks = await pool.query(
+      `SELECT id, name FROM ci_tasks
+        WHERE project_id = $1 AND notify_config->'channelIds' @> to_jsonb(ARRAY[$2]::uuid[])
+          AND (notify_config->>'onSuccess' = 'true' OR notify_config->>'onFailure' = 'true')`,
+      [context.project.id, request.params.channelId],
+    );
+    if ((referencing.rowCount || referencingSuites.rowCount || referencingTasks.rowCount) && request.query.force !== "true") {
       const rules = referencing.rows.map((row) => ({ id: String(row.id), name: String(row.name) }));
       const suites = referencingSuites.rows.map((row) => ({ id: String(row.id), name: String(row.name) }));
-      return reply.code(409).send({ code: 2003, message: "notification channel is referenced by alert rules or suite notifications", data: { rules, suites } });
+      const ciTasks = referencingTasks.rows.map((row) => ({ id: String(row.id), name: String(row.name) }));
+      return reply.code(409).send({ code: 2003, message: "notification channel is referenced by alert rules, suite notifications or CI task notifications", data: { rules, suites, ciTasks } });
     }
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       await client.query("UPDATE alert_rules SET channel_ids = array_remove(channel_ids, $1::uuid) WHERE project_id = $2 AND channel_ids @> ARRAY[$1]::uuid[]", [request.params.channelId, context.project.id]);
-      /* 套件通知的 channelIds 是 JSONB 数组（jsonb_agg 重建，空集写 '[]'），与
-         alert_rules 的 UUID[] 是两种摘法——同一条事务里各自做对。 */
-      await client.query(
-        `UPDATE test_suites SET notify_config = jsonb_set(notify_config, '{channelIds}',
-            COALESCE((
-              SELECT jsonb_agg(entry.channel ORDER BY entry.ord)
-                FROM jsonb_array_elements(notify_config->'channelIds')
-                     WITH ORDINALITY AS entry(channel, ord)
-               WHERE entry.channel <> to_jsonb($1::uuid)
-            ), '[]'::jsonb), true)
-          WHERE project_id = $2 AND notify_config->'channelIds' @> to_jsonb(ARRAY[$1]::uuid[])`,
-        [request.params.channelId, context.project.id],
-      );
+      /* 套件与任务通知的 channelIds 是 JSONB 数组（jsonb_agg 重建，空集写 '[]'），与
+         alert_rules 的 UUID[] 是两种摘法——同一条事务里各自做对。两张表的语句只差表名，
+         循环而不是抄两遍：表名来自代码里的字面量数组，不是输入。 */
+      for (const table of ["test_suites", "ci_tasks"] as const) {
+        await client.query(
+          `UPDATE ${table} SET notify_config = jsonb_set(notify_config, '{channelIds}',
+              COALESCE((
+                SELECT jsonb_agg(entry.channel ORDER BY entry.ord)
+                  FROM jsonb_array_elements(notify_config->'channelIds')
+                       WITH ORDINALITY AS entry(channel, ord)
+                 WHERE entry.channel <> to_jsonb($1::uuid)
+              ), '[]'::jsonb), true)
+            WHERE project_id = $2 AND notify_config->'channelIds' @> to_jsonb(ARRAY[$1]::uuid[])`,
+          [request.params.channelId, context.project.id],
+        );
+      }
       const deleted = await client.query("DELETE FROM notification_channels WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.channelId, context.project.id]);
       await client.query("COMMIT");
       if (!deleted.rowCount) return fail(reply, 404, 2001, "notification channel not found");

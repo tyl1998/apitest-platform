@@ -273,6 +273,7 @@ const DEFAULT_SUITE_TEMPLATE = {
     "通过率: {{passRate}} · 耗时: {{duration}}",
     "触发: {{trigger}}",
     "报告: {{reportName}}",
+    "链接: {{reportUrl}}",
     "时间: {{finishedAt}}",
   ].join("\n"),
 };
@@ -281,6 +282,19 @@ const DEFAULT_SUITE_TEMPLATE = {
 function humanDuration(ms: number | undefined): string {
   if (ms === undefined || ms === null) return "—";
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+}
+
+/**
+ * 通知里的报告直链（2026-09-03：模版支持 `{{reportUrl}}`）。
+ *
+ * 通知由调度器进程投递（订阅终态事件），那里没有 HTTP 请求上下文，根地址只能来自
+ * `PUBLIC_BASE_URL`（与产物直链 / JobSpec 的 APITRACK_URL 同一条纪律）。未配置时回
+ * **相对路径**：站内路由是确定的，缺的只是域名那一半——写一句「配 PUBLIC_BASE_URL
+ * 就有完整链接」比悄悄吞掉占位符可排查。
+ */
+function reportUrl(path: string): string {
+  const base = process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, "");
+  return base ? `${base}${path}` : path;
 }
 
 /**
@@ -328,6 +342,7 @@ export async function notifySuiteResult(event: Extract<ExecutionEvent, { kind: "
     total: String(event.total),
     duration: humanDuration(row.duration_ms === null || row.duration_ms === undefined ? undefined : Number(row.duration_ms)),
     reportName: row.report_name ? String(row.report_name) : "—",
+    reportUrl: reportUrl(`/projects/${event.projectId}/suite-reports/${event.suiteExecutionId}`),
     trigger: row.trigger_source === "scheduled" || row.trigger_source === "webhook" || row.trigger_source === "ci"
       ? `${TRIGGER_LABEL[String(row.trigger_source)] ?? String(row.trigger_source)}「${row.trigger_ref_name ?? "?"}」`
       : "手动",
@@ -336,6 +351,99 @@ export async function notifySuiteResult(event: Extract<ExecutionEvent, { kind: "
   const message: AlertMessage = {
     title: renderTemplate(notify.template?.title || DEFAULT_SUITE_TEMPLATE.title, values),
     lines: renderBody(notify.template?.body || DEFAULT_SUITE_TEMPLATE.body, values),
+  };
+
+  await dispatchAlert({
+    projectId: event.projectId,
+    executionIndexId: event.executionIndexId,
+    channels,
+    message,
+  });
+}
+
+/* ── 仓库任务级结果通知（P4.5-12，8.7 的范围扩项）────────────────── */
+
+/**
+ * 默认模版。占位符换成 CI 语境（没有「报告名」——CI 的报告是 run 详情页本身；多出
+ * `runNumber` / `gitRef` / `commitSha`，那三个是「跑的是哪一版代码」的答案；
+ * `reportUrl` 直指 run 详情页——2026-09-03 起与套件模版同款支持报告链接）。
+ */
+const DEFAULT_CI_TASK_TEMPLATE = {
+  title: "【接口自动化】任务「{{taskName}}」#{{runNumber}} {{status}}",
+  body: [
+    "结果: {{status}} · 通过 {{passedCount}}/{{total}} · 失败 {{failedCount}} · 跳过 {{skippedCount}}",
+    "代码: {{gitRef}} @ {{commitSha}}",
+    "耗时: {{duration}}",
+    "触发: {{trigger}}",
+    "详情: {{reportUrl}}",
+    "时间: {{finishedAt}}",
+  ].join("\n"),
+};
+
+/**
+ * pipeline run 终态事件 → 按任务自己的通知配置投递。
+ *
+ * 与 `notifySuiteResult` 是同一件事在第二种目标上的同一个答案，所以除了「事实从哪张表取」
+ * 与「文案里说什么」之外一行不同：开关语义、渠道来源、模版覆盖、投递证据（`rule_id` 为空）
+ * 全部复用。订阅点也共用（`scheduler.ts` 那一条），因此 `complete` 与租约回收（abort）两条
+ * 终态路径**自动都覆盖**，不必各插一次通知调用。
+ *
+ * 终态口径：
+ * - `canceled` **不通知**（与套件同款：用户动作不是执行结果）。
+ * - `aborted` / `timed_out` **要通知**，归一成失败文案——「机器没了」与「跑超时了」正是最
+ *   需要有人知道的两种结局；run 行上的原状态保留，通知里说的是 `status` 占位符渲染出的
+ *   那个词，两者不冲突。
+ */
+export async function notifyPipelineResult(event: Extract<ExecutionEvent, { kind: "pipeline" }>): Promise<void> {
+  const CI_TERMINAL_STATUS: Record<string, string> = {
+    success: "成功", failed: "失败", aborted: "中断（Runner 失联）", timed_out: "超时",
+  };
+  const label = CI_TERMINAL_STATUS[event.status];
+  if (!label) return;
+
+  /* 事实一次取齐：任务配置 + 计数 + 代码版本 + 触发者 + 耗时。ci_task_id 是 NOT NULL 且
+     级联删除，所以任务行在则 run 在——join 不中只可能是删除竞态，跳过即可。 */
+  const found = await pool.query(
+    `SELECT t.notify_config, t.name AS task_name,
+            pr.run_number, pr.git_ref, pr.commit_sha, pr.case_total, pr.passed_count,
+            pr.failed_count, pr.skipped_count, pr.trigger_source, pr.trigger_ref_name,
+            EXTRACT(EPOCH FROM (pr.finished_at - COALESCE(pr.started_at, pr.claimed_at))) * 1000 AS duration_ms
+       FROM pipeline_runs pr JOIN ci_tasks t ON t.id = pr.ci_task_id
+      WHERE pr.id = $1 AND pr.project_id = $2`,
+    [event.pipelineRunId, event.projectId],
+  );
+  if (!found.rowCount) return;
+  const row = found.rows[0];
+
+  const notify = normalizeSuiteNotify(row.notify_config);
+  const wanted = event.status === "success" ? notify.onSuccess : notify.onFailure;
+  if (!wanted) return;
+  if (!notify.channelIds.length) return;
+
+  const channels = await loadChannels(event.projectId, notify.channelIds);
+  if (!channels.length) return;
+
+  const values = {
+    taskName: String(row.task_name),
+    runNumber: String(Number(row.run_number)),
+    status: label,
+    passedCount: String(Number(row.passed_count)),
+    failedCount: String(Number(row.failed_count)),
+    skippedCount: String(Number(row.skipped_count)),
+    total: String(Number(row.case_total)),
+    duration: humanDuration(row.duration_ms === null || row.duration_ms === undefined ? undefined : Number(row.duration_ms)),
+    gitRef: String(row.git_ref ?? "—"),
+    /* 短 sha：群里没人读 40 位。clone 之前失败的 run 这一列是空串，读成「—」。 */
+    commitSha: row.commit_sha ? String(row.commit_sha).slice(0, 8) : "—",
+    reportUrl: reportUrl(`/projects/${event.projectId}/pipeline-runs/${event.pipelineRunId}`),
+    trigger: row.trigger_source === "scheduled" || row.trigger_source === "webhook" || row.trigger_source === "ci"
+      ? `${TRIGGER_LABEL[String(row.trigger_source)] ?? String(row.trigger_source)}「${row.trigger_ref_name ?? "?"}」`
+      : "手动",
+    finishedAt: clock(),
+  };
+  const message: AlertMessage = {
+    title: renderTemplate(notify.template?.title || DEFAULT_CI_TASK_TEMPLATE.title, values),
+    lines: renderBody(notify.template?.body || DEFAULT_CI_TASK_TEMPLATE.body, values),
   };
 
   await dispatchAlert({

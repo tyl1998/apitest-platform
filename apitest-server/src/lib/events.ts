@@ -21,7 +21,14 @@ export type ExecutionEvent =
   | { kind: "flow"; projectId: string; flowExecutionId: string; executionIndexId?: string; status: string; total: number; successCount: number; failedCount: number; skippedCount: number }
   /* 套件父记录的进度（P2-4）。成员级进度不需要新事件：一个成员就是一次独立执行，
      它自己已经在流上发 execution / flow 事件，这一条只描述父级计数与终态。 */
-  | { kind: "suite"; projectId: string; suiteExecutionId: string; executionIndexId?: string; status: string; total: number; successCount: number; failedCount: number; skippedCount: number };
+  | { kind: "suite"; projectId: string; suiteExecutionId: string; executionIndexId?: string; status: string; total: number; successCount: number; failedCount: number; skippedCount: number }
+  /* CI pipeline run 的状态变化（P4.5-4，计划 8.6）。`claimed` / `running` / `cancelling`
+     与五个终态都走这一条；`executionIndexId` 在归一行落库后才有。 */
+  | { kind: "pipeline"; projectId: string; pipelineRunId: string; executionIndexId?: string; status: string; stage?: string }
+  /* pipeline run 的日志水位推进（P4.5-4）。**日志内容不进事件体**（8.6：与「事件不带
+     响应体」同一条纪律，避免 Redis pub/sub 里流过几十 MB 日志）——前端收到后按
+     `logBytes` 走 `GET …/pipeline-runs/:id/logs?offset=` 拉增量。 */
+  | { kind: "pipelineLog"; projectId: string; pipelineRunId: string; logBytes: number };
 
 let publisher: ReturnType<typeof createRedis> | undefined;
 

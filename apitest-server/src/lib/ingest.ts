@@ -450,23 +450,41 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
     /* 幂等键命中就走合并分支：同一行 run 被更新，records 靠 UNIQUE(run, seq) 去重。
        `xmax = 0` 是 Postgres 上区分「这一行是 INSERT 还是 ON CONFLICT 走了 UPDATE」的惯用
        写法：新插入的行事务里没有前一个版本，xmax 为 0。下面的 diff 计数要用它——重投不该
-       重写「这次上报新增了几条用例」这个已经定局的事实。 */
+        重写「这次上报新增了几条用例」这个已经定局的事实。
+       键 = (repository, commit)（迁移 049 折形）：045 曾把键留在三列上、靠「插入值写 ''」
+       折形，但 UPDATE 分支把真值写回键列（`COALESCE(NULLIF($15,''),…)`）——第 1 次建行、
+       第 2 次命中合并且键列变真值、第 3 次起 `''` 再也匹配不上 → 同 commit 每两次上报
+       溢出一行（dev 库 c1f4d1ba 实测 2 行）。键里删掉 `ci_run_id` 列本身才是折形；
+       列保留为纯展示语义「最近一次上报来自哪次 CI 执行」，不参与任何唯一性。 */
     const runId = randomUUID();
     const run = await client.query(
       `INSERT INTO ingest_runs (
          id, project_id, repository_id, protocol_version, commit_sha, branch, ci_run_id, ci_run_url,
          scope, is_full_inventory, sdk_name, sdk_version, warnings, started_at, finished_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15)
-       ON CONFLICT (repository_id, commit_sha, ci_run_id) DO UPDATE SET
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14)
+       ON CONFLICT (repository_id, commit_sha) DO UPDATE SET
+         branch = EXCLUDED.branch,
+         ci_run_id = CASE WHEN EXCLUDED.ci_run_id <> '' THEN EXCLUDED.ci_run_id ELSE ingest_runs.ci_run_id END,
          scope = EXCLUDED.scope,
          is_full_inventory = EXCLUDED.is_full_inventory,
          sdk_name = EXCLUDED.sdk_name,
          sdk_version = EXCLUDED.sdk_version,
          warnings = EXCLUDED.warnings,
-         finished_at = COALESCE(EXCLUDED.finished_at, ingest_runs.finished_at)
+         finished_at = COALESCE(EXCLUDED.finished_at, ingest_runs.finished_at),
+         /* 计数只在新 CI 执行（run id 变了）时 +1：同一次执行的重试/重投（ci_run_id
+            相同）不推——「跑过几次」数的是执行，不是上报调用。SDK 直跑（空串）不推：
+            它不是 CI 执行。
+            已知的近似：判据是「与列上记录的上一来源不同」而不是「全局见没见过这个
+            run id」——A 报完 B 再报、之后 A 的**重试**再报一次，会按新执行多推 1。
+            列上不保留 run id 全史（那是无界数组），一条 SQL 也算不了集合差；交错重试
+            是罕见路径，误差 +1 且只影响展示列，不影响折行本身。 */
+         ci_execution_count = CASE
+           WHEN EXCLUDED.ci_run_id <> '' AND EXCLUDED.ci_run_id <> ingest_runs.ci_run_id THEN ingest_runs.ci_execution_count + 1
+           ELSE ingest_runs.ci_execution_count END
        RETURNING id, execution_index_id, (xmax = 0) AS inserted`,
       [
-        runId, projectId, repository.id, data.protocolVersion, data.commitSha, data.branch, data.ciRunId, data.ciRunUrl ?? null,
+        runId, projectId, repository.id, data.protocolVersion, data.commitSha, data.branch,
+        data.ciRunId, data.ciRunUrl ?? null,
         data.scope, data.isFullInventory, data.sdkName, data.sdkVersion, JSON.stringify(warnings),
         data.startedAt ?? null, data.finishedAt ?? null,
       ],
@@ -544,6 +562,9 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
      * 它们确实会增长，而完全重复的重投带来的增量是 0，加上去等于不变。**每次重算**的三个
      * （用例总数、通过/失败、未归位数）描述「这一份快照现在长什么样」，重投得到的答案与第
      * 一次相同，刷一遍无害。
+     *
+     * `ci_execution_count`（迁移 045）在 upsert 里维护，这里不再动：新 CI 执行 +1、
+     * 同一执行的重试不推、SDK 直跑不推——「跑过几次」数执行不数调用。
      */
     await client.query(
       `UPDATE ingest_runs SET
@@ -555,7 +576,7 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
          updated_count = CASE WHEN $13 THEN $10 ELSE updated_count END,
          unmatched_count = CASE WHEN $13 THEN $11 ELSE unmatched_count + $11 END,
          unplaced_count = $12
-        WHERE id = $1`,
+       WHERE id = $1`,
       [
         effectiveRunId, indexId, reconciled,
         data.inventory.length, passedCount, failedCount, written.inserted,
@@ -564,6 +585,9 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
         firstPass,
       ],
     );
+
+    /* SDK 路径缝合的另一半在 completePipelineRun（pipelineRun.ts）：反查
+       (project, commit) 的折合行。 */
 
     await client.query("COMMIT");
     return {

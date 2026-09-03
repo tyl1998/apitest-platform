@@ -1,3 +1,5 @@
 node_modules/
 dist/
 .env
+# 产物存储（ARTIFACT_FS_ROOT 的缺省落点，P4.5-7）。
+data/

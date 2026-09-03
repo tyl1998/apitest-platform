@@ -146,18 +146,36 @@ export async function endpointRoutes(app: FastifyInstance) {
     }
     /* Pagination is opt-in: the project store still fetches the whole list for
        endpoint pickers (flow nodes, mock 快照来源), so the absence of `pageSize`
-       keeps the unpaginated contract those callers rely on. */
-    const select = `SELECT endpoints.*, COALESCE(cases.total, 0) AS case_count
+       keeps the unpaginated contract those callers rely on.
+
+       LATERAL last-run（2026-09-03 性能修复）：列表页原先靠前端另拉 200 条
+       `/executions`（约 254KB）画「最近运行」条与状态列；现在按接口随行带出最近
+       一次执行的 status / duration（走 executions_endpoint_created_at_idx 的
+       LIMIT 1），那笔大请求连同「最近运行」列一起删除。`source <> 'flow_step'`
+       与旧的前端拉法同一口径：流程步骤不冒充接口的独立运行。 */
+    const select = `SELECT endpoints.*, COALESCE(cases.total, 0) AS case_count,
+           lr.last_status, lr.last_duration_ms
          FROM endpoints
          /* Sub-select, not a join onto test_cases: joining would multiply the
             endpoint row per case and inflate anything else aggregated here. */
          LEFT JOIN (SELECT endpoint_id, COUNT(*)::int AS total FROM test_cases GROUP BY endpoint_id) AS cases
            ON cases.endpoint_id = endpoints.id
-        WHERE ${clauses.join(" AND ")}
-        ORDER BY endpoints.created_at DESC`;
+         LEFT JOIN LATERAL (
+           SELECT e.status AS last_status, e.duration_ms AS last_duration_ms
+             FROM executions e
+            WHERE e.endpoint_id = endpoints.id AND e.source <> 'flow_step'
+            ORDER BY e.created_at DESC LIMIT 1
+         ) lr ON true
+         WHERE ${clauses.join(" AND ")}
+         ORDER BY endpoints.created_at DESC`;
     /* caseCount is a real number now that用例 exist (P1); 0 truthfully means
        "this endpoint has no cases yet". */
-    const rows = (result: { rows: Record<string, unknown>[] }) => result.rows.map((row) => ({ ...mapEndpoint(row), caseCount: Number(row.case_count) }));
+    const rows = (result: { rows: Record<string, unknown>[] }) => result.rows.map((row) => ({
+      ...mapEndpoint(row),
+      caseCount: Number(row.case_count),
+      lastStatus: row.last_status === null || row.last_status === undefined ? undefined : String(row.last_status),
+      lastDurationMs: row.last_duration_ms === null || row.last_duration_ms === undefined ? undefined : Number(row.last_duration_ms),
+    }));
     if (request.query.pageSize === undefined) {
       const result = await pool.query(select, params);
       return success(rows(result), { total: result.rowCount ?? 0 });

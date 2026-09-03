@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyReply } from "fastify";
 import { pool } from "../db.js";
+import { writeAuditLogAsync } from "./audit.js";
+import { claimIdempotency, fillIdempotencyResult, IDEMPOTENCY_SCOPES, type IdempotencyClaim } from "./idempotency.js";
 import { NoRunnerError, enqueueFlowRun, enqueueSuiteRun } from "./enqueue.js";
 import { SUITE_LEAF_BUDGET, toFlowNode, validateFlowGraph } from "./flow.js";
 import { checkFlowReferences } from "./flowRefs.js";
@@ -8,9 +11,10 @@ import { fail, failNoRunner } from "./response.js";
 import { memberTokenDemand } from "./suiteRun.js";
 import { isUuid } from "./uuid.js";
 import {
-  mapFlow, mapTestSuite,
+  mapCiTask, mapFlow, mapPipelineRun, mapTestSuite,
+  RUNNER_OFFLINE_AFTER_SECONDS,
   SUITE_DEFAULT_CONCURRENCY, SUITE_MAX_CONCURRENCY, SUITE_MAX_MEMBERS,
-  type Flow, type FlowEdge, type FlowNode, type SuiteExecutionConfig, type SuiteMemberRef, type SuiteMemberSnapshot, type SuiteSelection, type TestSuite, type TriggerContext,
+  type Flow, type FlowEdge, type FlowNode, type PipelineRun, type SuiteExecutionConfig, type SuiteMemberRef, type SuiteMemberSnapshot, type SuiteSelection, type TestSuite, type TriggerContext,
 } from "../models/types.js";
 
 /**
@@ -48,6 +52,8 @@ export class TriggerValidationError extends Error {
 /** 触发失败的统一映射。调度器（P3-4）不走这里——它捕获原始错误记 schedule_runs。 */
 export function failTrigger(reply: FastifyReply, error: unknown, fallback: string) {
   if (error instanceof NoRunnerError) return failNoRunner(reply, error.label, error.message);
+  /* CI 形状的 2004（P4.5-2）：消息由抛点说清缺的是 Runner 还是沙箱档（验收门槛 4）。 */
+  if (error instanceof NoCiRunnerError) return failNoRunner(reply, error.label, error.message);
   if (error instanceof TriggerTargetError) return fail(reply, 404, 2001, error.message);
   if (error instanceof TriggerValidationError) return fail(reply, 400, 1001, error.message);
   const message = error instanceof Error ? error.message : fallback;
@@ -55,6 +61,21 @@ export function failTrigger(reply: FastifyReply, error: unknown, fallback: strin
      「执行队列不可用」rather than blaming the flow or the suite. */
   if (message.includes("queue unavailable")) return fail(reply, 503, 5001, message);
   return fail(reply, 400, 2002, message);
+}
+
+/**
+ * CI 触发的目标分区没有能领这个 job 的 Runner（P4.5-2，错误码 `2004` 的 CI 形状）。
+ *
+ * 与 `NoRunnerError`（BullMQ worker 那一侧）分开成两个类型而不是复用一个带自定义消息的
+ * 基类：`failNoRunner` 的形状复用（503 + 2004 + `data.label`），但判据不同——CI 读
+ * `runners` 表且多一层沙箱可满足性，消息也必须说清缺的是「Runner」还是「容器档」，
+ * 复用同一个类会让两种检查挤在一个 message 里。
+ */
+export class NoCiRunnerError extends Error {
+  constructor(readonly label: string, message: string) {
+    super(message);
+    this.name = "NoCiRunnerError";
+  }
 }
 
 /* ---------------------------------------------------------------------------
@@ -420,4 +441,223 @@ export async function triggerSuiteRun(input: SuiteTriggerInput): Promise<string>
     variables: input.variables ?? {},
     trigger: input.trigger,
   });
+}
+
+/* ---------------------------------------------------------------------------
+ * CI 任务触发（P4.5-2）。与上面两条路径并列（P3 边界 5 的「单一触发路径」）：
+ * 调度（`lib/schedule.ts` 的 `fireCiTask`）与 Webhook（`routes/webhookTriggers.ts` 的
+ * `ci_task` 分支）在 P4.5-12 接了进来，两者都走这一个函数而不是各自再校验一遍。
+ *
+ * 与 flow / suite 最大的不同：这里没有 Redis 队列。`pipeline_runs` 本身就是队列
+ * （claim 用 `FOR UPDATE SKIP LOCKED` 直接认领行，P4.5-3），所以本函数的职责到
+ * 「写下一行 queued 并 NOTIFY」为止。
+ * ------------------------------------------------------------------------- */
+
+export type CiTaskTriggerInput = {
+  projectId: string;
+  ciTaskId: string;
+  /** 触发时可顺带填的任务参数（§8.3），键形与变量覆盖同一条规则。 */
+  parameters?: Record<string, string>;
+  /** `{ caseKeys }` = 勾选执行（§8.3，P4.5-9 贯通）；缺省/null = 全量。 */
+  caseFilter?: { caseKeys?: unknown } | null;
+  /** 触发者（P3-3 同款形状）。缺省 manual；`scheduled` / `webhook` 由 P4.5-12 的两条
+      接入路径产出，`ci` 值仍没有产出方。 */
+  trigger?: TriggerContext;
+  /** 点按钮的用户（manual 路径）。 */
+  triggeredBy?: string;
+  /**
+   * `Idempotency-Key` 请求头（P4.5-8，边界 17 的通用设施第一次接线）。缺省不防重
+   * （与接入前的行为完全一致——双击产出两条 run 是既有事实，不装作它已经被修掉）。
+   */
+  idempotencyKey?: string;
+  /** 审计用：触发请求的来源 IP（`request.ip`）。 */
+  requestIp?: string;
+};
+
+/** 勾选执行的 key 集合上限：防一次误传全量树把 JobSpec 撑大；正常勾选远到不了这里。 */
+const CASE_FILTER_LIMIT = 500;
+
+/**
+ * 校验并归一 `caseFilter`；返回落库的 `{ case_keys }`（null = 全量）。
+ *
+ * 落库键形是 **snake_case `case_keys`**，与 JobSpec 协议（`lib/jobSpec.ts`）、
+ * `caseFilterKeys`（lib/pipelineRun.ts）与 `mapPipelineRun`（models/types.ts）三个读侧
+ * 同一形状；请求侧键名 `caseKeys` 是 camelCase 信封的形状，归一在这里完成一次性翻译。
+ *
+ * key 只做非空与去重，**不校验它是否存在于树上**：脚本不认识的 key 由脚本自己跳过、
+ * 平台以 `not_run` 差集兜底（边界 16），在触发时拦「树上没有的 key」反而会把跨任务
+ * 勾选（§8.3 明确支持）误伤。
+ */
+function normalizeCaseFilter(filter: CiTaskTriggerInput["caseFilter"]): { case_keys: string[] } | null {
+  if (filter === undefined || filter === null) return null;
+  if (typeof filter !== "object" || Array.isArray(filter)) {
+    throw new TriggerValidationError("caseFilter must be an object with a caseKeys array");
+  }
+  const raw = (filter as { caseKeys?: unknown }).caseKeys;
+  if (raw !== undefined && raw !== null && !Array.isArray(raw)) throw new TriggerValidationError("caseFilter.caseKeys must be an array of strings");
+  const keys = [...new Set((Array.isArray(raw) ? raw : []).map((each) => String(each ?? "").trim()).filter(Boolean))];
+  if (!keys.length) throw new TriggerValidationError("caseFilter.caseKeys cannot be empty; omit caseFilter to run the full set");
+  if (keys.length > CASE_FILTER_LIMIT) throw new TriggerValidationError(`caseFilter.caseKeys accepts at most ${CASE_FILTER_LIMIT} keys`);
+  return { case_keys: keys };
+}
+
+/** 幂等命中（`Idempotency-Key` 撞到已有键）：`run` 是首次那条，没有新触发发生。 */
+export class IdempotentReplayError extends Error {
+  constructor(readonly run: PipelineRun) {
+    super("this Idempotency-Key was already used; returning the original run");
+    this.name = "IdempotentReplayError";
+  }
+}
+
+/**
+ * 触发一次 CI 任务：校验 → 检查 Runner 可用性 → 写下一行 `queued` 的 pipeline run。
+ *
+ * 校验全部在**写行之前**（照 P2-8 边界 4 的教训）：分区没有 Runner、沙箱档没人支持、
+ * 仓库没配 clone 地址、SDK 上报开着却没有 ingest token——任何一条不满足都一行不写，
+ * 用户拿到的是一句说得清的错误，而不是一条永远 `queued` 的 run。
+ *
+ * `Idempotency-Key`（P4.5-8）：抢占（`INSERT ... ON CONFLICT DO NOTHING`）与回填都在
+ * 本函数自己的事务里，与 run 行的写入同进退——触发失败 ROLLBACK 时占位键一起消失，
+ * 重试不受影响。校验失败（400/404/2004 那些早期拒绝）发生在**抢占之前**：同一个键
+ * 换个参数重试是被允许的，只有真正产出了 run 的那次调用才占用这个键。命中已有键抛
+ * `IdempotentReplayError`（路由层映射回首次的 run，`failTrigger` 不认识它——它不是失败）。
+ */
+export async function triggerCiTaskRun(input: CiTaskTriggerInput): Promise<PipelineRun> {
+  if (!isUuid(input.ciTaskId)) throw new TriggerTargetError("CI task not found");
+  /* clone 来源在任务自己身上（P4.5-14，迁移 041）：不再 join `repositories`——那张表
+     只由上报创建，而建任务不该以「先跑过一次 CI」为前提（计划 8.11 的 A 类）。 */
+  const found = await pool.query(
+    `SELECT t.*, c.name AS git_credential_name, c.method AS git_credential_method
+       FROM ci_tasks t LEFT JOIN git_credentials c ON c.id = t.git_credential_id
+      WHERE t.id = $1 AND t.project_id = $2`,
+    [input.ciTaskId, input.projectId],
+  );
+  if (!found.rowCount) throw new TriggerTargetError("CI task not found");
+  const task = mapCiTask(found.rows[0]);
+
+  if (!task.enabled) throw new TriggerValidationError("this CI task is disabled");
+  /* 存量行可能带着 container 档却没填 image（创建后才会被改坏的场景极少，但 JobSpec
+     组装在 P4.5-3，那时再报就是一条 failed 的 run——触发时说清（验收门槛 4 同款原则）。 */
+  if (task.sandboxMode === "container" && !task.image) {
+    throw new TriggerValidationError(`task "${task.name}" uses the container sandbox but has no image; set one or switch it to process mode`);
+  }
+  if (!task.gitUrl) {
+    throw new TriggerValidationError(`task "${task.name}" has no git URL to clone from; set one in the task first`);
+  }
+
+  const invalidParameters = validateVariableOverrides(input.parameters, "parameters");
+  if (invalidParameters) throw new TriggerValidationError(invalidParameters);
+  const caseFilter = normalizeCaseFilter(input.caseFilter);
+
+  /**
+   * `APITRACK_TOKEN` 不在这里检查（P4.5-3 起）：约定 8 写的「复用项目的 ingest_tokens，
+   * 没有就在触发时报错」落地时改成了 **claim 时按 run 现签一张**（lib/jobSpec.ts）——
+   * 库里只存 scrypt 哈希，明文取不回来，「注入既有 token」没有可实现形状。原 P4.5-2 的
+   * 触发前置检查随之撤销：按 run 签发永远能签出来，那个检查只会拦住合法触发。
+   */
+
+  /**
+   * 无在线 Runner 拒绝（`2004`）+ `sandbox_mode` 可满足性检查，一次查询两个答案。
+   *
+   * 判据与 Runner 池面板（`routes/runners.ts` 的 claimable）同一份：心跳新鲜度用
+   * `RUNNER_OFFLINE_AFTER_SECONDS`，且排除 `draining`。**不读 `workers` 表**：同一个
+   * 标签下可以既有 BullMQ worker 又有 Runner，两者互不相领（8.1），CI 只认 Runner。
+   */
+  const available = await pool.query(
+    `SELECT COUNT(*)::int AS online,
+            COUNT(*) FILTER (WHERE $3 = ANY(sandbox_modes))::int AS matching
+       FROM runners
+      WHERE $1 = ANY(labels)
+        AND status <> 'draining'
+        AND last_seen_at > now() - ($2 || ' seconds')::interval`,
+    [task.runnerLabel, RUNNER_OFFLINE_AFTER_SECONDS, task.sandboxMode],
+  );
+  const online = Number(available.rows[0].online);
+  const matching = Number(available.rows[0].matching);
+  if (!online) throw new NoCiRunnerError(task.runnerLabel, `no online runner serves partition "${task.runnerLabel}"; register one with this label first`);
+  if (!matching) {
+    throw new NoCiRunnerError(task.runnerLabel, `online runners on partition "${task.runnerLabel}" do not support sandbox mode "${task.sandboxMode}"; register a runner with that capability or switch the task to ${task.sandboxMode === "container" ? "process" : "container"} mode`);
+  }
+
+  const trigger = input.trigger ?? { source: "manual" as const };
+  const runId = randomUUID();
+  const client = await pool.connect();
+  let idempotencyClaim: IdempotencyClaim | undefined;
+  try {
+    await client.query("BEGIN");
+    /* 幂等抢占在事务里、且在锁任务行之前：并发双击的两个事务里只有一个能 INSERT
+       成功，另一个走 DO NOTHING 回读——但它读到的是未提交行吗？不会：READ COMMITTED
+       下它看不到对方的未提交插入，自己的 INSERT 也会因唯一索引冲突（等对方提交后）
+       返回 0 行，回读拿到的已是对方 COMMIT 后回填的真 run id。抢占先于 FOR UPDATE
+       是刻意的：撞键的请求不必排队等任务行锁，直接短路。 */
+    if (input.idempotencyKey) {
+      idempotencyClaim = await claimIdempotency(client, IDEMPOTENCY_SCOPES.ciTaskTrigger, input.projectId, input.idempotencyKey);
+      if (!idempotencyClaim.claimed) {
+        const replayed = await pool.query("SELECT * FROM pipeline_runs WHERE id = $1", [idempotencyClaim.resultId]);
+        /* result_id 理论上可能指向已删除的 run（项目删除会级联掉 runs 但 idempotency_keys
+           同项目一起级联，正常路径到不了这里）。查不到按幂等失效处理：删掉占位行重试。 */
+        if (replayed.rowCount) {
+          throw new IdempotentReplayError(mapPipelineRun(replayed.rows[0]));
+        }
+        await client.query(
+          "DELETE FROM idempotency_keys WHERE scope = $1 AND project_id = $2 AND key = $3 AND result_id = $4",
+          [IDEMPOTENCY_SCOPES.ciTaskTrigger, input.projectId, input.idempotencyKey, idempotencyClaim.resultId],
+        );
+        idempotencyClaim = await claimIdempotency(client, IDEMPOTENCY_SCOPES.ciTaskTrigger, input.projectId, input.idempotencyKey);
+      }
+    }
+    /* 锁任务行把同一任务的并发触发串行化（suiteReportName 同款）：否则两次触发都数到
+       n、都写 n+1，撞 pipeline_runs_task_number_idx 的那个拿 500。 */
+    await client.query("SELECT 1 FROM ci_tasks WHERE id = $1 AND project_id = $2 FOR UPDATE", [task.id, input.projectId]);
+    const numbered = await client.query(
+      "SELECT COALESCE(MAX(run_number), 0) + 1 AS next FROM pipeline_runs WHERE ci_task_id = $1",
+      [task.id],
+    );
+    const inserted = await client.query(
+      `INSERT INTO pipeline_runs (
+         id, project_id, ci_task_id, run_number, status, stage, runner_label, sandbox_mode,
+         trigger_source, trigger_ref_id, trigger_ref_name, triggered_by, git_ref, case_filter, parameters
+       ) VALUES ($1, $2, $3, $4, 'queued', 'pending', $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb)
+       RETURNING *`,
+      [
+        runId, input.projectId, task.id, Number(numbered.rows[0].next),
+        task.runnerLabel, task.sandboxMode,
+        trigger.source, trigger.refId ?? null, trigger.refName ?? null, input.triggeredBy ?? null,
+        task.gitRef, caseFilter ? JSON.stringify(caseFilter) : null, JSON.stringify(input.parameters ?? {}),
+      ],
+    );
+    /* NOTIFY 在事务里发、commit 时投递（8.2 约定 2）：等待中的 claim 长轮询（P4.5-3）
+       立刻醒。载荷带标签供 listener 侧过滤，现在没有监听者也无害。 */
+    await client.query("SELECT pg_notify('pipeline_queued', $1)", [task.runnerLabel]);
+    if (idempotencyClaim?.claimed) {
+      await fillIdempotencyResult(client, IDEMPOTENCY_SCOPES.ciTaskTrigger, input.projectId, input.idempotencyKey!, idempotencyClaim.placeholderId, runId);
+    }
+    await client.query("COMMIT");
+    /* 审计在 COMMIT 之后（fire-and-forget）：run 已是事实，审计写失败不该连累它
+       （见 lib/audit.ts 文件头的取舍）。detail 带 case_filter 的 key 数量而不是全量
+       列表（§8.3 的纪律），parameters 只记键名——值可能是用户数据。 */
+    writeAuditLogAsync({
+      action: "ci_task.trigger",
+      targetType: "ci_task",
+      targetId: task.id,
+      projectId: input.projectId,
+      userId: input.triggeredBy ?? null,
+      detail: {
+        runId,
+        runNumber: Number(inserted.rows[0].run_number),
+        triggerSource: trigger.source,
+        caseFilterCount: caseFilter?.case_keys.length ?? 0,
+        parameterKeys: Object.keys(input.parameters ?? {}),
+      },
+      ip: input.requestIp ?? "",
+    });
+    return mapPipelineRun(inserted.rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    /* IdempotentReplayError 是「命中」不是「失败」，但 ROLLBACK 仍是必要的：占位键
+       行（若有）随回滚消失，键回到可用状态——对方已提交的行不受影响。 */
+    throw error;
+  } finally {
+    client.release();
+  }
 }

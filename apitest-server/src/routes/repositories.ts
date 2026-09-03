@@ -13,6 +13,11 @@ import { mapIngestToken, mapRepository } from "../models/types.js";
  * 仓库是**单例视图**：`GET /projects/:id/repository` 回一行或 `null`，没有列表、没有
  * 创建路由——绑定由首次上报完成（边界 18），登记一个「还没报过任何东西的仓库」在平台上
  * 没有任何用途。这里只有读、改跟踪分支、解绑三件事。
+ *
+ * **拉取凭据不在这里**（P4.5-14，计划 8.11 的 A 类）：原先的
+ * `PUT …/repository/credential` 已删，Git 凭据是项目级命名池
+ * （`routes/gitCredentials.ts`），拉取地址在 CI 任务自己身上。仓库行从此只回答
+ * 「用例树是谁的」——这正是它在 P4 里的原始职责。
  */
 
 const PROVIDERS = ["github", "gitlab", "gitee", "bitbucket", "other"];
@@ -20,7 +25,14 @@ const PROVIDERS = ["github", "gitlab", "gitee", "bitbucket", "other"];
 export async function repositoryRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>("/api/v1/projects/:id/repository", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
-    const result = await pool.query("SELECT * FROM repositories WHERE project_id = $1", [context.project.id]);
+    /* 只回 active：解绑（`status='unbound'`）的行对这一页就是「没有绑定」——回出去的
+       话，凭据页的连通状态面板除了状态词什么都照旧（地址、用例数、解绑按钮），解绑
+       在界面上等于没发生。历史事实不丢：用例树与上报记录两页不依赖这一行。下一次
+       上报会带着新地址把行重新激活（lib/ingestAuth.ts 的 bindRepository）。 */
+    const result = await pool.query(
+      "SELECT * FROM repositories WHERE project_id = $1 AND status = 'active'",
+      [context.project.id],
+    );
     /* 未绑定回 `null` 而不是 404：接入指引页把「还没报过」当成一个正常的初始状态显示，
        404 会让它必须把「真的没绑」与「请求错了」两件事分开处理。 */
     if (!result.rowCount) return success(null);
@@ -78,10 +90,13 @@ export async function repositoryRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>("/api/v1/projects/:id/ingest-tokens", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     /* 列出所有列**除了** token_hash：`SELECT *` 会把它带进来，而映射漏一个字段就是一次
-       凭据泄露。列名写全比信任映射安全。 */
+       凭据泄露。列名写全比信任映射安全。
+       已吊销的不列：吊销即从管理视图消失（行留在表里供「那次上报是谁报的」对账）。CI
+       按 run 现签的 token（`ci … #N`）在 run 终态即吊销，列出来只会以每个任务每天几十
+       行的速度把手工建的那几张淹掉。 */
     const result = await pool.query(
       `SELECT id, project_id, name, token_prefix, created_by, last_used_at, revoked_at, created_at
-         FROM ingest_tokens WHERE project_id = $1 ORDER BY created_at DESC`,
+         FROM ingest_tokens WHERE project_id = $1 AND revoked_at IS NULL ORDER BY created_at DESC`,
       [context.project.id],
     );
     return success(result.rows.map(mapIngestToken), { total: result.rowCount });

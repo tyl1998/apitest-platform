@@ -8,11 +8,13 @@ import {
 } from "../lib/ingest.js";
 import { authenticateIngest } from "../lib/ingestAuth.js";
 import { buildEndpointMatcher, comparableTemplate, coverageShapeKey, endpointPath, loadEndpointShapes, stripQuery } from "../lib/ingestPath.js";
+import { findReportArtifactRow, loadReportView } from "../lib/reportPayload.js";
+import type { ReportStep } from "../lib/allureReport.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { METHODS } from "../lib/run.js";
 import { isUuid } from "../lib/uuid.js";
-import { mapEndpoint, mapIngestPathRule, mapIngestRecord, mapIngestRun, mapRepoTestCase } from "../models/types.js";
+import { mapEndpoint, mapIngestPathRule, mapIngestRecord, mapIngestRun, mapRepoTestCase, type IngestRecord } from "../models/types.js";
 
 /**
  * 仓库模式：唯一上报入口 + 查询侧（P4-3/4/5/6，计划 7.2）。
@@ -27,6 +29,71 @@ function paging(query: { page?: string; pageSize?: string }) {
   const page = Math.max(1, Number(query.page ?? 1));
   const pageSize = Math.min(100, Math.max(1, Number(query.pageSize ?? 20)));
   return { page, pageSize, offset: (page - 1) * pageSize };
+}
+
+/**
+ * 「该用例最新一条任务报告」的 LATERAL 片段（2026-09-03，验收反馈 ⑦）。
+ *
+ * 树上的通过状态、最近执行与「绑定的仓库任务」都从**任务报告**读（pipeline_run_cases，
+ * Runner 解析 junit/allure 落的行），而不是 ingest 侧的 `repo_test_cases.last_result`——
+ * 后者是 SDK 请求桩的推导，报告才是「这轮 CI 到底怎么走的」的权威副本。
+ *
+ * 匹配键 = nodeid 去掉参数化后缀（SDK 的 case_key 这么来）。2026-09-03 修复：allure-pytest
+ * 的 fullName 是 `pkg.Module#test`（点号 + `#`），不是 nodeid 的 `path/to.py::test`——
+ * Runner 侧（report/allure.ts 的 normalizeFullName）已把新上报归一到 nodeid 形态；这里
+ * 的第二个匹配分支救**历史行**（修复之前落的点号形态），同一 SQL 里做同一个逆变换，
+ * 不回写历史数据（边界 13 的「读时关联」不变）。**读时关联，绝不回写**——junit 的
+ * `classname::name` 对不上就是显示「没有报告」，不产生任何数据变更。
+ *
+ * 归并规则：一次 run 里同一条用例的多条参数化行折成一条——有 failed/error 就算失败，
+ * 否则有 skipped 就算跳过，否则通过（与 `mapCiTask` 的最近执行、报告页的失败口径一致：
+ * 「任何一个场景挂了，这条用例就是挂了」）。
+ *
+ * 正则与迁移 047 的表达式索引逐字相同，改一处必须同步另一处。历史兼容分支（dotkey）
+ * **不走**那个索引——它是救旧数据的过渡，新数据不再产生点号形态，扫描成本随历史行
+ * 一起消亡；不打算为它建第二个表达式索引。
+ */
+const LATEST_REPORT_LATERAL = `LEFT JOIN LATERAL (
+    SELECT pr.id AS report_run_id, pr.run_number AS report_run_number,
+           t.name AS report_task_name, pr.created_at AS report_run_at,
+           pr.ingest_run_id AS report_ingest_run_id,
+           CASE WHEN COUNT(*) FILTER (WHERE prc.status IN ('failed', 'error')) > 0 THEN 'failed'
+                WHEN COUNT(*) FILTER (WHERE prc.status = 'skipped') > 0 THEN 'skipped'
+                ELSE 'passed' END AS report_status,
+           MAX(prc.duration_ms) AS report_duration_ms,
+           /* 失败行的话优先（失败那句话才是要点开抽屉的理由）；没有失败行时多为 NULL。 */
+           (ARRAY_AGG(prc.message ORDER BY (prc.status IN ('failed', 'error')) DESC, prc.message NULLS LAST))[1] AS report_message
+      FROM pipeline_run_cases prc
+      JOIN pipeline_runs pr ON pr.id = prc.pipeline_run_id AND pr.project_id = c.project_id
+      JOIN ci_tasks t ON t.id = pr.ci_task_id
+     WHERE prc.guessed_case_key IS NOT NULL
+       AND (
+         regexp_replace(prc.guessed_case_key, '\\[[^\\]]*\\]$', '') = c.case_key
+          OR (
+            /* 历史行兼容（见函数注释）：pkg.Mod#test[param] → pkg/Mod.py::test，
+               与 Runner 侧 normalizeFullName 同一个逆变换。只对含 # 的 key 生效——
+               junit 的 classname::name 没有 #，不会走进这个分支。 */
+            prc.guessed_case_key LIKE '%#%'
+            AND c.case_key = concat(
+              replace(split_part(prc.guessed_case_key, '#', 1), '.', '/'), '.py::',
+              regexp_replace(split_part(prc.guessed_case_key, '#', 2), '\\[[^\\]]*\\]$', ''))
+          )
+       )
+     GROUP BY pr.id, pr.run_number, t.name, pr.created_at, pr.ingest_run_id
+      ORDER BY pr.created_at DESC
+      LIMIT 1
+  ) lr ON true`;
+
+/** LATERAL 结果 → API 的 `lastReport`（null 行读作「没有匹配的任务报告」）。 */
+function mapLastReport(row: Record<string, unknown>) {
+  if (!row.report_run_id) return undefined;
+  return {
+    runId: String(row.report_run_id),
+    runNumber: Number(row.report_run_number),
+    taskName: String(row.report_task_name),
+    status: String(row.report_status) as "passed" | "failed" | "skipped",
+    runAt: new Date(String(row.report_run_at)).toISOString(),
+  };
 }
 
 /**
@@ -170,8 +237,9 @@ export async function ingestRoutes(app: FastifyInstance) {
     const endpointIds = endpoints.rows.map((row) => String(row.id));
     const caseRows = endpointIds.length
       ? await pool.query(
-          `SELECT r.endpoint_id, r.request_count, c.*
+          `SELECT r.endpoint_id, c.*, lr.report_run_id, lr.report_run_number, lr.report_task_name, lr.report_run_at, lr.report_status
              FROM repo_case_endpoints r JOIN repo_test_cases c ON c.id = r.repo_case_id
+             ${LATEST_REPORT_LATERAL}
             WHERE r.endpoint_id = ANY($${filterParams.length + 1}::uuid[]) AND ${caseWhere}
             ORDER BY c.name`,
           [...filterParams, endpointIds],
@@ -224,9 +292,11 @@ export async function ingestRoutes(app: FastifyInstance) {
         endpointId: String(row.id), name: String(row.name), method: String(row.method), url: String(row.url),
         /* 关系数（边界 9）：与 distinctCaseTotal 不是同一个口径。 */
         caseCount: Number(row.case_count),
+        /* 2026-09-03 起 cases 不再带 requestCount（用户要求删掉「请求数」列）；
+            最近任务 / 状态 / 最近执行从 lastReport 读（见 LATEST_REPORT_LATERAL）。 */
         cases: (byEndpoint.get(String(row.id)) ?? []).map((entry) => ({
           ...mapRepoTestCase(entry),
-          requestCount: Number(entry.request_count ?? 0),
+          lastReport: mapLastReport(entry),
         })),
       })),
       coverage: {
@@ -261,21 +331,40 @@ export async function ingestRoutes(app: FastifyInstance) {
       AND NOT EXISTS (SELECT 1 FROM repo_case_endpoints r WHERE r.repo_case_id = c.id)`;
     const count = await pool.query(`SELECT COUNT(*)::int AS total FROM repo_test_cases c WHERE ${where}`, [context.project.id]);
     const result = await pool.query(
-      `SELECT c.* FROM repo_test_cases c WHERE ${where} ORDER BY c.name LIMIT $2 OFFSET $3`,
+      `SELECT c.*, lr.report_run_id, lr.report_run_number, lr.report_task_name, lr.report_run_at, lr.report_status
+         FROM repo_test_cases c
+         ${LATEST_REPORT_LATERAL}
+        WHERE ${where} ORDER BY c.name LIMIT $2 OFFSET $3`,
       [context.project.id, pageSize, offset],
     );
-    return success(result.rows.map(mapRepoTestCase), { page, pageSize, total: Number(count.rows[0].total) });
+    /* 与主树同款补 lastReport（未归位用例的最近任务报告同样成立——它只是没打到本项目
+        登记的接口，CI 照样跑了它）。 */
+    return success(
+      result.rows.map((row) => ({ ...mapRepoTestCase(row), lastReport: mapLastReport(row) })),
+      { page, pageSize, total: Number(count.rows[0].total) },
+    );
   });
 
-  /** 单用例：参数化场景 + 最近的记录（记录保留给 run 明细页与将来的步骤展示用）。 */
+  /**
+   * 单用例：参数化场景 + 最近的记录 + **最新任务报告**（2026-09-03，验收反馈 ⑦）。
+   *
+   * `latestReport` 回答三个问题：「绑定了哪个仓库任务」（taskName / runNumber）、
+   * 「这轮报告里它的结论」（status / durationMs / message）、「用例内执行了什么」——
+   * 后者由两部分拼成：报告包里的 allure 步骤树（`steps`，有报告包才有）与那次 run 的
+   * SDK 请求序列（`requests`，按 seq 排序；`endpointId` 都在行上，前端据此高亮「该接口
+   * 所在的步骤」）。两部分都可能缺席（junit-only 的任务没有包、关了 SDK 的任务没有
+   * 上报），缺席就是缺席，不伪造空壳。
+   */
   app.get<{ Params: { id: string; caseId: string }; Querystring: { page?: string; pageSize?: string } }>("/api/v1/projects/:id/repo-cases/:caseId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     if (!isUuid(request.params.caseId)) return fail(reply, 404, 2001, "repo case not found");
     const result = await pool.query("SELECT * FROM repo_test_cases WHERE id = $1 AND project_id = $2", [request.params.caseId, context.project.id]);
     if (!result.rowCount) return fail(reply, 404, 2001, "repo case not found");
+    const caseRow = result.rows[0];
     /* 参数化场景：records 里 distinct param_id，按首次出现排序（2026-08-30 用例详情用）。
-       协议不报场景清单——它只存在于请求记录里，所以这里聚合。allure 式的步骤不受 SDK
-       采集（桩挂在传输层，看不见 allure.step），场景 id 是现在能拿到的最接近物。 */
+        协议不报场景清单——它只存在于请求记录里，所以这里聚合。allure 式的步骤不受 SDK
+        采集（桩挂在传输层，看不见 allure.step），场景 id 是 ingest 侧最接近的对应物；
+        报告侧的步骤树在下面的 latestReport.steps。 */
     const params = await pool.query(
       `SELECT param_id, MIN(created_at) AS first_seen
          FROM ingest_records WHERE repo_case_id = $1 AND param_id IS NOT NULL
@@ -288,10 +377,72 @@ export async function ingestRoutes(app: FastifyInstance) {
       "SELECT * FROM ingest_records WHERE repo_case_id = $1 ORDER BY created_at DESC, seq DESC LIMIT $2 OFFSET $3",
       [request.params.caseId, pageSize, offset],
     );
+
+    /* ── 最新任务报告（树上的状态/最近执行同一条匹配，见 LATEST_REPORT_LATERAL）── */
+    let latestReport: {
+      runId: string; runNumber: number; taskName: string; status: "passed" | "failed" | "skipped";
+      durationMs: number; message: string | null; runAt: string;
+      steps?: ReportStep[];
+      requests: IngestRecord[];
+    } | undefined;
+    const latest = await pool.query(
+      `SELECT lr.* FROM repo_test_cases c ${LATEST_REPORT_LATERAL} WHERE c.id = $1`,
+      [request.params.caseId],
+    );
+    if (latest.rowCount && latest.rows[0].report_run_id) {
+      const row = latest.rows[0];
+      const runId = String(row.report_run_id);
+      /* 步骤树来自报告包（与 run 详情页同一个装载器与缓存）：按「归一 fullName =
+          case_key」匹配——与 LATERAL 匹配 pipeline_run_cases 是同一把尺。归一两侧都做：
+          报告包里的 fullName 是 allure-pytest 的 `pkg.Mod#test` 点号形态（Runner 侧
+          normalizeFullName 只管新上报的 guessed_case_key，报告包是 zip 原文，改不了），
+          所以这里把两边都折到同一形态再比——`#`→`::` + 包段点号→`/` 补 `.py`。 */
+      let steps: ReportStep[] | undefined;
+      const artifact = await findReportArtifactRow(runId);
+      if (artifact) {
+        try {
+          const view = await loadReportView(String(artifact.id), String(artifact.storage_driver), String(artifact.storage_key));
+          const fullNameToNodeid = (value: string) => {
+            const hash = value.indexOf("#");
+            if (hash < 0) return value;
+            const head = value.slice(0, hash);
+            return `${head ? `${head.replace(/\./g, "/")}.py` : ""}::${value.slice(hash + 1)}`;
+          };
+          /* 两边都去参数化后缀再比（参数化子项共享一棵步骤树时取第一条；normal用例只有一条）。 */
+          const normalizeKey = (value: string) => fullNameToNodeid(value).replace(/\[[^\]]*\]$/, "");
+          const matched = view.cases.find((each) => normalizeKey(each.fullName) === String(caseRow.case_key));
+          if (matched) steps = matched.steps;
+        } catch {
+          /* 包读不出来：报告事实仍在，步骤树缺席（best-effort 增强而不是前提）。 */
+        }
+      }
+      /* 请求序列来自那次 run 的 SDK 上报（pipeline_runs.ingest_run_id，迁移 045 折行口径
+         下它指向本 run 对应的 ingest 行）。上限 200：序列是「第几步打了哪个接口」的
+         展示，不是取证清单。 */
+      const requests = row.report_ingest_run_id
+        ? await pool.query(
+            "SELECT * FROM ingest_records WHERE repo_case_id = $1 AND ingest_run_id = $2 ORDER BY seq LIMIT 200",
+            [request.params.caseId, String(row.report_ingest_run_id)],
+          )
+        : { rows: [] as Record<string, unknown>[] };
+      latestReport = {
+        runId,
+        runNumber: Number(row.report_run_number),
+        taskName: String(row.report_task_name),
+        status: String(row.report_status) as "passed" | "failed" | "skipped",
+        durationMs: Number(row.report_duration_ms ?? 0),
+        message: row.report_message === null || row.report_message === undefined ? null : String(row.report_message),
+        runAt: new Date(String(row.report_run_at)).toISOString(),
+        ...(steps ? { steps } : {}),
+        requests: requests.rows.map(mapIngestRecord),
+      };
+    }
+
     return success({
-      ...mapRepoTestCase(result.rows[0]),
+      ...mapRepoTestCase(caseRow),
       params: params.rows.map((row) => String(row.param_id)),
       records: records.rows.map(mapIngestRecord),
+      latestReport,
     }, { page, pageSize, total: Number(recordCount.rows[0].total) });
   });
 

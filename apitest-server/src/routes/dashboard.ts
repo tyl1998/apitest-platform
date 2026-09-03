@@ -67,6 +67,7 @@ export async function queryProjectMetrics(
       COALESCE(tc.case_count, 0)::int          AS case_count,
       COALESCE(tc.covered_endpoint_count, 0)::int AS covered_endpoint_count,
       COALESCE(sc.schedule_count, 0)::int      AS schedule_count,
+      COALESCE(ct.ci_task_count, 0)::int       AS ci_task_count,
       ex.last_execution_at
     FROM projects p
     LEFT JOIN (SELECT project_id, COUNT(*) AS endpoint_count FROM endpoints GROUP BY project_id) ep ON ep.project_id = p.id
@@ -100,6 +101,12 @@ export async function queryProjectMetrics(
          面板上把它藏掉只会让人以为少建了一条。 */
       SELECT project_id, COUNT(*) AS schedule_count FROM schedules GROUP BY project_id
     ) sc ON sc.project_id = p.id
+    LEFT JOIN (
+      /* CI 任务数（P4.5-11）：与调度数同一条口径——建了多少条就是多少条，含停用的。
+         看板上的这个数字此前是硬写的「未启用」占位（交互 2.2 的表格里就留着这一格）。
+         **覆盖率一个字不改**（P4 边界 2 / P4.5 边界 2）：这里只是数任务，不进任何比率。 */
+      SELECT project_id, COUNT(*) AS ci_task_count FROM ci_tasks GROUP BY project_id
+    ) ct ON ct.project_id = p.id
     ${where}
     ORDER BY p.created_at DESC
     ${limitFragment}`, params);
@@ -125,6 +132,7 @@ export async function queryProjectMetrics(
       caseCount: Number(row.case_count),
       coveredEndpointCount,
       scheduleCount: Number(row.schedule_count),
+      ciTaskCount: Number(row.ci_task_count),
       /* null, not 0: "no runs yet" and "everything failed" are different facts. */
       passRate: judgedCount ? (passedCount / judgedCount) * 100 : null,
       completionRate: endpointCount ? (executedEndpointCount / endpointCount) * 100 : null,
@@ -161,8 +169,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
       /* Real numbers now that接口用例 exist (P1). */
       coverageRate: endpointCount ? (coveredEndpointCount / endpointCount) * 100 : null,
       testCaseCount: projects.reduce((sum, item) => sum + item.caseCount, 0),
-      /* Not yet built. null renders as "未启用" rather than a misleading 0. */
-      ciTaskCount: null,
+      /* Real numbers now that CI tasks exist (P4.5-11). */
+      ciTaskCount: projects.reduce((sum, item) => sum + item.ciTaskCount, 0),
       /* Real numbers now that schedules exist (P3-6). */
       scheduleCount: projects.reduce((sum, item) => sum + item.scheduleCount, 0),
       projects,

@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { CronExpressionParser } from "cron-parser";
 import { pool } from "../db.js";
-import { triggerSuiteRun } from "./trigger.js";
+import { triggerCiTaskRun, triggerSuiteRun } from "./trigger.js";
 
 /**
- * 定时调度域（P3-4，计划 6.0 / 6.3，边界 1、2、3）。
+ * 定时调度域（P3-4，计划 6.0 / 6.3，边界 1、2、3；P4.5-12 接入 CI 任务目标，计划 8.7）。
  *
  * 调度器是**进程**（src/scheduler.ts），这里是它的域逻辑：cron 解析、下次时刻、
  * 行级认领、触发与漏跑判定。刻意不用 BullMQ repeatable jobs：队列是「一次执行」的
@@ -12,7 +12,8 @@ import { triggerSuiteRun } from "./trigger.js";
  * 「删调度」变成清队列、「漏跑判定」变成读队列内部状态（6.0）。
  *
  * 触发一律走 `lib/trigger.ts`（P3-3 的统一触发路径）——手动与定时不可能各有一套
- * 校验，定时那条没人盯着，缺一项检查就是夜里静默少跑（边界 5）。
+ * 校验，定时那条没人盯着，缺一项检查就是夜里静默少跑（边界 5）。目标类型的分派只在
+ * `fire()` 一处（`fireSuite` / `fireCiTask`），两条都只是「选哪个 trigger 函数」。
  */
 
 /**
@@ -101,13 +102,16 @@ function toSchedule(row: Record<string, unknown>): DueSchedule {
 /** 写一行 schedule_runs。triggered/failed 带 triggered_at，skipped 不带（030 的形状）。 */
 async function recordRun(
   schedule: DueSchedule,
-  entry: { status: "triggered" | "skipped" | "failed"; executionIndexId?: string; error?: string },
+  entry: { status: "triggered" | "skipped" | "failed"; executionIndexId?: string; pipelineRunId?: string; error?: string },
 ) {
   const triggered = entry.status !== "skipped";
   await pool.query(
-    `INSERT INTO schedule_runs (id, schedule_id, project_id, planned_at, triggered_at, status, execution_index_id, error)
-     VALUES ($1, $2, $3, $4, ${triggered ? "now()" : "NULL"}, $5, $6, $7)`,
-    [randomUUID(), schedule.id, schedule.projectId, schedule.nextRunAt, entry.status, entry.executionIndexId ?? null, entry.error ?? null],
+    `INSERT INTO schedule_runs (id, schedule_id, project_id, planned_at, triggered_at, status, execution_index_id, pipeline_run_id, error)
+     VALUES ($1, $2, $3, $4, ${triggered ? "now()" : "NULL"}, $5, $6, $7, $8)`,
+    [
+      randomUUID(), schedule.id, schedule.projectId, schedule.nextRunAt, entry.status,
+      entry.executionIndexId ?? null, entry.pipelineRunId ?? null, entry.error ?? null,
+    ],
   );
 }
 
@@ -146,9 +150,10 @@ async function claimAndAdvance(schedule: DueSchedule, advanced: Date, markRun: b
 
 /** 触发一个到期时刻（宽限期内）。 */
 async function fire(schedule: DueSchedule, now: Date) {
-  /* 目标类型护栏：CHECK 今天只有 'suite'，这一分支是为 P4.5 的 CI 目标留的——届时
-     在这里分派而不是改这张表的形状。 */
-  if (schedule.targetType !== "suite") {
+  /* 目标类型护栏：CHECK 在迁移 042 放宽成 ('suite','ci_task')，分派就在这一处（030:149 的
+     注释说的就是这一刻）。第三个值仍然停靠而不是猜——库里出现 CHECK 之外的值只可能是有人
+     手改过行，按未知处理比按套件跑一遍安全。 */
+  if (schedule.targetType !== "suite" && schedule.targetType !== "ci_task") {
     await park(schedule, `unsupported schedule target type "${schedule.targetType}"`);
     return;
   }
@@ -163,27 +168,62 @@ async function fire(schedule: DueSchedule, now: Date) {
 
   /* 只把「触发本身」包进 try：触发成功后的取证（查索引 id、写证据行）失败是调度器
      自己的事故，记成 failed 会让一次已经跑起来的执行在调度页上读成没跑成。 */
-  let suiteExecutionId: string;
+  let evidence: { executionIndexId?: string; pipelineRunId?: string };
   try {
-    /* 触发级环境覆盖（边界 4）与变量覆盖（6.5）都在这一处进 trigger：调度配置的就是
-       「这次触发带什么」，与手动执行同一个入口、同一套校验。 */
-    suiteExecutionId = await triggerSuiteRun({
-      projectId: schedule.projectId,
-      suiteId: schedule.targetId,
-      environmentId: schedule.environmentId,
-      variables: schedule.variables,
-      trigger: { source: "scheduled", refId: schedule.id, refName: schedule.name },
-    });
+    evidence = schedule.targetType === "ci_task" ? await fireCiTask(schedule) : await fireSuite(schedule);
   } catch (error) {
-    /* 边界 3：分区没有执行器（2004）、套件解析成零成员、套件被删……都记 failed 带上
-       原因，调度保持启用——认领时已快进，下一拍照常。这里**不**禁用、不重试。 */
+    /* 边界 3：分区没有执行器（2004）、分区没有在线 Runner（同一个码）、套件解析成零成员、
+       目标被删……都记 failed 带上原因，调度保持启用——认领时已快进，下一拍照常。
+       这里**不**禁用、不重试。 */
     await recordRun(schedule, { status: "failed", error: error instanceof Error ? error.message : "schedule trigger failed" });
     return;
   }
+  await recordRun(schedule, { status: "triggered", ...evidence });
+}
+
+/** 套件目标：触发级环境覆盖（边界 4）与变量覆盖（6.5）都在这一处进 trigger。 */
+async function fireSuite(schedule: DueSchedule): Promise<{ executionIndexId?: string }> {
+  const suiteExecutionId = await triggerSuiteRun({
+    projectId: schedule.projectId,
+    suiteId: schedule.targetId,
+    environmentId: schedule.environmentId,
+    variables: schedule.variables,
+    trigger: { source: "scheduled", refId: schedule.id, refName: schedule.name },
+  });
   /* triggerSuiteRun 回的是明细行 id；schedule_runs 指向父索引，报告页顺着它能一步
      跳到这次执行。 */
   const index = await pool.query("SELECT execution_index_id FROM suite_executions WHERE id = $1", [suiteExecutionId]);
-  await recordRun(schedule, { status: "triggered", executionIndexId: index.rows[0] ? String(index.rows[0].execution_index_id) : undefined });
+  return { executionIndexId: index.rows[0] ? String(index.rows[0].execution_index_id) : undefined };
+}
+
+/**
+ * CI 任务目标（P4.5-12）。走 `triggerCiTaskRun`——与手动触发、Webhook 完全同一个函数
+ * （P3 边界 5 的单一触发路径）：无在线 Runner 的 2004、沙箱档可满足性、任务停用、缺
+ * `git_url` 这些检查一处都不能绕，定时那条没人盯着，少一项就是夜里静默不跑。
+ *
+ * 三个刻意的缺省：
+ * - **不带 `idempotencyKey`**。抢占键的形状会是 `(scheduleId, plannedAt)`，但认领已经用
+ *   `next_run_at` 的行级 UPDATE 做到了「一个到期时刻只有一个实例能触发」（6.0），再加一层
+ *   只是把同一个不变量说第二遍；更糟的是 `IdempotentReplayError` 不被 `failTrigger` 认作
+ *   失败，落到这里的 catch 里会被记成一次 `failed` 触发——一条本该读作「已跑」的证据。
+ * - **不带 `triggeredBy`**：没有点按钮的人。审计行的 `user_id` 为空、`trigger_source`
+ *   是 `scheduled`，两者合起来才说得清「谁让它跑的」。
+ * - **不传环境**：仓库里的脚本自己决定打哪个环境，平台不注入（`environment_id` 在 CI
+ *   目标上无意义，前端也不显示那个选择器）。
+ *
+ * `variables` 当 `parameters` 用：键形约束（`VARIABLE_NAME_PATTERN`）与语义（「这次触发带
+ * 什么」）两边完全同一条，为它在 `schedules` 上加第二列只会让「我该填哪个框」变成新问题。
+ */
+async function fireCiTask(schedule: DueSchedule): Promise<{ pipelineRunId: string }> {
+  const run = await triggerCiTaskRun({
+    projectId: schedule.projectId,
+    ciTaskId: schedule.targetId,
+    parameters: schedule.variables,
+    trigger: { source: "scheduled", refId: schedule.id, refName: schedule.name },
+  });
+  /* 指向 run 而不是父索引：`execution_index` 行要等 run 到终态才写（lib/pipelineRun.ts），
+     触发这一刻它还不存在（迁移 042 加那一列的全部理由）。 */
+  return { pipelineRunId: run.id };
 }
 
 /** 漏跑（边界 2）：记一行 skipped，next_run_at 快进到当前之后的第一个时刻。 */

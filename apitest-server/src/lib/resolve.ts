@@ -185,13 +185,18 @@ export function resolveDeep(value: unknown, variables: VariableBag): unknown {
  */
 export const VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** 校验一份变量覆盖；返回 undefined 表示合法（或未提供）。 */
-export function validateVariableOverrides(input: unknown): string | undefined {
+/**
+ * 校验一份变量覆盖；返回 undefined 表示合法（或未提供）。
+ *
+ * `label` 只进错误文案（P4.5-2 起 CI 触发参数共用同一份键形校验，说 "parameters" 而不是
+ * 误报 "variables"）；默认值保持既有调用方的消息不变。
+ */
+export function validateVariableOverrides(input: unknown, label = "variables"): string | undefined {
   if (input === undefined || input === null) return undefined;
-  if (typeof input !== "object" || Array.isArray(input)) return "variables must be an object of string values";
+  if (typeof input !== "object" || Array.isArray(input)) return `${label} must be an object of string values`;
   for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
-    if (!VARIABLE_NAME_PATTERN.test(key)) return `variable name "${key}" must start with a letter or underscore and contain only letters, digits and underscores`;
-    if (typeof value !== "string") return `variable "${key}" must be a string`;
+    if (!VARIABLE_NAME_PATTERN.test(key)) return `${label} name "${key}" must start with a letter or underscore and contain only letters, digits and underscores`;
+    if (typeof value !== "string") return `${label} "${key}" must be a string`;
   }
   return undefined;
 }

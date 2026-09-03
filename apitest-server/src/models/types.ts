@@ -1,3 +1,7 @@
+/* 唯一的 import：`mapCiTask` 要把 `allureDir` 现算出来（P4.5-14，报告目录的单一出处是
+   命令行本身）。`lib/allureDir.ts` 是纯函数、不碰 db，不会把这份类型文件拖进依赖环。 */
+import { parseAllureDir } from "../lib/allureDir.js";
+
 export type Role = "project_admin" | "developer" | "viewer";
 export type User = { id: string; email: string; name: string; passwordHash: string; isSystemAdmin: boolean };
 export type Project = { id: string; name: string; description: string; ownerId: string; createdAt: string };
@@ -733,8 +737,10 @@ export type ExecutionIndex = {
   /* 'scenario' 已由 026 从 CHECK 中移除（P2-3 场景下线，行由 021 删净）。
      'batch' 仍在 CHECK 里但暂无写入方：批量调试有自己的 batch_executions。
      'ingest' 是仓库模式的一次上报（P4 边界 1，迁移 035 放宽 CHECK）：它是「别人已经
-     跑完的历史」，所以取消/重跑/回收三条路径都要显式拒绝它。 */
-  kind: "flow" | "suite" | "batch" | "ingest";
+     跑完的历史」，所以取消/重跑/回收三条路径都要显式拒绝它。
+     'runner' 是一次自研 Runner 的 pipeline run（P4.5-4 写入，迁移 038 放宽 CHECK）：
+     详情跳 pipeline-runs/:id，取消走 pipeline-runs 的 cancel（只经心跳下发）。 */
+  kind: "flow" | "suite" | "batch" | "ingest" | "runner";
   targetId?: string;
   targetName: string;
   detailId: string;
@@ -1052,24 +1058,43 @@ export type SuiteExecution = {
  * ------------------------------------------------------------------------- */
 
 /**
- * 一条定时调度（边界 1）：目标只有测试套件——要按时跑一条流程，把它放进一个
- * 只含它的套件。`targetType` 目前单值，留列是为了 P4.5 的 CI 目标不必回填历史行
- * （与迁移 010 的 workers.mode 同一条理由）。
+ * 可被定时调度的目标类型（P4.5-12，迁移 042 放宽了 CHECK）。
+ *
+ * 流程**不在**里面（P3 边界 1）：要按时跑一条流程，把它放进一个只含它的套件——那样才有
+ * 报告与统计口径。CI 任务加进来是因为它自己就是一次完整执行，没有「放进套件」这个形状。
+ */
+export const SCHEDULE_TARGET_TYPES = ["suite", "ci_task"] as const;
+export type ScheduleTargetType = (typeof SCHEDULE_TARGET_TYPES)[number];
+
+/**
+ * 一条定时调度（P3 边界 1 + P4.5-12）：目标是测试套件或 CI 任务。
+ *
+ * 迁移 030 留整列而只写一个 CHECK 值，正是为了这一刻不必回填历史行（与迁移 010 的
+ * workers.mode 同一条理由）；迁移 042 只放宽 CHECK，表的形状一处没动。
  */
 export type Schedule = {
   id: string;
   projectId: string;
   name: string;
-  targetType: "suite";
+  targetType: ScheduleTargetType;
   targetId: string;
-  /** 列表查询 join 出的目标名，编辑器要能显示「这条调度跑的是哪个套件」。 */
+  /** 列表查询 join 出的目标名，编辑器要能显示「这条调度跑的是哪个套件 / 任务」。 */
   targetName?: string;
-  /** 为空 = 套件自己的环境配置；有值 = 触发时覆盖（边界 4，复用既有 override 链）。 */
+  /**
+   * 为空 = 套件自己的环境配置；有值 = 触发时覆盖（P3 边界 4，复用既有 override 链）。
+   * **CI 任务目标上这一列无意义**：仓库里的脚本自己决定打哪个环境，平台不注入环境
+   * （P4.5-12）。前端在 CI 目标下不显示这个选择器，服务端也不拿它做任何事。
+   */
   environmentId?: string;
   cron: string;
   timezone: string;
   enabled: boolean;
-  /** 每次触发都带的变量覆盖（6.5 泳道第二层），以最高优先级压过环境变量。 */
+  /**
+   * 每次触发都带的变量覆盖（6.5 泳道第二层），以最高优先级压过环境变量。
+   * **CI 任务目标下它就是 `parameters`**（P4.5-12）：两者的键形约束是同一条
+   * （`VARIABLE_NAME_PATTERN`）、语义也是同一句「这次触发带什么」，为它加第二列只会让
+   * 「我该填哪个框」变成一个新问题。
+   */
   variables: Record<string, string>;
   /** 禁用时置空；同时也是调度器行级认领去重的锚点（6.0）。 */
   nextRunAt?: string;
@@ -1091,12 +1116,34 @@ export type ScheduleRun = {
   plannedAt: string;
   triggeredAt?: string;
   status: "triggered" | "skipped" | "failed";
-  /** 触发成功才指向产生的父执行；skipped / failed 没有。 */
+  /**
+   * 套件目标触发成功后指向产生的父执行；skipped / failed 没有。
+   * **CI 目标在触发时拿不到它**——`pipeline_runs` 的 index 行只在终态才写，所以那条路径
+   * 记的是下面的 `pipelineRunId`（P4.5-12，迁移 042）。
+   */
   executionIndexId?: string;
-  /** 触发失败的原因（哪个分区没有执行器、解析成几个成员等）。 */
+  /** CI 目标触发成功后指向那条 pipeline run（任务被删时置空，调度证据仍在）。 */
+  pipelineRunId?: string;
+  /**
+   * 那次执行自己的状态（读时 JOIN，不落 schedule_runs）：`triggered` 只回答「拉起
+   * 成功」，执行结果在这——CI 目标是 `pipeline_runs.status`（queued/running/…终态），
+   * 套件目标是 `execution_index.status`（ExecutionStatus 五值）。skipped / failed 与
+   * 引用悬空（目标被删）时为 undefined。
+   */
+  executionStatus?: string;
+  /** 触发失败的原因（哪个分区没有执行器 / 没有在线 Runner、解析成零成员等）。 */
   error?: string;
   createdAt: string;
 };
+
+/**
+ * 可被 Webhook 触发的目标类型（P4.5-12，迁移 042 放宽了 CHECK）。
+ *
+ * 流程留着（P3 边界 1 末段）：外部业务事件天然是单链路且要带入参。CI 任务加进来回答的是
+ * 另一件事——发布流水线跑完，让平台在自己的 Runner 上跑一遍仓库里的用例。
+ */
+export const WEBHOOK_TARGET_TYPES = ["flow", "suite", "ci_task"] as const;
+export type WebhookTargetType = (typeof WEBHOOK_TARGET_TYPES)[number];
 
 /**
  * 外部可调用的触发器，凭 HMAC 准入（边界 6，形状照 P2-5 的 Mock 运行时）。
@@ -1108,8 +1155,7 @@ export type WebhookTrigger = {
   id: string;
   projectId: string;
   name: string;
-  /** 流程仍可被 Webhook 触发（边界 1 末段）：业务事件天然是单链路且要带入参。 */
-  targetType: "flow" | "suite";
+  targetType: WebhookTargetType;
   targetId: string;
   /** 列表查询 join 出的目标名。 */
   targetName?: string;
@@ -1562,10 +1608,11 @@ export function mapWorker(row: Record<string, unknown>): Worker {
 export function mapSchedule(row: Record<string, unknown>): Schedule {
   return {
     id: String(row.id), projectId: String(row.project_id), name: String(row.name),
-    /* CHECK 当前只有 'suite'；cast 而不是硬编码字面量，P4.5 放宽 CHECK 时这里不用改。 */
+    /* CHECK 在迁移 042 放宽成 ('suite','ci_task')；cast 而不是硬编码字面量，所以这一行
+       在那次放宽时一个字都没改（030 留整列的收益就在这里）。 */
     targetType: String(row.target_type) as Schedule["targetType"],
     targetId: String(row.target_id),
-    /* 列表查询 join test_suites 的名字；未 join 时缺省。 */
+    /* 列表查询按 target_type 分别 join test_suites / ci_tasks 的名字；未 join 时缺省。 */
     targetName: row.target_name ? String(row.target_name) : undefined,
     environmentId: row.environment_id ? String(row.environment_id) : undefined,
     cron: String(row.cron),
@@ -1586,6 +1633,11 @@ export function mapScheduleRun(row: Record<string, unknown>): ScheduleRun {
     triggeredAt: row.triggered_at ? new Date(String(row.triggered_at)).toISOString() : undefined,
     status: String(row.status) as ScheduleRun["status"],
     executionIndexId: row.execution_index_id ? String(row.execution_index_id) : undefined,
+    pipelineRunId: row.pipeline_run_id ? String(row.pipeline_run_id) : undefined,
+    /* runs 列表路由 JOIN 出的两列；别处（无 JOIN）调用本 mapper 时保持 undefined。 */
+    executionStatus: row.run_status !== null && row.run_status !== undefined
+      ? String(row.run_status)
+      : row.exec_status !== null && row.exec_status !== undefined ? String(row.exec_status) : undefined,
     error: row.error === null || row.error === undefined ? undefined : String(row.error),
     createdAt: new Date(String(row.created_at)).toISOString(),
   };
@@ -1678,6 +1730,34 @@ export type Repository = {
 };
 
 /**
+ * 项目级命名 Git 凭据（P4.5-14，迁移 041）。
+ *
+ * 它取代了原先挂在 `repositories` 上的 `clone_method` / `credential_encrypted`
+ * （计划 8.11 的 A 类）：那三列要求「先有一次上报才能配 clone」，而用户来这里正是因为
+ * 还没有 CI。凭据搬到自己的表上并获得一个名字后，多个任务共用一把 key，换 token 只改
+ * 一处。
+ *
+ * **没有 `none` 档**：「公开仓库不需要凭据」由任务不引用任何凭据表达
+ * （`CiTask.gitCredentialId` 为空），不需要一行「什么都没有的凭据」来代表它。
+ *
+ * 明文永不回（边界 11 的缓解②）：只回 `method` 与 `credentialUpdatedAt`——与
+ * `Environment.secretKeys`、`WebhookTrigger.hasSecret` 同一条纪律。凭据明文只在 claim
+ * 的响应体里出现一次。
+ */
+export type GitCredential = {
+  id: string;
+  projectId: string;
+  name: string;
+  method: "https_token" | "ssh_key";
+  credentialUpdatedAt: string;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+  /** 引用它的 CI 任务数，由列表查询的分组子选填入（删除前置提示用）。 */
+  taskCount?: number;
+};
+
+/**
  * 上报 Token。明文**只在创建时回一次**（边界 17），此后接口只回 `tokenPrefix`。
  *
  * 与 `WebhookTrigger.hasSecret` 的区别正是那条边界：Webhook 要拿明文验签所以加密存，
@@ -1704,9 +1784,13 @@ export type IngestRun = {
   protocolVersion: string;
   commitSha: string;
   branch: string;
-  /** 本地跑没有 CI id，协议里存空串而不是 null（NULL 在 UNIQUE 里不去重）。 */
+  /** 本地跑没有 CI id，协议里存空串而不是 null（NULL 在 UNIQUE 里不去重）。
+   * 2026-09-03（迁移 045）起语义变为「最近一次上报的 CI 来源」，同一 commit 的
+   * 上报折同一行、不随执行新增行。 */
   ciRunId: string;
   ciRunUrl?: string;
+  /** 这个 commit 在 CI 上执行过的次数（迁移 045；SDK 直跑不计入）。 */
+  ciExecutionCount: number;
   /** 本次跑的范围，相对仓库根（边界 11/19）。空数组 = 全仓。 */
   scope: string[];
   /** 「这个范围内没有过滤」，不是「跑了整个仓库」。 */
@@ -1803,6 +1887,19 @@ export function mapRepository(row: Record<string, unknown>): Repository {
   };
 }
 
+/** 凭据密文刻意不进映射：留一行就迟早会被某个 `SELECT *` 带到响应里去。 */
+export function mapGitCredential(row: Record<string, unknown>): GitCredential {
+  return {
+    id: String(row.id), projectId: String(row.project_id), name: String(row.name),
+    method: String(row.method) as GitCredential["method"],
+    credentialUpdatedAt: new Date(String(row.credential_updated_at)).toISOString(),
+    createdBy: row.created_by ? String(row.created_by) : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+    taskCount: row.task_count === undefined || row.task_count === null ? undefined : Number(row.task_count),
+  };
+}
+
 export function mapIngestToken(row: Record<string, unknown>): IngestToken {
   return {
     id: String(row.id), projectId: String(row.project_id), name: String(row.name),
@@ -1822,6 +1919,7 @@ export function mapIngestRun(row: Record<string, unknown>): IngestRun {
     executionIndexId: row.execution_index_id ? String(row.execution_index_id) : undefined,
     protocolVersion: String(row.protocol_version), commitSha: String(row.commit_sha),
     branch: String(row.branch ?? ""), ciRunId: String(row.ci_run_id ?? ""),
+    ciExecutionCount: Number(row.ci_execution_count ?? 1),
     ciRunUrl: row.ci_run_url ? String(row.ci_run_url) : undefined,
     /* TEXT[] 经 pg 读回即 string[]。 */
     scope: Array.isArray(row.scope) ? (row.scope as unknown[]).map(String) : [],
@@ -1889,5 +1987,484 @@ export function mapIngestPathRule(row: Record<string, unknown>): IngestPathRule 
     note: String(row.note ?? ""),
     createdBy: row.created_by ? String(row.created_by) : undefined,
     createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+/* ── P4.5: 自研 Runner。范围与边界见 DEVELOPMENT_PLAN.md 8.0 ──────────────────── */
+
+/** Runner 支持的沙箱档（边界 15）。容器档是任务级默认，进程档是一个信任声明。 */
+export const SANDBOX_MODES = ["process", "container"] as const;
+export type SandboxMode = (typeof SANDBOX_MODES)[number];
+
+/**
+ * 平台当前实现的 Runner 协议版本，与 **N / N-1 双支持** 的受理集合（8.2 约定 7）。
+ *
+ * 自托管 Runner 的升级不由平台控制，所以受理集合必须是显式的一份常量而不是散落的 `if`：
+ * 注册时按它拒绝，JobSpec 组装时按它分派。首版只有 `1.0`，但机制现在就要在——补协议
+ * 字段比补版本机制便宜得多（P4 边界 19 是同一个教训）。
+ */
+export const RUNNER_PROTOCOL_VERSION = "1.0";
+export const SUPPORTED_RUNNER_PROTOCOL_VERSIONS = [RUNNER_PROTOCOL_VERSION] as const;
+
+/**
+ * Runner 多久没心跳算离线。
+ *
+ * 90 秒 = 三个心跳间隔（Spec 2.10.2），与租约时长同一个数——`pipeline_runs.lease_expires_at`
+ * 由每次心跳续到 `now() + 90s`。**刻意与 `WORKER_OFFLINE_AFTER_SECONDS`（30 秒）不同**：
+ * BullMQ worker 直写 Postgres 心跳、掉线只影响调度；Runner 的心跳要跨公网走 HTTP，掉线要
+ * 判 `aborted` 并回收租约——把一次网络抖动读成「机器没了」的代价高得多。
+ *
+ * 单一来源：Runner 池面板与触发前的「这个标签下有在线 Runner 吗」必须用同一个阈值，
+ * 两个数会让「面板显示在线、触发却说没有 Runner」成立（P2-8 边界 4 的同一个坑）。
+ */
+export const RUNNER_OFFLINE_AFTER_SECONDS = 90;
+
+/**
+ * 心跳间隔（由 `register` 的响应下发给 Runner，客户端不自己定）。
+ *
+ * **5 秒（2026-09-03 从 30 秒调小）**：取消只经心跳下发（约定 6），间隔就是取消信号的最坏
+ * 到达延迟——30 秒下，一个 35 秒的任务点完取消几乎注定「看着它跑完」（验收实测：信号在
+ * 容器启动后整 30 秒到达，脚本离自然结束只剩 0.75 秒，杀梯子无事可做）。降到 5 秒后取消
+ * 最坏 5 秒内到达；代价是每个在途 job 每 5 秒一拍 HTTP（本地/内网部署无感），租约与掉线
+ * 判据不受影响（都钉在 90 秒，不随间隔缩放）。Spec 2.10.2 原文的「90 秒 = 三个心跳间隔」
+ * 的推导由此失效，以本注释为准。
+ */
+export const RUNNER_HEARTBEAT_INTERVAL_SECONDS = 5;
+/** 25 秒：与 SSE 心跳同款，避开常见的 30 秒代理超时（8.2 约定 2）。 */
+export const RUNNER_POLL_TIMEOUT_SECONDS = 25;
+
+/**
+ * Runner 注册 Token（迁移 036）。系统级，明文只在创建时回一次。
+ *
+ * `labels` 是**这张 token 允许声明的分区**：注册时校验 `runner.labels ⊆ token.labels`，
+ * 否则任何拿到 token 的机器都能自称在生产网段并开始领那边的任务。
+ */
+export type RunnerToken = {
+  id: string;
+  name: string;
+  /** 明文前 8 位（`apirunner_` 之后那段），供列表辨认，不足以反推 Token。 */
+  tokenPrefix: string;
+  labels: string[];
+  createdBy?: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+  createdAt: string;
+  /** 这张 token 下已注册的 Runner 台数（列表查询 join 出来）。 */
+  runnerCount?: number;
+};
+
+/**
+ * 一台已注册的 Runner（迁移 036）。
+ *
+ * 与 `Worker` 是**两张表两个概念**，界面上要挨着放并写明区别（8.6）：
+ * 「执行器（平台内部 BullMQ worker）」vs「Runner（自托管，跑仓库代码）」。不写明会被
+ * 当成重复功能报上来。
+ */
+export type Runner = {
+  id: string;
+  runnerTokenId: string;
+  /** 签发时人给 token 起的名字（列表查询 join 出来），用于「这台是拿哪张 token 注册的」。 */
+  runnerTokenName?: string;
+  /** Runner 自报的 hostname，仅显示。 */
+  name: string;
+  labels: string[];
+  capacity: number;
+  /** 这台机器实际支持哪几档沙箱，由 Runner 探测本机 docker 后自报。 */
+  sandboxModes: SandboxMode[];
+  /** 容器档通道（迁移 046）：`cli`（docker run 命令）/ `api`（Engine API over socket）。
+      空串 = 没自报（进程档 only 或旧版 Runner），读侧显示「—」。 */
+  dockerTransport?: string;
+  version: string;
+  protocolVersion: string;
+  /** `draining` 是唯一一个人可以改的值：不再参与 claim，在跑的任务跑完。 */
+  status: "online" | "draining" | "offline";
+  /**
+   * 由查询按心跳新鲜度算出，从不存储。
+   *
+   * 它只回答「这台机器在不在线」，**不**回答「这个任务还活着吗」——后者是
+   * `pipeline_runs.lease_expires_at`（边界 5）。
+   */
+  online: boolean;
+  lastSeenAt: string;
+  registeredAt: string;
+};
+
+/** 一条 CI 任务（迁移 037）。CRUD 是 P4.5-2，mapper 先行落位。 */
+export type CiTask = {
+  id: string;
+  projectId: string;
+  /**
+   * 任务自带的拉取地址与凭据引用（P4.5-14，迁移 041）。
+   *
+   * 与 `Repository.gitUrl` 刻意同名不同角色：后者是上报身份（`/ingest` 的准入判据），
+   * 这里只回答「Runner 去哪 clone」。搬过来的理由是配置顺序——仓库行只能由第一次上报
+   * 创建，而用户建任务时通常还没有任何上报（计划 8.11 的 A 类）。
+   *
+   * `gitCredentialId` 为空 = 公开仓库，不需要凭据。原先那个 `clone_method='none'` 档
+   * 由「不引用凭据」表达，拉取方式随凭据走，任务表单里不再出现这个词。
+   */
+  gitUrl: string;
+  gitCredentialId?: string;
+  /** 列表页要显示引用的是哪一把 key，由 join 填入（凭据被删时为空）。 */
+  gitCredentialName?: string;
+  gitCredentialMethod?: GitCredential["method"];
+  name: string;
+  description: string;
+  gitRef: string;
+  runnerLabel: string;
+  sandboxMode: SandboxMode;
+  /** 留位（边界 15）：`isolated` 本阶段不做，CHECK 里只有 `shared`。 */
+  isolationMode: "shared";
+  image: string;
+  /** 一整段 shell 原文，不是数组——它们共享一个进程与工作目录（迁移 037 的注释）。 */
+  steps: string;
+  env: Record<string, string>;
+  cachePaths: string[];
+  cacheKeyFiles: string[];
+  /**
+   * 从 `steps` 里解析出的 allure 结果目录（`lib/allureDir.ts`），**只读派生值、不是列**。
+   *
+   * 报告格式的下拉与路径输入框在 P4.5-14 一起删了：目录已经写在命令里
+   * （`--alluredir=…`），再要一个输入框就是让同一个事实有两个能互相矛盾的出处。
+   * 解析不到为 `null`，界面据此提示「跑完不会有报告」——提示而不是拒绝保存，因为它可能
+   * 写在用户仓库的 `pytest.ini` 里，平台看不见那份文件。
+   */
+  allureDir: string | null;
+  sdkIngestEnabled: boolean;
+  /**
+   * 终态结果通知（P4.5-12，迁移 042）。**与套件复用同一个类型与归一函数**
+   * （`SuiteNotifyConfig` / `normalizeSuiteNotify`）：形状逐字相同不是巧合——「这个东西跑
+   * 完了，告诉我结果」在两种目标上是同一个问题的同一个答案。占位符词表不同（CI 语境的
+   * `taskName` / `runNumber` / `gitRef` …，见 `lib/alerts.ts` 的默认模版）。
+   */
+  notify: SuiteNotifyConfig;
+  /**
+   * 任务级串行（P4.5-12，迁移 042）。**默认 true**：同一份仓库用例并发跑两遍互不干扰，
+   * 是需要被证明的性质而不是默认成立的性质（用户的原始理由：共享测试数据导致 case 不稳定）。
+   *
+   * 语义是**排队而不是拒绝**：触发照常受理、run 照常入 `queued`，串行由 claim 侧守卫
+   * （`routes/runners.ts`）保证——序号更小的在途 run 存在时，后面那条领不走。
+   */
+  singleConcurrency: boolean;
+  timeoutSeconds: number;
+  enabled: boolean;
+  /**
+   * 任务当前在途（queued/claimed/running/cancelling）的最新一条 run：列表页的
+   * 「执行中/排队中」行内提示，点击直达 run 详情。只有列表查询填充，其余调用方为
+   * `undefined`（读作「未知」，不与「没有在途」混同——后者是 `activeRunCount` 为 0）。
+   */
+  activeRun?: { id: string; runNumber: number; status: PipelineRun["status"] };
+  /** 在途条数：串行任务恒 ≤1；关掉串行后一个任务可并行多条，用条数说全。仅列表查询填充。 */
+  activeRunCount?: number;
+  /**
+   * 最近一条执行（任何状态，按 `run_number` 倒序取一条）与历史总条数。仅列表查询填充。
+   *
+   * `activeRun` 只在有在途 run 时存在，所以一条「跑完就没了」的任务在收起状态下既没有
+   * 状态也没有规模——「这个任务上次是过还是挂，一共跑过几次」得点开才知道。这两个字段
+   * 让列表行自己回答那两个问题；展开的历史表仍是完整证据（时间/触发源/计数）。
+   */
+  lastRun?: { id: string; runNumber: number; status: PipelineRun["status"] };
+  /** 历史执行总条数（含终态与在途）。`0` 是「从没跑过」，`undefined` 是「没查」。 */
+  runTotal?: number;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function mapRunnerToken(row: Record<string, unknown>): RunnerToken {
+  return {
+    id: String(row.id), name: String(row.name),
+    /* token_hash 刻意不出现在这个映射里，理由同 `mapIngestToken`：映射里留一行就迟早
+       会被某个 `SELECT *` 带到响应里去。 */
+    tokenPrefix: String(row.token_prefix),
+    labels: Array.isArray(row.labels) && row.labels.length ? (row.labels as unknown[]).map(String) : ["default"],
+    createdBy: row.created_by ? String(row.created_by) : undefined,
+    lastUsedAt: row.last_used_at ? new Date(String(row.last_used_at)).toISOString() : undefined,
+    revokedAt: row.revoked_at ? new Date(String(row.revoked_at)).toISOString() : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    runnerCount: row.runner_count === null || row.runner_count === undefined ? undefined : Number(row.runner_count),
+  };
+}
+
+export function mapRunner(row: Record<string, unknown>): Runner {
+  return {
+    id: String(row.id), runnerTokenId: String(row.runner_token_id),
+    runnerTokenName: row.runner_token_name ? String(row.runner_token_name) : undefined,
+    name: String(row.name),
+    labels: Array.isArray(row.labels) && row.labels.length ? (row.labels as unknown[]).map(String) : ["default"],
+    capacity: Number(row.capacity),
+    /* 空数组读成「只支持进程档」以匹配迁移 036 的列默认值（`mapWorker` 对 labels 同款）。 */
+    sandboxModes: Array.isArray(row.sandbox_modes) && row.sandbox_modes.length
+      ? (row.sandbox_modes as unknown[]).map(String) as SandboxMode[]
+      : ["process"],
+    dockerTransport: row.docker_transport ? String(row.docker_transport) : undefined,
+    version: String(row.version ?? ""),
+    protocolVersion: String(row.protocol_version ?? RUNNER_PROTOCOL_VERSION),
+    status: String(row.status) as Runner["status"],
+    /* 由查询按 last_seen_at 新鲜度算出；`draining` 的机器仍可能 online=true——它是
+       「还在跑完手上的活」而不是「已经走了」。 */
+    online: Boolean(row.online),
+    lastSeenAt: new Date(String(row.last_seen_at)).toISOString(),
+    registeredAt: new Date(String(row.registered_at)).toISOString(),
+  };
+}
+
+/**
+ * `allureDir` 是从 `steps` 现算的派生值（`lib/allureDir.ts`），不是列——报告目录的单一
+ * 出处是命令行本身（P4.5-14）。放在 mapper 里而不是各路由自己算，是为了「同一段命令在
+ * 列表、详情、claim 三处解析出同一个答案」这件事只由一处代码保证。
+ */
+export function mapCiTask(row: Record<string, unknown>): CiTask {
+  return {
+    id: String(row.id), projectId: String(row.project_id),
+    gitUrl: String(row.git_url ?? ""),
+    gitCredentialId: row.git_credential_id ? String(row.git_credential_id) : undefined,
+    /* join 来的两列：不在 `ci_tasks` 上，缺席就是「这个任务不用凭据」或「查询没 join」。 */
+    gitCredentialName: row.git_credential_name ? String(row.git_credential_name) : undefined,
+    gitCredentialMethod: row.git_credential_method ? String(row.git_credential_method) as GitCredential["method"] : undefined,
+    name: String(row.name), description: String(row.description ?? ""),
+    gitRef: String(row.git_ref), runnerLabel: String(row.runner_label),
+    sandboxMode: String(row.sandbox_mode) as SandboxMode,
+    isolationMode: String(row.isolation_mode) as CiTask["isolationMode"],
+    image: String(row.image ?? ""), steps: String(row.steps ?? ""),
+    env: (row.env ?? {}) as Record<string, string>,
+    cachePaths: Array.isArray(row.cache_paths) ? (row.cache_paths as unknown[]).map(String) : [],
+    cacheKeyFiles: Array.isArray(row.cache_key_files) ? (row.cache_key_files as unknown[]).map(String) : [],
+    allureDir: parseAllureDir(String(row.steps ?? "")),
+    sdkIngestEnabled: Boolean(row.sdk_ingest_enabled),
+    notify: normalizeSuiteNotify(row.notify_config),
+    /* 缺省读 true 而不是 false：列的 DB 默认是 true，缺列的查询（理论上不存在）读成
+       「不串行」会静默改变行为。 */
+    singleConcurrency: row.single_concurrency === undefined || row.single_concurrency === null ? true : Boolean(row.single_concurrency),
+    timeoutSeconds: Number(row.timeout_seconds),
+    enabled: Boolean(row.enabled),
+    /* 列表页的行内「执行中/排队中」提示：任务当前未终态的最新一条 run + 在途条数。
+       只有列表查询（routes/ciTasks.ts 的 LATERAL join）填充；其它调用方缺列 →
+       undefined，读作「未知」而不是「没有」。 */
+    activeRun: row.active_run_id
+      ? {
+          id: String(row.active_run_id),
+          runNumber: Number(row.active_run_number),
+          status: String(row.active_run_status) as PipelineRun["status"],
+        }
+      : undefined,
+    activeRunCount: row.active_run_count === undefined || row.active_run_count === null
+      ? undefined
+      : Number(row.active_run_count),
+    /* 最近一条执行 + 历史总条数（同一条 LATERAL join 带出）：收起的任务行要能读到
+       「上次是什么结果、一共跑过几次」。`last_run_id` 为空 = 从没跑过（此时
+       run_total 为 0，不是 undefined——那是「查询没带这一段」）。 */
+    lastRun: row.last_run_id
+      ? {
+          id: String(row.last_run_id),
+          runNumber: Number(row.last_run_number),
+          status: String(row.last_run_status) as PipelineRun["status"],
+        }
+      : undefined,
+    runTotal: row.run_total === undefined || row.run_total === null ? undefined : Number(row.run_total),
+    createdBy: row.created_by ? String(row.created_by) : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+  };
+}
+
+/**
+ * 一次 CI 任务的执行（迁移 038）。
+ *
+ * 状态机与协议接口（claim / heartbeat / logs / complete）是 P4.5-3 / P4.5-4；本类型先落
+ * 触发侧（P4.5-2）返回排队行所需的完整形状，后续批次不再改它。
+ */
+export type PipelineRun = {
+  id: string;
+  projectId: string;
+  ciTaskId: string;
+  /** 归一进统一执行记录的那一行（kind='runner'，P4.5-4 写入）；触发时还没有。 */
+  executionIndexId?: string;
+  /** 任务内自增，界面上的 #128。 */
+  runNumber: number;
+  status: "queued" | "claimed" | "running" | "cancelling" | "success" | "failed" | "canceled" | "aborted" | "timed_out";
+  /** 固定四段（clone / cache / script / report）+ pending，阶段进度条的数据源。 */
+  stage: "pending" | "clone" | "cache" | "script" | "report" | "done";
+  /**
+   * 触发时冻结的分区标签（照 P2-8 边界 1）与沙箱档快照：任务改配置后，历史 run 仍说得清
+   * 「当时从哪个网段、用哪一档沙箱跑的」。
+   */
+  runnerLabel: string;
+  sandboxMode: SandboxMode;
+  runnerId?: string;
+  /** 「这个任务还活着吗」的唯一判据（边界 5），不等于「Runner 在不在线」。 */
+  leaseExpiresAt?: string;
+  triggerSource: TriggerSource;
+  triggerRefId?: string;
+  triggerRefName?: string;
+  triggeredBy?: string;
+  gitRef: string;
+  /** clone 完了由 Runner 回填。 */
+  commitSha: string;
+  /** NULL = 全量；`{ caseKeys }` = 勾选执行（§8.3，P4.5-9 贯通）。 */
+  caseFilter?: { caseKeys: string[] };
+  parameters: Record<string, unknown>;
+  exitCode?: number;
+  error?: string;
+  /** 已收日志的总字节数 = 下一个期望 offset（边界 7）。BIGINT 经 pg 读回是字符串。 */
+  logBytes: number;
+  caseTotal: number;
+  passedCount: number;
+  failedCount: number;
+  skippedCount: number;
+  /** SDK 路径回填（A 路径，`APITRACK_CI_RUN_ID = job_id` 缝起来）。 */
+  ingestRunId?: string;
+  createdAt: string;
+  claimedAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+};
+
+export function mapPipelineRun(row: Record<string, unknown>): PipelineRun {
+  const filter = row.case_filter as { case_keys?: unknown[] } | null | undefined;
+  return {
+    id: String(row.id), projectId: String(row.project_id), ciTaskId: String(row.ci_task_id),
+    executionIndexId: row.execution_index_id ? String(row.execution_index_id) : undefined,
+    runNumber: Number(row.run_number),
+    status: String(row.status) as PipelineRun["status"],
+    stage: String(row.stage) as PipelineRun["stage"],
+    runnerLabel: String(row.runner_label),
+    sandboxMode: String(row.sandbox_mode) as SandboxMode,
+    runnerId: row.runner_id ? String(row.runner_id) : undefined,
+    leaseExpiresAt: row.lease_expires_at ? new Date(String(row.lease_expires_at)).toISOString() : undefined,
+    triggerSource: String(row.trigger_source ?? "manual") as TriggerSource,
+    triggerRefId: row.trigger_ref_id ? String(row.trigger_ref_id) : undefined,
+    triggerRefName: row.trigger_ref_name ? String(row.trigger_ref_name) : undefined,
+    triggeredBy: row.triggered_by ? String(row.triggered_by) : undefined,
+    gitRef: String(row.git_ref), commitSha: String(row.commit_sha ?? ""),
+    caseFilter: filter
+      ? { caseKeys: Array.isArray(filter.case_keys) ? filter.case_keys.map(String) : [] }
+      : undefined,
+    parameters: (row.parameters ?? {}) as Record<string, unknown>,
+    exitCode: row.exit_code === null || row.exit_code === undefined ? undefined : Number(row.exit_code),
+    error: row.error === null || row.error === undefined ? undefined : String(row.error),
+    logBytes: Number(row.log_bytes ?? 0),
+    caseTotal: Number(row.case_total ?? 0),
+    passedCount: Number(row.passed_count ?? 0),
+    failedCount: Number(row.failed_count ?? 0),
+    skippedCount: Number(row.skipped_count ?? 0),
+    ingestRunId: row.ingest_run_id ? String(row.ingest_run_id) : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    claimedAt: row.claimed_at ? new Date(String(row.claimed_at)).toISOString() : undefined,
+    startedAt: row.started_at ? new Date(String(row.started_at)).toISOString() : undefined,
+    finishedAt: row.finished_at ? new Date(String(row.finished_at)).toISOString() : undefined,
+  };
+}
+
+/**
+ * 一份已登记的产物（迁移 039，P4.5-7）。写入方是 Runner 的 artifacts 申请路由，
+ * 列表路由与下载直链（presignGet）在 P4.5-11 接上——类型与 mapper 先落位，届时
+ * `SELECT *` 的返回不需要再改这一层。
+ */
+export type Artifact = {
+  id: string;
+  projectId: string;
+  /** 首版只有 'pipeline_run'（多态留位，见迁移 039 的注释）。 */
+  ownerType: "pipeline_run";
+  ownerId: string;
+  kind: "log" | "report" | "file";
+  name: string;
+  storageDriver: "fs" | "s3";
+  /** 驱动内寻址键；不回传给前端以外的任何消费者当路径用。 */
+  storageKey: string;
+  sizeBytes: number;
+  contentType: string;
+  /** sha256 hex（fs 驱动在落盘时算；s3 侧信任申请时 Runner 报的值）。 */
+  checksum: string;
+  /** undefined = 申请了但没传成（Runner 中途死掉是事实，不是垃圾）。 */
+  uploadedAt?: string;
+  createdAt: string;
+};
+
+export function mapArtifact(row: Record<string, unknown>): Artifact {
+  return {
+    id: String(row.id), projectId: String(row.project_id),
+    ownerType: String(row.owner_type) as Artifact["ownerType"],
+    ownerId: String(row.owner_id),
+    kind: String(row.kind) as Artifact["kind"],
+    name: String(row.name),
+    storageDriver: String(row.storage_driver) as Artifact["storageDriver"],
+    storageKey: String(row.storage_key),
+    sizeBytes: Number(row.size_bytes ?? 0),
+    contentType: String(row.content_type ?? "application/octet-stream"),
+    checksum: String(row.checksum ?? ""),
+    uploadedAt: row.uploaded_at ? new Date(String(row.uploaded_at)).toISOString() : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+/**
+ * 报告解析出的 case 级结果（迁移 038 + 040 + 044，P4.5-6/13）。时间戳是 allure 的 epoch
+ * 毫秒原样（BIGINT 经 pg 读回是字符串，mapper 统一转 number）；junit 路径四个新列
+ * 恒 NULL——渲染侧按「有 startedAtMs 才进时间轴」降级。`externalId` 是 allure 结果
+ * 文件的 uuid——同名参数化用例的两次执行靠它分成两行（迁移 044）。
+ */
+export type PipelineRunCase = {
+  id: string;
+  pipelineRunId: string;
+  source: "junit" | "allure";
+  suiteName: string;
+  caseName: string;
+  guessedCaseKey?: string;
+  status: "passed" | "failed" | "skipped" | "error";
+  durationMs: number;
+  message?: string;
+  externalId?: string;
+  startedAtMs?: number;
+  finishedAtMs?: number;
+  host?: string;
+  thread?: string;
+};
+
+export function mapPipelineRunCase(row: Record<string, unknown>): PipelineRunCase {
+  return {
+    id: String(row.id),
+    pipelineRunId: String(row.pipeline_run_id),
+    source: String(row.source) as PipelineRunCase["source"],
+    suiteName: String(row.suite_name ?? ""),
+    caseName: String(row.case_name),
+    guessedCaseKey: row.guessed_case_key ? String(row.guessed_case_key) : undefined,
+    status: String(row.status) as PipelineRunCase["status"],
+    durationMs: Number(row.duration_ms ?? 0),
+    message: row.message === null || row.message === undefined ? undefined : String(row.message),
+    externalId: row.external_id ? String(row.external_id) : undefined,
+    startedAtMs: row.started_at_ms === null || row.started_at_ms === undefined ? undefined : Number(row.started_at_ms),
+    finishedAtMs: row.finished_at_ms === null || row.finished_at_ms === undefined ? undefined : Number(row.finished_at_ms),
+    host: row.host === null || row.host === undefined ? undefined : String(row.host),
+    thread: row.thread === null || row.thread === undefined ? undefined : String(row.thread),
+  };
+}
+
+/**
+ * 一条报告分享（迁移 043）。`token` 是 URL 里的公开凭据——把它回给项目成员是安全的
+ * （他们本来就能创建分享），公开路由只认 token 不认人。
+ */
+export type ReportShare = {
+  id: string;
+  projectId: string;
+  /** 'suite' = suite_executions.id；'runner' = pipeline_runs.id。 */
+  targetType: "suite" | "runner";
+  targetId: string;
+  token: string;
+  createdBy?: string;
+  createdAt: string;
+  revokedAt?: string;
+};
+
+export function mapReportShare(row: Record<string, unknown>): ReportShare {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    targetType: String(row.target_type) as ReportShare["targetType"],
+    targetId: String(row.target_id),
+    token: String(row.token),
+    createdBy: row.created_by ? String(row.created_by) : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    revokedAt: row.revoked_at ? new Date(String(row.revoked_at)).toISOString() : undefined,
   };
 }

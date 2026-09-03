@@ -7,12 +7,13 @@ import { createRedis } from "../lib/queue.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { VARIABLE_NAME_PATTERN } from "../lib/resolve.js";
 import { fail, success } from "../lib/response.js";
-import { environmentBelongs, failTrigger, triggerFlowRun, triggerSuiteRun } from "../lib/trigger.js";
+import { environmentBelongs, failTrigger, triggerCiTaskRun, triggerFlowRun, triggerSuiteRun } from "../lib/trigger.js";
 import { isUuid } from "../lib/uuid.js";
-import { mapWebhookTrigger } from "../models/types.js";
+import { WEBHOOK_TARGET_TYPES, mapWebhookTrigger, type WebhookTargetType } from "../models/types.js";
 
 /**
- * Webhook 触发（P3-6，计划 6.2，边界 6、7）。目标为流程或套件（边界 1 末段）。
+ * Webhook 触发（P3-6，计划 6.2，边界 6、7；P4.5-12 加 CI 任务目标，计划 8.7）。
+ * 目标为流程、套件或 CI 任务（`WEBHOOK_TARGET_TYPES`）。
  *
  * 管理路由与其它资源同款（项目内、写操作要求非 viewer）；公开触发路由
  * `POST /webhooks/:publicId` 无鉴权，凭 HMAC 准入——形状照 P2-5 的 Mock 运行时
@@ -24,34 +25,42 @@ import { mapWebhookTrigger } from "../models/types.js";
  * `timestamp.nonce.<原始请求体字节>`（HMAC-SHA256，hex）。时间戳窗口 ±300 秒；nonce
  * 用 Redis `SET NX EX` 挡重放——窗口内的同一组 (publicId, nonce) 只被接受一次。密钥
  * AES-GCM 加密存库（验签必须拿明文，所以不能只存哈希），创建/轮换时回明文一次，之后
- * 管理接口只回 hasSecret。
+ * 管理接口只回 hasSecret。**HMAC 验证、时间窗、nonce 防重放在 P4.5-12 一处未改。**
  */
 
 /** 时间戳窗口与 nonce 记忆时长（秒）：记忆比窗口长一倍，盖住两边的时钟偏差。 */
 const SIGNATURE_WINDOW_SECONDS = 300;
 const NONCE_TTL_SECONDS = SIGNATURE_WINDOW_SECONDS * 2;
 
+/** 目标类型 → 那张表（代码常量三选一，不是输入拼接；见 validateTarget）。 */
+const TARGET_TABLES: Record<WebhookTargetType, string> = { flow: "flows", suite: "test_suites", ci_task: "ci_tasks" };
+
 /** 带目标名的一行（目标被删后 LEFT JOIN 得 NULL，仍读得通）。 */
-const SELECT_TRIGGER = `SELECT w.*, COALESCE(f.name, ts.name) AS target_name FROM webhook_triggers w
+const SELECT_TRIGGER = `SELECT w.*, COALESCE(f.name, ts.name, ct.name) AS target_name FROM webhook_triggers w
   LEFT JOIN flows f ON w.target_type = 'flow' AND f.id = w.target_id
-  LEFT JOIN test_suites ts ON w.target_type = 'suite' AND ts.id = w.target_id`;
+  LEFT JOIN test_suites ts ON w.target_type = 'suite' AND ts.id = w.target_id
+  LEFT JOIN ci_tasks ct ON w.target_type = 'ci_task' AND ct.id = w.target_id`;
 
 type TriggerBody = {
   name?: string;
-  targetType?: "flow" | "suite";
+  targetType?: WebhookTargetType;
   targetId?: string;
-  /** 触发级环境覆盖（边界 4）：null = 清掉。 */
+  /** 触发级环境覆盖（边界 4）：null = 清掉。CI 目标上无意义（脚本自己选环境）。 */
   environmentId?: string | null;
   enabled?: boolean;
 };
 
 async function validateTarget(projectId: string, targetType: string, targetId: string): Promise<string | undefined> {
-  if (targetType !== "flow" && targetType !== "suite") return "targetType must be flow or suite";
+  if (!(WEBHOOK_TARGET_TYPES as readonly string[]).includes(targetType)) {
+    return `targetType must be one of ${WEBHOOK_TARGET_TYPES.join(", ")}`;
+  }
   if (!isUuid(targetId)) return "targetId must be a UUID";
-  const table = targetType === "flow" ? "flows" : "test_suites";
-  const found = await pool.query(`SELECT 1 FROM ${table} WHERE id = $1 AND project_id = $2`, [targetId, projectId]);
-  /* 表名是代码常量二选一，不是输入拼接；id 走参数。 */
-  if (!found.rowCount) return `targetId must reference a ${targetType} in this project`;
+  /* 表名从 TARGET_TABLES 取（代码常量），id 走参数。 */
+  const found = await pool.query(
+    `SELECT 1 FROM ${TARGET_TABLES[targetType as WebhookTargetType]} WHERE id = $1 AND project_id = $2`,
+    [targetId, projectId],
+  );
+  if (!found.rowCount) return `targetId must reference a ${targetType === "ci_task" ? "CI task" : targetType} in this project`;
   return undefined;
 }
 
@@ -222,10 +231,14 @@ export async function webhookTriggerRoutes(app: FastifyInstance) {
       const projectId = String(row.project_id);
       const environmentId = row.environment_id ? String(row.environment_id) : undefined;
       const trigger = { source: "webhook" as const, refId: String(row.id), refName: String(row.name) };
+      const targetType = String(row.target_type);
       try {
-        if (String(row.target_type) === "flow") {
-          /* 请求体注入仅流程（边界 7）：套件没有变量模型，body 整体忽略。非 JSON 的
-             请求体注入为空而不是报错——准入靠签名，不靠格式。 */
+        /* 三分支**显式**分派（P4.5-12 改掉了原来的 `if flow / else suite` 落空写法）：
+           那种写法下一个未知的 target_type 会被静默当套件跑一遍，而 CHECK 之外的值只可能
+           来自有人手改过行——按未知拒绝才对。 */
+        if (targetType === "flow") {
+          /* 请求体注入仅流程（边界 7）：套件与 CI 任务没有这个变量模型，body 整体忽略。
+             非 JSON 的请求体注入为空而不是报错——准入靠签名，不靠格式。 */
           let body: unknown;
           try { body = raw.length ? JSON.parse(raw.toString("utf8")) : undefined; } catch { body = undefined; }
           const flowExecutionId = await triggerFlowRun({
@@ -235,10 +248,32 @@ export async function webhookTriggerRoutes(app: FastifyInstance) {
           });
           return reply.code(202).send(success({ flowExecutionId }));
         }
-        const suiteExecutionId = await triggerSuiteRun({
-          projectId, suiteId: String(row.target_id), environmentId, trigger,
-        });
-        return reply.code(202).send(success({ suiteExecutionId }));
+        if (targetType === "suite") {
+          const suiteExecutionId = await triggerSuiteRun({
+            projectId, suiteId: String(row.target_id), environmentId, trigger,
+          });
+          return reply.code(202).send(success({ suiteExecutionId }));
+        }
+        if (targetType === "ci_task") {
+          /**
+           * CI 任务目标（P4.5-12）。走 `triggerCiTaskRun`——无在线 Runner 的 2004、沙箱档
+           * 可满足性、任务停用这些检查与手动触发共用一份（P3 边界 5）。
+           *
+           * **不注入请求体、不带 `Idempotency-Key`**：
+           * - 请求体注入是流程独占（边界 7）。CI 任务确实有 `parameters` 这个同形的袋子，
+           *   但把外部 POST 的顶层标量灌进 Runner 的环境变量是另一件事——那些值会进
+           *   `env`、进日志（任务级 secret 已删，Runner 侧没有脱敏词表，见 8.11 的 B 类）。
+           *   要带参数就在任务的 `env` 里写死，或者用调度的变量覆盖。
+           * - 幂等键的来源只能是 nonce，而 nonce 已经在上面挡掉重放了；再加一层只是把同一
+           *   个不变量说第二遍，且 `IdempotentReplayError` 不被 `failTrigger` 认作失败，
+           *   落到下面的 catch 里会变成一个 500。
+           */
+          const run = await triggerCiTaskRun({
+            projectId, ciTaskId: String(row.target_id), trigger,
+          });
+          return reply.code(202).send(success({ pipelineRunId: run.id, runNumber: run.runNumber }));
+        }
+        return fail(reply, 400, 1001, `unsupported webhook target type "${targetType}"`);
       } catch (error) {
         return failTrigger(reply, error, "webhook trigger failed");
       }

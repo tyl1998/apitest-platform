@@ -25,6 +25,11 @@ import { notificationDeliveryRoutes } from "./routes/notificationDeliveries.js";
 import { reportRoutes } from "./routes/reports.js";
 import { repositoryRoutes } from "./routes/repositories.js";
 import { ingestRoutes } from "./routes/ingest.js";
+import { runnerRoutes } from "./routes/runners.js";
+import { ciTaskRoutes } from "./routes/ciTasks.js";
+import { gitCredentialRoutes } from "./routes/gitCredentials.js";
+import { pipelineRunRoutes } from "./routes/pipelineRuns.js";
+import { reportShareRoutes } from "./routes/reportShares.js";
 
 declare module "@fastify/jwt" {
   interface FastifyJWT { payload: { userId: string; email: string }; user: { userId: string; email: string }; }
@@ -45,6 +50,18 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(scheduleRoutes); await app.register(webhookTriggerRoutes); await app.register(notificationChannelRoutes); await app.register(alertRuleRoutes); await app.register(notificationDeliveryRoutes); await app.register(reportRoutes);
   /* P4：仓库模式。`ingestRoutes` 带公开上报入口 `POST /ingest`（Token 鉴权，不走 JWT）。 */
   await app.register(repositoryRoutes); await app.register(ingestRoutes);
+  /* P4.5：自研 Runner。`runnerRoutes` 带 `/runner/*`（`apirunner_` Token 鉴权，不走 JWT）
+     与 `/api/v1/system/runner*`（系统管理员）两组接口。`ciTaskRoutes` 是 CI 任务 CRUD
+     与触发（P4.5-2）；Git 拉取凭据是项目级命名池（`gitCredentialRoutes`，P4.5-14——
+     它取代了原先写在仓库行上的 `PUT …/repository/credential`）。`pipelineRunRoutes`
+     目前只有 cancel（P4.5-3，取消只经心跳下发的源头），读路由在 P4.5-11。 */
+  await app.register(runnerRoutes);
+  await app.register(gitCredentialRoutes);
+  await app.register(ciTaskRoutes);
+  await app.register(pipelineRunRoutes);
+  /* 报告分享（2026-09-02）：项目内 CRUD + `/public/report-shares/:token` 免登录只读
+     （与 Webhook 公开路由同款：不走 JWT，token 即凭据）。 */
+  await app.register(reportShareRoutes);
   return app;
 }
 
