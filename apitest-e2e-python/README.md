@@ -15,7 +15,8 @@ apitest-e2e-python/
 ├── test_case/
 │   ├── auth/            # /api/v1/auth/*
 │   ├── projects/        # /api/v1/projects*
-│   └── runner/          # /api/v1/system/runner-*（Runner 相关只读查询）
+│   ├── runner/          # /api/v1/system/runner-*（Runner 相关只读查询）
+│   └── system/          # /api/v1/system/*（limits / runner-labels 只读查询）
 └── utils/
     └── other_utils.py   # 唯一项目名等工具
 ```
