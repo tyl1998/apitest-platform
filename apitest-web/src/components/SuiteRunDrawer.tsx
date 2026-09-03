@@ -169,14 +169,17 @@ export function SuiteRunDrawer({ projectId, run, onClose, onCancel, canceling }:
 /**
  * 一个成员的证据（用例快照 / 流程步骤树 / 失败原因），导出给套件报告页复用：
  * 报告的成员明细与运行抽屉的成员行是同一份数据，展开逻辑不该有第二种实现。
+ *
+ * `shareToken`（2026-09-03）：分享页的公开读法。传了它就不再要求 projectId——证据
+ * 全部走 `/public/report-shares/:token/*`，鉴权是 token 而不是登录用户。
  */
-export function MemberEvidence({ projectId, row }: { projectId: string; row: MemberRow }) {
+export function MemberEvidence({ projectId, row, shareToken }: { projectId?: string; row: MemberRow; shareToken?: string }) {
   const { t } = useTranslation();
 
   /* 用例成员：一次请求，快照就是全部。 */
   if (row.execution) return <ExecutionDetail result={row.execution} />;
   /* 流程成员：它自己是一次父执行，证据在那棵步骤树里。 */
-  if (row.childIndexId) return <FlowMemberSteps projectId={projectId} indexId={row.childIndexId} />;
+  if (row.childIndexId) return <FlowMemberSteps projectId={projectId} indexId={row.childIndexId} shareToken={shareToken} />;
 
   /* 起不来的成员（用例/流程被删、子流程成环、并发超预算）没有证据，但有原因。
      错误原文照抄——它是数据，不是文案。 */
@@ -206,8 +209,10 @@ export function MemberEvidence({ projectId, row }: { projectId: string; row: Mem
  *
  * 走 index id 而不是 `output.flowExecutionId`：后者只在成员跑完时才写，而
  * `child_index_id` 在开跑之前就落库，所以正在跑的成员也能展开来看。
+ *
+ * `shareToken`（分享页）：公开端点在服务端就地完成两跳，浏览器只发一次请求。
  */
-function FlowMemberSteps({ projectId, indexId }: { projectId: string; indexId: string }) {
+function FlowMemberSteps({ projectId, indexId, shareToken }: { projectId?: string; indexId: string; shareToken?: string }) {
   const { t } = useTranslation();
   const [run, setRun] = useState<FlowExecutionDetail>();
   const [failed, setFailed] = useState(false);
@@ -216,12 +221,17 @@ function FlowMemberSteps({ projectId, indexId }: { projectId: string; indexId: s
   useEffect(() => {
     let alive = true;
     setRun(undefined); setFailed(false); setOpenStep(undefined);
-    void api.executionIndexDetail(projectId, indexId)
-      .then((index) => api.flowExecution(projectId, index.detailId))
+    const request = shareToken
+      ? api.publicShareFlowSteps(shareToken, indexId)
+      : projectId
+        ? api.executionIndexDetail(projectId, indexId)
+          .then((index) => api.flowExecution(projectId, index.detailId))
+        : Promise.reject(new Error("no project context"));
+    void request
       .then((detail) => { if (alive) setRun(detail); })
       .catch(() => { if (alive) setFailed(true); });
     return () => { alive = false; };
-  }, [projectId, indexId]);
+  }, [projectId, indexId, shareToken]);
 
   /* 读失败要说出来，而不是显示一个空列表让人以为这条流程什么都没跑。 */
   if (failed) return <p className="form-note text-fail">{t("suites.memberStepsFailed")}</p>;
@@ -245,7 +255,7 @@ function FlowMemberSteps({ projectId, indexId }: { projectId: string; indexId: s
           <RunStatusTag status={toRunStatus(row.status)} />
           <span className="mono muted">{row.execution?.statusCode ?? "—"} · {row.execution?.durationMs ?? row.durationMs}ms</span>
         </button>
-        {open && <div className="batch-detail"><StepEvidence projectId={projectId} row={row} /></div>}
+        {open && <div className="batch-detail"><StepEvidence projectId={projectId} row={row} shareToken={shareToken} /></div>}
       </div>;
     })}
   </div>;

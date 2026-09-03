@@ -78,7 +78,7 @@ function LineChart({ buckets, series, yMax, yFormat, hourly, yTicks }: {
       {yTicks.map((tick) => <line
         key={tick}
         x1={PAD_L} x2={CHART_W - PAD_R} y1={y(tick)} y2={y(tick)}
-        style={{ stroke: "var(--rule)" }}
+        style={{ stroke: "var(--line)" }}
         strokeWidth={1}
       />)}
       {series.map((each, index) => <path
@@ -125,7 +125,7 @@ function VolumeBars({ buckets }: { buckets: TrendReport["buckets"] }) {
           {passH > 0 && <rect x={x} y={innerH - totalH} width={barW} height={Math.max(passH, bucket.total > 0 ? 1 : 0)} style={{ fill: "var(--pass)" }} rx={1} />}
           {failedH > 0 && <rect x={x} y={innerH - failedH} width={barW} height={Math.max(failedH, 1)} style={{ fill: "var(--fail)" }} rx={1} />}
           {/* total=0 的桶画一粒 1px 的灰点：空桶是「没有执行」，与「跑了一两个」在柱高上几乎不可分。 */}
-          {bucket.total === 0 && <rect x={x} y={innerH - 1} width={barW} height={1} style={{ fill: "var(--rule)" }} />}
+          {bucket.total === 0 && <rect x={x} y={innerH - 1} width={barW} height={1} style={{ fill: "var(--line)" }} />}
         </g>;
       })}
     </svg>
@@ -147,7 +147,7 @@ function FailureDonut({ segments }: { segments: { label: string; value: number; 
   let offset = 25; /* 从 12 点方向起 */
   return <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
     <svg viewBox="0 0 42 42" width={132} height={132} role="img" aria-label={t("trends.failByType")}>
-      <circle cx="21" cy="21" r={R} fill="none" style={{ stroke: "var(--rule)" }} strokeWidth="5" />
+      <circle cx="21" cy="21" r={R} fill="none" style={{ stroke: "var(--line)" }} strokeWidth="5" />
       {segments.map((segment) => {
         const share = (segment.value / total) * 100;
         const dash = `${share} ${100 - share}`;
@@ -194,26 +194,29 @@ export function Trends() {
   const [summary, setSummary] = useState<ReportSummary>();
   const [failed, setFailed] = useState(false);
   /**
-   * 「含仓库上报」开关（P4 边界 1），**默认关闭**。
+   * 「含仓库执行」开关（P4 边界 1 + P4.5 边界 2），**默认关闭**。
    *
-   * 关着的时候这两张图算的还是平台自己跑的那些（flow / suite）。打开之后混进外部 CI 的
-   * 上报：它的耗时是用户进程里的客户端耗时，与平台的墙钟耗时不是一个口径；一次 `-m smoke`
-   * 的局部跑也会把通过率拉出一个台阶。所以它是一个「我知道自己在看混合视图」的显式选择，
-   * 不进地址栏——分享一条链接时不该顺手把别人的口径也改掉。
+   * 关着的时候这两张图算的还是平台自己跑的那些（flow / suite）。打开之后混进两类仓库
+   * 里跑的：外部 CI 的**上报**（ingest）与平台自研 Runner 的**执行**（runner）。
+   * 一个开关同时管两者，**不给第二个复选框**（P4.5 边界 2）：那两者对用户是同一件事
+   * （「仓库里跑的」），而它们混进来的问题也是同一个——耗时是用户进程里的客户端耗时，
+   * 与平台的墙钟耗时不是一个口径；一次 `-m smoke` 的局部跑也会把通过率拉出一个台阶。
+   *
+   * 不进地址栏：分享一条链接时不该顺手把别人的口径也改掉。
    */
-  const [includeIngest, setIncludeIngest] = useState(false);
+  const [includeRepo, setIncludeRepo] = useState(false);
 
   useEffect(() => {
     if (!projectId || loadedProjectId !== projectId || projectLoading) return;
     let alive = true;
     setTrend(undefined); setSummary(undefined); setFailed(false);
-    /* 趋势与汇总同一份数据口径（父执行 + 可选的仓库上报），一起取；任一失败都算这页
-       没加载出来。 */
-    void Promise.all([api.trendReport(projectId, range, includeIngest), api.reportSummary(projectId, range, includeIngest)])
+    /* 趋势与汇总同一份数据口径（父执行 + 可选的仓库上报与仓库执行），一起取；任一失败
+       都算这页没加载出来。 */
+    void Promise.all([api.trendReport(projectId, range, includeRepo), api.reportSummary(projectId, range, includeRepo)])
       .then(([trendResult, summaryResult]) => { if (alive) { setTrend(trendResult); setSummary(summaryResult); } })
       .catch(() => { if (alive) setFailed(true); });
     return () => { alive = false; };
-  }, [projectId, loadedProjectId, projectLoading, range, includeIngest]);
+  }, [projectId, loadedProjectId, projectLoading, range, includeRepo]);
 
   const hourly = range === "24h";
   const buckets = trend?.buckets ?? [];
@@ -233,13 +236,14 @@ export function Trends() {
       </div>
     </div>
 
-    {/* 口径开关（P4 边界 1）：默认关。说明文字必须留着——两个口径混在一条曲线上时，
-        「为什么 p90 突然掉了一半」只有这一句能解释。 */}
+    {/* 口径开关（P4 边界 1 + P4.5 边界 2）：默认关，一个开关同时管 ingest 与 runner。
+        说明文字必须留着——两个口径混在一条曲线上时，「为什么 p90 突然掉了一半」只有
+        这一句能解释。 */}
     <label className="check-field">
-      <input type="checkbox" checked={includeIngest} onChange={(event) => setIncludeIngest(event.target.checked)} />
-      {t("trends.includeIngest")}
+      <input type="checkbox" checked={includeRepo} onChange={(event) => setIncludeRepo(event.target.checked)} />
+      {t("trends.includeRepo")}
     </label>
-    <p className="form-note">{t("trends.includeIngestHint")}</p>
+    <p className="form-note">{t("trends.includeRepoHint")}</p>
 
     {failed && <p className="form-error">{t("trends.loadFailed")}</p>}
 

@@ -25,12 +25,12 @@ import { useProjectStore } from "../stores/projectStore";
 import { toRunStatus } from "../ui";
 import { HistorySidebar } from "./HistorySidebar";
 import { IconButton } from "./IconButton";
+import { ResourceSchedules } from "./ResourceSchedules";
 import { RunStatusTag } from "./RunStatusTag";
 import { SIDEBAR_PAGE_SIZES, SidebarPager } from "./SidebarPager";
 import { SuiteMemberPicker } from "./SuiteMemberPicker";
 import { SuiteRunDrawer } from "./SuiteRunDrawer";
 import { SuiteRunModal } from "./SuiteRunModal";
-import { SuiteSchedules } from "./SuiteSchedules";
 
 /**
  * 套件配置页 (P2-4)。
@@ -698,10 +698,10 @@ export function SuiteWorkspace() {
           </div>
         </section>
 
-        {/* 定时调度（P3-11）：独立调度页已删除，配置入口收进它唯一的目标。
+        {/* 定时调度（P3-11）：独立调度页已删除，配置入口收进它的目标。
             排在通知设置之前（验收反馈）：调度是「怎么跑」，通知是「跑完之后」，
-            阅读顺序与执行顺序一致。 */}
-        <SuiteSchedules projectId={projectId!} suiteId={suiteId!} />
+            阅读顺序与执行顺序一致。P4.5-12 起同一个组件也挂在 CI 任务上。 */}
+        <ResourceSchedules projectId={projectId!} targetType="suite" targetId={suiteId!} />
 
         {/* 通知设置（P3-11）：终态按开关投递。配置跟套件走——「这个套件跑完了告诉我」
             与「项目的质量指标怎么了」（告警规则页）是两个问题，两处配置互不替代。 */}

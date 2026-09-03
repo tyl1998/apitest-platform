@@ -1,24 +1,35 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Drawer, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { CalendarClock, Pencil, Play, Plus, Trash2 } from "lucide-react";
-import { api, type Schedule, type SchedulePreview, type ScheduleRun } from "../api";
+import {
+  api, noRunnerLabel,
+  type Schedule, type SchedulePreview, type ScheduleRun, type ScheduleTargetType,
+} from "../api";
 import { useProjectStore } from "../stores/projectStore";
+import type { RunStatus } from "../ui";
 import { IconButton } from "./IconButton";
 import { RunStatusTag } from "./RunStatusTag";
 import { fromPairs, toPairs, type Pair } from "./KeyValueEditor";
 import { VariableRowsEditor } from "./VariableRowsEditor";
 
 /**
- * 套件详情页的「定时调度」面板（P3-11，6.8）。
+ * 一个资源的「定时调度」面板（P3-11，6.8；P4.5-12 泛化到 CI 任务，计划 8.7）。
  *
- * 独立调度页已删除：调度的配置入口收进它唯一的目标——套件。这里列出的就是
- * 「这个套件」的调度（`GET /schedules?targetId=`），创建时目标固定为当前套件，
- * 编辑抽屉里没有目标选择器。触发历史与「立即跑一次」随面板一起进来。
+ * 独立调度页在 P3-11 已删除：调度的配置入口收进它的目标本身。所以这个组件永远只列
+ * 「这一个资源」的调度（`GET /schedules?targetType=&targetId=`），创建时目标固定为传进来
+ * 的那个，编辑抽屉里**没有目标选择器**——两步选资源（交互 3.7 原设计）是独立调度页才需要
+ * 的东西，从资源里进来的人已经回答了那一步。
  *
- * 调度的增删改走的是与原先同一个 REST 资源（`/schedules`），没有任何新路由：
- * 面板只是换了收件人，没有换邮局。
+ * 两处按目标类型分叉，其余完全共用：
+ * - **环境覆盖只对套件出现**。CI 任务跑的是仓库里的脚本，环境由脚本自己决定，平台不注入
+ *   （服务端也不拿 `environment_id` 做任何事）。给它留一个不起作用的下拉是在撒谎。
+ * - **变量覆盖在 CI 目标下叫「触发参数」**。同一列 `variables`、同一条键形约束，服务端把它
+ *   当 `parameters` 传给 `triggerCiTaskRun`；换个标题是因为「变量」在仓库模式里没有对应物，
+ *   用户看到的是环境变量。
+ *
+ * 增删改走的是与原先同一个 REST 资源（`/schedules`），没有任何新路由。
  */
 
 const VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -35,10 +46,21 @@ function emptyForm(): ScheduleForm {
   return { name: "", cron: "", timezone: "Asia/Shanghai", environmentId: "", enabled: true };
 }
 
-export function SuiteSchedules({ projectId, suiteId }: { projectId: string; suiteId: string }) {
+export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCreate = false }: {
+  projectId: string;
+  targetType: ScheduleTargetType;
+  targetId: string;
+  /**
+   * 挂载时直接打开「新建调度」抽屉（任务编辑页的场景：新建页点「新建调度」→ 任务被
+   * 静默保存 → 面板带着新任务 id 挂载 → 抽屉自动打开，用户不需要再点一次）。
+   * 只在挂载那一次生效：父级会在面板挂载后把 armed 清掉，这里用 ref 固定初值。
+   */
+  autoOpenCreate?: boolean;
+}) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { environments } = useProjectStore();
+  const isCiTask = targetType === "ci_task";
 
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [total, setTotal] = useState(0);
@@ -64,7 +86,7 @@ export function SuiteSchedules({ projectId, suiteId }: { projectId: string; suit
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await api.schedules(projectId, { targetId: suiteId, page, pageSize: 20 });
+      const result = await api.schedules(projectId, { targetType, targetId, page, pageSize: 20 });
       setSchedules(result.items);
       setTotal(result.total);
       setOverdue(result.scheduler.overdue);
@@ -73,7 +95,7 @@ export function SuiteSchedules({ projectId, suiteId }: { projectId: string; suit
     } finally {
       setLoading(false);
     }
-  }, [projectId, suiteId, page, t]);
+  }, [projectId, targetType, targetId, page, t]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -95,6 +117,9 @@ export function SuiteSchedules({ projectId, suiteId }: { projectId: string; suit
     });
     setVariables(toPairs(schedule.variables));
   }
+
+  const armedRef = useRef(autoOpenCreate);
+  useEffect(() => { if (armedRef.current) openEdit("new"); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* cron 预览：防抖后自动算（与服务端同一个解析，预览说几点跑就几点跑）。 */
   useEffect(() => {
@@ -121,10 +146,12 @@ export function SuiteSchedules({ projectId, suiteId }: { projectId: string; suit
     try {
       const input = {
         name: form.name.trim(),
-        targetId: suiteId,
+        targetType,
+        targetId,
         cron: form.cron.trim(),
         timezone: form.timezone.trim() || "Asia/Shanghai",
-        environmentId: form.environmentId || null,
+        /* CI 目标不显示环境下拉，也就永远不发它（服务端那一列在这条路径上无意义）。 */
+        environmentId: isCiTask ? null : form.environmentId || null,
         enabled: form.enabled,
         variables: fromPairs(variables),
       };
@@ -155,15 +182,32 @@ export function SuiteSchedules({ projectId, suiteId }: { projectId: string; suit
     });
   }
 
-  /** 立即跑一次：手动触发（trigger_source=manual），失败原因原样转述。 */
+  /**
+   * 立即跑一次：手动触发（trigger_source=manual），失败原因原样转述。
+   *
+   * 结果按 `targetType` 判别（服务端 P4.5-12 的联合响应）：套件报出报告名，CI 任务报出
+   * 执行序号并直接跳到那条 run 的详情页——那一页是 CI 执行唯一的看处（实时日志在那里）。
+   * `Idempotency-Key` 只在 CI 路径生成：那是一次全新的「我现在要跑一遍」，键即用即弃，
+   * 作用只是挡住双击产出两条 run。
+   */
   async function runNow(schedule: Schedule) {
     setRunning(schedule.id);
     try {
-      const queued = await api.runScheduleNow(projectId, schedule.id);
-      message.success(`${t("suiteReports.reportName")}: ${queued.reportName ?? queued.id}`);
+      const result = await api.runScheduleNow(projectId, schedule.id, isCiTask ? { idempotencyKey: crypto.randomUUID() } : undefined);
+      if (result.targetType === "ci_task") {
+        message.success(t("ciTasks.triggered", { number: result.pipelineRun.runNumber }));
+        navigate(`/projects/${projectId}/pipeline-runs/${result.pipelineRun.id}`);
+        return;
+      }
+      message.success(`${t("suiteReports.reportName")}: ${result.suiteExecution.reportName ?? result.suiteExecution.id}`);
     } catch (error) {
+      /* 2004 是「这个分区没有在线执行器 / Runner」，与「队列挂了」是两个处置动作
+         （noRunnerLabel 的单一判定，各执行入口共用）。 */
+      const label = noRunnerLabel(error);
       const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      message.error(detail ?? t("schedules.runNowFailed"));
+      message.error(label === undefined
+        ? detail ?? t("schedules.runNowFailed")
+        : t(isCiTask ? "ciTasks.noRunner" : "run.noRunner", { label }));
     } finally {
       setRunning(undefined);
     }
@@ -200,6 +244,34 @@ export function SuiteSchedules({ projectId, suiteId }: { projectId: string; suit
     }
   }
 
+  /**
+   * 一行触发记录能点开什么：套件路径顺 `executionIndexId` 跳报告，CI 路径顺
+   * `pipelineRunId` 跳 run 详情页（它的 index 行要到终态才写，触发时还没有——迁移 042
+   * 加那一列的全部理由）。skipped / failed 两者都没有，不可点。
+   */
+  function runTarget(run: ScheduleRun): (() => void) | undefined {
+    if (run.pipelineRunId) return () => navigate(`/projects/${projectId}/pipeline-runs/${run.pipelineRunId}`);
+    if (run.executionIndexId) return () => void openRunExecution(run.executionIndexId!);
+    return undefined;
+  }
+
+  /**
+   * 触发行的状态显示（2026-09-03 验收修正）：`triggered` 只是拉起事实，不能画成绿色
+   * 通过——执行结果以 `executionStatus` 为准（CI=run 行状态，套件=index 行状态）。
+   * 归一到设计系统 Status 六值：success→pass、queued/claimed/running/cancelling→
+   * running 或 queued、其余→fail；executionStatus 缺席（目标被删）时回退「已触发」
+   * 中性文案，调度证据仍可读。
+   */
+  function execStatusOf(run: ScheduleRun): { status: RunStatus; label: string; fallback: boolean } {
+    const raw = run.executionStatus;
+    if (!raw) return { status: "skip", label: t("schedules.statusTriggered"), fallback: true };
+    if (raw === "success") return { status: "pass", label: t("schedules.execSuccess"), fallback: false };
+    if (raw === "queued") return { status: "queued", label: t("schedules.execQueued"), fallback: false };
+    if (raw === "claimed" || raw === "running" || raw === "cancelling") return { status: "running", label: t("schedules.execRunning"), fallback: false };
+    if (raw === "canceled") return { status: "canceled", label: t("schedules.execCanceled"), fallback: false };
+    return { status: "fail", label: t("schedules.execFailed"), fallback: false };
+  }
+
   return <section className="panel">
     <div className="panel-head">
       <strong>{t("schedules.title")}</strong>
@@ -208,7 +280,7 @@ export function SuiteSchedules({ projectId, suiteId }: { projectId: string; suit
       </div>
     </div>
     <div className="panel-body">
-      <p className="form-note">{t("schedules.hint")}</p>
+      <p className="form-note">{t(isCiTask ? "schedules.hintCiTask" : "schedules.hint")}</p>
       {overdue > 0 && <p className="form-error">{t("schedules.overdue", { count: overdue })}</p>}
       {loading && <p className="muted">{t("common.loading")}</p>}
       {schedules.length ? <table className="grid schedule-grid">
@@ -263,7 +335,7 @@ export function SuiteSchedules({ projectId, suiteId }: { projectId: string; suit
       </div>}
     </div>
 
-    {/* 编辑抽屉：目标固定为当前套件，没有目标选择器。 */}
+    {/* 编辑抽屉：目标固定为传进来的那个资源，没有目标选择器。 */}
     <Drawer
       title={editing === "new" ? t("schedules.createTitle") : t("schedules.editTitle")}
       open={Boolean(editing)}
@@ -302,7 +374,8 @@ export function SuiteSchedules({ projectId, suiteId }: { projectId: string; suit
           </div>)}
       {previewing && <p className="muted">{t("common.loading")}</p>}
 
-      <label className="field">
+      {/* 环境覆盖只对套件出现：CI 任务的环境由仓库里的脚本决定，平台不注入。 */}
+      {!isCiTask && <label className="field">
         <span>{t("schedules.envOverride")}</span>
         <Select
           value={form.environmentId || undefined}
@@ -313,14 +386,14 @@ export function SuiteSchedules({ projectId, suiteId }: { projectId: string; suit
           style={{ width: "100%" }}
         />
         <p className="form-note">{t("schedules.envOverrideHint")}</p>
-      </label>
+      </label>}
 
       <VariableRowsEditor
-        title={t("schedules.variables")}
-        hint={t("schedules.variablesHint")}
+        title={t(isCiTask ? "schedules.parameters" : "schedules.variables")}
+        hint={t(isCiTask ? "schedules.parametersHint" : "schedules.variablesHint")}
         pairs={variables}
         onChange={setVariables}
-        keyPlaceholder="lane"
+        keyPlaceholder={isCiTask ? "BUILD_TAG" : "lane"}
       />
 
       <label className="check-field" style={{ marginTop: 12 }}>
@@ -344,24 +417,33 @@ export function SuiteSchedules({ projectId, suiteId }: { projectId: string; suit
           <th>{t("schedules.runNote")}</th>
         </tr></thead>
         <tbody>
-          {runs.map((run) => <tr
-            key={run.id}
-            data-clickable={run.executionIndexId ? "" : undefined}
-            onClick={run.executionIndexId ? () => void openRunExecution(run.executionIndexId!) : undefined}
-          >
-            <td className="mono">{new Date(run.plannedAt).toLocaleString()}</td>
-            <td className="col-status">
-              {run.status === "triggered"
-                ? <RunStatusTag status="pass" />
-                : run.status === "skipped"
-                  ? <RunStatusTag status="skip" />
-                  : <RunStatusTag status="fail" />}
-              <span className="muted" style={{ marginLeft: 6 }}>{t(`schedules.status${run.status.charAt(0).toUpperCase()}${run.status.slice(1)}`)}</span>
-            </td>
-            <td className="mono muted truncate" title={run.error ?? ""}>
-              {run.error ?? (run.executionIndexId ? t("suiteReports.trigger") : "—")}
-            </td>
-          </tr>)}
+          {runs.map((run) => {
+            const open = runTarget(run);
+            return <tr
+              key={run.id}
+              data-clickable={open ? "" : undefined}
+              onClick={open}
+            >
+              <td className="mono">{new Date(run.plannedAt).toLocaleString()}</td>
+              <td className="col-status">
+                {run.status === "skipped"
+                  ? <><RunStatusTag status="skip" /><span className="muted" style={{ marginLeft: 6 }}>{t("schedules.statusSkipped")}</span></>
+                  : run.status === "failed"
+                    ? <><RunStatusTag status="fail" /><span className="muted" style={{ marginLeft: 6 }}>{t("schedules.statusFailed")}</span></>
+                    : (() => {
+                      /* triggered：显示执行的真实状态（execStatusOf）；拉起成功只是
+                         背景事实，降级进结果列的副文案。 */
+                      const exec = execStatusOf(run);
+                      return <><RunStatusTag status={exec.status} /><span className="muted" style={{ marginLeft: 6 }}>{exec.label}</span></>;
+                    })()}
+              </td>
+              <td className="mono muted truncate" title={run.error ?? ""}>
+                {run.error ?? (run.status === "triggered" && !run.executionStatus
+                  ? t("schedules.launchedNote")
+                  : open ? t("suiteReports.trigger") : "—")}
+              </td>
+            </tr>;
+          })}
         </tbody>
       </table> : !runsLoading && <p className="form-note">{t("schedules.runsEmpty")}</p>}
       {runsTotal > 10 && <div className="pager">

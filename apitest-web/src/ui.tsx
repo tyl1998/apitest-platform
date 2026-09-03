@@ -1,7 +1,13 @@
 import type { ReactNode } from "react";
 import { Tooltip } from "antd";
 
-export type RunStatus = "pass" | "fail" | "skip" | "running" | "queued" | "canceled";
+/**
+ * `not_run` 是勾选执行（P4.5-9）才会出现的第四态：这一条被勾选了、这一轮却没有报到
+ * 结果。它**不能**折进 `skip`——「脚本主动跳过」与「平台勾了它但它没跑」是两回事，
+ * 前者说明测试自己做了决定，后者说明这次勾选没生效（脚本不认识 `--apitrack-case-keys`
+ * 或崩在中途）。
+ */
+export type RunStatus = "pass" | "fail" | "skip" | "running" | "queued" | "canceled" | "not_run";
 
 /**
  * 原生 `title` 悬停的替代（2026-08-30）。原生 title 的延迟由浏览器决定（~1 秒）且
@@ -20,6 +26,7 @@ const STATUS_LABEL: Record<RunStatus, string> = {
   running: "执行中",
   queued: "排队中",
   canceled: "已取消",
+  not_run: "未执行",
 };
 
 /** Maps the API's execution vocabulary onto the design system's. */
@@ -29,6 +36,7 @@ export function toRunStatus(status: string): RunStatus {
   if (status === "running") return "running";
   if (status === "queued") return "queued";
   if (status === "canceled") return "canceled";
+  if (status === "not_run") return "not_run";
   return "skip";
 }
 

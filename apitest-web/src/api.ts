@@ -155,6 +155,10 @@ export type Endpoint = {
   defaultEnvironmentId?: string;
   /** How many saved cases this endpoint has. 0 truthfully means "none yet". */
   caseCount?: number | null;
+  /** 最近一次执行（不含流程步骤）的状态与耗时：服务端 LATERAL 随行带出，列表页不再
+      为「最近运行」另拉一份 /executions。 */
+  lastStatus?: string;
+  lastDurationMs?: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -786,8 +790,10 @@ export type FlowPlanStep = { nodeId: string; name: string; endpointId?: string; 
 export type ExecutionIndex = {
   id: string;
   projectId: string;
-  /** `ingest` 是仓库模式的一次上报（P4 边界 1）：它归一进这张清单，但不参与趋势口径。 */
-  kind: "flow" | "suite" | "batch" | "ingest";
+  /** `ingest` 是仓库模式的一次上报（P4 边界 1）：它归一进这张清单，但不参与趋势口径。
+      `runner` 是自研 Runner 的一次 pipeline run（P4.5-4）：可筛选、可看计数，详情页
+      （pipeline-runs/:id）是 P4.5-11。 */
+  kind: "flow" | "suite" | "batch" | "ingest" | "runner";
   targetId?: string;
   targetName: string;
   detailId: string;
@@ -1144,7 +1150,12 @@ export type ExecutionEvent =
      它自己已经在流上发 execution / flow 事件，这一条只描述父级计数与终态。
      成员行因此靠一次详情重取来更新，而不是靠事件里的 id 对号——套件的 execution
      事件不带 suiteExecutionId。 */
-  | { kind: "suite"; projectId: string; suiteExecutionId: string; executionIndexId?: string; status: ExecutionStatus; total: number; successCount: number; failedCount: number; skippedCount: number };
+   | { kind: "suite"; projectId: string; suiteExecutionId: string; executionIndexId?: string; status: ExecutionStatus; total: number; successCount: number; failedCount: number; skippedCount: number }
+  /* CI pipeline run 的状态变化与日志水位（P4.5-4）。日志内容不进事件体——前端按
+     `logBytes` 走 `GET …/pipeline-runs/:id/logs?offset=` 拉增量，与后端
+     lib/events.ts 的同一条纪律。 */
+  | { kind: "pipeline"; projectId: string; pipelineRunId: string; executionIndexId?: string; status: string; stage?: string }
+  | { kind: "pipelineLog"; projectId: string; pipelineRunId: string; logBytes: number };
 
 export type ProjectMetric = Project & {
   endpointCount: number;
@@ -1157,6 +1168,8 @@ export type ProjectMetric = Project & {
   coveredEndpointCount: number;
   /** 调度数（P3-6）：含停用的——停用不是「不存在」。 */
   scheduleCount: number;
+  /** CI 任务数（P4.5-11）：同款口径，含停用的。 */
+  ciTaskCount: number;
   /** null means "never run" — distinct from 0%, which means "every run failed". */
   passRate: number | null;
   completionRate: number | null;
@@ -1174,7 +1187,7 @@ export type Dashboard = {
   completionRate: number | null;
   coverageRate: number | null;
   testCaseCount: number | null;
-  /** null means the capability is not built yet; render "未启用", never 0. */
+  /** CI 任务数（P4.5-11 起是真值；此前是 null 占位、渲染成「未启用」）。 */
   ciTaskCount: number | null;
   /** Real numbers now that schedules exist (P3-6). */
   scheduleCount: number;
@@ -1188,22 +1201,35 @@ export type Preferences = { theme: "light" | "dark" | "system"; language: "zh-CN
  * 页面在 P3-9 落地；这里是它们要用的全部类型与调用。
  * ------------------------------------------------------------------------- */
 
-/** 一条定时调度（边界 1：目标只有测试套件）。 */
+/**
+ * 可被定时调度 / Webhook 触发的目标类型（P4.5-12）。
+ *
+ * 调度没有 `flow`（P3 边界 1：要按时跑一条流程，把它放进只含它的套件）；Webhook 有
+ * （外部业务事件天然是单链路且要带入参）。两个列表刻意分开而不是求并集——它们不是同一个
+ * 集合恰好差一项，是两个问题各自的答案。
+ */
+export const SCHEDULE_TARGET_TYPES = ["suite", "ci_task"] as const;
+export type ScheduleTargetType = (typeof SCHEDULE_TARGET_TYPES)[number];
+export const WEBHOOK_TARGET_TYPES = ["flow", "suite", "ci_task"] as const;
+export type WebhookTargetType = (typeof WEBHOOK_TARGET_TYPES)[number];
+
+/** 一条定时调度（目标是套件或 CI 任务，P4.5-12）。 */
 export type Schedule = {
   id: string;
   projectId: string;
   name: string;
-  targetType: "suite";
+  targetType: ScheduleTargetType;
   targetId: string;
-  /** 列表/详情接口 join 出的套件名；套件被删后为空。 */
+  /** 列表/详情接口 join 出的目标名；目标被删后为空。 */
   targetName?: string;
-  /** 为空 = 套件自己的环境配置；有值 = 触发时覆盖（边界 4）。 */
+  /** 为空 = 套件自己的环境配置；有值 = 触发时覆盖（边界 4）。CI 目标上无意义。 */
   environmentId?: string;
   cron: string;
   /** 用户按墙上时钟写 cron，默认 Asia/Shanghai。 */
   timezone: string;
   enabled: boolean;
-  /** 每次触发都带的变量覆盖（6.5 泳道第二层），如 {"lane":"lane-b"}。 */
+  /** 每次触发都带的变量覆盖（6.5 泳道第二层），如 {"lane":"lane-b"}。
+      CI 目标下它就是任务 `parameters`（同一条键形约束、同一句语义）。 */
   variables: Record<string, string>;
   /** 禁用为空；调度器认领后快进。界面显示「下次执行」就靠它。 */
   nextRunAt?: string;
@@ -1214,6 +1240,8 @@ export type Schedule = {
 
 export type ScheduleInput = {
   name?: string;
+  /** 创建时缺省 `'suite'`（服务端兜底）；编辑时不改类型就不用带。 */
+  targetType?: ScheduleTargetType;
   targetId?: string;
   cron?: string;
   timezone?: string;
@@ -1231,11 +1259,30 @@ export type ScheduleRun = {
   plannedAt: string;
   triggeredAt?: string;
   status: "triggered" | "skipped" | "failed";
-  /** 触发成功才指向产生的父执行；skipped/failed 没有。 */
+  /** 套件目标触发成功后指向产生的父执行；skipped/failed 没有。 */
   executionIndexId?: string;
+  /** CI 目标触发成功后指向那条 pipeline run——它的 index 行要到终态才写（P4.5-12）。 */
+  pipelineRunId?: string;
+  /**
+   * 那次执行自己的状态（服务端 runs 列表 JOIN 出来）：`triggered` 只表示拉起成功，
+   * 执行结果在这——CI 目标为 `pipeline_runs.status`，套件目标为 `execution_index.status`。
+   * skipped / failed 或引用悬空（目标被删）时为 undefined。
+   */
+  executionStatus?: string;
   error?: string;
   createdAt: string;
 };
+
+/**
+ * 「立即跑一次」的结果（P4.5-12 起是按 `targetType` 判别的联合）。
+ *
+ * 两条路径产出的是两种东西（一行 `suite_executions` / 一行 `pipeline_runs`），后续跳转
+ * 目标也不同（套件报告 / run 详情页）。判别式把「我拿到的是什么」写在数据里，而不是让
+ * 调用方按字段有无去猜。
+ */
+export type ScheduleRunNowResult =
+  | { targetType: "suite"; suiteExecution: SuiteExecution }
+  | { targetType: "ci_task"; pipelineRun: PipelineRun & { idempotentReplay?: boolean } };
 
 /** cron 预览（`POST /schedules/preview`）：服务端算出的下几次执行时间。 */
 export type SchedulePreview = { cron: string; timezone: string; next: string[] };
@@ -1245,8 +1292,7 @@ export type WebhookTrigger = {
   id: string;
   projectId: string;
   name: string;
-  /** 流程仍可被 Webhook 触发（边界 1 末段）：业务事件天然是单链路且要带入参。 */
-  targetType: "flow" | "suite";
+  targetType: WebhookTargetType;
   targetId: string;
   targetName?: string;
   environmentId?: string;
@@ -1260,7 +1306,7 @@ export type WebhookTrigger = {
 
 export type WebhookTriggerInput = {
   name?: string;
-  targetType?: "flow" | "suite";
+  targetType?: WebhookTargetType;
   targetId?: string;
   environmentId?: string | null;
   enabled?: boolean;
@@ -1344,11 +1390,13 @@ export type NotificationDelivery = {
 export type NotificationDeliveryRow = NotificationDelivery & { channelName: string | null; ruleName: string | null };
 
 /** 报告列表行（边界 13/14）：派生值（耗时/排队/通过率）由服务端算好。 */
+/** 报告列表行（2026-09-02 起两个来源：套件 + 仓库执行，`kind` 决定点行去哪个详情页）。 */
 export type SuiteReportSummary = {
   id: string;
-  executionIndexId?: string;
+  kind: "suite" | "runner";
   reportName: string | null;
-  suiteName: string;
+  /** 套件名（suite）或任务名（runner）。 */
+  targetName: string;
   environmentName: string | null;
   runnerLabel: string;
   triggerSource: TriggerSource;
@@ -1407,15 +1455,15 @@ export type TrendBucket = {
   p99: number | null;
 };
 
-export type TrendReport = { range: "24h" | "7d" | "30d"; includeIngest: boolean; buckets: TrendBucket[] };
+export type TrendReport = { range: "24h" | "7d" | "30d"; includeRepo: boolean; buckets: TrendBucket[] };
 
 export type ReportRange = "24h" | "7d" | "30d";
 
 /** 汇总：总量 + 失败分布（按接口 Top20 / 按错误类型）。 */
 export type ReportSummary = {
   range: ReportRange;
-  /** 样本里是否含仓库上报（P4 边界 1），默认 false。 */
-  includeIngest: boolean;
+  /** 样本里是否含仓库上报与仓库执行（P4 边界 1 + P4.5 边界 2），默认 false。 */
+  includeRepo: boolean;
   total: number;
   successCount: number;
   failedCount: number;
@@ -1473,6 +1521,27 @@ export type Repository = {
   ingestRunCount: number;
 };
 
+/**
+ * 项目级命名 Git 凭据（P4.5-14）。
+ *
+ * 取代了原先挂在仓库行上的 `cloneMethod` / `hasCredential`：那三列要求「先有一次上报才
+ * 能配 clone」，而用户来这里正是因为还没有 CI。多个任务共用一把 key，换 token 只改一处。
+ *
+ * 明文永不回（只写不读）：这里只有名字、方式与更新时间。「公开仓库」由任务不引用凭据
+ * 表达，所以没有 `none` 档。
+ */
+export type GitCredential = {
+  id: string;
+  projectId: string;
+  name: string;
+  method: "https_token" | "ssh_key";
+  credentialUpdatedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  /** 引用它的 CI 任务数：删除确认前要先说清「删了它会影响几个任务」。 */
+  taskCount?: number;
+};
+
 /** 上报 Token。明文只在创建响应里出现一次，列表只回 `tokenPrefix`。 */
 export type IngestToken = {
   id: string;
@@ -1484,6 +1553,19 @@ export type IngestToken = {
 };
 
 export type RepoCaseResult = "passed" | "failed" | "unknown" | "not_run";
+
+/**
+ * 该用例最新一条**任务报告**（2026-09-03，验收反馈 ⑦）：通过状态、最近执行与
+ * 「绑定的仓库任务」都从 pipeline_run_cases（Runner 解析 junit/allure 落的行）读时
+ * 关联出来——报告是「这轮 CI 到底怎么走的」的权威副本。
+ */
+export type RepoCaseLastReport = {
+  runId: string;
+  runNumber: number;
+  taskName: string;
+  status: "passed" | "failed" | "skipped";
+  runAt: string;
+};
 
 export type RepoTestCase = {
   id: string;
@@ -1497,8 +1579,8 @@ export type RepoTestCase = {
   lastSeenCommit?: string;
   lastRunAt?: string;
   removedAt?: string;
-  /** 树里这条用例在该接口下的请求数（关系表上的累积值）。 */
-  requestCount?: number;
+  /** 最新任务报告（没有匹配的报告行时缺席——junit 的 guessed key 对不上就是没有）。 */
+  lastReport?: RepoCaseLastReport;
   endpoints?: { endpointId: string; endpointName: string; method: string; url: string; requestCount: number }[];
 };
 
@@ -1521,12 +1603,38 @@ export type RepoCaseTree = {
   };
 };
 
+/**
+ * 单条仓库用例的详情（抽屉读）：身份事实 + 参数化场景 + 最近记录 + 最新任务报告。
+ *
+ * `latestReport.requests` 是那次 run 的 SDK 请求序列（按 seq 排序，行上带 endpointId，
+ * 抽屉据此高亮「该接口所在的步骤」）；`latestReport.steps` 是报告包里的 allure 步骤树
+ * （junit-only 的任务没有包，缺席）。
+ */
+export type RepoCaseDetail = RepoTestCase & {
+  params: string[];
+  records: IngestRecord[];
+  latestReport?: {
+    runId: string;
+    runNumber: number;
+    taskName: string;
+    status: "passed" | "failed" | "skipped";
+    durationMs: number;
+    message: string | null;
+    runAt: string;
+    steps?: AllureReportStep[];
+    requests: IngestRecord[];
+  };
+};
+
 export type IngestRun = {
   id: string;
   commitSha: string;
   branch: string;
+  /** 最近一次上报的 CI 来源（迁移 045 起同 commit 折同一行，不再随执行新增行）。 */
   ciRunId: string;
   ciRunUrl?: string;
+  /** 这个 commit 在 CI 上执行过的次数（SDK 直跑不计入）。 */
+  ciExecutionCount: number;
   /** 本次跑的范围，相对仓库根。空数组 = 全仓。 */
   scope: string[];
   /** 「这个范围内没有过滤」，不是「跑了整个仓库」。 */
@@ -1567,6 +1675,9 @@ export type IngestRecord = {
   caseName?: string;
   caseKey?: string;
   endpointName?: string;
+  /** 打到的登记接口（未匹配为 undefined）。服务端 mapIngestRecord 一直回，用例抽屉的
+      「该接口」高亮按它比对。 */
+  endpointId?: string;
 };
 
 export type IngestRunDetail = IngestRun & { records: IngestRecord[] };
@@ -1593,6 +1704,353 @@ export type UnmatchedPath = {
 
 /** 人工标注的外部依赖前缀。只影响诊断列表的显示，不影响任何统计。 */
 export type IngestPathRule = { id: string; pathPrefix: string; note: string; createdAt: string };
+
+/* ── P4.5: pipeline run（P4.5-11 执行详情页 + P4.5-13 报告视图） ─────────────── */
+
+/**
+ * 一条仓库任务（服务端 `mapCiTask` 的前端副本）。
+ *
+ * P4.5-9 只读它的身份字段（选任务用）；完整 CRUD 表单是 P4.5-11。任务级 secret 在
+ * P4.5-14 被删掉了——敏感值现在只有明文 `env` 一条路（代价见服务端注释）。
+ */
+export type CiTask = {
+  id: string;
+  projectId: string;
+  /**
+   * 任务自带的 clone 来源（P4.5-14）。`gitCredentialId` 为空 = 公开仓库。
+   *
+   * 与 `Repository.gitUrl` 同名不同角色：后者是上报身份，这里只回答「Runner 去哪 clone」。
+   * 搬到任务上的理由是配置顺序——仓库行只能由第一次上报创建。
+   */
+  gitUrl: string;
+  gitCredentialId?: string;
+  gitCredentialName?: string;
+  gitCredentialMethod?: GitCredential["method"];
+  name: string;
+  description: string;
+  gitRef: string;
+  runnerLabel: string;
+  sandboxMode: "process" | "container";
+  isolationMode: "shared";
+  image: string;
+  steps: string;
+  env: Record<string, string>;
+  cachePaths: string[];
+  cacheKeyFiles: string[];
+  /**
+   * 从 `steps` 里解析出的 allure 结果目录，**服务端算的只读派生值**。
+   *
+   * 报告格式下拉与路径输入框在 P4.5-14 一起删了：目录已经写在命令里
+   * （`--alluredir=…`）。为 `null` 时界面提示「跑完不会有报告」——提示而不是拦保存，
+   * 因为它可能写在用户仓库的 `pytest.ini` 里，平台看不见那份文件。
+   */
+  allureDir: string | null;
+  sdkIngestEnabled: boolean;
+  /**
+   * 终态结果通知（P4.5-12）。**与套件复用同一个类型**：形状逐字相同，只有占位符词表不同
+   * （CI 语境：{{taskName}} {{runNumber}} {{status}} {{passedCount}} {{failedCount}}
+   * {{skippedCount}} {{total}} {{duration}} {{gitRef}} {{commitSha}} {{trigger}}
+   * {{finishedAt}}）。
+   */
+  notify: SuiteNotifyConfig;
+  /**
+   * 任务级串行（P4.5-12）。默认开：同一份仓库用例并发跑两遍互不干扰，是需要被证明的
+   * 性质而不是默认成立的性质。语义是**排队而不是拒绝**——触发照常受理，只是要等前一条。
+   */
+  singleConcurrency: boolean;
+  timeoutSeconds: number;
+  enabled: boolean;
+  /**
+   * 任务当前在途（排队/执行中）的最新一条 run：列表页的行内提示，点击直达 run 详情。
+   * 只有列表接口填充，其余调用方为 `undefined`（「未知」，不与「没有在途」混同——后者
+   * 是 `activeRunCount` 为 0）。
+   */
+  activeRun?: { id: string; runNumber: number; status: PipelineRun["status"] };
+  /** 在途条数：串行任务恒 ≤1；关掉串行后可并行多条。仅列表接口填充。 */
+  activeRunCount?: number;
+  /**
+   * 最近一条执行（任何状态）与历史总条数。仅列表接口填充。
+   *
+   * `activeRun` 只在有在途 run 时存在——跑完的任务收起来后就既没有状态也没有规模。
+   * 这两个字段让收起的任务行自己回答「上次是过还是挂、一共跑过几次」。
+   */
+  lastRun?: { id: string; runNumber: number; status: PipelineRun["status"] };
+  /** 历史执行总条数。`0` = 从没跑过；`undefined` = 这个读法没查（详情/编辑页）。 */
+  runTotal?: number;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * 勾选执行的任务推荐（§8.3）。
+ *
+ * `ciTaskId` 为 null = 没有历史命中，由前端按「只有一个任务就用它、多个让用户选」处理
+ * （P4.5-14 删掉了「默认任务」那一档兜底）。
+ */
+export type CiTaskRecommendation = {
+  ciTaskId: string | null;
+  reason: "recent_hit" | null;
+  /** `recent_hit` 时：这个任务最近上报过勾选集里的几条。 */
+  hitCount: number;
+  caseKeyTotal: number;
+};
+
+/** 一次 CI 任务的执行（服务端 PipelineRun mapper 的前端副本）。 */
+export type PipelineRun = {
+  id: string;
+  projectId: string;
+  ciTaskId: string;
+  executionIndexId?: string;
+  runNumber: number;
+  status: "queued" | "claimed" | "running" | "cancelling" | "success" | "failed" | "canceled" | "aborted" | "timed_out";
+  stage: "pending" | "clone" | "cache" | "script" | "report" | "done";
+  runnerLabel: string;
+  sandboxMode: string;
+  runnerId?: string;
+  leaseExpiresAt?: string;
+  triggerSource: TriggerSource;
+  triggerRefName?: string;
+  triggeredBy?: string;
+  gitRef: string;
+  commitSha: string;
+  caseFilter?: { caseKeys: string[] };
+  parameters: Record<string, unknown>;
+  exitCode?: number;
+  error?: string;
+  logBytes: number;
+  caseTotal: number;
+  passedCount: number;
+  failedCount: number;
+  skippedCount: number;
+  ingestRunId?: string;
+  createdAt: string;
+  claimedAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+};
+
+/** 报告解析出的 case 级结果（junit/allure；时间戳是 allure 的 epoch 毫秒）。 */
+export type PipelineRunCase = {
+  id: string;
+  pipelineRunId: string;
+  source: "junit" | "allure";
+  suiteName: string;
+  caseName: string;
+  guessedCaseKey?: string;
+  status: "passed" | "failed" | "skipped" | "error";
+  durationMs: number;
+  message?: string;
+  startedAtMs?: number;
+  finishedAtMs?: number;
+  host?: string;
+  thread?: string;
+};
+
+/** 一份已上传产物（列表读法带下载直链）。 */
+export type Artifact = {
+  id: string;
+  projectId: string;
+  ownerType: "pipeline_run";
+  ownerId: string;
+  kind: "log" | "report" | "file";
+  name: string;
+  storageDriver: "fs" | "s3";
+  storageKey: string;
+  sizeBytes: number;
+  contentType: string;
+  checksum: string;
+  uploadedAt?: string;
+  createdAt: string;
+};
+
+/**
+ * CI 任务的写入体（P4.5-11）。
+ *
+ * 全部可选是**部分覆盖**语义：PUT 时缺省的字段保持原值（服务端 `mergeDraft`）。
+ * `secrets` 是 patch（字符串写、`null` 删、缺省不动）——客户端从未持有明文，发不回全量。
+ * `repositoryId` 不在这里：代码来源只读，继承项目唯一仓库（交互 3.12.2）。
+ */
+export type CiTaskInput = {
+  name?: string;
+  description?: string;
+  gitUrl?: string;
+  /** `null` 是显式的「不用凭据」（公开仓库）；缺省 = 不动。 */
+  gitCredentialId?: string | null;
+  gitRef?: string;
+  runnerLabel?: string;
+  sandboxMode?: "process" | "container";
+  image?: string;
+  steps?: string;
+  env?: Record<string, string>;
+  cachePaths?: string[];
+  cacheKeyFiles?: string[];
+  sdkIngestEnabled?: boolean;
+  /** 整块覆盖（与套件同款）：缺省 = 不动，给了就整份写。 */
+  notify?: SuiteNotifyConfig;
+  singleConcurrency?: boolean;
+  timeoutSeconds?: number;
+  enabled?: boolean;
+};
+
+/** Git 凭据的写入体。`credential` 是明文，只在这一个方向出现（更新时缺省 = 不换）。 */
+export type GitCredentialInput = {
+  name: string;
+  method: GitCredential["method"];
+  credential?: string;
+};
+
+/**
+ * 一个 Runner 标签下的池状态（`/system/runner-pool`，任何能看这个项目的人可读）。
+ *
+ * 与 `RunnerLabelStatus`（BullMQ worker 的分区目录）**不是**一回事：那是平台内部执行器，
+ * 这是自托管 Runner。`queued` 是**跨项目的全局数**——认领扫描按标签取全平台最早的那条，
+ * 所以「我前面排着几个」的真实答案就是全局的。
+ */
+export type RunnerPoolLabel = {
+  label: string;
+  /** 可认领的台数（在线且不 draining）/ 注册台数。多标签 Runner 在每个标签下各算一次。 */
+  online: number;
+  total: number;
+  /** 可认领 Runner 的槽位之和（不按标签数均摊——跑哪个标签的 job 由 claim 决定）。 */
+  capacity: number;
+  inflight: number;
+  queued: number;
+};
+
+export type RunnerPool = {
+  offlineAfterSeconds: number;
+  labels: RunnerPoolLabel[];
+  /** 合计从 runner 行算，不是把 labels 求和（一台多标签机器只算一台）。 */
+  online: number;
+  total: number;
+  capacity: number;
+  inflight: number;
+  queued: number;
+};
+
+/**
+ * 一张 Runner 注册 Token（系统管理员）。明文只在创建响应里出现一次。
+ *
+ * `labels` 是**这张 token 允许声明的分区**：注册时校验 `runner.labels ⊆ token.labels`，
+ * 否则任何拿到 token 的机器都能自称在生产网段并领那边的任务。
+ */
+export type RunnerToken = {
+  id: string;
+  name: string;
+  /** 明文前 8 位，供列表辨认，不足以反推 Token。 */
+  tokenPrefix: string;
+  labels: string[];
+  createdBy?: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+  createdAt: string;
+  runnerCount?: number;
+};
+
+/**
+ * 一台已注册的 Runner（系统管理员）。
+ *
+ * 与 `Worker` 是两张表两个概念：「执行器」是平台内部 BullMQ worker，「Runner」是自托管、
+ * 跑仓库代码的机器。界面上要挨着放并写明区别（8.6）。
+ */
+export type Runner = {
+  id: string;
+  runnerTokenId: string;
+  runnerTokenName?: string;
+  name: string;
+  labels: string[];
+  capacity: number;
+  sandboxModes: ("process" | "container")[];
+  /** 容器档通道（Runner 自报）：`cli`（docker run 命令）/ `api`（Engine API over socket）。
+      缺席 = 这台机器没自报（进程档 only 或旧版 Runner）。 */
+  dockerTransport?: string;
+  version: string;
+  protocolVersion: string;
+  /** `draining` 是唯一一个人可以改的值：不再参与 claim，在跑的任务跑完。 */
+  status: "online" | "draining" | "offline";
+  /** 由查询按心跳新鲜度算出，从不存储。 */
+  online: boolean;
+  lastSeenAt: string;
+  registeredAt: string;
+};
+
+export type RunnerFleet = {
+  runners: Runner[];
+  offlineAfterSeconds: number;
+  capacity: number;
+  online: number;
+  total: number;
+};
+
+/** 报告视图（P4.5-13）：allure-results 包在服务端解析后的归一形状。 */
+export type AllureReportAttachment = {
+  /** allure 的展示名（log / stdout / 截图名）。 */
+  name: string;
+  /** 报告包内的实体文件名（allure 的 `source`）——附件下载路由按它取数。 */
+  source: string;
+  /** allure 报的媒体类型；空串时按扩展名猜。 */
+  type: string;
+};
+
+export type AllureReportStep = {
+  name: string;
+  status: string;
+  start?: number;
+  stop?: number;
+  children?: AllureReportStep[];
+  attachments?: AllureReportAttachment[];
+};
+
+export type AllureReportCase = {
+  uid: string;
+  name: string;
+  fullName: string;
+  /** 注释（pytest 的 docstring 落这里）；没有时为 null。 */
+  description: string | null;
+  suiteName: string;
+  parentSuiteName: string;
+  status: string;
+  message: string | null;
+  trace: string | null;
+  start?: number;
+  stop?: number;
+  durationMs: number;
+  host: string | null;
+  thread: string | null;
+  parameters: { name: string; value: string }[];
+  labels: { name: string; value: string }[];
+  steps: AllureReportStep[];
+  /** fixture（container 的 before/after）：case 执行前后做了什么。 */
+  befores: AllureReportFixture[];
+  afters: AllureReportFixture[];
+  attachments: AllureReportAttachment[];
+};
+
+export type AllureReportFixture = {
+  name: string;
+  type: "before" | "after";
+  status: string;
+  start?: number;
+  stop?: number;
+  steps: AllureReportStep[];
+  attachments: AllureReportAttachment[];
+};
+
+export type AllureReportContainer = {
+  uid: string;
+  children: string[];
+  befores: AllureReportFixture[];
+  afters: AllureReportFixture[];
+};
+
+export type AllureReportView = {
+  cases: AllureReportCase[];
+  containers: AllureReportContainer[];
+  /** 附件实体名（source）→ content-type。 */
+  attachments: Record<string, string>;
+  skippedFiles: number;
+};
 export type ExecutionSourceFilter = "endpoint_debug" | "test_case" | "flow_step" | "all";
 export type ExecutionFilters = { status?: string; endpointId?: string; source?: ExecutionSourceFilter; caseId?: string; page?: number; pageSize?: number };
 /** Paged reads keep `total` so the UI can show real page controls. */
@@ -1713,6 +2171,24 @@ export const api = {
   systemLimits: () => client.get("/system/limits").then(data<PlatformLimits>),
   /** 分区标签目录：环境编辑器的分区建议与「无在线执行器」提示用。任何登录用户可读。 */
   runnerLabels: () => client.get("/system/runner-labels").then(data<RunnerLabelStatus[]>),
+  /**
+   * 自托管 Runner 池的**聚合**状态（P4.5-11）。任何登录用户可读——CI 任务列表顶部要
+   * 显示「在线 / 槽位 / 空闲 / 排队 N 个」，而 Runner 清单（`runnerFleet`）只给系统
+   * 管理员。与 `runnerLabels` 不是一回事：那是平台内部 BullMQ 执行器。
+   */
+  runnerPool: () => client.get("/system/runner-pool").then(data<RunnerPool>),
+  /** Runner 清单 + 可认领容量。系统管理员，带机器身份信息。 */
+  runnerFleet: () => client.get("/system/runners").then(data<RunnerFleet>),
+  /** 只能改 status，且只在 online ↔ draining 之间（offline 是心跳算出来的事实）。 */
+  updateRunner: (runnerId: string, status: "online" | "draining") =>
+    client.patch(`/system/runners/${runnerId}`, { status }).then(data<Runner>),
+  runnerTokens: () => client.get("/system/runner-tokens").then(data<RunnerToken[]>),
+  /** 创建：`token` 明文**只在这一次响应里**，丢了只能吊销重发。 */
+  createRunnerToken: (input: { name: string; labels?: string[] }) =>
+    client.post("/system/runner-tokens", input).then(data<RunnerToken & { token: string }>),
+  /** 吊销是软删（留 `revokedAt`）：硬删会级联掉 runners，「那台机器拿哪张 token 注册的」就答不出来了。 */
+  revokeRunnerToken: (tokenId: string) =>
+    client.delete(`/system/runner-tokens/${tokenId}`).then(data<RunnerToken>),
 
   projects: (filters?: ProjectFilters) => client.get("/projects", { params: projectParams(filters) }).then(data<ProjectMetric[]>),
   /** 管理页的分页读法（与 environmentList 同一契约）：keyword 在 SQL 里过滤，total 是全量
@@ -1811,13 +2287,16 @@ export const api = {
   cancelBatch: (projectId: string, batchId: string) => client.post(`/projects/${projectId}/batch-executions/${batchId}/cancel`).then(data<BatchDebugSummary & { canceled: number }>),
   executions: (projectId: string, filters?: ExecutionFilters) => client.get(`/projects/${projectId}/executions`, { params: executionParams(filters) }).then(paged<Execution>),
   /** Project-wide parent executions, filtered by kind — flows are a category here (5.0.9). */
-  executionIndex: (projectId: string, filters?: { kind?: ExecutionIndex["kind"] | "all"; status?: string; triggerSource?: TriggerSource | "all"; keyword?: string; page?: number; pageSize?: number }) =>
+  executionIndex: (projectId: string, filters?: { kind?: ExecutionIndex["kind"] | "all"; status?: string; triggerSource?: TriggerSource | "all"; keyword?: string; caseFilter?: boolean; page?: number; pageSize?: number }) =>
     client.get(`/projects/${projectId}/execution-index`, {
       params: {
         kind: filters?.kind === "all" ? undefined : filters?.kind,
         status: filters?.status === "all" ? undefined : filters?.status,
         triggerSource: filters?.triggerSource === "all" || !filters?.triggerSource ? undefined : filters.triggerSource,
         keyword: filters?.keyword?.trim() || undefined,
+        /* 「勾选来的那些」（§8.3）：服务端按 `pipeline_runs.case_filter IS NOT NULL` 判，
+           不加第五个 trigger_source 值（边界 10）。只对 runner 行有意义。 */
+        caseFilter: filters?.caseFilter ? "1" : undefined,
         page: filters?.page, pageSize: filters?.pageSize,
       },
     }).then(paged<ExecutionIndex>),
@@ -2051,8 +2530,8 @@ export const api = {
    * 调度。`scheduler.overdue`（超宽限期未认领的启用调度数）是调度器活性提示——不建
    * 心跳表，用事实回答（P3-4）；>0 才在界面提示「调度器可能没在运行」。
    */
-  schedules: (projectId: string, filters?: { keyword?: string; enabled?: boolean; targetId?: string; page?: number; pageSize?: number }) =>
-    client.get(`/projects/${projectId}/schedules`, { params: { keyword: filters?.keyword?.trim() || undefined, enabled: filters?.enabled === undefined ? undefined : filters.enabled, targetId: filters?.targetId || undefined, page: filters?.page, pageSize: filters?.pageSize } }).then((response) => {
+  schedules: (projectId: string, filters?: { keyword?: string; enabled?: boolean; targetType?: ScheduleTargetType; targetId?: string; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/schedules`, { params: { keyword: filters?.keyword?.trim() || undefined, enabled: filters?.enabled === undefined ? undefined : filters.enabled, targetType: filters?.targetType || undefined, targetId: filters?.targetId || undefined, page: filters?.page, pageSize: filters?.pageSize } }).then((response) => {
       const result = paged<Schedule>(response);
       const scheduler = (response.data.meta as { scheduler?: { overdue?: number } } | undefined)?.scheduler;
       return { ...result, scheduler: { overdue: scheduler?.overdue ?? 0 } };
@@ -2067,9 +2546,15 @@ export const api = {
   /** 触发历史（含漏跑 skipped / 触发失败 failed——那两种没有执行，边界 15）。 */
   scheduleRuns: (projectId: string, scheduleId: string, filters?: { status?: string; page?: number; pageSize?: number }) =>
     client.get(`/projects/${projectId}/schedules/${scheduleId}/runs`, { params: { status: filters?.status && filters.status !== "all" ? filters.status : undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<ScheduleRun>),
-  /** 立即跑一次：用调度的配置现在触发，trigger_source=manual（不写 schedule_runs）。 */
-  runScheduleNow: (projectId: string, scheduleId: string) =>
-    client.post(`/projects/${projectId}/schedules/${scheduleId}/run`).then(data<SuiteExecution>),
+  /**
+   * 立即跑一次：用调度的配置现在触发，trigger_source=manual（不写 schedule_runs）。
+   * 结果按 `targetType` 判别（P4.5-12）：套件回一行执行，CI 任务回一行 pipeline run。
+   * `Idempotency-Key` 只在 CI 路径上有意义（服务端忽略套件路径的这个头）。
+   */
+  runScheduleNow: (projectId: string, scheduleId: string, options?: { idempotencyKey?: string }) =>
+    client.post(`/projects/${projectId}/schedules/${scheduleId}/run`, undefined, {
+      headers: options?.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : undefined,
+    }).then(data<ScheduleRunNowResult>),
 
   /** Webhook 触发器。创建/轮换的响应额外带一次性 `secret`（此处类型上收窄掉了）。 */
   webhookTriggers: (projectId: string) => client.get(`/projects/${projectId}/webhook-triggers`).then(data<WebhookTrigger[]>),
@@ -2109,17 +2594,18 @@ export const api = {
     client.get(`/projects/${projectId}/notification-deliveries`, { params: { ruleId: filters?.ruleId, channelId: filters?.channelId, executionIndexId: filters?.executionIndexId, status: filters?.status && filters.status !== "all" ? filters.status : undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<NotificationDeliveryRow>),
 
   /** 报告列表（边界 14 分页 + 触发源/状态筛选）。 */
-  suiteReports: (projectId: string, filters?: { keyword?: string; triggerSource?: string; status?: string; page?: number; pageSize?: number }) =>
-    client.get(`/projects/${projectId}/suite-reports`, { params: { keyword: filters?.keyword?.trim() || undefined, triggerSource: filters?.triggerSource && filters.triggerSource !== "all" ? filters.triggerSource : undefined, status: filters?.status && filters.status !== "all" ? filters.status : undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<SuiteReportSummary>),
+  suiteReports: (projectId: string, filters?: { keyword?: string; triggerSource?: string; status?: string; source?: string; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/suite-reports`, { params: { keyword: filters?.keyword?.trim() || undefined, triggerSource: filters?.triggerSource && filters.triggerSource !== "all" ? filters.triggerSource : undefined, status: filters?.status && filters.status !== "all" ? filters.status : undefined, source: filters?.source && filters.source !== "all" ? filters.source : undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<SuiteReportSummary>),
   /** 一份报告：标识 / 触发 / 结论 / 成员明细（不分页）。 */
   suiteReport: (projectId: string, executionId: string) =>
     client.get(`/projects/${projectId}/suite-reports/${executionId}`).then(data<SuiteReport>),
-  /** 趋势（边界 11）：空桶由服务端补齐，分位数 percentile_cont 在 SQL 里算。 */
-  trendReport: (projectId: string, range: ReportRange, includeIngest?: boolean) =>
-    client.get(`/projects/${projectId}/reports/trend`, { params: { range, includeIngest: includeIngest ? "1" : undefined } }).then(data<TrendReport>),
+  /** 趋势（边界 11）：空桶由服务端补齐，分位数 percentile_cont 在 SQL 里算。
+      `includeRepo` 同时管 `ingest` 与 `runner`（P4.5 边界 2：对用户是同一件事）。 */
+  trendReport: (projectId: string, range: ReportRange, includeRepo?: boolean) =>
+    client.get(`/projects/${projectId}/reports/trend`, { params: { range, includeRepo: includeRepo ? "1" : undefined } }).then(data<TrendReport>),
   /** 汇总：总量 + 失败分布（按接口 Top20 / 按错误类型）。 */
-  reportSummary: (projectId: string, range: ReportRange, includeIngest?: boolean) =>
-    client.get(`/projects/${projectId}/reports/summary`, { params: { range, includeIngest: includeIngest ? "1" : undefined } }).then(data<ReportSummary>),
+  reportSummary: (projectId: string, range: ReportRange, includeRepo?: boolean) =>
+    client.get(`/projects/${projectId}/reports/summary`, { params: { range, includeRepo: includeRepo ? "1" : undefined } }).then(data<ReportSummary>),
 
   /* ── P4: 仓库模式 ─────────────────────────────────────────────────────────── */
 
@@ -2138,6 +2624,19 @@ export const api = {
   revokeIngestToken: (projectId: string, tokenId: string) =>
     client.delete(`/projects/${projectId}/ingest-tokens/${tokenId}`).then(data<IngestToken>),
 
+  /* ── P4.5-14: 项目级 Git 拉取凭据（取代仓库行上的 clone 凭据） ─────────────── */
+
+  /** 列表带 `taskCount`：删除前要先说清「删了它会影响几个任务」。 */
+  gitCredentials: (projectId: string) => client.get(`/projects/${projectId}/git-credentials`).then(data<GitCredential[]>),
+  createGitCredential: (projectId: string, input: GitCredentialInput) =>
+    client.post(`/projects/${projectId}/git-credentials`, input).then(data<GitCredential>),
+  /** `credential` 缺省 = 只改名（凭据不动）；换方式必须同时给新明文。 */
+  updateGitCredential: (projectId: string, credentialId: string, input: GitCredentialInput) =>
+    client.put(`/projects/${projectId}/git-credentials/${credentialId}`, input).then(data<GitCredential>),
+  /** 被任务引用时回 409，`data.tasks` 是引用它的任务清单（没有 force 强删）。 */
+  deleteGitCredential: (projectId: string, credentialId: string) =>
+    client.delete(`/projects/${projectId}/git-credentials/${credentialId}`).then(data<{ id: string }>),
+
   /** 用例树（按接口分组，分页在接口上）+ 覆盖统计。 */
   repoCases: (projectId: string, filters?: { keyword?: string; status?: string; page?: number; pageSize?: number }) =>
     client.get(`/projects/${projectId}/repo-cases`, { params: { keyword: filters?.keyword?.trim() || undefined, status: filters?.status && filters.status !== "active" ? filters.status : undefined, page: filters?.page, pageSize: filters?.pageSize } })
@@ -2154,7 +2653,7 @@ export const api = {
       records 仍在响应里（run 明细页的口径），抽屉不展示。 */
   repoCase: (projectId: string, caseId: string) =>
     client.get(`/projects/${projectId}/repo-cases/${caseId}`)
-      .then(data<RepoTestCase & { params: string[]; records: IngestRecord[] }>),
+      .then(data<RepoCaseDetail>),
 
   /** 两个过滤都是布尔闸（后端 OR 语义）：changed = 新增或消失 > 0，unmatched = 有未匹配。 */
   ingestRuns: (projectId: string, page?: number, pageSize?: number, filters?: { changed?: boolean; unmatched?: boolean }) =>
@@ -2182,4 +2681,156 @@ export const api = {
     client.post(`/projects/${projectId}/ingest-path-rules`, input).then(data<IngestPathRule>),
   deleteIngestPathRule: (projectId: string, ruleId: string) =>
     client.delete(`/projects/${projectId}/ingest-path-rules/${ruleId}`).then(data<{ id: string }>),
+
+  /* ── P4.5: 自研 Runner 的 pipeline run（P4.5-11 读路由 + P4.5-13 报告视图） ──── */
+
+  /**
+   * CI 任务列表（P4.5-11 起是任务列表页的数据源；P4.5-9 的勾选弹窗也用它选触发目标）。
+   *
+   * `keyword` 由服务端 `ILIKE` 过滤（名称 / 描述 / Git 地址）：就地过滤只筛得到当前页，
+   * 而「我那条任务在第几页」正是要搜索的原因。
+   */
+  ciTasks: (projectId: string, page?: number, pageSize?: number, keyword?: string) =>
+    client.get(`/projects/${projectId}/ci-tasks`, { params: { page, pageSize, keyword: keyword || undefined } }).then(paged<CiTask>),
+  ciTask: (projectId: string, taskId: string) =>
+    client.get(`/projects/${projectId}/ci-tasks/${taskId}`).then(data<CiTask>),
+  createCiTask: (projectId: string, input: CiTaskInput) =>
+    client.post(`/projects/${projectId}/ci-tasks`, input).then(data<CiTask>),
+  /** 部分覆盖：缺省字段保持原值。`gitCredentialId: null` 显式清成「公开仓库」。 */
+  updateCiTask: (projectId: string, taskId: string, input: CiTaskInput) =>
+    client.put(`/projects/${projectId}/ci-tasks/${taskId}`, input).then(data<CiTask>),
+  /** 删除会级联掉这个任务的全部 pipeline run（服务端刻意如此）；要留历史就停用。 */
+  /**
+   * 删除。被调度 / Webhook 引用时回 409，`data.schedules` 与 `data.webhookTriggers` 是引用
+   * 清单（P4.5-12）；`force` 只在用户看过那份清单之后才发，服务端连带删掉引用者。
+   */
+  deleteCiTask: (projectId: string, taskId: string, force = false) =>
+    client.delete(`/projects/${projectId}/ci-tasks/${taskId}`, { params: force ? { force: "true" } : undefined }).then(data<{ id: string }>),
+  /** 勾选执行的推荐任务（§8.3）。POST 是因为 key 集合最多 500 条，塞不进查询串。 */
+  recommendCiTask: (projectId: string, caseKeys: string[]) =>
+    client.post(`/projects/${projectId}/ci-tasks/recommend`, { caseKeys }).then(data<CiTaskRecommendation>),
+  /**
+   * 触发一次 CI 任务。`caseFilter` 省略 = 全量；带上 = 勾选执行（§8.3）。
+   *
+   * `Idempotency-Key` 由调用方传入并**在重试之间保持不变**（P4.5-8）：键在这里现生成
+   * 就等于没防重——双击会生成两个键、产出两条 run。响应的 `idempotentReplay` 为真时
+   * 表示这一次没有新触发，回的是首次那条。
+   */
+  triggerCiTask: (projectId: string, taskId: string, input?: { parameters?: Record<string, string>; caseKeys?: string[]; idempotencyKey?: string }) =>
+    client.post(
+      `/projects/${projectId}/ci-tasks/${taskId}/trigger`,
+      {
+        parameters: input?.parameters,
+        caseFilter: input?.caseKeys?.length ? { caseKeys: input.caseKeys } : undefined,
+      },
+      input?.idempotencyKey ? { headers: { "Idempotency-Key": input.idempotencyKey } } : undefined,
+    ).then(data<PipelineRun & { idempotentReplay?: boolean }>),
+
+  /**
+   * run 列表（P4.5-15，8.12 ②）：按 `ciTaskId` 过滤，任务列表行内展开执行历史的数据源。
+   * `ciTaskId` 必填——跨任务的统一视角走执行记录页（execution_index），这里是任务视角。
+   */
+  pipelineRuns: (projectId: string, ciTaskId: string, page?: number, pageSize?: number) =>
+    client.get(`/projects/${projectId}/pipeline-runs`, { params: { ciTaskId, page, pageSize } }).then(paged<PipelineRun>),
+  /**
+   * run 详情。`blockedBy` 是**读时算出的关系**（P4.5-12）：这条 run 排着队且被任务级串行
+   * 挡在一条更早的 run 后面时，它是那一条的序号。没有它，「一直排队」与「分区没有 Runner」
+   * 在界面上长得一样，而处置动作完全不同。
+   */
+  pipelineRun: (projectId: string, runId: string) =>
+    client.get(`/projects/${projectId}/pipeline-runs/${runId}`).then((response) => ({
+      ...(response.data.data as PipelineRun),
+      blockedBy: (response.data.meta as { blockedBy?: number } | undefined)?.blockedBy,
+    })),
+  cancelPipelineRun: (projectId: string, runId: string) =>
+    client.post(`/projects/${projectId}/pipeline-runs/${runId}/cancel`).then(data<PipelineRun>),
+  /** 日志增量：`nextOffset` 是本次拉取的尾，`totalBytes` 是服务端当前总长（追上与否
+      的判据）。前端循环拉到 nextOffset === totalBytes 为止。 */
+  pipelineRunLogs: (projectId: string, runId: string, offset: number, bytes?: number) =>
+    client.get(`/projects/${projectId}/pipeline-runs/${runId}/logs`, { params: { offset, bytes } })
+      .then(data<{ text: string; nextOffset: number; totalBytes: number }>),
+  /** cases 全量（时间轴与列表共用；几万行内不分页）。 */
+  pipelineRunCases: (projectId: string, runId: string) =>
+    client.get(`/projects/${projectId}/pipeline-runs/${runId}/cases`).then(data<PipelineRunCase[]>),
+  /** 产物列表（带 5 分钟短活的下载直链）。 */
+  pipelineRunArtifacts: (projectId: string, runId: string) =>
+    client.get(`/projects/${projectId}/pipeline-runs/${runId}/artifacts`).then(data<(Artifact & { downloadUrl: string })[]>),
+  /** 报告视图（P4.5-13）：没有报告包时回 null（junit 任务是正常态不是错误态）。 */
+  pipelineRunReport: (projectId: string, runId: string) =>
+    client.get(`/projects/${projectId}/pipeline-runs/${runId}/report`).then(data<AllureReportView | null>),
+  /**
+   * 报告附件（步骤日志 / 截图）。走 axios 拿 Blob 而不是裸 URL：附件路由要 Bearer 头，
+   * `<img src>` 与 `fetch` 都带不上（dev 下 web 与 API 还是跨源），只有 axios 的请求
+   * 拦截器能带上 token。`name` 传附件的**实体文件名**（allure 的 source）——路由按
+   * 报告包内 basename 匹配，展示名（log/stdout）在包里没有同名实体。
+   */
+  pipelineRunAttachment: (projectId: string, runId: string, name: string) =>
+    client.get(`/projects/${projectId}/pipeline-runs/${runId}/attachments`, { params: { name }, responseType: "blob" })
+      .then((response) => response.data as Blob),
+
+  /* ── 报告分享（2026-09-02）：项目内管理 + 免登录公开读 ─────────────────────── */
+
+  /** 目标当前的有效分享；没有时回 null（已分享 / 未分享是一个布尔事实，不是错误）。 */
+  reportShare: (projectId: string, targetType: ReportShareTarget, targetId: string) =>
+    client.get(`/projects/${projectId}/report-shares`, { params: { targetType, targetId } }).then(data<ReportShare | null>),
+  /**
+   * 创建分享。幂等于服务端：一个目标同时只有一条有效分享（重复点拿到同一条链接，
+   * token 不换——先贴出去的链接不会因为再点一次按钮而失效）。
+   */
+  createReportShare: (projectId: string, targetType: ReportShareTarget, targetId: string) =>
+    client.post(`/projects/${projectId}/report-shares`, { targetType, targetId }).then(data<ReportShare>),
+  /** 撤销分享：链接立刻失效。 */
+  revokeReportShare: (projectId: string, shareId: string) =>
+    client.delete(`/projects/${projectId}/report-shares/${shareId}`).then(data<{ id: string }>),
+  /** 公开读（免登录）：token → 报告只读视图。附件走 `publicReportAttachment`（同为 Blob）。 */
+  publicReportShare: (token: string) =>
+    client.get(`/public/report-shares/${encodeURIComponent(token)}`).then(data<PublicReportShare>),
+  /** 公开附件（免登录）：token 即凭据，仍走 axios 只为统一 Blob 形状。 */
+  publicReportAttachment: (token: string, name: string) =>
+    client.get(`/public/report-shares/${encodeURIComponent(token)}/attachments`, { params: { name }, responseType: "blob" })
+      .then((response) => response.data as Blob),
+  /* ── 公开成员证据（套件报告分享页的成员抽屉，2026-09-03）────────────────────
+   * 与站内三件同款拼装，鉴权从「项目成员」换成「持有 token」；归属由服务端的证据
+   * 闭包判定（token 换的是这份报告的证据，不是项目的执行历史）。 */
+  /** 用例成员的执行快照。 */
+  publicShareExecution: (token: string, executionId: string) =>
+    client.get(`/public/report-shares/${encodeURIComponent(token)}/executions/${encodeURIComponent(executionId)}`).then(data<Execution>),
+  /** 流程成员的整次流程执行（run + steps + executionSteps，服务端一次带齐）。 */
+  publicShareFlowSteps: (token: string, indexId: string) =>
+    client.get(`/public/report-shares/${encodeURIComponent(token)}/flow-steps/${encodeURIComponent(indexId)}`).then(data<FlowExecutionDetail>),
+  /** 容器步骤的内层证据（loop / subflow / 并发请求）。 */
+  publicShareStepChildren: (token: string, stepId: string) =>
+    client.get(`/public/report-shares/${encodeURIComponent(token)}/step-children/${encodeURIComponent(stepId)}`)
+      .then(data<{ steps: ExecutionStep[]; executions: Execution[] }>),
+};
+
+/** 分享目标两类：套件报告与仓库执行报告。 */
+export type ReportShareTarget = "suite" | "runner";
+
+/** 一条有效分享（token 就是 URL 凭据——对项目成员可见，他们本来就能创建）。 */
+export type ReportShare = {
+  id: string;
+  projectId: string;
+  targetType: ReportShareTarget;
+  targetId: string;
+  token: string;
+  createdBy?: string;
+  createdAt: string;
+  revokedAt?: string;
+};
+
+/** 公开分享载荷：按 kind 分派两份只读视图（与项目内详情同一份服务端拼装）。 */
+export type PublicReportShare = {
+  kind: ReportShareTarget;
+  projectName: string;
+  sharedAt: string;
+  report: SuiteReport | RunnerReportPayload;
+};
+
+/** 仓库执行报告的分享载荷：run 摘要 + cases + allure 视图（与 report tab 同一形状）。 */
+export type RunnerReportPayload = {
+  run: PipelineRun;
+  taskName: string;
+  cases: PipelineRunCase[];
+  report: AllureReportView | null;
 };

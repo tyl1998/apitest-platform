@@ -6,6 +6,7 @@
  * breakpoints against .kilo/skill/quiet-console/SKILL.md.
  */
 import { createRoot } from "react-dom/client";
+import { ArrowLeft, Bell, Globe, History, Plug } from "lucide-react";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
 import "@fontsource/inter/600.css";
@@ -41,17 +42,26 @@ function Reference() {
   return (
     <div className="console">
       <aside className="sidebar">
-        <div className="lockup">
-          <span className="lockup-mark mono">AT</span>
-          <span className="lockup-name">ApiTrack</span>
+        <div className="sidebar-head">
+          <div className="lockup">
+            <span className="lockup-mark mono">AT</span>
+            <span className="lockup-name">ApiTrack</span>
+          </div>
+          <button className="nav-item nav-back">
+            <ArrowLeft size={14} />返回主页
+          </button>
         </div>
         <nav>
-          <span className="nav-section">接口模式</span>
-          <button className="nav-item is-active" aria-current="page">接口管理</button>
-          <button className="nav-item">环境管理</button>
-          <span className="nav-section">通用</span>
-          <button className="nav-item">运行概览</button>
-          <button className="nav-item">执行记录</button>
+          <div className="nav-group">
+            <span className="nav-section">接口资产</span>
+            <button className="nav-item is-active" aria-current="page"><Plug size={14} />接口管理</button>
+            <button className="nav-item"><Globe size={14} />环境管理</button>
+          </div>
+          <div className="nav-group">
+            <span className="nav-section">通用</span>
+            <button className="nav-item"><History size={14} />执行记录</button>
+            <button className="nav-item"><Bell size={14} />告警通知</button>
+          </div>
         </nav>
         <div className="sidebar-foot">
           <span className="chip mono">staging</span>

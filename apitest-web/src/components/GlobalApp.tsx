@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Form, Input, Modal, Pagination, Select, Switch, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { LogOut } from "lucide-react";
+import { Folder, LayoutDashboard, LogOut, Settings, type LucideIcon } from "lucide-react";
 import { api, type Dashboard, type Preferences, type ProjectMetric, type WorkerFleet, type WorkerMode } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useRecordLastPage } from "../hooks/useRecordLastPage";
@@ -10,6 +10,7 @@ import { useAuthStore } from "../stores/authStore";
 import type { ModePreference } from "../theme";
 import { Empty, Readout, Status } from "../ui";
 import { IconButton } from "./IconButton";
+import { RunnerPoolPanel } from "./RunnerPoolPanel";
 
 type GlobalPage = "dashboard" | "projects" | "system";
 
@@ -21,12 +22,14 @@ export function GlobalApp({ page, themePreference, onThemeChange }: { page: Glob
   const location = useLocation();
   const { t, i18n } = useTranslation();
   const logout = useAuthStore((state) => state.logout);
-  const nav: [GlobalPage, string][] = [["dashboard", t("nav.dashboard")], ["projects", t("nav.projects")], ["system", t("nav.system")]];
+  const nav: [GlobalPage, string, LucideIcon][] = [["dashboard", t("nav.dashboard"), LayoutDashboard], ["projects", t("nav.projects"), Folder], ["system", t("nav.system"), Settings]];
 
   return <div className="console">
     <aside className="sidebar">
-      <div className="lockup"><span className="lockup-mark mono">AT</span><span className="lockup-name">{t("app.name")}</span></div>
-      <nav><span className="nav-section">{t("nav.global")}</span>{nav.map(([key, label]) => <button key={key} className={`nav-item${page === key ? " is-active" : ""}`} onClick={() => navigate(`/${key}`)}>{label}</button>)}</nav>
+      <div className="sidebar-head">
+        <div className="lockup"><span className="lockup-mark mono">AT</span><span className="lockup-name">{t("app.name")}</span></div>
+      </div>
+      <nav><span className="nav-section">{t("nav.global")}</span>{nav.map(([key, label, Icon]) => <button key={key} className={`nav-item${page === key ? " is-active" : ""}`} onClick={() => navigate(`/${key}`)}><Icon size={14} />{label}</button>)}</nav>
       {/* Same control as the project shell, so signing out looks identical everywhere */}
       <div className="sidebar-foot">
         <IconButton
@@ -83,8 +86,10 @@ function DashboardPage() {
       </div>
       <div className="readouts">
         <Readout label={t("dashboard.testCases")} value={data.testCaseCount ?? t("dashboard.notEnabled")} />
-        <Readout label={t("dashboard.ciTasks")} value={t("dashboard.notEnabled")} />
-        {/* P3-6 起为真值：定时任务数在 dashboard 聚合里由服务端给出。CI 任务仍是 P4.5。 */}
+        {/* P4.5-11 起是真值：CI 任务数在 dashboard 聚合里由服务端给出（覆盖率一个字不改，
+            P4.5 边界 2——这里只是数任务）。 */}
+        <Readout label={t("dashboard.ciTasks")} value={data.ciTaskCount ?? t("dashboard.notEnabled")} />
+        {/* P3-6 起为真值：定时任务数在 dashboard 聚合里由服务端给出。 */}
         <Readout label={t("dashboard.schedules")} value={data.scheduleCount} />
       </div>
       <section className="panel"><div className="panel-head"><strong>{t("dashboard.projectTable")}</strong></div><div className="panel-body"><ProjectMetricsTable projects={data.projects} onEnter={(id) => navigate(`/projects/${id}/endpoints`)} /></div></section>
@@ -190,7 +195,7 @@ function ProjectsPage() {
   </>;
 }
 
-type SystemTab = "preferences" | "workers";
+type SystemTab = "preferences" | "workers" | "runners";
 
 function SystemPage({ themePreference, onThemeChange, language }: { themePreference: ModePreference; onThemeChange: (mode: ModePreference) => void; language: "zh-CN" | "en" }) {
   const { t, i18n } = useTranslation();
@@ -220,9 +225,13 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
    * that only share a page, which is what tabs are for. The second tab is
    * absent for non-admins rather than disabled: a tab you may never open is
    * just clutter.
+   *
+   * Runner 池（P4.5-11）是第三个 tab，**紧挨着执行器**：那是最容易被当成重复功能的
+   * 一对（8.6）。「执行器」是平台内部的 BullMQ worker，「Runner」是自托管、跑用户仓库
+   * 代码的机器；两张表两个概念，所以两个面板并列且各自写明区别，而不是合成一个。
    */
   const tabs: [SystemTab, string][] = isAdmin
-    ? [["preferences", t("system.tabPreferences")], ["workers", t("workers.title")]]
+    ? [["preferences", t("system.tabPreferences")], ["workers", t("workers.title")], ["runners", t("runners.title")]]
     : [["preferences", t("system.tabPreferences")]];
 
   return <>
@@ -241,6 +250,7 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
     </section>}
 
     {tab === "workers" && isAdmin && <WorkerFleetPanel />}
+    {tab === "runners" && isAdmin && <RunnerPoolPanel />}
   </>;
 }
 

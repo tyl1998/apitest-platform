@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Drawer, Form, Input, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -7,7 +7,7 @@ import { api, noRunnerLabel, type BatchDebugResult, type Endpoint, type Executio
 import { useDebounced } from "../hooks/useDebounced";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty, Method, RunStrip, toRunStatus, type RunStatus } from "../ui";
+import { Empty, Method, toRunStatus, type RunStatus } from "../ui";
 import { BatchResultList } from "./BatchResultList";
 import { ExecutionSnapshot } from "./ExecutionSnapshot";
 import { IconButton } from "./IconButton";
@@ -34,7 +34,6 @@ export function EndpointList() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [recent, setRecent] = useState<Execution[]>([]);
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState<string>();
   const [duplicating, setDuplicating] = useState<string>();
@@ -79,13 +78,10 @@ export function EndpointList() {
     if (!projectId || loadedProjectId !== projectId || projectLoading) return;
     setLoading(true);
     try {
-      /* 列表页走服务端分页（项目 store 仍拿全量给各处选择器，两者互不影响）。 */
-      const [list, runs] = await Promise.all([
-        api.endpointsPaged(projectId, { keyword: debouncedKeyword, method, environmentId: environmentFilter, page, pageSize }),
-        /* Enough recent runs to draw the history strip, not the full archive. */
-        api.executions(projectId, { pageSize: 200 }),
-      ]);
-      setRecent(runs.items);
+      /* 列表页走服务端分页（项目 store 仍拿全量给各处选择器，两者互不影响）。最近一次
+         执行的状态/耗时由列表接口随行带出（2026-09-03 性能修复：原先这里还要并行拉
+         200 条 /executions——约 254KB——只为了画「最近运行」条，那一列已按需求删除）。 */
+      const list = await api.endpointsPaged(projectId, { keyword: debouncedKeyword, method, environmentId: environmentFilter, page, pageSize });
       /* 删掉本页最后一行（单删或批删）后自动退一页，而不是停在一张空表上。 */
       if (!list.items.length && list.total > 0 && page > 1) { setPage(page - 1); return; }
       setEndpoints(list.items);
@@ -98,12 +94,6 @@ export function EndpointList() {
     setSearchParams({ ...(debouncedKeyword ? { keyword: debouncedKeyword } : {}), ...(method !== "all" ? { method } : {}), ...(environmentFilter !== "all" ? { environmentId: environmentFilter } : {}) }, { replace: true });
     void load();
   }, [projectId, loadedProjectId, projectLoading, debouncedKeyword, method, environmentFilter, page, pageSize]);
-
-  const runsByEndpoint = useMemo(() => {
-    const map = new Map<string, Execution[]>();
-    for (const run of recent) map.set(run.endpointId, [...(map.get(run.endpointId) ?? []), run]);
-    return map;
-  }, [recent]);
 
   async function execute(endpoint: Endpoint) {
     if (!projectId) return;
@@ -332,15 +322,14 @@ export function EndpointList() {
         <th className="col-path">{t("endpoints.path")}</th>
         <th className="col-num col-cases">{t("endpoints.cases")}</th>
         <th className="col-num">{t("endpoints.duration")}</th>
-        <th className="col-history">{t("endpoints.recentRuns")}</th>
         <th className="col-status">{t("endpoints.status")}</th>
         <th className="col-actions" />
       </tr></thead>
       <tbody>
         {endpoints.map((endpoint) => {
-          const runs = runsByEndpoint.get(endpoint.id) ?? [];
-          const latest = runs[0];
-          const status: RunStatus | undefined = running === endpoint.id || (batchRunning && selected.has(endpoint.id)) ? "running" : latest ? toRunStatus(latest.status) : undefined;
+          /* 耗时/状态读服务端随行的最近一次执行（不含流程步骤）；本行正在跑时以
+              running 覆盖——那是眼前的事实，优先于任何落库的旧结论。 */
+          const status: RunStatus | undefined = running === endpoint.id || (batchRunning && selected.has(endpoint.id)) ? "running" : endpoint.lastStatus ? toRunStatus(endpoint.lastStatus) : undefined;
           return <tr key={endpoint.id} data-clickable="" className={selected.has(endpoint.id) ? "is-selected" : undefined} onClick={() => navigate(`/projects/${projectId}/endpoints/${endpoint.id}`)}>
             <td className="col-select" onClick={(event) => event.stopPropagation()}>
               <input type="checkbox" aria-label={t("endpoints.selectEndpoint", { name: endpoint.name })} checked={selected.has(endpoint.id)} disabled={batchRunning} onChange={(event) => toggleSelected(endpoint.id, event.target.checked)} />
@@ -360,16 +349,7 @@ export function EndpointList() {
                 ? <span className="muted">—</span>
                 : <button className="cell-link mono" onClick={() => navigate(`/projects/${projectId}/endpoints/${endpoint.id}?side=cases`)}>{endpoint.caseCount}</button>}
             </td>
-            <td className="col-num mono">{latest ? <>{latest.durationMs}<span className="unit">ms</span></> : <span className="muted">—</span>}</td>
-            <td className="col-history">
-              <span
-                className="runstrip-hit"
-                role={latest ? "button" : undefined}
-                onClick={(event) => { event.stopPropagation(); if (latest) setResult(latest); }}
-              >
-                <RunStrip history={runs.slice(0, 10).reverse().map((run) => toRunStatus(run.status))} />
-              </span>
-            </td>
+            <td className="col-num mono">{endpoint.lastDurationMs !== undefined ? <>{endpoint.lastDurationMs}<span className="unit">ms</span></> : <span className="muted">—</span>}</td>
             <td className="col-status">{status ? <RunStatusTag status={status} /> : <span className="muted">{t("status.notRun")}</span>}</td>
             <td className="col-actions" onClick={(event) => event.stopPropagation()}>
               <div className="row-actions">

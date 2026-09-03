@@ -7,7 +7,6 @@ import { api, type IngestRun, type IngestRunDetail } from "../api";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Method, Tip } from "../ui";
 import { RepoPageHead, RepoTabs } from "./RepoShell";
-import { RunStatusTag } from "./RunStatusTag";
 
 /**
  * 上报记录（P4-8，交互 3.11.3）。
@@ -116,7 +115,9 @@ export function IngestRuns() {
                 </span>
                 <span className="resource-type mono truncate">
                   {run.sdkName ? `${run.sdkName} ${run.sdkVersion}` : t("repoCases.unknownSdk")}
-                  {run.ciRunId ? ` · ${run.ciRunId}` : ""}
+                  {/* ×N（迁移 045）：同一 commit 在 CI 上执行过的次数——折行后这行
+                      不再随执行新增，「跑了 8 次都折在这」要能一眼读出。 */}
+                  {run.ciExecutionCount > 1 && ` · ${t("repoCases.ciExecutionCount", { count: run.ciExecutionCount })}`}
                 </span>
               </td>
               {/* 空 scope = 全仓。显示成「整个仓库」而不是空白：空白读不出是「全仓」
@@ -135,7 +136,7 @@ export function IngestRuns() {
               <td className="col-num mono">{run.unmatchedCount || "—"}</td>
               <td className="mono muted">{new Date(run.createdAt).toLocaleString()}</td>
             </tr>
-            {open && <tr><td colSpan={8} style={{ padding: 0 }}>
+            {open && <tr><td colSpan={7} style={{ padding: 0 }}>
               <div className="panel-body">
                 <p className="form-note">
                   {state === "reconciled"
@@ -149,6 +150,9 @@ export function IngestRuns() {
                   <input type="checkbox" checked={changesOnly} onChange={(event) => setChangesOnly(event.target.checked)} />
                   {t("repoCases.filterRunChanges")}
                 </label>
+                {/* 记录明细不列 状态码/耗时/状态（2026-09-03 用户确认）：这张表回答的是
+                    「哪条用例的哪个请求打到了哪条路径」，执行结论属于仓库侧的报告视图
+                    （run 详情页），在这里重复一遍只是噪声。 */}
                 {!detail ? <p className="muted">{t("common.loading")}</p> : detail.records.length ? <table className="grid">
                   <thead><tr>
                     <th className="col-num">#</th>
@@ -156,9 +160,6 @@ export function IngestRuns() {
                     <th>{t("repoCases.phase")}</th>
                     <th>{t("repoCases.caseName")}</th>
                     <th>{t("repoCases.param")}</th>
-                    <th className="col-num">{t("status.code")}</th>
-                    <th className="col-num">{t("status.duration")}</th>
-                    <th className="col-status">{t("endpoints.status")}</th>
                   </tr></thead>
                   <tbody>
                     {detail.records.map((record) => <tr key={record.id}>
@@ -179,11 +180,6 @@ export function IngestRuns() {
                           用 pytest 的括号写法，看到 [vip] 就知道它是 param id；非参数化用例
                           与 fixture 阶段的记录显示 —。 */}
                       <Tip text={record.paramId ?? undefined}><td className="mono muted truncate">{record.paramId ? `[${record.paramId}]` : "—"}</td></Tip>
-                      <td className="col-num mono">{record.statusCode ?? "—"}</td>
-                      <td className="col-num mono">{record.latencyMs ?? "—"}</td>
-                      <td className="col-status">
-                        {record.passed === undefined ? <span className="muted">—</span> : <RunStatusTag status={record.passed ? "pass" : "fail"} />}
-                      </td>
                     </tr>)}
                   </tbody>
                 </table> : <p className="form-note">{changesOnly ? t("repoCases.noChangedRecords") : t("repoCases.noRecords")}</p>}

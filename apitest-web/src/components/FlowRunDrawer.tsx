@@ -109,15 +109,18 @@ export function flowStepRows(run: FlowExecutionDetail): StepRow[] {
 /**
  * 一个步骤展开后该看到什么。套件抽屉复用它，所以它必须自己判断行的种类，
  * 而不是靠调用方先分好类。
+ *
+ * `shareToken`（2026-09-03）：分享页的公开读法，内层证据（NestedStepList）改走
+ * `/public/report-shares/:token/*`；站内路径不变。
  */
-export function StepEvidence({ projectId, row }: { projectId: string; row: StepRow }) {
+export function StepEvidence({ projectId, row, shareToken }: { projectId?: string; row: StepRow; shareToken?: string }) {
   /* HTTP step: the request/response snapshot is the whole story. */
   if (row.execution) return row.step
     ? <ExecutionStepDetail step={row.step} execution={row.execution} />
     : <ExecutionDetail result={row.execution} />;
 
   /* Container steps (loop / subflow / request 并发) carry a summary and hang
-     their children off them. 只要 output 里带了 iterations，就需要展开成嵌套列表。 */
+      their children off them. 只要 output 里带了 iterations，就需要展开成嵌套列表。 */
   const iterations = (row.step?.output as {
     iterations?: { index: number; item?: string; status: string; durationMs: number; error?: string }[];
   } | undefined)?.iterations;
@@ -128,6 +131,7 @@ export function StepEvidence({ projectId, row }: { projectId: string; row: StepR
         projectId={projectId}
         parentStepId={row.step.id}
         iterations={iterations}
+        shareToken={shareToken}
       />
     </>;
   }

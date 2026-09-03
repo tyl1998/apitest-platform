@@ -16,12 +16,16 @@ import { toRunStatus } from "../ui";
  *
  * 循环 / 子流程可以再套循环 / 子流程，所以容器行展开后递归再渲染一层 NestedStepList，
  * 每一层都只展示自己的直接子步骤，点击始终落到具体那一次执行的快照上。
+ *
+ * `shareToken`（2026-09-03）：分享页的公开读法，取数改走 `/public/report-shares/:token/*`
+ * （token 即凭据）；站内路径不变。
  */
-export function NestedStepList({ projectId, parentStepId, iterations }: {
-  projectId: string;
+export function NestedStepList({ projectId, parentStepId, iterations, shareToken }: {
+  projectId?: string;
   parentStepId: string;
   /** 循环节点的每次迭代结论；子流程不传（它只跑一次）。 */
   iterations?: { index: number; item?: string; status: string; durationMs: number; error?: string }[];
+  shareToken?: string;
 }) {
   const { t } = useTranslation();
   const [steps, setSteps] = useState<ExecutionStep[]>();
@@ -32,10 +36,15 @@ export function NestedStepList({ projectId, parentStepId, iterations }: {
 
   useEffect(() => {
     setSteps(undefined); setFailed(false); setOpenStep(undefined); setOpenIteration(new Set());
-    void api.executionStepChildren(projectId, parentStepId)
+    const request = shareToken
+      ? api.publicShareStepChildren(shareToken, parentStepId)
+      : projectId
+        ? api.executionStepChildren(projectId, parentStepId)
+        : Promise.reject(new Error("no project context"));
+    void request
       .then((data) => { setSteps(data.steps); setExecutions(data.executions); })
       .catch(() => setFailed(true));
-  }, [projectId, parentStepId]);
+  }, [projectId, parentStepId, shareToken]);
 
   /* 失败要说出来，而不是显示一个空列表让人以为「里面什么都没跑」。 */
   if (failed) return <p className="form-note text-fail">{t("flows.nestedStepsFailed")}</p>;
@@ -67,7 +76,7 @@ export function NestedStepList({ projectId, parentStepId, iterations }: {
       {open && <div className="batch-detail">
         {/* 容器再套容器：递归展示下一层，各自按迭代/步骤逐层点开。 */}
         {isContainer
-          ? <NestedStepList projectId={projectId} parentStepId={step.id} iterations={stepIterations} />
+          ? <NestedStepList projectId={projectId} parentStepId={step.id} iterations={stepIterations} shareToken={shareToken} />
           : <ExecutionStepDetail step={step} execution={step.httpExecutionId ? httpById.get(step.httpExecutionId) : undefined} />}
       </div>}
     </div>;

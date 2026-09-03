@@ -49,6 +49,7 @@
   --bg: #f7f7f6;
   --surface: #ffffff;
   --raised: #fbfbfa;
+  --hover: #f0f0ee;
   --line: #e3e3e0;
   --line-strong: #cfcfca;
   --ink: #1c1c1a;
@@ -72,6 +73,7 @@
   --bg: #16181d;
   --surface: #1c1f25;
   --raised: #21252c;
+  --hover: #262b33;
   --line: #2c313a;
   --line-strong: #3a404b;
   --ink: #e4e6e9;
@@ -194,6 +196,18 @@ body {
 
 .lockup-name { font-weight: 600; letter-spacing: -.01em; }
 
+/* The project identity and the way back out are one header zone, separated
+   from the page list by a rule — without it the lockup read as just another
+   row of the nav. */
+.sidebar-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  min-width: 0;
+  padding-bottom: var(--s4);
+  border-bottom: 1px solid var(--line);
+}
+
 .sidebar nav {
   display: flex;
   flex: 1;
@@ -202,8 +216,22 @@ body {
   min-width: 0;
 }
 
+/* Each section is a real group box so the inter-group distance lives on the
+   group boundary. The old `.nav-section:first-child { margin-top: 0 }` reset
+   matched EVERY title — each was the first child of its own display:contents
+   wrapper — silently zeroing all top margins, which is why the groups read
+   as one pile no matter what the margin said. */
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.nav-group + .nav-group { margin-top: var(--s3); }
+
 .nav-section {
-  margin: 14px 0 var(--s1);
+  margin: 0 0 var(--s1);
   padding: 0 var(--s2);
   font-size: 10px;
   font-weight: 600;
@@ -212,19 +240,17 @@ body {
   color: var(--ink-3);
 }
 
-.nav-section:first-child { margin-top: 0; }
-
 .nav-back {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: var(--s2);
   color: var(--ink-3);
 }
 
 .nav-back:hover { color: var(--ink); }
 
 .nav-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
   padding: 6px var(--s2);
   border: 0;
   border-radius: 4px;
@@ -238,15 +264,32 @@ body {
   transition: background var(--t), color var(--t);
 }
 
-.nav-item:hover { background: var(--raised); color: var(--ink); }
+/* Outline marks sit one step quieter than the label; the active item's icon
+   follows the accent like its text. */
+.nav-item svg { flex: 0 0 auto; color: var(--ink-3); }
+.nav-item.is-active svg { color: var(--accent); }
+
+.nav-item:hover { background: var(--hover); color: var(--ink); }
 
 /* The current page must be unmistakable, since it is now the only indicator
-   of where you are: the in-page back link is gone. */
+   of where you are: the in-page back link is gone. The edge is a ::before
+   tick instead of an inset shadow so it stays crisp where the shadow had to
+   follow the rounded corners. */
 .nav-item.is-active {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
-  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.nav-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 3px;
+  bottom: 3px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 .sidebar-foot {
@@ -627,6 +670,14 @@ body {
   background: transparent;
   box-shadow: inset 0 0 0 1px currentColor;
 }
+/* 未执行（勾选执行的第四态，P4.5-9）：既不是结论也不是「测试自己决定跳过」，所以它
+   不借用任何语义色——中性 --ink-3 加空心点，读作「这一格还没有内容」。跟 skip 用同一个
+   黄会让「脚本跳过」与「勾了没跑」在扫列表时分不开，而那正是这一态存在的理由。 */
+.status[data-status="not_run"] { color: var(--ink-3); }
+.status[data-status="not_run"] .status-mark {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
 
 /* The one animation in the app: an in-flight request */
 .status[data-status="running"] .status-mark {
@@ -683,6 +734,35 @@ body {
 
 .panel-head strong { font-weight: 600; }
 .panel-body { padding: 18px var(--s4); }
+
+/* ── Advanced collapsed section (CI task editor, P4.5-15) ───────── */
+
+/* A `<details>` that reuses the panel chrome: the summary is the panel head.
+   The bottom border from .panel-head would double up with the body when open,
+   so it is moved here and dropped entirely while collapsed. */
+.advanced-panel { margin-top: var(--s5); }
+.advanced-panel > .advanced-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: 13px var(--s4);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.advanced-panel[open] > .advanced-summary { border-bottom: 1px solid var(--line); }
+.advanced-panel > .advanced-summary::-webkit-details-marker { display: none; }
+.advanced-panel > .advanced-summary:hover { color: var(--ink); }
+.advanced-panel > .advanced-summary strong { font-weight: 600; }
+
+/* ── Inline run history inside the task table (P4.5-15) ─────────── */
+
+.col-expand { width: 36px; }
+/* The nested table inherits .grid borders; inside a detail-row cell it must
+   read as part of the row, not as a second table. */
+.history-inline { border: 0; }
+.history-inline th { border-top: 0; }
 
 /* A run with no response yet: waiting, queued, or offering a cancel (P1-3). */
 .response-empty {
@@ -765,24 +845,30 @@ body {
 /* 详情抽屉的事实清单：标签列固定、值列吃剩余——抽屉窄、长路径是常态，值截断配 title
    悬停。与 .project-facts（三列居中的卡片统计块）是两种语境，不共用。
    两列网格长在每个 dt/dd 包裹 div 上而不是 dl 上：dl 的直接子元素是 div，把列定义放
-   dl 会让相邻两行并排挤进 96px 的列里（首版就是这条 bug）。 */
+   dl 会让相邻两行并排挤进 96px 的列里（首版就是这条 bug）。
+   行距 12px + dt/dd 同基线对齐（2026-09-03 反馈：行间距偏紧、KV 与下方卡片紧挨）。 */
 .detail-facts {
   display: grid;
-  gap: 10px;
-  margin: 14px 0 4px;
-  padding-top: 14px;
+  gap: 12px;
+  margin: var(--s4) 0 var(--s2);
+  padding-top: var(--s4);
   border-top: 1px solid var(--line);
 }
 .detail-facts > div {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
-  column-gap: 10px;
-  align-items: start;
+  column-gap: var(--s3);
+  align-items: baseline;
 }
-.detail-facts dt { font-size: 11px; color: var(--ink-3); padding-top: 3px; }
+.detail-facts dt { font-size: 11px; color: var(--ink-3); }
 .detail-facts dd { margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 /* 值列里的长文本：flex 子项默认不收缩，截断要显式允许。 */
 .detail-facts dd .truncate { flex: 1 1 auto; min-width: 0; }
+/* 身份事实的降权（2026-09-03 反馈：暗色下全屏同亮度）：case_key / 文件路径这类
+   「机器坐标」用 --ink-3（两档降权里的第二档，AA 内），名字与结论仍走 --ink——
+   层级来自灰度差，不引新色。抽屉专属：正文里的 mono 数值（状态码/耗时）不降。 */
+.detail-facts dd.mono { color: var(--ink-2); font-size: 12px; }
+.detail-facts dd.mono .cell-link { color: var(--ink-2); }
 
 .settings-list {
   background: var(--surface);
@@ -928,6 +1014,47 @@ pre.code { max-height: 340px; }
   background: var(--bg);
 }
 
+/* ── 公开分享页（/share/reports/:token）─────────────────────────── */
+/*
+ * 极简版 console：同样的「外壳占满视口、只有内容区滚动」纪律，但不带侧边栏与项目
+ * 导航——公开页面暴露导航等于把整个项目的结构亮给任何拿到链接的人。
+ */
+.share-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg);
+}
+.share-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: var(--s3) var(--s6);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.share-topbar .muted { font-size: 12px; }
+
+/* 分享控件（报告详情页顶栏）：链接框占满剩余宽度，动作按钮不换行。 */
+.share-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+}
+.share-controls .share-url {
+  width: min(360px, 36vw);
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
 .login-card {
   width: min(100%, 380px);
   padding: var(--s7);
@@ -1000,14 +1127,32 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
   /* Nav wraps onto more lines rather than scrolling sideways */
   .sidebar nav { flex: 1 1 auto; flex-flow: row wrap; gap: 2px; }
 
+  /* In bar mode the header zone collapses to an inline group; the divider
+     would cut the bar in half for no structural gain. */
+  .sidebar-head {
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--s2);
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
   .lockup, .sidebar-foot { flex: 0 0 auto; }
   .nav-section { display: none; }
+  /* Groups dissolve so the items wrap as one flat stream across the bar;
+     display:contents also drops the inter-group margins by itself. */
+  .nav-group { display: contents; }
   .nav-item { white-space: nowrap; }
 
   .nav-item.is-active {
     box-shadow: inset 0 -2px 0 var(--accent);
     border-radius: 4px 4px 0 0;
   }
+
+  /* The left tick belongs to the vertical rail; the bar marks the active
+     page with the underline above instead. */
+  .nav-item.is-active::before { display: none; }
 
   .sidebar-foot { padding-top: 0; border-top: 0; }
   .sidebar-who { display: none; }
@@ -1319,6 +1464,8 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .title-input:hover, .subtitle-input:hover { border-color: var(--line); }
 .title-input:focus, .subtitle-input:focus { outline: none; border-color: var(--accent); background: var(--surface); }
 .chip-warn { color: var(--skip); border-color: var(--skip); }
+/* 失败计数的 chip（run 概要行）：语义色的本义用法，不是装饰。 */
+.chip-fail { color: var(--fail); border-color: var(--fail); }
 
 .workbench { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--s4); align-items: start; }
 .workbench.is-solo { grid-template-columns: minmax(0, 1fr) auto; }
@@ -2537,7 +2684,11 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .check-field input { width: 14px; height: 14px; accent-color: var(--accent); }
 .detail-tabs { max-width: var(--measure); padding-inline: 0; }
 .detail-panel { margin-top: var(--s4); }
-.data-source-definition { max-width: 680px; }
+/* P3 把通用 .definition-grid 改成报告概览的三列 label-above-value 网格时，数据源
+   连接配置卡共用该类被连带改掉。这里恢复它原本的单列堆叠（首版样式：
+   flex column + gap s3，行内 140px 标签由 .definition-row 负责）。本条位于
+   .definition-grid 及其 940px/700px 媒体查询之后，同优先级必胜。 */
+.data-source-definition { display: flex; flex-direction: column; gap: var(--s3); max-width: 680px; }
 .sql-section { margin-top: var(--s4); }
 .section-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); margin-bottom: var(--s3); }
 .section-toolbar h2 { margin: 0; font-size: 15px; font-weight: 600; }
@@ -2673,3 +2824,341 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .phase-split { display: flex; gap: var(--s2); }
 .phase-split > span { color: var(--ink-3); font-family: var(--mono); font-size: 11px; }
 .phase-split > span[data-dominant] { color: var(--ink); font-weight: 500; }
+
+/*
+ * P4.5-11/13: CI 执行详情页。
+ *
+ * 概要行是**带标签的事实块**（2026-09-02 验收反馈 ②）：状态 / 阶段 / 提交 / 触发 /
+ * 结果各占一格、竖线分隔。原先那一行是纯文本混排——阶段词、commit 与三个计数挤在同一
+ * 条基线上，读的人得先分辨「哪几个字是一组」才能开始读内容。
+ *
+ * 阶段进度条仍是四个文本段加当前段强调——不画进度条的「轨道」，四段之间的先后关系
+ * 由文字顺序表达，当前段用 accent 下边线标出（与 .tab 的选中形状同族）。
+ */
+.pipeline-facts {
+  display: flex;
+  align-items: stretch;
+  gap: var(--s4);
+  flex-wrap: wrap;
+  margin-bottom: var(--s3);
+  min-width: 0;
+}
+.pipeline-fact { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.pipeline-fact + .pipeline-fact { padding-left: var(--s4); border-left: 1px solid var(--line); }
+.pipeline-fact > .label { font-size: 10px; }
+.pipeline-fact-value { display: flex; align-items: center; gap: var(--s2); min-width: 0; font-size: 12px; }
+/* 排队原因与错误文本是整句，不进事实格：它们要占满一行才读得完。 */
+.pipeline-notes { display: flex; flex-direction: column; gap: 3px; margin-bottom: var(--s4); }
+.pipeline-stages { display: flex; gap: var(--s3); min-width: 0; }
+.pipeline-stage {
+  font-size: 12px;
+  color: var(--ink-3);
+  padding-bottom: 3px;
+  border-bottom: 2px solid transparent;
+}
+.pipeline-stage.is-done { color: var(--ink); }
+.pipeline-stage.is-current {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+  font-weight: 500;
+}
+.pipeline-error {
+  color: var(--fail);
+  font-size: 12px;
+  max-width: 80ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 日志框：等高滚动（与 .console 同一条「只有内容区滚动」的纪律），行高对齐 mono。 */
+.pipeline-log {
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: var(--s3);
+  max-height: 60vh;
+  overflow: auto;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-width: 0;
+}
+
+/*
+ * timeline gantt（P4.5-13 第一层；2026-09-02 验收反馈重画）。
+ *
+ * 三件事让它可读：① 刻度落在整齐的时间边界上并配同位置的背景网格线——三个端点标签
+ * 读不出「某一段发生在什么时刻」；② 没有任何用例在跑的**空档**画成带虚线边界的灰带
+ * 并标注时长——原先那种「最右边孤零零一块、中间大片留白」看不出中间是空的还是数据
+ * 没画出来；③ 泳道按最早开始时间排序，读的顺序与执行顺序一致。
+ *
+ * 三层（刻度 / 网格+空档 / 泳道）靠同一个 `--lane-label` 变量对齐，改宽度只改一处。
+ * bar 高度 10px、轨道 16px：密集的并行执行里 bar 之间要留出可指的缝隙。
+ */
+.timeline {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: var(--s3);
+  min-width: 0;
+  overflow-x: auto;
+}
+.timeline-head { display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s2); }
+.timeline-head-facts { display: flex; gap: var(--s3); margin-left: auto; font-size: 11px; color: var(--ink-3); }
+/*
+ * `--lane-label` 是泳道标签列宽，刻度尺 / 网格层 / 泳道三层都拿它对齐，改宽度只改一处。
+ * `--tick-gutter` 是**右侧留白**：刻度标签居中于自己的刻度线，落在 100% 的那个会向右
+ * 探出半个标签宽。绝对定位的子元素仍然计入滚动溢出区，不留这条 gutter 的话最右侧那个
+ * 标签就会把 `.timeline` 的 `overflow-x: auto` 变成一条无意义的滚动条。留白而不是按
+ * 百分比把边缘标签改成右对齐：后者要猜标签有多宽，而字体与时区格式都会让那个猜测失准。
+ */
+.timeline-plot {
+  --lane-label: 148px;
+  --tick-gutter: 32px;
+  position: relative;
+  min-width: 620px;
+  padding-right: var(--tick-gutter);
+}
+.timeline-ruler { position: relative; height: 15px; margin-left: calc(var(--lane-label) + var(--s3)); }
+.timeline-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.timeline-lanes { position: relative; }
+/* 网格层与泳道的 track 对齐靠同一个偏移量：`.timeline-lane` 是
+   `grid-template-columns: var(--lane-label) 1fr` + `gap: var(--s3)`，所以 track 的左边
+   就在「标签列宽 + 间距」处，右边与容器右边齐平——这一层用同一个 calc 做 inset。
+   `overflow: hidden` 是为了最后那条落在 100% 的网格线：1px 宽会溢出 1px，给外层的
+   `overflow-x: auto` 造出一条无意义的滚动条。 */
+.timeline-grid { position: absolute; inset: 0 0 0 calc(var(--lane-label) + var(--s3)); overflow: hidden; pointer-events: none; }
+.timeline-gridline { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line); }
+.timeline-idle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--hover);
+  border-inline: 1px dashed var(--line-strong);
+}
+.timeline-idle span { padding-inline: 2px; font-size: 10px; color: var(--ink-3); white-space: nowrap; }
+.timeline-lane {
+  display: grid;
+  grid-template-columns: var(--lane-label) 1fr;
+  gap: var(--s3);
+  align-items: center;
+  padding: 3px 0;
+}
+.timeline-lane-label {
+  color: var(--ink-3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.timeline-track { position: relative; height: 16px; min-width: 0; }
+.timeline-bar {
+  position: absolute;
+  top: 3px;
+  height: 10px;
+  border-radius: 2px;
+  min-width: 2px;
+  opacity: .9;
+}
+.timeline-bar:hover { opacity: 1; }
+.timeline-bar.case-passed { background: var(--pass); }
+.timeline-bar.case-failed { background: var(--fail); }
+.timeline-bar.case-skipped { background: var(--skip); }
+.timeline-bar.case-error { background: var(--fail); }
+/* 悬停读数占一行常驻高度：条件渲染会让整块图在指针进出时上下跳一次。 */
+.timeline-hover {
+  display: flex;
+  gap: var(--s3);
+  align-items: center;
+  min-height: 20px;
+  margin-top: var(--s2);
+  font-size: 11px;
+  min-width: 0;
+}
+.timeline-hover .truncate { max-width: 48ch; }
+.timeline-note { margin: var(--s2) 0 0; font-size: 11px; color: var(--ink-3); }
+
+/* 用例行首的状态圆点：语义色的小面积使用（Status 原语的点状对应物）。 */
+.case-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: var(--s2);
+  flex-shrink: 0;
+}
+.case-dot.case-passed { background: var(--pass); }
+.case-dot.case-failed { background: var(--fail); }
+.case-dot.case-skipped { background: var(--skip); }
+.case-dot.case-error { background: var(--fail); }
+
+/* suite 分组行（报告视图）：不参与行 hover 的实体，只是分组标题。 */
+.grid tr.suite-row td {
+  background: var(--raised);
+  font-size: 11px;
+  color: var(--ink-3);
+  padding: 6px var(--s3);
+}
+.suite-name { font-weight: 500; color: var(--ink); }
+/* 可折叠的分组行（2026-09-02 验收反馈 ③）：整行是按钮，caret 指示展开态。 */
+.grid tr.suite-row[data-clickable] td { cursor: pointer; }
+.grid tr.suite-row[data-clickable]:hover td { background: var(--hover); }
+.suite-row-head { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.suite-row-head > .suite-name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.suite-row-head > .muted { flex: 0 0 auto; }
+.suite-row-caret { display: inline-flex; flex: 0 0 auto; color: var(--ink-3); }
+/* 分组统计里的失败数：一眼看出「要展开哪一个文件」。 */
+.suite-row-head .text-fail { font-weight: 500; }
+
+/* 报告视图的 case 明细（2026-09-02 第三批起住在抽屉里，抽屉体自滚动）。 */
+.report-case-detail { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+/* 抽屉标题与 Modal 同级（2026-09-03 反馈：13px 与正文无层级差，读不出「这是标题」）。
+   Drawer 没有 titleFontSize 这个 component token（Modal 有），走 CSS 一层——antd 的
+   boundary 规则：行为留给 antd，外观归这边。所有抽屉统一生效，不止仓库用例抽屉。 */
+.ant-drawer-title {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  color: var(--ink);
+}
+
+/* 抽屉二级标题（2026-09-03 反馈）：11px/500 与正文 12px 无层级差，读不出「这是小节」。
+   12px/600 + 上边距 + 分隔线给足分割感；大写字母间距与 .nav-section 同款，是本系统
+   「小节标签」的既有形状（不引新色、不动字号体系）。 */
+.detail-block h4 {
+  margin: var(--s5) 0 var(--s3);
+  padding-bottom: var(--s1);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink-2);
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+.detail-block:first-child h4 { margin-top: 0; }
+.param-row { display: flex; gap: var(--s3); font-size: 12px; }
+.param-row .muted { min-width: 16ch; }
+.step-tree { list-style: none; margin: 0; padding: 0; min-width: 0; }
+.step-tree .step-tree { padding-left: var(--s4); }
+.step-tree li { min-width: 0; }
+.step-tree li + li { margin-top: 2px; }
+.step-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  /* 2026-09-03 反馈：行高过矮（2px 内边距）。6px 让请求序列/步骤树有呼吸感；
+     按钮行同步（同一条规则管两种 step-row，否则 hover 底色高矮不一）。 */
+  padding: 6px 0;
+  font-size: 12px;
+  min-width: 0;
+}
+.step-row .truncate { flex: 1; min-width: 0; }
+/* 有子步骤的行是真按钮（原先 caret 只是装饰，点不动）：整行可点，键盘可达。 */
+button.step-row {
+  width: 100%;
+  border: 0;
+  border-radius: var(--r);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--t);
+}
+button.step-row:hover { background: var(--hover); }
+.step-caret { display: inline-flex; flex: 0 0 auto; color: var(--ink-3); }
+.step-caret[data-leaf] { opacity: .3; }
+/* 状态圆点的光学对齐（2026-09-03 反馈：8px 点在 12px 行里偏高 1px）：
+   基线中点与文本 x-height 的视觉中心差半像素，位移而不是改尺寸——尺寸是语义色
+   斑点的既有大小。 */
+.step-row .case-dot { transform: translateY(.5px); }
+/* 仓库用例抽屉的「该接口」请求行（2026-09-03）：选中态的克制用法——左缘 accent +
+   同款底色，不加新颜色（accent 只出现在「被指认的那一行」这一处交互元素上）。 */
+.step-row.report-step-hit {
+  border-left: 2px solid var(--accent);
+  padding-left: var(--s2);
+  background: var(--selected);
+  border-radius: 0 var(--r) var(--r) 0;
+}
+/* 请求序列行（2026-09-03 反馈：状态码/耗时/标签全挤在一行没有视觉重心）：
+   定宽网格列——序号、方法（52px 是 HTTP 动词的既有对齐盒）、路径吃剩余、
+   状态码右对齐 tabular、耗时右对齐固定、阶段标签固定收尾。列固定后 200/72ms/
+   「前置」各自成列，扫读不再解挤成一串。 */
+.request-row {
+  display: grid;
+  grid-template-columns: 44px 52px minmax(0, 1fr) 40px 56px auto;
+  gap: var(--s2);
+  align-items: center;
+  padding: 6px 0;
+  font-size: 12px;
+  min-width: 0;
+}
+.request-row .col-right { text-align: right; }
+/* 路径是机器坐标：与 .detail-facts 的降权同一条（暗色反馈：次要信息降权）。 */
+.request-row .truncate { color: var(--ink-2); }
+/* 窄抽屉收尾列的降级（<=560px 是既有断点：readouts 2-up 的那条）：
+   耗时并入状态码列后面自然换行，网格列数不动，避免两套布局。 */
+@media (max-width: 560px) {
+  .request-row { grid-template-columns: 36px 52px minmax(0, 1fr) auto; }
+  .request-row .request-latency { display: none; }
+}
+.attachment-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.attachment-list a { color: var(--accent); }
+.attachment-image { max-width: 320px; max-height: 200px; border-radius: var(--r); border: 1px solid var(--line); display: block; }
+
+/* 步骤日志附件（2026-09-02）：文本类附件就地展开读——allure 的 log 附件是报告里
+   「这一步输出了什么」的唯一事实源。缩进对齐所属步骤，pre 复用日志框的读法。 */
+.step-attachments { padding: var(--s1) 0 var(--s2) 21px; }
+.attachment-text > summary { cursor: pointer; font-size: 11px; user-select: none; }
+.attachment-text > summary:hover { color: var(--ink-2); }
+.attachment-text .pipeline-log { max-height: 320px; margin-top: var(--s2); }
+
+/* 报告用例的注释（allure description / pytest docstring）：普通正文字号，
+   pre-wrap 保留换行——docstring 的缩进是作者排版的一部分。 */
+.report-description {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 报告视图 / 用例列表的展开行：默认的 td padding 收窄，内容区自己留白。 */
+.grid tr.detail-row td { padding: var(--s2) var(--s3) var(--s3); }
+
+/*
+ * 报告用例表（2026-09-02 验收反馈 ③④⑥⑪）。
+ *
+ * 定宽走通用的 `.grid-fixed`（表格随「展开了哪些行」重排列宽是
+ * `问题记录-仓库用例树列宽跳动` 已经付过一次的账）；这里只覆盖列宽：状态列要装 Status
+ * 原语（点 + 词）比默认的 96px 宽一点，耗时/步骤数右对齐。
+ */
+.report-grid-cases .col-status { width: 104px; }
+.report-grid-cases .col-num { width: 84px; }
+.report-grid-cases .col-attach { width: 42px; text-align: center; }
+/* 用例名单元格：状态点 + 标题一行，函数名/nodeid 作副标题（验收反馈 ④）。 */
+.case-title { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.case-title > .truncate { flex: 1 1 auto; min-width: 0; }
+.case-subname { display: block; margin-top: 2px; margin-left: 16px; font-size: 11px; color: var(--ink-3); }
+
+/* 任务列表的「最近执行」列（验收反馈 ⑦）：状态 + #序号一行，执行次数作副标题。 */
+.col-lastrun { width: 132px; }
+
+@media (max-width: 940px) {
+  /* 窄屏优先保住名字与状态：Git 地址与分区已经在名字列的副标题里能读到大部分。 */
+  .col-lastrun { width: 112px; }
+}

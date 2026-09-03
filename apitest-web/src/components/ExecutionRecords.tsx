@@ -50,6 +50,15 @@ export function ExecutionRecords() {
   const [status, setStatus] = useState(searchParams.get("status") ?? "all");
   const [recordType, setRecordType] = useState(toRecordType(searchParams.get("type")));
   const [kind, setKind] = useState(searchParams.get("kind") ?? "all");
+  /**
+   * 「只看勾选来的」（§8.3 提到的读法，P4.5-11）。
+   *
+   * 判据是 `pipeline_runs.case_filter IS NOT NULL`——勾选执行**不加**第五个
+   * `trigger_source` 值（边界 10：勾选就是人按了按钮，`manual` 是事实），所以它不能靠
+   * 触发源筛出来，只能靠这个复选框。只在 `kind=runner` 下出现：对流程/套件/上报来说这
+   * 个条件恒为假，摆在那里只会让人以为自己筛错了。
+   */
+  const [caseFilterOnly, setCaseFilterOnly] = useState(searchParams.get("caseFilter") === "1");
   const [source, setSource] = useState(searchParams.get("source") ?? "all");
   const [endpointId, setEndpointId] = useState(searchParams.get("endpointId") ?? undefined);
   const [keyword, setKeyword] = useState(searchParams.get("keyword") ?? "");
@@ -76,6 +85,7 @@ export function ExecutionRecords() {
     setSearchParams({
       ...(recordType !== "single" ? { type: recordType } : {}),
       ...(recordType === "parent" && kind !== "all" ? { kind } : {}),
+      ...(recordType === "parent" && kind === "runner" && caseFilterOnly ? { caseFilter: "1" } : {}),
       ...(recordType !== "batch" && status !== "all" ? { status } : {}),
       ...(recordType === "single" && source !== "all" ? { source } : {}),
       ...(recordType === "single" && endpointId ? { endpointId } : {}),
@@ -93,7 +103,7 @@ export function ExecutionRecords() {
     const request: Promise<Paged<Execution> | Paged<BatchDebugSummary> | Paged<ExecutionIndex>> = recordType === "batch"
       ? api.batchExecutions(projectId, page, pageSize)
       : recordType === "parent"
-        ? api.executionIndex(projectId, { kind: kind as ExecutionIndex["kind"] | "all", status, keyword, page, pageSize })
+        ? api.executionIndex(projectId, { kind: kind as ExecutionIndex["kind"] | "all", status, keyword, caseFilter: kind === "runner" && caseFilterOnly, page, pageSize })
         : api.executions(projectId, { status, endpointId, source: source as ExecutionSourceFilter, page, pageSize });
     request
       .then((next) => {
@@ -104,7 +114,7 @@ export function ExecutionRecords() {
       })
       .catch(() => message.error(t("reports.loadFailed")))
       .finally(() => setLoading(false));
-  }, [projectId, recordType, kind, status, source, endpointId, keyword, page, pageSize, revision]);
+  }, [projectId, recordType, kind, status, source, endpointId, keyword, caseFilterOnly, page, pageSize, revision]);
 
   /**
    * 事件比列表快，但列表要重取才有完整字段（单接口的状态码/耗时只在记录里）。
@@ -143,11 +153,18 @@ export function ExecutionRecords() {
    */
   function openIngest() {
     if (!projectId) return;
-    navigate(`/projects/${projectId}/repo-cases/runs`);
+    navigate(`/projects/${projectId}/repo/runs`);
   }
 
   function openParent(row: ExecutionIndex) {
     if (row.kind === "ingest") { openIngest(); return; }
+    /* runner 的明细页是独立路由（P4.5-11/13 已落地）：阶段进度 + 实时日志 + cases
+       时间轴 + 报告视图 + 产物。不能用 loadParent 兜底——它会把 runner 的 detailId
+       当流程 id 去读 flow_executions，那一定 404。 */
+    if (row.kind === "runner") {
+      if (projectId) navigate(`/projects/${projectId}/pipeline-runs/${row.detailId}`);
+      return;
+    }
     void loadParent(row)
       .then(() => setSearchParams((current) => { current.set("parent", row.id); return current; }, { replace: true }))
       .catch(() => message.error(t("reports.loadFailed")));
@@ -203,6 +220,12 @@ export function ExecutionRecords() {
           openIngest();
           return;
         }
+        /* runner 同理（见 `openParent`）：跳详情页而不是开抽屉。 */
+        if (row.kind === "runner") {
+          setSearchParams((current) => { current.delete("parent"); return current; }, { replace: true });
+          if (projectId) navigate(`/projects/${projectId}/pipeline-runs/${row.detailId}`);
+          return;
+        }
         return loadParent(row);
       })
       .catch(() => {
@@ -243,6 +266,10 @@ export function ExecutionRecords() {
    */
   useEffect(() => {
     stream.onEvent((event) => {
+      /* `pipelineLog` 是唯一一个**没有 status** 的事件变体（它只报日志水位，P4.5-4），
+         而这一页只关心状态与计数——先把它挡在门外，`event.status` 才是全类型可读的。
+         不挡的话 union 收窄不过，整个仓的 `pnpm check` 就编不过去。 */
+      if (event.kind === "pipelineLog") return;
       const terminal = SETTLED.has(event.status);
 
       if (event.kind === "execution") {
@@ -302,7 +329,7 @@ export function ExecutionRecords() {
      没有筛选条件，所以它永远是前者。 */
   const filtered = recordType === "single"
     ? status !== "all" || source !== "all" || Boolean(endpointId)
-    : recordType === "parent" && (status !== "all" || kind !== "all" || Boolean(keyword.trim()));
+    : recordType === "parent" && (status !== "all" || kind !== "all" || caseFilterOnly || Boolean(keyword.trim()));
 
   return <main className="content">
     <div className="page-head">
@@ -368,9 +395,17 @@ export function ExecutionRecords() {
             /* 仓库上报（P4 边界 1）：来源筛选一处不改就能看到它，这正是把它归一进
                execution_index 的理由。 */
             { value: "ingest", label: t("reports.kindIngest") },
+            /* 自研 Runner 的 pipeline run（P4.5-4）：验收门槛 15——执行记录页能按 runner
+               筛出来，点行跳 `pipeline-runs/:id` 执行详情页（P4.5-11/13 已落地）。 */
+            { value: "runner", label: t("reports.kindRunner") },
           ]}
           style={{ width: 120 }}
         />
+        {/* 只在 runner 下出现：对别的 kind 这个条件恒为假（见 caseFilterOnly 的注释）。 */}
+        {kind === "runner" && <label className="check-field">
+          <input type="checkbox" checked={caseFilterOnly} onChange={(event) => { setCaseFilterOnly(event.target.checked); setPage(1); }} />
+          {t("reports.caseFilterOnly")}
+        </label>}
         <Select
           value={status}
           onChange={(next) => { setStatus(next); setPage(1); }}
@@ -438,7 +473,7 @@ export function ExecutionRecords() {
                 说不清这一点。 */}
             <td>
               <span className="cell-name">
-                <span className="chip">{run.kind === "suite" ? t("reports.kindSuite") : run.kind === "ingest" ? t("reports.kindIngest") : t("reports.kindFlow")}</span>
+                <span className="chip">{run.kind === "suite" ? t("reports.kindSuite") : run.kind === "ingest" ? t("reports.kindIngest") : run.kind === "runner" ? t("reports.kindRunner") : t("reports.kindFlow")}</span>
                 <span className="truncate">{run.targetName}</span>
               </span>
             </td>

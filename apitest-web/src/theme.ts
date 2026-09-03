@@ -20,6 +20,10 @@ const PALETTE = {
     bg: "#f7f7f6",
     surface: "#ffffff",
     raised: "#fbfbfa",
+    /* Hover fill for nav items on --surface. --raised is only a shade away
+       from white, which made the sidebar's hover state invisible; this is the
+       same warm grey family, one step further down. */
+    hover: "#f0f0ee",
     line: "#e3e3e0",
     lineStrong: "#cfcfca",
     ink: "#1c1c1a",
@@ -45,6 +49,7 @@ const PALETTE = {
     bg: "#16181d",
     surface: "#1c1f25",
     raised: "#21252c",
+    hover: "#262b33",
     line: "#2c313a",
     lineStrong: "#3a404b",
     ink: "#e4e6e9",
@@ -74,6 +79,7 @@ const CSS_VAR: Record<keyof typeof PALETTE.light, string> = {
   bg: "--bg",
   surface: "--surface",
   raised: "--raised",
+  hover: "--hover",
   line: "--line",
   lineStrong: "--line-strong",
   ink: "--ink",

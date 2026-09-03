@@ -27,9 +27,13 @@ import { DataSourceList } from "./components/DataSourceList";
 import { DataSourceDetail } from "./components/DataSourceDetail";
 import { MockList } from "./components/MockList";
 import { RepoCaseTreePage } from "./components/RepoCaseTree";
-import { RepoOnboarding } from "./components/RepoOnboarding";
+import { RepoCredentials } from "./components/RepoCredentials";
 import { IngestRuns } from "./components/IngestRuns";
 import { IngestUnmatched } from "./components/IngestUnmatched";
+import { CiTaskList } from "./components/CiTaskList";
+import { CiTaskEditor } from "./components/CiTaskEditor";
+import { PipelineRunPage } from "./components/PipelineRunPage";
+import { ShareReportPage } from "./components/ShareReportPage";
 import { antdTheme, useMode } from "./theme";
 import { useAuthStore } from "./stores/authStore";
 import { useLimitsStore } from "./stores/limitsStore";
@@ -96,16 +100,29 @@ function Root() {
         <Route path="suite-reports/:executionId" element={<SuiteReportPage />} />
         <Route path="trends" element={<Trends />} />
         <Route path="alerts" element={<Alerts />} />
-        {/* P4：仓库模式。四个平级页面各有自己的路由而不是 `?tab=`——接入指引会被贴进
-            别人的 CI 说明、上报记录会被贴进排查群，两者都要是一条能直接打开的地址。 */}
-        <Route path="repo-cases" element={<RepoCaseTreePage />} />
-        <Route path="repo-cases/onboarding" element={<RepoOnboarding />} />
-        <Route path="repo-cases/runs" element={<IngestRuns />} />
-        <Route path="repo-cases/unmatched" element={<IngestUnmatched />} />
+        {/* P4 + P4.5-14：仓库模式收成一个导航项、五个平级页面。各有自己的真实路由而不是
+            `?tab=`——凭据页会被贴进别人的 CI 说明、上报记录会被贴进排查群，两者都要是一条
+            能直接打开的地址。P4.5-15 起任务编辑也是独立页（`/repo/tasks/new|:taskId`，
+            8.12 ①：8 个分区 + Monaco + 调度/通知面板，抽屉盛不下）。 */}
+        <Route path="repo" element={<CiTaskList />} />
+        <Route path="repo/tasks/new" element={<CiTaskEditor />} />
+        <Route path="repo/tasks/:taskId" element={<CiTaskEditor />} />
+        <Route path="repo/tree" element={<RepoCaseTreePage />} />
+        <Route path="repo/runs" element={<IngestRuns />} />
+        <Route path="repo/unmatched" element={<IngestUnmatched />} />
+        <Route path="repo/credentials" element={<RepoCredentials />} />
+        {/* P4.5-11/13：CI 执行详情。独立路由而不是执行记录页的抽屉——实时日志与报告
+            视图都是长驻内容，抽屉盛不下；执行记录页的 runner 行跳到这里。 */}
+        <Route path="pipeline-runs/:runId" element={<PipelineRunPage />} />
       </Route>
 
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
     </Route>
+
+    {/* 报告分享的公开落地页（2026-09-02）：在 Protected 之外——链接即凭据，登录与否
+        都能看。404（撤销/删除）由页面内 Empty 承担，不跳登录页（跳了就等于告诉一个
+        未登录的访客「登录就能看」，而这份报告恰恰不需要登录）。 */}
+    <Route path="/share/reports/:token" element={<ShareReportPage />} />
 
     <Route path="*" element={<Navigate to={token ? "/dashboard" : "/login"} replace />} />
   </Routes></AntApp></ConfigProvider>;
