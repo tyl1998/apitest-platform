@@ -73,6 +73,16 @@ fi
 # echo "[1/3] Postgres + Redis (docker compose)"
 # docker compose -f "$SERVER/compose.yaml" up -d --wait
 
+# 服务器 .env（DB / Redis / 产物存储等）：进程代码只读 process.env，加载文件这一层
+# 归启动脚本。文件存在才注入，且不覆盖已导出的变量（本机临时 override 优先）。
+if [ -f "$SERVER/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$SERVER/.env"
+  set +a
+  echo "[env] 已加载 $SERVER/.env"
+fi
+
 if [ "$SKIP_MIGRATE" -eq 0 ]; then
   echo "[1/3] 数据库迁移"
   (cd "$SERVER" && pnpm migrate)
