@@ -1,3 +1,0 @@
-# 可选：apitrack 上报 SDK（已发布到正式 PyPI，v0.1.0）
-# 安装：pip install -r requirements-dev.txt
-apitrack-sdk>=0.1.0
