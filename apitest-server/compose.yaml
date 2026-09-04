@@ -30,6 +30,38 @@ services:
       timeout: 5s
       retries: 10
 
+  # 产物对象存储（ARTIFACT_STORAGE_DRIVER=s3 时用）。9000 是 S3 API，9001 是
+  # 控制台。凭证与 apitest-server/.env 里的 AWS_ACCESS_KEY_ID / SECRET 保持一致。
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: apitest
+      MINIO_ROOT_PASSWORD: apitest-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # 桶初始化（一次性）：等 minio 就绪后 mc mb，已存在则跳过（--ignore-existing）。
+  # 幂等，随 up -d 反复运行无害；桶名与 .env 的 ARTIFACT_S3_BUCKET 保持一致。
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 apitest apitest-secret &&
+      mc mb --ignore-existing local/apitest-artifacts"
+
 volumes:
   postgres_data:
   redis_data:
+  minio_data:

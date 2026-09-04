@@ -43,7 +43,9 @@ export async function buildApp(): Promise<FastifyInstance> {
    * while curl (which sends no preflight) still succeeds.
    */
   await app.register(cors, { origin: true, methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] });
-  await app.register(jwt, { secret: process.env.JWT_SECRET ?? "change-this-in-production" });
+  /* 空串与未设置同义：本地 .env 只放非默认配置，占位值会让密钥漂移（dev 库里
+     AES 加密的 Git 凭据按 JWT_SECRET 派生回退密钥解密，见 lib/crypto.ts）。 */
+  await app.register(jwt, { secret: process.env.JWT_SECRET?.trim() || "change-this-in-production" });
   app.get("/health", async () => success({ status: "ok" }));
   await app.register(authRoutes); await app.register(projectRoutes); await app.register(environmentRoutes); await app.register(dataSourceRoutes); await app.register(endpointRoutes); await app.register(caseRoutes); await app.register(scriptRoutes); await app.register(flowRoutes); await app.register(suiteRoutes); await app.register(mockRoutes); await app.register(executionIndexRoutes); await app.register(dashboardRoutes); await app.register(streamRoutes); await app.register(systemRoutes);
   /* P3：调度 / Webhook 触发（含公开 HMAC 路由）/ 告警 / 报告。 */

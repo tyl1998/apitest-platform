@@ -90,7 +90,28 @@ function decryptCredential(encrypted: unknown): string | null {
 /**
  * 组装 JobSpec。`baseUrl` 是平台对外根地址（SDK 的 `APITRACK_URL` 接受根地址或完整
  * `/ingest`，`apitrack-sdk/apitrack/config.py` 两种都归一）。
+ *
+ * 容器档的回环改写（`containerLoopback`）：`baseUrl` 缺省取 Runner 拨号的 Host 头，
+ * 本机部署时是 `localhost:3000`——对进程档 Runner 正好，但**容器档的脚本在容器里**，
+ * `localhost` 指向容器自身，SDK 上报会 Connection refused（run #23 实测）。改写目标是
+ * `host.apitrack.internal`：Runner 起容器时用 `--add-host` 把它指到宿主网关（见
+ * executor 容器档），Linux 原生 docker / Docker Desktop / OrbStack 语义一致——
+ * `host.docker.internal` 只在 Docker 系桌面产品里内置，Linux 上不存在，不能用。
+ * 只对 container 档改写、且只改回环地址；部署侧显式配了 PUBLIC_BASE_URL 时原样使用
+ * （那已经是「对所有消费者都可达」的地址，平台不猜）。
  */
+function containerLoopback(baseUrl: string, sandboxMode: string): string {
+  if (sandboxMode !== "container") return baseUrl;
+  try {
+    const url = new URL(baseUrl);
+    if (url.hostname !== "localhost" && url.hostname !== "127.0.0.1" && url.hostname !== "[::1]" && url.hostname !== "::1") return baseUrl;
+    url.hostname = "host.apitrack.internal";
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return baseUrl;
+  }
+}
+
 export async function buildJobSpec(baseUrl: string, run: ClaimedRun): Promise<JobSpec> {
   const loaded = await pool.query(
     `SELECT t.name AS task_name, t.steps, t.env, t.image,
@@ -134,7 +155,7 @@ export async function buildJobSpec(baseUrl: string, run: ClaimedRun): Promise<Jo
     ...(run.parameters as Record<string, string>),
   };
   if (task.sdk_ingest_enabled) {
-    env.APITRACK_URL = baseUrl;
+    env.APITRACK_URL = containerLoopback(baseUrl, String(run.sandbox_mode));
     env.APITRACK_TOKEN = ingestToken!;
     /* SDK 拿它做「本次执行」的标识上报（ci_run_id 列保留「最近一次来自哪次执行」）。
        幂等折行已改为按 commit（迁移 045）：同一 commit 的再次执行不再新增上报行，

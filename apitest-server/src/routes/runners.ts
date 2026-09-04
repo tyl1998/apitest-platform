@@ -642,6 +642,42 @@ export async function runnerRoutes(app: FastifyInstance) {
   );
 
   /**
+   * 上传完成确认（s3 驱动的 `uploaded_at` 落位点）。fs 的 PUT 端点自己回写上传时刻
+   * （见上）；s3 的 pre-signed PUT 直连对象存储，平台侧唯一的事实源是存储本身——
+   * Runner 直传成功后调这里，服务端 HeadObject 核对象在、再回写 `uploaded_at`。
+   * 不核就写等于把「报告列表过滤 uploaded_at IS NOT NULL」的判据交给客户端的嘴。
+   * fs 驱动也收（幂等 true）：协议不用按驱动分叉，Runner 无条件确认即可。
+   */
+  app.post<{ Params: { artifactId: string }; Body: { runner_id?: string; runnerId?: string } }>(
+    "/runner/artifacts/:artifactId/uploaded",
+    async (request, reply) => {
+      const identity = await authenticateRunner(request.headers.authorization);
+      if (!identity) return fail(reply, 401, 1002, "runner token is invalid or revoked");
+      if (!isUuid(request.params.artifactId)) return fail(reply, 404, 2001, "artifact not found");
+      const runnerId = String(request.body?.runner_id ?? request.body?.runnerId ?? "").trim();
+      const runnerRow = await ownRunner(reply, identity, runnerId);
+      if (!runnerRow) return;
+
+      const artifact = await pool.query(
+        "SELECT id, storage_driver, storage_key, uploaded_at FROM artifacts WHERE id = $1",
+        [request.params.artifactId],
+      );
+      if (!artifact.rowCount) return fail(reply, 404, 2001, "artifact not found");
+      const row = artifact.rows[0];
+      /* 幂等：重复确认（重试窗口内的重发）直接回 ok。 */
+      if (row.uploaded_at) return success({ uploaded: true });
+
+      const store = await getSharedObjectStore(requestBaseUrl(request));
+      const exists = await store.objectExists(String(row.storage_key)).catch(() => false);
+      if (!exists) return fail(reply, 409, 2004, "artifact object was not found in storage; the upload may have failed");
+      await pool.query("UPDATE artifacts SET uploaded_at = now() WHERE id = $1 AND uploaded_at IS NULL", [
+        request.params.artifactId,
+      ]);
+      return success({ uploaded: true });
+    },
+  );
+
+  /**
    * fs 驱动的下载直链（P4.5-7）。鉴权同上传：一次性 HMAC token（绑 storage_key +
    * 过期），浏览器从产物列表拿到 URL 直接跳——列表接口（P4.5-11）经
    * `presignGet` 生成这里带的 token。

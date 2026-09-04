@@ -461,7 +461,7 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
       `INSERT INTO ingest_runs (
          id, project_id, repository_id, protocol_version, commit_sha, branch, ci_run_id, ci_run_url,
          scope, is_full_inventory, sdk_name, sdk_version, warnings, started_at, finished_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14)
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15)
        ON CONFLICT (repository_id, commit_sha) DO UPDATE SET
          branch = EXCLUDED.branch,
          ci_run_id = CASE WHEN EXCLUDED.ci_run_id <> '' THEN EXCLUDED.ci_run_id ELSE ingest_runs.ci_run_id END,
@@ -532,8 +532,8 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
      * `UNIQUE (kind, detail_id)` 让重投复用同一行索引；`target_id` 留空——上报没有平台
      * 侧的目标对象，`target_name` 用「仓库 @ 分支」把它在列表里说清。
      */
-    const indexId = existingIndexId ?? randomUUID();
-    await client.query(
+     const indexId = existingIndexId ?? randomUUID();
+     const indexRow = await client.query(
       `INSERT INTO execution_index (
          id, project_id, kind, target_id, target_name, detail_id, status,
          total, success_count, failed_count, trigger_source, trigger_ref_name, started_at, finished_at
@@ -541,7 +541,8 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
        ON CONFLICT (kind, detail_id) DO UPDATE SET
          target_name = EXCLUDED.target_name, status = EXCLUDED.status, total = EXCLUDED.total,
          success_count = EXCLUDED.success_count, failed_count = EXCLUDED.failed_count,
-         finished_at = EXCLUDED.finished_at`,
+         finished_at = EXCLUDED.finished_at
+       RETURNING id`,
       [
         indexId, projectId, `${repository.gitUrl}${data.branch ? ` @ ${data.branch}` : ""}`, effectiveRunId,
         failedCount > 0 ? "failed" : "success",
@@ -549,6 +550,12 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
         data.sdkName || "ingest", data.startedAt ?? null, data.finishedAt ?? new Date().toISOString(),
       ],
     );
+    /* 实际行 id 与 indexId 可能不同：折形后的幂等键是 (repository, commit)（ingest_runs
+       侧），而 execution_index 的键还是 (kind, detail_id)——重投且 ingest_run 行的
+       execution_index_id 尚为 NULL 时（首次上报在回填前失败过），ON CONFLICT 走
+       UPDATE 分支、本次新签的 indexId 根本没插进去；拿 indexId 回填就是引用一个
+       不存在的行 → FK 23503（dev 库 8e6be34a 实测）。回填永远用 RETURNING 的真值。 */
+    const effectiveIndexId = String(indexRow.rows[0].id);
 
     /**
      * 回填这一行 run 的统计。
@@ -578,7 +585,7 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
          unplaced_count = $12
        WHERE id = $1`,
       [
-        effectiveRunId, indexId, reconciled,
+        effectiveRunId, effectiveIndexId, reconciled,
         data.inventory.length, passedCount, failedCount, written.inserted,
         cases.added, removed, cases.updated,
         written.unmatched, Number(unplaced.rows[0].total),
@@ -591,7 +598,7 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
 
     await client.query("COMMIT");
     return {
-      runId: effectiveRunId, indexId,
+      runId: effectiveRunId, indexId: effectiveIndexId,
       matched: written.matched, unmatched: written.unmatched,
       unplaced: Number(unplaced.rows[0].total),
       reconciled, warnings,

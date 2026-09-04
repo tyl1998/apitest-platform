@@ -49,6 +49,13 @@ export interface ObjectStore {
   presignGet(key: string, opts: { expiresSeconds: number; downloadName?: string }): Promise<string>;
   /** fs 驱动校验一次性上传 token；s3 驱动无此动作（签名在 URL 里），恒 true。 */
   verifyUploadToken(artifactId: string, token: string): boolean;
+  /**
+   * 对象是否已在存储里。上传确认（`POST /runner/artifacts/:id/uploaded`）用它把
+   * 「Runner 说传完了」落到 `uploaded_at`：fs 的 PUT 端点自己回写、无需确认，s3 的
+   * pre-signed PUT 只有存储侧知道结果——不核一下，`uploaded_at IS NULL` 的行会
+   * 把报告装载与产物列表一起饿死。存在性查询是元数据级（HeadObject），不碰字节流。
+   */
+  objectExists(key: string): Promise<boolean>;
 }
 
 /* ── fs 驱动 ─────────────────────────────────────────────────────────────────── */
@@ -186,6 +193,10 @@ export async function getObjectStore(baseUrlFallback: string): Promise<ObjectSto
         return `${base}/runner/artifacts/${encodeURIComponent(key)}/download?expires=${expiresAt}&token=${encodeURIComponent(token)}${name}`;
       },
       verifyUploadToken: (artifactId, token) => verifyFsUploadToken(artifactId, token),
+      async objectExists(key) {
+        const { stat } = await import("node:fs/promises");
+        return stat(`${fsStorageRoot()}/${key}`).then((s) => s.isFile()).catch(() => false);
+      },
     };
     return store;
   }
@@ -217,6 +228,17 @@ export async function getObjectStore(baseUrlFallback: string): Promise<ObjectSto
       return s3.presigner.getSignedUrl(s3.client, command, { expiresIn: opts.expiresSeconds });
     },
     verifyUploadToken: () => true,
+    async objectExists(key) {
+      const { HeadObjectCommand } = await import("@aws-sdk/client-s3");
+      try {
+        await s3.client.send(new HeadObjectCommand({ Bucket: s3.bucket, Key: key }));
+        return true;
+      } catch (error) {
+        const name = (error as { name?: string }).name ?? "";
+        if (name === "NotFound" || name === "404" || name === "NoSuchKey") return false;
+        throw error;
+      }
+    },
   };
   return store;
 }
