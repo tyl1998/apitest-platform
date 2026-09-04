@@ -12,6 +12,23 @@ from req.http_req import login  # noqa: E402
 log = logging.getLogger("apitest.e2e")
 
 
+def pytest_addoption(parser):
+    """--host 指定被测服务根地址；留空默认 localhost:3000。"""
+    parser.addoption(
+        "--host",
+        action="store",
+        default="",
+        help="被测 apitest-server 根地址（如 http://127.0.0.1:3000）；留空默认 http://localhost:3000",
+    )
+
+
+def pytest_configure(config):
+    """--host 非空时覆盖 base_url，login 及所有请求都打到指定地址。"""
+    host = config.getoption("--host")
+    if host:
+        BASE_CONFIG.base_url = host.rstrip("/")
+
+
 def pytest_runtest_logstart(nodeid):
     log.info("==> %s", nodeid)
 

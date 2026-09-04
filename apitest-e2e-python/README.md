@@ -48,6 +48,12 @@ APITEST_PASSWORD=admin123 \
 python -m pytest test_case -v
 ```
 
+也可以用 `--host` 直接指定被测服务根地址（留空默认 `http://localhost:3000`）：
+
+```bash
+python -m pytest test_case -v --host http://127.0.0.1:3000
+```
+
 ## apitrack 上报（可选）
 
 装好 `apitrack-sdk`（`pip install -r requirements-dev.txt`）后 source 配置再跑，结果即上报平台（Token 在 `env.local.sh`，
