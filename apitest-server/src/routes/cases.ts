@@ -7,40 +7,13 @@ import { NoRunnerError, enqueueRun } from "../lib/enqueue.js";
 import { toFlowNode, validateExtracts, validateHooks, validateResponseScripts } from "../lib/flow.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, failNoRunner, success } from "../lib/response.js";
-import { BODY_TYPES, METHODS } from "../lib/run.js";
 import { detachSuiteMember } from "../lib/suiteMembers.js";
 import { isUuid } from "../lib/uuid.js";
 import { persistCaseLifecycleScripts, persistFlowScripts } from "../lib/scripts.js";
+import { validateCase, type CaseInput } from "../lib/validate.js";
 import { mapExecution, mapFlow, mapTestCase, mapTestCaseSummary, type Assertion, type FlowExtract, type HookConfig, type RequestSnapshot, type ResponseScriptConfig, type TestCase } from "../models/types.js";
 
-type CaseInput = {
-  name?: string;
-  description?: string;
-  environmentId?: string | null;
-  request?: Partial<RequestSnapshot>;
-  assertions?: Assertion[];
-  preRequestHooks?: HookConfig[];
-  extracts?: FlowExtract[];
-  responseScripts?: ResponseScriptConfig[];
-  tags?: string[];
-};
-
-function validate(input: CaseInput, partial = false): string | undefined {
-  if (!partial || input.name !== undefined) if (!input.name?.trim()) return "name is required";
-  if (!partial || input.request !== undefined) {
-    const request = input.request;
-    if (!request) return "request is required";
-    if (!request.method || !METHODS.includes(request.method.toUpperCase())) return `request.method must be one of ${METHODS.join(", ")}`;
-    if (!request.url?.trim()) return "request.url is required";
-    /* Variables are resolved at run time, so only validate literal URLs here. */
-    if (!request.url.includes("{{") && !/^https?:\/\//i.test(request.url.trim())) return "request.url must start with http:// or https://";
-    if (request.bodyType !== undefined && !BODY_TYPES.includes(request.bodyType)) return `request.bodyType must be one of ${BODY_TYPES.join(", ")}`;
-  }
-  return validateDeclarativeAssertions(input.assertions)
-    ?? validateHooks(input.preRequestHooks, "case")
-    ?? validateExtracts(input.extracts, "case")
-    ?? validateResponseScripts(input.responseScripts, "case");
-}
+type CaseWithRun = TestCase & { lastRun?: ReturnType<typeof mapExecution> };
 
 /** Fills in what the client may omit, so a stored snapshot is always complete. */
 function toSnapshot(request: Partial<RequestSnapshot>): RequestSnapshot {
@@ -73,8 +46,6 @@ async function latestRuns(caseIds: string[]) {
   );
   return new Map(result.rows.map((row) => [String(row.case_id), mapExecution(row)]));
 }
-
-type CaseWithRun = TestCase & { lastRun?: ReturnType<typeof mapExecution> };
 
 async function withLastRun(cases: TestCase[]): Promise<CaseWithRun[]> {
   const runs = await latestRuns(cases.map((item) => item.id));
@@ -208,7 +179,7 @@ export async function caseRoutes(app: FastifyInstance) {
     const endpoint = await pool.query("SELECT id FROM endpoints WHERE id = $1 AND project_id = $2", [request.params.endpointId, context.project.id]);
     if (!endpoint.rowCount) return fail(reply, 404, 2001, "endpoint not found");
 
-    const invalid = validate(request.body);
+    const invalid = validateCase(request.body);
     if (invalid) return fail(reply, 400, 1001, invalid);
     const name = await environmentName(context.project.id, request.body.environmentId);
     if (name === undefined) return fail(reply, 400, 1001, "environment must belong to the project");
@@ -263,7 +234,7 @@ export async function caseRoutes(app: FastifyInstance) {
   app.patch<{ Params: { id: string; caseId: string }; Body: CaseInput }>("/api/v1/projects/:id/cases/:caseId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
     if (!isUuid(request.params.caseId)) return fail(reply, 404, 2001, "case not found");
-    const invalid = validate(request.body, true);
+    const invalid = validateCase(request.body, true);
     if (invalid) return fail(reply, 400, 1001, invalid);
 
     /* environmentId is tri-state on a patch: absent keeps it, null clears it,
@@ -507,7 +478,7 @@ export async function caseRoutes(app: FastifyInstance) {
 
     const override = request.body?.request;
     if (override) {
-      const invalid = validate({ name: testCase.name, request: override });
+      const invalid = validateCase({ name: testCase.name, request: override });
       if (invalid) return fail(reply, 400, 1001, invalid);
     }
     const assertionOverride = request.body?.assertions;

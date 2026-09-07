@@ -30,6 +30,8 @@ import { ciTaskRoutes } from "./routes/ciTasks.js";
 import { gitCredentialRoutes } from "./routes/gitCredentials.js";
 import { pipelineRunRoutes } from "./routes/pipelineRuns.js";
 import { reportShareRoutes } from "./routes/reportShares.js";
+import { mcpTokenRoutes } from "./routes/mcpTokens.js";
+import { mcpRoutes } from "./routes/mcp.js";
 
 declare module "@fastify/jwt" {
   interface FastifyJWT { payload: { userId: string; email: string }; user: { userId: string; email: string }; }
@@ -64,6 +66,13 @@ export async function buildApp(): Promise<FastifyInstance> {
   /* 报告分享（2026-09-02）：项目内 CRUD + `/public/report-shares/:token` 免登录只读
      （与 Webhook 公开路由同款：不走 JWT，token 即凭据）。 */
   await app.register(reportShareRoutes);
+  /* P5-1：MCP Token 的签发 / 列表 / 吊销（项目级）。`/mcp` 端点本身与工具面在
+     P5-3/P5-4 落地——这里先回答「钥匙怎么发、怎么收」。 */
+  await app.register(mcpTokenRoutes);
+  /* P5-3：`/mcp` 端点（无状态，`apimcp_` Token + 四道闸门，不走 JWT）。SDK 挂载与
+     兼容腿见 routes/mcp.ts 文件头；工具面 P5-3 只立机制、清单为空，P5-4/P5-5 逐批
+     登记进 lib/mcpServer.ts 的注册表。 */
+  await app.register(mcpRoutes);
   return app;
 }
 

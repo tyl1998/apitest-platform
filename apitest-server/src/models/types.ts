@@ -2468,3 +2468,48 @@ export function mapReportShare(row: Record<string, unknown>): ReportShare {
     revokedAt: row.revoked_at ? new Date(String(row.revoked_at)).toISOString() : undefined,
   };
 }
+
+/**
+ * MCP Token 的 scope 三值（计划 9.0 边界 1，迁移 050）。
+ *
+ * `read` 看、`write` 改、`execute` 跑。Token 上是 scope 数组而不是三个 boolean——
+ * 第四种 scope（将来的）加进来不改类型形状。
+ */
+export type McpScope = "read" | "write" | "execute";
+
+/**
+ * 一张 MCP Token（迁移 050）。明文**只在签发时回一次**（与 `IngestToken` / `RunnerToken`
+ * 同一条纪律），此后接口只回 `tokenPrefix`。
+ *
+ * `scope` 决定 `tools/list` 回哪些工具、`tools/call` 放不放行（边界 1）——一条
+ * `/mcp` 端点，不是三个。写与执行权限**不**存在 Token 上：每次写/执行调用都按
+ * `createdBy` 重跑 `canAccess`（边界 2），Token 只是一把钥匙、不是一份权限快照。
+ */
+export type McpToken = {
+  id: string;
+  projectId: string;
+  name: string;
+  /** 明文前 8 位（`apimcp_` 之后那段），供列表辨认，不足以反推 Token。 */
+  tokenPrefix: string;
+  scope: McpScope[];
+  createdBy?: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+  createdAt: string;
+};
+
+export function mapMcpToken(row: Record<string, unknown>): McpToken {
+  return {
+    id: String(row.id), projectId: String(row.project_id), name: String(row.name),
+    /* token_hash 刻意不出现在这个映射里，理由同 `mapIngestToken`：它没有任何客户端
+       用途，映射里留一行就迟早会被某个 `SELECT *` 带到响应里去。 */
+    tokenPrefix: String(row.token_prefix),
+    /* TEXT[] 经 pg 读回即 string[]。异常值读成空数组（而不是炸掉映射）——校验在
+       签发侧，库里不该有第三种值。 */
+    scope: Array.isArray(row.scope) ? (row.scope as unknown[]).map(String) as McpScope[] : [],
+    createdBy: row.created_by ? String(row.created_by) : undefined,
+    lastUsedAt: row.last_used_at ? new Date(String(row.last_used_at)).toISOString() : undefined,
+    revokedAt: row.revoked_at ? new Date(String(row.revoked_at)).toISOString() : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}

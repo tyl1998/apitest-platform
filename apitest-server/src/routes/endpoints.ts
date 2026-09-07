@@ -4,25 +4,10 @@ import { pool } from "../db.js";
 import { NoRunnerError, cancelBatch, cancelRun, enqueueRun } from "../lib/enqueue.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, failNoRunner, success } from "../lib/response.js";
-import { BODY_TYPES, METHODS } from "../lib/run.js";
 import { isUuid } from "../lib/uuid.js";
-import { mapBatchExecution, mapEndpoint, mapExecution, type BodyType, type Endpoint, type EndpointAuth, type RequestSnapshot } from "../models/types.js";
+import { validateEndpoint, type EndpointInput } from "../lib/validate.js";
+import { mapBatchExecution, mapEndpoint, mapExecution, type Endpoint, type RequestSnapshot } from "../models/types.js";
 
-type EndpointInput = {
-  name?: string;
-  description?: string;
-  method?: string;
-  url?: string;
-  headers?: Record<string, string>;
-  queryParams?: Record<string, string>;
-  pathParams?: Record<string, string>;
-  bodyType?: BodyType;
-  body?: unknown;
-  bodyText?: string;
-  auth?: EndpointAuth;
-  tags?: string[];
-  defaultEnvironmentId?: string | null;
-};
 type ImportItem = EndpointInput;
 
 /** Column list shared by insert and import so the two cannot drift apart. */
@@ -60,21 +45,6 @@ async function validEnvironment(projectId: string, environmentId: string | null 
   return Boolean(result.rowCount);
 }
 
-function validate(input: EndpointInput, partial = false): string | undefined {
-  if (!partial || input.name !== undefined) if (!input.name?.trim()) return "name is required";
-  if (!partial || input.method !== undefined) {
-    if (!input.method) return "method is required";
-    if (!METHODS.includes(input.method.toUpperCase())) return `method must be one of ${METHODS.join(", ")}`;
-  }
-  if (!partial || input.url !== undefined) {
-    if (!input.url?.trim()) return "url is required";
-    /* Variables are resolved at run time, so only validate literal URLs here. */
-    if (!input.url.includes("{{") && !/^https?:\/\//i.test(input.url.trim())) return "url must start with http:// or https://";
-  }
-  if (input.bodyType !== undefined && !BODY_TYPES.includes(input.bodyType)) return `bodyType must be one of ${BODY_TYPES.join(", ")}`;
-  return undefined;
-}
-
 /** The runnable part of an endpoint, in the shape a case also freezes. */
 export function toRequestSnapshot(endpoint: Endpoint): RequestSnapshot {
   return {
@@ -94,8 +64,12 @@ export function toRequestSnapshot(endpoint: Endpoint): RequestSnapshot {
  * The definition is snapshotted here rather than re-read by the worker, so what
  * gets sent is what existed when the button was pressed — an edit made while
  * the run sits in the queue cannot change it underneath.
+ *
+ * Exported for the MCP `run_endpoint` tool (P5-5b): the tool runs saved
+ * definitions with no overrides, which is exactly this function's contract —
+ * keeping it private would force a second copy of the environment chain.
  */
-async function queueEndpointRun(projectId: string, endpointId: string, requestedEnvironmentId: string | null | undefined, explicitEnvironment: boolean, batchId?: string): Promise<string> {
+export async function queueEndpointRun(projectId: string, endpointId: string, requestedEnvironmentId: string | null | undefined, explicitEnvironment: boolean, batchId?: string): Promise<string> {
   const endpointResult = await pool.query("SELECT * FROM endpoints WHERE id = $1 AND project_id = $2", [endpointId, projectId]);
   if (!endpointResult.rowCount) throw new Error("endpoint not found");
   const endpoint = mapEndpoint(endpointResult.rows[0]);
@@ -222,7 +196,7 @@ export async function endpointRoutes(app: FastifyInstance) {
 
   app.post<{ Params: { id: string }; Body: EndpointInput }>("/api/v1/projects/:id/endpoints", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
-    const invalid = validate(request.body);
+    const invalid = validateEndpoint(request.body);
     if (invalid) return fail(reply, 400, 1001, invalid);
     if (!await validEnvironment(context.project.id, request.body.defaultEnvironmentId)) return fail(reply, 400, 1001, "default environment must belong to the project");
     const result = await pool.query(
@@ -235,7 +209,7 @@ export async function endpointRoutes(app: FastifyInstance) {
   app.patch<{ Params: { id: string; endpointId: string }; Body: EndpointInput }>("/api/v1/projects/:id/endpoints/:endpointId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
     if (!isUuid(request.params.endpointId)) return fail(reply, 404, 2001, "endpoint not found");
-    const invalid = validate(request.body, true);
+    const invalid = validateEndpoint(request.body, true);
     if (invalid) return fail(reply, 400, 1001, invalid);
     if ("defaultEnvironmentId" in request.body && !await validEnvironment(context.project.id, request.body.defaultEnvironmentId)) return fail(reply, 400, 1001, "default environment must belong to the project");
     const b = request.body;
@@ -528,7 +502,7 @@ export async function endpointRoutes(app: FastifyInstance) {
     const imported: Endpoint[] = []; const updated: Endpoint[] = []; const skipped: string[] = [];
 
     for (const item of items) {
-      if (validate(item)) continue;
+      if (validateEndpoint(item)) continue;
       const existing = await pool.query("SELECT id FROM endpoints WHERE project_id = $1 AND method = $2 AND url = $3 LIMIT 1", [context.project.id, item.method!.toUpperCase(), item.url!.trim()]);
 
       if (existing.rowCount && strategy === "skip") { skipped.push(`${item.method!.toUpperCase()} ${item.url}`); continue; }

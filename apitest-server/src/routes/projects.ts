@@ -75,15 +75,18 @@ export async function projectRoutes(app: FastifyInstance) {
 
   app.get<{ Params: { id: string } }>("/api/v1/projects/:id/settings", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
-    const result = await pool.query("SELECT default_environment_id, store_plaintext FROM project_settings WHERE project_id = $1", [context.project.id]);
+    const result = await pool.query("SELECT default_environment_id, store_plaintext, mcp_enabled FROM project_settings WHERE project_id = $1", [context.project.id]);
     const row = result.rows[0];
     return success({
       defaultEnvironmentId: row?.default_environment_id ? String(row.default_environment_id) : undefined,
       storePlaintext: Boolean(row?.store_plaintext),
+      /* 无行 = false（P5 计划 9.1）：那张表只在项目设置被 PUT 过一次时才有行，开关的
+         默认值在迁移 050 的列默认上，不在行上。 */
+      mcpEnabled: Boolean(row?.mcp_enabled),
     });
   });
 
-  app.put<{ Params: { id: string }; Body: { defaultEnvironmentId?: string | null; storePlaintext?: boolean } }>("/api/v1/projects/:id/settings", async (request, reply) => {
+  app.put<{ Params: { id: string }; Body: { defaultEnvironmentId?: string | null; storePlaintext?: boolean; mcpEnabled?: boolean } }>("/api/v1/projects/:id/settings", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
     const environmentId = request.body.defaultEnvironmentId ?? null;
     if (environmentId) {
@@ -93,18 +96,25 @@ export async function projectRoutes(app: FastifyInstance) {
     if (request.body.storePlaintext !== undefined && typeof request.body.storePlaintext !== "boolean") {
       return fail(reply, 400, 1001, "storePlaintext must be a boolean");
     }
+    if (request.body.mcpEnabled !== undefined && typeof request.body.mcpEnabled !== "boolean") {
+      return fail(reply, 400, 1001, "mcpEnabled must be a boolean");
+    }
+    /* `mcp_enabled` 与 `store_plaintext` 同款 COALESCE（计划 9.1 点名的坑）：只改默认
+       环境的一次 PUT 不该把开关顺手清回 false——显式传 false 才是「关掉」。 */
     const result = await pool.query(
-      `INSERT INTO project_settings (project_id, default_environment_id, store_plaintext) VALUES ($1, $2, COALESCE($3, false))
+      `INSERT INTO project_settings (project_id, default_environment_id, store_plaintext, mcp_enabled) VALUES ($1, $2, COALESCE($3, false), COALESCE($4, false))
        ON CONFLICT (project_id) DO UPDATE SET
-         default_environment_id = EXCLUDED.default_environment_id,
-         store_plaintext = COALESCE(EXCLUDED.store_plaintext, project_settings.store_plaintext)
-       RETURNING default_environment_id, store_plaintext`,
-      [context.project.id, environmentId, request.body.storePlaintext ?? null],
+          default_environment_id = EXCLUDED.default_environment_id,
+          store_plaintext = COALESCE(EXCLUDED.store_plaintext, project_settings.store_plaintext),
+          mcp_enabled = COALESCE(EXCLUDED.mcp_enabled, project_settings.mcp_enabled)
+       RETURNING default_environment_id, store_plaintext, mcp_enabled`,
+      [context.project.id, environmentId, request.body.storePlaintext ?? null, request.body.mcpEnabled ?? null],
     );
     const row = result.rows[0];
     return success({
       defaultEnvironmentId: row.default_environment_id ? String(row.default_environment_id) : undefined,
       storePlaintext: Boolean(row.store_plaintext),
+      mcpEnabled: Boolean(row.mcp_enabled),
     });
   });
 

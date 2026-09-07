@@ -22,6 +22,30 @@ export const AUDIT_ACTIONS = {
   runnerTokenCreate: "runner_token.create",
   /** Runner 注册 Token 吊销。target = runner_token，系统级。 */
   runnerTokenRevoke: "runner_token.revoke",
+  /** MCP Token 签发（P5-1，计划 9.3）。target = mcp_token，项目级；detail 只带 name 与 scope。 */
+  mcpTokenCreate: "mcp_token.create",
+  /** MCP Token 吊销（P5-1，计划 9.3）。target = mcp_token，项目级。 */
+  mcpTokenRevoke: "mcp_token.revoke",
+  /**
+   * MCP 调用被拒（P5-3，计划 9.0 边界 13「只审计写入、执行与拒绝」）。target = mcp_tool
+   * （targetId 是工具名），detail 带 gate（scope 可见集 / rbac 活体判据）。只有第 3、4 道
+   * 闸门的拒绝落这里——第 1 道没有可归属的身份（探针噪音），第 2 道是通道关着而不是
+   * 「谁被拒了」。
+   */
+  mcpCallRejected: "mcp.call_rejected",
+  /**
+   * MCP 写工具成功执行（P5-5，边界 13「只审计写入、执行与拒绝」）。target = mcp_tool
+   * （targetId 是工具名），detail 带目标资源 id 与 outcome（created/updated/deleted）——
+   * **不带 payload**：payload 里是业务数据，审计只回答「谁改了什么」。
+   */
+  mcpToolWrite: "mcp_tool.write",
+  /**
+   * MCP 执行工具成功触发（P5-5b）。target = mcp_tool；detail 带 run/execution id。
+   * `trigger_ci_task_run` 另有一行 `ci_task.trigger`（triggerCiTaskRun 自己写的，
+   * triggeredBy = Token 签发人）——两行回答两个问题：谁触发的（ci_task.trigger）、
+   * 经哪把钥匙触发的（mcp_tool.execute）。
+   */
+  mcpToolExecute: "mcp_tool.execute",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
