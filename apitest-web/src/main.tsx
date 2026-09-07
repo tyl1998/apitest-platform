@@ -26,6 +26,7 @@ import { ExecutionRecords } from "./components/ExecutionRecords";
 import { DataSourceList } from "./components/DataSourceList";
 import { DataSourceDetail } from "./components/DataSourceDetail";
 import { MockList } from "./components/MockList";
+import { McpPage } from "./components/McpPage";
 import { RepoCaseTreePage } from "./components/RepoCaseTree";
 import { RepoCredentials } from "./components/RepoCredentials";
 import { IngestRuns } from "./components/IngestRuns";
@@ -92,6 +93,9 @@ function Root() {
         <Route path="data-sources" element={<DataSourceList />} />
         <Route path="data-sources/:dataSourceId" element={<DataSourceDetail />} />
         <Route path="mocks" element={<MockList />} />
+        {/* P5：MCP 管理页（开关 / 端点 / Token / 工具清单）。只读展示 + 管理动作，
+            不做对话式创建 UI（交互文档 3.10 的边界）。 */}
+        <Route path="mcp" element={<McpPage />} />
         <Route path="reports" element={<ExecutionRecords />} />
         {/* P3：报告 / 趋势 / 告警。报告详情是只读派生物，独立路由而不是抽屉——
             它要能被分享、被收藏（执行记录页的父执行抽屉仍是另一个入口）。

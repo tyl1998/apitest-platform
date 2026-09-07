@@ -319,7 +319,17 @@ function RequestNodeDrawer({ projectId, flowId, node, nodes, edges, variables, e
               ? <Select
                   value={current.endpointId || undefined}
                   onChange={(endpointId) => void seedFrom({ endpointId })}
-                  options={endpoints.map((item) => ({ value: item.id, label: `${item.method}  ${item.name}` }))}
+                  options={[
+                    /* The bound endpoint can be absent from the store list —
+                       created out-of-band (MCP tool) after this page loaded, or
+                       deleted after the flow was saved. Same fallback as the
+                       case source below: a readable option instead of antd
+                       rendering the bare uuid as the value. */
+                    ...(current.endpointId && !endpoints.some((item) => item.id === current.endpointId)
+                      ? [{ value: current.endpointId, label: `${current.request.method}  ${current.name}` }]
+                      : []),
+                    ...endpoints.map((item) => ({ value: item.id, label: `${item.method}  ${item.name}` })),
+                  ]}
                   placeholder={t("flows.pickEndpoint")}
                   showSearch optionFilterProp="label" style={{ flex: 1 }}
                 />

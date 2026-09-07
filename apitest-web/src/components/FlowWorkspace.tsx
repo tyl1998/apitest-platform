@@ -206,7 +206,7 @@ function FlowCanvas() {
   const navigate = useNavigate();
   const { projectId, flowId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { environments, endpoints } = useProjectStore();
+  const { environments, endpoints, reloadEndpoints } = useProjectStore();
   const setGuard = useNavGuardStore((state) => state.setGuard);
 
   const [flow, setFlow] = useState<Flow>();
@@ -364,7 +364,11 @@ function FlowCanvas() {
     void api.dataSources(projectId).then(setDataSources).catch(() => setDataSources([]));
     /* 标签建议服务端 DISTINCT：用例与流程共用一套「用来匹配成员」的标签词汇。 */
     void api.projectTags(projectId, "members").then(setMemberTags).catch(() => setMemberTags([]));
-  }, [projectId]);
+    /* 接口清单来自项目 store，而 store 只在进项目时加载一次——MCP 写工具的带外创建
+       不会经过任何前端写路径，进编辑器时列表是旧的，节点选择器就拿 endpointId 匹配
+       不到选项。dataSources / 标签都是每次进来现拉，接口清单不该是例外。 */
+    void reloadEndpoints();
+  }, [projectId, reloadEndpoints]);
 
   /* 可引用的流程：一条流程不能把自己当子流程。 */
   useEffect(() => {

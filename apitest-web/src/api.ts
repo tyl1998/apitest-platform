@@ -22,7 +22,7 @@ export type Environment = {
    */
   defaultHeaders: Record<string, string>;
 };
-export type ProjectSettings = { defaultEnvironmentId?: string; storePlaintext: boolean };
+export type ProjectSettings = { defaultEnvironmentId?: string; storePlaintext: boolean; mcpEnabled: boolean };
 
 /**
  * Secrets are patched, never replaced: `null` removes a key, a string sets it,
@@ -2158,6 +2158,30 @@ export function subscribeExecutions(projectId: string, onEvent: (event: Executio
   return () => controller.abort();
 }
 
+/* ── P5: MCP（Token 签发 / 吊销 + 工具清单展示） ───────────────────────────── */
+
+/** scope 三值（计划 9.0 边界 1）：read 恒在，write / execute 签发时显式勾选。 */
+export type McpScope = "read" | "write" | "execute";
+
+/**
+ * MCP Token 行（列表 / 签发 / 吊销响应共用）。`token_hash` 永不出现在 API 面
+ * （`mapMcpToken` 刻意不映射它）；明文 `token` 只附加在签发那一次的响应里。
+ */
+export type McpToken = {
+  id: string;
+  projectId: string;
+  name: string;
+  tokenPrefix: string;
+  scope: McpScope[];
+  createdBy?: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+  createdAt: string;
+};
+
+/** 工具清单行（前端展示用，非 MCP 协议面）：description 是给模型读的原文，不翻译。 */
+export type McpToolSummary = { name: string; description: string; scope: McpScope };
+
 export const api = {
   login: (email: string, password: string) => client.post("/auth/login", { email, password }).then(data<{ token: string; user: User }>),
   me: () => client.get("/auth/me").then(data<User>),
@@ -2208,7 +2232,9 @@ export const api = {
   environmentList: (projectId: string, filters?: { keyword?: string; page?: number; pageSize?: number }) =>
     client.get(`/projects/${projectId}/environments`, { params: { keyword: filters?.keyword?.trim() || undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<Environment>),
   projectSettings: (projectId: string) => client.get(`/projects/${projectId}/settings`).then(data<ProjectSettings>),
-  updateProjectSettings: (projectId: string, input: { defaultEnvironmentId: string | null; storePlaintext: boolean }) => client.put(`/projects/${projectId}/settings`, input).then(data<ProjectSettings>),
+  /* storePlaintext / mcpEnabled 都可缺省：服务端 COALESCE 保留原值（9.1 防的就是「只改
+     一个开关把另一个顺手清掉」）；defaultEnvironmentId 例外——缺省等于清空，必须随行当前值。 */
+  updateProjectSettings: (projectId: string, input: { defaultEnvironmentId: string | null; storePlaintext?: boolean; mcpEnabled?: boolean }) => client.put(`/projects/${projectId}/settings`, input).then(data<ProjectSettings>),
   createEnvironment: (projectId: string, input: EnvironmentInput) => client.post(`/projects/${projectId}/environments`, input).then(data<Environment>),
   updateEnvironment: (projectId: string, id: string, input: EnvironmentInput) => client.patch(`/projects/${projectId}/environments/${id}`, input).then(data<Environment>),
   /* Server-side duplicate: the client never holds secret plaintext, so a client-side copy would lose every secret. */
@@ -2802,6 +2828,19 @@ export const api = {
   publicShareStepChildren: (token: string, stepId: string) =>
     client.get(`/public/report-shares/${encodeURIComponent(token)}/step-children/${encodeURIComponent(stepId)}`)
       .then(data<{ steps: ExecutionStep[]; executions: Execution[] }>),
+
+  /* ── P5: MCP —— 项目级 Token，scope 三值裁剪 /mcp 的工具可见集 ───────────── */
+
+  /** 列表只含未吊销行：吊销即从管理视图消失（行留库供审计对账，不在这里回显）。 */
+  mcpTokens: (projectId: string) => client.get(`/projects/${projectId}/mcp/tokens`).then(data<McpToken[]>),
+  /** 签发：明文 token **只在这一次响应里**出现，丢了只能吊销重发。 */
+  createMcpToken: (projectId: string, input: { name: string; scope?: McpScope[] }) =>
+    client.post(`/projects/${projectId}/mcp/tokens`, input).then(data<McpToken & { token: string }>),
+  /** 吊销（软删留行）但**即时生效**：鉴权候选集走部分索引，被吊销行下一次调用就不在。 */
+  revokeMcpToken: (projectId: string, tokenId: string) =>
+    client.delete(`/projects/${projectId}/mcp/tokens/${tokenId}`).then(data<McpToken>),
+  /** 工具清单（展示用非协议面）：与 /mcp 的 tools/list 出自同一个 MCP_TOOLS 注册表。 */
+  mcpTools: (projectId: string) => client.get(`/projects/${projectId}/mcp/tools`).then(data<McpToolSummary[]>),
 };
 
 /** 分享目标两类：套件报告与仓库执行报告。 */

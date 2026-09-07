@@ -2,14 +2,14 @@ import { useEffect, useState } from "react";
 import { Select } from "antd";
 import { useTranslation } from "react-i18next";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Bell, Database, FolderGit2, Globe, History, Layers, LogOut, MessageSquare, Plug, ScrollText, TrendingUp, Workflow, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Bell, Bot, Database, FolderGit2, Globe, History, Layers, LogOut, MessageSquare, Plug, ScrollText, TrendingUp, Workflow, type LucideIcon } from "lucide-react";
 import { useRecordLastPage } from "../hooks/useRecordLastPage";
 import { useAuthStore } from "../stores/authStore";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 import { IconButton } from "./IconButton";
 
-const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "repo", "reports", "suite-reports", "trends", "alerts"] as const;
+const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "mcp", "repo", "reports", "suite-reports", "trends", "alerts"] as const;
 export type ProjectPage = typeof PAGES[number];
 
 /**
@@ -28,6 +28,7 @@ const NAV_ICONS: Record<ProjectPage, LucideIcon> = {
   environments: Globe,
   "data-sources": Database,
   mocks: MessageSquare,
+  mcp: Bot,
   repo: FolderGit2,
   reports: History,
   "suite-reports": ScrollText,
@@ -88,7 +89,7 @@ export function ProjectShell() {
   }
 
   const nav: { group: string; items: [ProjectPage, string][] }[] = [
-    { group: t("nav.interfaceAssets"), items: [["endpoints", t("nav.endpoints")], ["environments", t("nav.environments")], ["data-sources", t("nav.dataSources")], ["mocks", "Mock"]] },
+    { group: t("nav.interfaceAssets"), items: [["endpoints", t("nav.endpoints")], ["environments", t("nav.environments")], ["data-sources", t("nav.dataSources")], ["mocks", "Mock"], ["mcp", "MCP"]] },
     /* 定时调度没有独立页（P3-11）：配置入口在套件详情页的「定时调度」面板。 */
     { group: t("nav.orchestration"), items: [["flows", t("nav.flows")], ["suites", t("nav.suites")]] },
     /* 仓库模式是**一个导航项**（P4.5-14，计划 8.11 的 C 类）：任务 / 用例树 / 上报记录 /
