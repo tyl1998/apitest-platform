@@ -1,7 +1,12 @@
 # 接口自动化平台 — 开发计划
 
-> 版本: v0.8.10
+> 版本: v0.8.11
 > 基于: API_AUTOMATION_SPEC.md v1.9 / FRONTEND_INTERACTION_DESIGN.md v2.3 / REPOSITORY_ARCHITECTURE.md v1.1
+> **P6–P10 已规划（2026-09-04 用户确认，尚未实现）**：用户与权限 / 测试管理 / 数据统计 /
+> 站内助手四个新阶段插在 P5 之后，**原 P6（性能/插件/版本）顺延为 P10**。五个阶段的
+> 范围、边界、迁移（051–054）、路由、批次与验收门槛见
+> **`DEVELOPMENT_PLAN_P6-P10.md`**（章节映射：该文件十~十四章 = 本计划的 P6~P10；
+> P10 于 2026-09-05 自本计划十四章并入该文件）。
 > 当前阶段: P0、P1 全部已实现；P2 全部已实现并通过验收；**P3 十一个批次全部实现并于
 > 2026-08-28 通过用户验收**；**P4（仓库模式：上报式用例 + `apitrack-sdk`）十二个批次于
 > 2026-08-29 全部实现，并于 2026-08-31 通过用户验收；`apitrack-sdk` v0.1.0 已发布至
@@ -23,6 +28,17 @@
 > ④ 通知模版新增 `{{reportUrl}}`（`PUBLIC_BASE_URL` 拼完整链接）；⑥ 上报记录明细删
 > 状态码/耗时/状态三列；⑦ 用例树×任务报告（最近任务列替代请求数列、状态/最近执行从
 > 报告读时关联【迁移 047 索引，绝不回写】、抽屉展示用例内步骤 + 请求序列高亮该接口）。
+>
+> **v0.8.11 增量（P5 范围扩界，2026-09-04 讨论确认，见 9.0 / 9.2 / 9.4）**：传输层补兼容
+> 姿态——SDK v2 默认 `legacy: 'stateless'`，智能体平台 rmcp-soddygo 1.5.0 的 Streamable
+> HTTP（2025-06-18）走兼容腿、零状态，老 SSE 传输（rmcp 0.10）不支持、平台侧用
+> `STREAMABLE_HTTP` 注册；工具面从 16 个扩到 **43 个封顶**（读 21 / 写 17 / 执行 5）——新增
+> 套件/调度/告警/CI 任务完整 CRUD（delete 走 MRTR 确认）、任务与报告读取、命名资产触发、
+> 单用例调试、`get_project_overview`；**边界 3 由「不给 execute/delete」重写为动作分级**
+> （可逆写直接执行 / 不可逆写 MRTR 确认回合、force 不再是入参 / 执行只跑已保存资产且不接受
+> overrides）；scope 增第三种 `execute`（表结构零改动）；授权分三层——Token scope、MRTR
+> 动作确认、站内助手身份绑定（9.8 三选一）。P5-3 增两条实测：elicitation/MRTR 转述、按会话
+> 注入凭据。
 >
 > **v0.8.10 增量（验收 2026-09-03 第二批，见 8.17）**：一项缺陷一项口径两项交互——
 > ① 树×报告匹配键形态缺陷（allure fullName 是 `pkg.Mod#test`，非 nodeid；Runner 侧
@@ -140,8 +156,8 @@
 > **v0.6 范围变更**: **P4.5（自研 Runner）范围与边界已于 2026-08-31 确认**，见 8.0：
 > 由 4 周上调为 **6 周**（理由见 8.0 边界 18）；沙箱做**进程 + 容器**两档；仓库凭据由平台
 > 加密存储并随 JobSpec 下发；报告归一走 **SDK 上报 / junit / allure** 三条路径（只有 SDK
-> 路径回写用例树）；**P6 10.1 的对象存储抽象提前到本阶段**，但只服务产物上传，执行历史归档
-> 与大响应体截断仍留在 P6；勾选用例快速执行（8.3）确认进本阶段。
+> 路径回写用例树）；**P10 14.1（原 P6 10.1）的对象存储抽象提前到本阶段**，但只服务产物上传，执行历史归档
+> 与大响应体截断仍留在 P10；勾选用例快速执行（8.3）确认进本阶段。
 >
 > **v0.5 增量切片**: **P2-8 执行分区（跨网段执行）** 已全部实现（P2-8.1–P2-8.6 于
 > 2026-08-26 完成，P2-8.7 配置体验补齐于 2026-08-27 增补）**并于 2026-08-27 通过用户
@@ -157,11 +173,12 @@
 ## 一、整体路线图
 
 ```
-P0 ──→ P1 ──→ P2 ──→ P3 ──→ P4 ──→ P4.5 ──→ P5 ──→ P6
-MVP    流程    数据源  套件调度 仓库    Runner   MCP     性能
-       编排    节点补全 报告告警 用例                     插件
-       断言    套件    趋势
-       用例    Mock
+P0 ──→ P1 ──→ P2 ──→ P3 ──→ P4 ──→ P4.5 ──→ P5 ──→ P6 ──→ P7 ──→ P8 ──→ P9 ──→ P10
+MVP    流程    数据源  套件调度 仓库    Runner   MCP    用户   测试   数据   站内   性能
+       编排    节点补全 报告告警 用例                     权限   管理   统计   助手   插件
+       断言    套件    趋势                                      （2026-09-04 新增，P6–P10 详见
+                                                               DEVELOPMENT_PLAN_P6-P10.md；
+                                                               原 P6 性能/插件/版本顺延为 P10）
 ```
 
 ---
@@ -774,7 +791,8 @@ EXECUTIONS  [已实现]
 ### 4.3 前端新页面
 
 - **Flow 编辑器** `[已实现]`: React Flow DAG 画布 (`@xyflow/react`)
-  - 首轮节点类型: **API 请求**（条件/循环/脚本/等待/子流程/MCP 工具按需排期）
+  - 首轮节点类型: **API 请求**（条件/循环/脚本/等待/子流程已实现；**MCP 工具节点撤销**——
+    那是「平台当 Client」方向，随 P5 范围收窄一并移出，见 9.0 第一条与交互文档 3.5.1）
   - 拖拽连接, 节点配置抽屉（请求 / 提取 / 校验三页签）
   - 单步调试 + 流程变量注入; 画布配色全部改写为设计令牌, 不用 xyflow 默认调色板
 - `[已实现]` **接口工作台「用例」框** (入口在接口管理, 无独立用例导航页):
@@ -2502,7 +2520,8 @@ P0–P2 把「怎么执行」做完了：一次执行有统一的父索引（`ex
   可能互相矛盾。
 - **流程执行报告**：流程执行详情（P1-2 的步骤树）已经是它的报告。本阶段的「报告」特指
   套件那一份统一摘要，不为流程再做一层。
-- **AI 趋势洞察 / 失败根因分析**（Spec 2.4.4）：属于 P5 的 MCP 能力。
+- **AI 趋势洞察 / 失败根因分析**（Spec 2.4.4）：由外部 AI 经 P5 的只读 MCP 工具读走数据后
+  自己生成，平台侧不调模型、不存 LLM 凭据（P5 边界 16）。
 - **覆盖率趋势与 `CoverageSnapshot`**（Spec 2.3）：覆盖率现在是即时算的，做趋势要先决定
   快照频率，与本阶段无关。
 - **调度产生的执行不参与「重跑对比」**（交互文档 3.6.1 的 A/B）：那是报告页的能力，本阶段
@@ -2633,7 +2652,7 @@ worker 之外的第三个进程（`pnpm scheduler`，`start.sh` 一并拉起）�
 
 **为什么不是插件**
 
-插件（P6）解决的是「平台不知道你要干什么」的扩展点。这里不是：**「一次执行该带哪些头」
+插件（P10）解决的是「平台不知道你要干什么」的扩展点。这里不是：**「一次执行该带哪些头」
 本来就是执行模型的一部分**，缺的只是两样东西——一个「整套生效」的头的存放位置，和一条
 「触发这一次时把某个值换掉」的通道。这两样都落在既有结构上，等插件反而会把一个 3 行的
 合并写成一套钩子生命周期。
@@ -3669,12 +3688,12 @@ JobSpec，Runner 在自己那台机器上 clone + 跑脚本 + 按 offset 推日�
     - **解析在 Runner 侧做，上报结构化 JSON**。让平台解析 XML 意味着把整个报告文件传上来
       （几十 MB 起）、在 API 进程里解析不可信 XML（XXE / 十亿笑声）、再引一个 XML 依赖。
       Runner 侧解析后只上报几 KB 的 case 数组，三个问题一起消失。
-14. **产物与对象存储从 P6 提前，但只服务 artifacts**（用户 2026-08-31 确认提前）。抽
+14. **产物与对象存储从 P10 14.1 提前，但只服务 artifacts**（用户 2026-08-31 确认提前）。抽
     `lib/objectStore.ts` 一层、两个驱动：`fs`（本地目录，dev 默认）与 `s3`（MinIO / S3，
     生产）。**硬约束：平台永不代理大文件流。** Runner 先 `POST …/artifacts` 申请一个
     pre-signed PUT URL，然后**直传对象存储**；`fs` 驱动下退化为一个带一次性 token 的平台
     上传地址。
-    **明确不做**：P6 10.1 的另外两件（执行历史归档分区表、大响应体截断进对象存储）不动。
+    **明确不做**：P10 14.1（原 P6 10.1）的另外两件（执行历史归档分区表、大响应体截断进对象存储）不动。
     本阶段只是把「对象存储这一层抽象」提前落地，`executions.response_body` 一个字都不改
     ——那是一次口径变更，要连着归档策略一起想。
 15. **沙箱两档都做，容器档是默认，进程档是逃生口**（用户 2026-08-31：「容器 + 进程」）。
@@ -3977,7 +3996,7 @@ CREATE INDEX audit_logs_project_created_at_idx ON audit_logs (project_id, create
 - **`idempotency_keys` 用复合主键而不是「UUID 主键 + 唯一索引」**：这张表**只**被
   「按 key 查有没有」这一种方式访问，一个自增 id 是纯粹的多余空间。`result_id` 无 FK——scope
   决定它指向哪张表。
-- **`artifacts` 用 `owner_type` + `owner_id` 多态而不是 `pipeline_run_id`**：P6 要把大响应体
+- **`artifacts` 用 `owner_type` + `owner_id` 多态而不是 `pipeline_run_id`**：P10 要把大响应体
   和归档也放进来（边界 14 说了本阶段不做，但表结构现在就别把自己锁死）。CHECK 里现在只有
   一个值，加值时是一次 DROP/ADD CHECK，比加一张表便宜。
 - **`audit_logs.detail` 不放 secret 值**要写进列注释。审计日志天然会被广泛读取，是最容易
@@ -4175,7 +4194,7 @@ JobSpec 携带 `case_filter: { case_keys: [] }` → Runner 注入 env `APITRACK_
   没有办法回滚，而 junit 的 `classname::name` 与 pytest nodeid 之间没有稳定映射
   （类名、参数化 id、`conftest` 层级都会让它对不上）。
 
-**对象存储抽象 `lib/objectStore.ts`**（从 P6 10.1 提前，只服务 artifacts）
+**对象存储抽象 `lib/objectStore.ts`**（从 P10 14.1 提前，只服务 artifacts）
 
 ```ts
 type PutTarget = { artifactId, uploadUrl, method: "PUT"|"POST", headers, expiresAt };
@@ -4194,7 +4213,7 @@ interface ObjectStore {
   那等于开了一个匿名上传口。
 - 依赖：`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`（按需 `import()`，不进启动
   路径，照 P2-7 边界 8 的形状）。
-- **P6 10.1 的另外两件不动**：执行历史归档分区表、大响应体截断进对象存储。
+- **P10 14.1（原 P6 10.1）的另外两件不动**：执行历史归档分区表、大响应体截断进对象存储。
   `executions.response_body` 一个字都不改——那是一次口径变更，要连着归档策略一起想。
 
 ### 8.5 沙箱两档（边界 15 的落地形状）
@@ -4670,6 +4689,13 @@ clone_method 形状）、`webhook_triggers.target_type` CHECK 扩展、
     tab 前端（P4.5-11——`presignGet` 直链的生成入口在那批接上；本批的下载端点
     已就位，手工拼 token 可验）；s3 驱动的 multipart 上传（>5GB 单文件走
     `uploadPart`，首版 1GB 上限内 PUT 够用）。
+  - **s3 驱动本地验证补全**（2026-09-04，MinIO 实测通过）：`compose.yaml` 增加
+    minio 服务（`minio_data` 卷）与一次性 `minio-init`（`mc mb --ignore-existing`
+    自动建桶）；`start.sh` 增加「存在才 source `apitest-server/.env`」的加载层
+    （此前三个进程只读 `process.env`，`.env` 文件从未被消费——占位值一进 env 即
+    暴露 `crypto.ts` / `index.ts` 的「空串 ≠ 未配置」缺陷，修复为 `?.trim() ||`）。
+    验证中补齐的链路缺陷见 `issue_fix/问题记录-P4.5S3产物直传三缺陷与env密钥漂移.md`
+    与 `问题记录-P4.5容器档SDK回连与缓存引导.md`。
 
 - **P4.5-8 已实现**（2026-09-01）。迁移 039 的 `idempotency_keys` + `audit_logs`
   （落在 `039b_p45_idempotency_audit.sql`，与 P4.5-7 预告的名字一致）+
@@ -5111,7 +5137,7 @@ clone_method 形状）、`webhook_triggers.target_type` CHECK 扩展、
 - **allure 静态站点托管**、`allure generate`、**vendor allure 官方 SPA**。仍然不做
   （2026-09-01 改判后的准确边界，见边界 19）：平台**自存原始 allure-results 文件、
   自渲染**报告视图，不跑 allure-cli、不喂它产的静态站、不拿它的 app.js 拼数据。
-- **P6 10.1 的执行历史归档（分区表）与大响应体截断**。本阶段只提前对象存储抽象这一层，
+- **P10 14.1（原 P6 10.1）的执行历史归档（分区表）与大响应体截断**。本阶段只提前对象存储抽象这一层，
   见边界 14。
 - **既有触发接口（套件 / 流程 / 批量）追溯支持 `Idempotency-Key`**。设施是通用的，但接线
   只做 CI 触发，见边界 17。
@@ -5298,7 +5324,7 @@ chunk；日志几 MB 可接受，读路径与现有 logs 接口同一条）。
 **明确不做（本批）**
 
 - 不改 Runner 协议与日志上报格式（下载是平台侧读路径的补全）。
-- 不做日志的关键字过滤 / 高亮 / 级别折叠——P6 的大响应体口径变更再议，本轮只补下载。
+- 不做日志的关键字过滤 / 高亮 / 级别折叠——P10 的大响应体口径变更再议，本轮只补下载。
 - 任务列表不内嵌迷你日志预览：要看日志点进 run 详情页，那里才是日志的完整视图。
 
 **实现状态（2026-09-01，P4.5-15 已落地）**
@@ -5561,7 +5587,7 @@ Runner 侧 `registry.ts`/`client.ts` 自报通道、`executor/container/{runtime
 约束形态与按 commit 折行（049 三列键失守）、树×报告匹配键形态（allure fullName
 逆变换）、勾选执行键形不匹配致全量跑、容器档取消不杀容器（含心跳间隔 30s → 5s）、
 容器档 `--storage-opt` 兼容降级、接口列表 254KB 拉取、分享页成员证据三端点、
-SDK xdist 多进程重复上报。P4.5 至此收口，进入 P5（MCP 对外暴露）。
+SDK xdist 多进程重复上报。P4.5 至此收口，进入 P5（平台作为 MCP Server 对外暴露，见 9.0）。
 
 ### 8.17 验收 2026-09-03 第二批（一缺陷一口径两交互）
 
@@ -5654,47 +5680,596 @@ commit 只去重同一次 CI run 的重投）。2026-09-03 用户改口径（同
 
 ---
 
-## 九、P5 — MCP: 平台对外暴露 (4 周)
+## 九、P5 — MCP: 平台对外暴露（Server 模式，4 周，范围与边界见 9.0）
 
-### 9.1 数据库迁移: 007_p5_schema.sql
+### 9.0 P5 范围与边界（2026-09-03 确认，2026-09-04 扩界：兼容姿态 / 工具面 43 个 / 边界 3 动作分级 / scope 三值）
+
+**问题**
+
+P0–P4.5 把「接口 / 用例 / 流程 / 套件 / 报告」这套资产做完了，但**创建它们的唯一途径是人在
+界面上点**。三个后果：
+
+1. **已有接口文档进不来第二次**。首次可以走 OpenAPI 导入（`lib/importers.ts`），但「文档改了
+   一个字段」之后没有增量通道——人得自己找到那条接口再改一遍。
+2. **外部工具无法驱动平台**。团队已经有需求管理、代码仓库、AI 工具链，它们全都知道「这次改
+   了哪个接口」，却没有办法把这件事说给平台听。
+3. **AI 只能在平台外面看着**。想让模型读一次执行证据再写一段校验脚本，模型手上既没有响应体，
+   也没有平台的 `ctx.*` 契约——它写出来的代码在这里跑不起来。
+
+P5 要的是**把平台自身能力暴露成 MCP 工具，让平台之外的 AI / 工具直接驱动它**。
+
+**核心模型**
+
+**平台是 MCP Server（工具提供方），不是 MCP Client。一条无状态 `POST /mcp` 端点，
+`apimcp_` Token 鉴权，Token 带 `read` / `write` / `execute` 三种 scope；读工具照搬既有
+mapper 出数，写工具复用既有校验后落库，执行工具只跑已保存的命名资产；不可逆动作（delete）
+走 MCP 协议原生的 MRTR 确认回合；执行证据在读取时重新脱敏。**
+
+三条与既有实现的关系必须一开始就说清，否则会写出第二套并行机制：
+
+- **不做「平台当 Client 去调外部 MCP Server」**。那是**相反方向**：注册外部 Server、发现工具、
+  在流程节点里调它（交互文档 3.10 主体、原 9.1 的 `mcp_servers` 表、5.0 的「MCP 工具节点」）。
+  它与本阶段共享名字「MCP」但不共享任何一行代码：本阶段是被调方，那个是调用方。**本阶段
+  范围内不实现，`mcp_servers` 表不建**——留在 P10 之后按需排期。原 9.1 把两个方向的表写在一起
+  是文档缺陷，本节纠正。
+- **不新建审计表**。原 9.1 的 `mcp_tool_calls(id, flow_execution_id, …)` 那个
+  `flow_execution_id` 只在「平台当 Client」时有值可填（调用发生在流程节点内）；外部 agent 调
+  进来时没有任何 flow execution。审计走 P4.5-8 已有的 `audit_logs`（迁移 039b）——它已经有
+  `(project_id, user_id, action, target_type, target_id, detail, ip)`、4KB 转储护栏与
+  fire-and-forget 包装（`lib/audit.ts:46,67`），且 `detail` 绝不放 secret 的纪律已经立好。
+- **不引入 session / 状态**。MCP 规范 `2026-07-28` GA 版已把协议核心改成无状态：移除协议级
+  session、移除 GET 流端点，每条消息是一次自包含 POST。这与现有无状态 Fastify + pg 完全同构
+  ——不需要 session 表、不需要粘性会话、不需要 Redis。**这是本阶段范围能压缩到一张表的
+  根本原因。**
+
+**已确认的边界决策（16 项）**
+
+1. **三种 scope，不是三个端点（2026-09-04 扩界）**：Token 上带 `scope TEXT[]`
+   （`read` / `write` / `execute`），一条 `/mcp` 端点按 scope 决定 `tools/list` 回哪些工具、
+   `tools/call` 放不放行。不给写/执行工具单开路径——路径分裂之后「同一个 Token 在两条路径上
+   权限不同」将成为可能，而 scope 在 Token 上是单一事实。签发默认只给 `read`，`write` 与
+   `execute` 必须显式勾选。
+2. **写与执行工具每次调用都重跑 `canAccess`，不信 Token 自带的权限**。Token 记 `created_by`；
+   每次写/执行调用都用那个 user 重跑一遍 `lib/rbac.ts:7` 的 `canAccess(user, projectId,
+   true)`。签发者被降成 `viewer` 或被移出项目后，他的 Token 立刻写不动——**权限的事实在
+   `user_project_roles`，Token 只是一把钥匙，不是一份权限快照**。这一条同时决定了 Token 不存
+   角色副本：存了就会与那张表分叉。
+3. **动作分级取代一刀切（2026-09-04 重写；原版把 execute 与 delete 整类排除，理由是「agent
+   没有『看到后果再决定』的能力」——MRTR 之后这个前提不成立，确认是协议回合而不是入参）**：
+   - **可逆写**（全部资产的 `create_*` / `update_*`）：`write` scope 直接执行、全审计，幂等键
+     沿用（`(project, method, url)`、`(endpoint, name)`、`(project, name)`、`(resource,
+     cron, target)`）。
+   - **不可逆写**（全部 `delete_*`）：`write` scope + **MRTR 确认回合**（9.4.1）——
+     `scanUsage`（`environments.ts:48`）的依赖清单就是确认内容，服务端返回 `resultType:
+     "input_required"`，客户端把问题转述给人、人确认后带 `inputResponses` 重试原调用才执行。
+     **`force` 不再是入参**：agent 照 409 提示「自动补 force=true」的路径从根上消失——不确认
+     就删不掉。
+   - **执行**（`run_endpoint` / `run_case` / `run_flow` / `trigger_suite_run` /
+     `trigger_ci_task_run`）：独立 `execute` scope + 在途去重（同目标已有排队/在途 run 时直接
+     返回那个 run id，不排第二个）+ 审计。**只跑已保存的命名资产、不接受任何 overrides**——
+     「执行已保存资产」与「凭空构造请求」（内联 method/url/body 的自由执行）是两件事，后者
+     仍然不给。
+   - 触发生效后目标自己的 `notify_config` 照常发通知：与人手点「运行」、与 cron 触发同源，
+     那是人配的规则在说话。
+4. **写工具拒绝字面量 secret，只接受 `{{变量}}` 引用**。`auth`、`headers`、`body` 里出现疑似
+   凭据的字面量（`Authorization` 头有值、字段名命中 `token|secret|password|key`）一律返回
+   工具错误并指向「先在环境里建一个 secret，再用 `{{name}}` 引用」。理由是**对话记录会留在
+   平台之外**：agent 平台自己会存 transcript，模型厂商也可能存。让凭据字面量流经工具入参，
+   等于把 secret 抄进一份平台管不着的日志。这一条与 4.6 的「secret 永不离开服务端」同向。
+   CI 任务的仓库凭据同理且更严：**只引用既有凭据条目，永不经工具入参创建或传递**。
+5. **执行证据在读取时重新脱敏，`store_plaintext` 对 MCP 不生效**。执行记录的脱敏发生在
+   **写入时**（`lib/run.ts:244-246`）；项目开了 `store_plaintext`（迁移 019）之后库里存的就是
+   真凭据。那个开关当初的理由写在迁移注释里——「让内部团队读到签名请求携带的确切凭据」，
+   **内部人读，不是外部 agent 平台读，更不是云端模型读**。所以 MCP 读执行证据时一律用该执行
+   环境**当前的** secret 值重跑 `sanitizeValue` / `sanitizeHeaders`。
+6. **脱敏无从进行时不返回 body**。`executions.environment_id` 是 `ON DELETE SET NULL`
+   （迁移 002），环境被删后只剩 `environment_name` 快照——此时**无从得知要遮哪些字符串**。
+   这种情况返回 `bodyOmitted: "环境已删除，无法按当时的 secret 脱敏"` 而不是原文：失败要朝
+   安全那边倒。`store_plaintext` 项目的历史行同理（写入时就没遮过，环境还在就能重算，环境
+   没了就不给）。
+7. **工具入参是裸 JSON Schema，校验走已装的 `ajv`**。SDK 文档默认用 zod 写 `inputSchema`，
+   但后端契约明令不引入校验库（`server-contract`）。SDK 导出 `fromJsonSchema` 且自带 ajv
+   校验器，因此工具声明写 JSON Schema、校验用 P1-1 已装的 `ajv`——零新校验库。业务级校验
+   仍复用路由里那套手写 `validate()`（见边界 8）。
+8. **写工具必须复用路由的校验函数，因此要把它们提到 `lib/`**。`routes/endpoints.ts:63` 与
+   `routes/cases.ts:28` 的 `validate()` 现在是模块内私有的。**这是本阶段唯一一笔真实重构成本，
+   躲不掉**：校验逻辑有两份就等于两套语义，MCP 建出来的接口能过 MCP 的校验却存不进 REST 的
+   形状。提取时不改行为、不改签名（仍返回 message string 而不是抛错），只挪位置。读工具反过来
+   ——各自写 SQL，共用 `models/types.ts` 的 mapper（契约第 6 条认定的共享边界），
+   **不重构现有 20 余条读路由**。
+9. **契约工具是工具集里最重要的一个**。`get_script_contract` 返回 `lib/scriptContract.ts` 的
+   `SCRIPT_CTX_SCHEMAS`（现在给 Monaco 做补全用，`routes/scripts.ts:109` 已有一条 REST 孪生
+   路由）。没有它，模型会写出 `expect(res.body).toHaveLength(3)` 这种在平台里根本跑不起来的
+   代码——**平台的脚本不是裸 JS，是一套 `ctx.*` 契约**。这份数据已经是机器可读的，直接复用。
+10. **契约工具必须明说「脚本型断言已废弃」**。`Assertion` 类型上还留着 `script?: ScriptRef`
+    字段（`models/types.ts:137`），而读取时会**静默过滤** `type === 'script'` 的项
+    （`models/types.ts:1292`，P2-2.1 废弃）。模型看到那个字段会很自然地往里写，然后得到
+    「保存成功、刷新就没了」。所以契约里写明：校验脚本只能进 `responseScripts`。
+11. **端点路径 `/mcp`，不带 `/api/v1` 前缀**。与 `/ingest`（`routes/ingest.ts:149`）、
+    `/runner/*`（`routes/runners.ts:159`）同款：那个前缀是给**平台自己前端**的版本化 REST
+    面用的，而 MCP 的版本协商在协议层（`MCP-Protocol-Version` 头），再叠一层 `/api/v1`
+    等于两套版本号指同一件事。
+12. **`project_settings.mcp_enabled` 默认 `false`，关掉时端点对该项目 404**。不是「藏起前端
+    入口」而是**服务端真的不服务**：一个默认开着的写入通道是安全默认值的反面。开关是项目级
+    而不是全局，与 `store_plaintext`（迁移 019）同款——同一套部署里，一个项目愿意接 AI、
+    另一个不愿意，是正常状态。
+13. **只审计写入、执行与拒绝，不审计读取**。一次对话会产生 3~10 次读调用，那个量级的读日志
+    是噪音，还会把 `audit_logs` 冲成一张日志表。要复盘的是「谁改了什么」「谁触发了什么」「谁
+    被拒了」；delete 的 MRTR 确认回合同样落审计（确认即决策）。Token 的「还有人在用吗」由行上
+    的 `last_used_at` 回答（照 `lib/ingestAuth.ts:77`：**不进业务事务**，业务回滚了不该让
+    「用过」这件事消失）。
+14. **Token 哈希存储，不加密**（照搬 P4 边界 17 的推理）：只需比对就该哈希，scrypt +
+    `salt:digest` 格式与 `users.password_hash` / `ingest_tokens` / `runner_tokens` 一致。
+    `token_prefix` 存明文前 8 位供列表辨认与候选集收窄（scrypt 是刻意昂贵的，全表比对会让
+    鉴权耗时随 Token 总数线性增长）。吊销是软删留 `revoked_at`，且**部分索引排除吊销行**
+    使吊销即时生效。三处实现（`ingestAuth.ts` / `runnerAuth.ts`）已经一模一样，本阶段是第
+    三次照抄——**不抽第四层公共封装**，三份 40 行的具体实现比一层参数化抽象更好读。
+15. **写工具是幂等的第一等公民，但不建幂等表**。`create_endpoint` 用
+    `(project_id, method, url)` 判重后走「更新还是跳过」（复用 `endpoints/import` 的
+    `conflictStrategy`，`routes/endpoints.ts:524`），而不是每次调用都插一行新接口。理由很具体：
+    **模型会重试**——网络抖动、上下文截断、用户重述一遍需求，都会让同一个意图被调两次。
+    不复用 `idempotency_keys`（迁移 039b）：那张表要求客户端自己带 `Idempotency-Key`，而
+    模型不会带；按业务键判重不需要客户端配合。
+16. **不做「AI 生成断言 / AI 根因分析 / AI 趋势洞察」**。原 9.2 把这三项列为「可选 / 后置」。
+    本阶段的定位纠正了它们的归属：**平台不调模型，模型调平台**。这三件事在新模型下是
+    「外部 agent 用只读工具读完数据后自己生成」，平台侧不需要任何新代码，也不需要配 LLM
+    凭据。真正需要平台侧支持的只有一件——把这些数据用工具暴露出去，那正是 9.4 在做的事。
+
+### 9.1 数据库迁移: 050_p5_mcp.sql
+
+一张表加一列。原 9.1 计划的两张表按边界 1（`mcp_servers` 是反方向，不建）与边界 13
+（审计复用 `audit_logs`，不建 `mcp_tool_calls`）撤销。
+
+```sql
+CREATE TABLE IF NOT EXISTS mcp_tokens (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  token_hash TEXT NOT NULL,                -- scrypt，salt:digest（边界 14）
+  token_prefix TEXT NOT NULL,              -- 明文前 8 位，辨认与候选集收窄用
+  scope TEXT[] NOT NULL DEFAULT '{read}',  -- 'read' / 'write' / 'execute'（边界 1）
+  created_by UUID REFERENCES users(id) ON DELETE SET NULL,   -- 写权限的活体判据（边界 2）
+  last_used_at TIMESTAMPTZ,
+  revoked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 部分索引：吊销行被条件排除，因此吊销即时生效（边界 14）
+CREATE INDEX IF NOT EXISTS mcp_tokens_prefix_idx
+  ON mcp_tokens (token_prefix) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS mcp_tokens_project_idx ON mcp_tokens (project_id);
+
+ALTER TABLE project_settings ADD COLUMN IF NOT EXISTS mcp_enabled BOOLEAN NOT NULL DEFAULT false;
+```
+
+`scope TEXT[]` 而不是 boolean 列：`ingest_runs.scope`（迁移 035）与 `workers.labels`
+（迁移 027）已经是这个先例——当初留的「将来加 scope 不改表」这次兑现了：`execute` 在表结构
+零改动的情况下加了进来，将来加第四种同样不需要动表。
+
+`created_by` 是 `ON DELETE SET NULL`：用户被删后 Token 行还在（吊销记录要活过被引用方），
+但边界 2 的活体判据取不到人——此时**写调用一律拒绝**，只保留 `read`。这不是降级容错，
+是唯一正确的答案：没有人为这次写入负责。
+
+**`mapMcpToken`**（`models/types.ts`，契约第 6 条）：返回 `id / name / tokenPrefix / scope /
+createdBy / lastUsedAt / revokedAt / createdAt`，**永不返回 `token_hash`**。明文只在签发响应里
+出现一次。
+
+**`project_settings` 的行可能不存在**：那张表只在项目设置被 PATCH 过一次时才有行
+（`routes/projects.ts:97` 的 upsert），所以 `mcp_enabled` 的读取必须按「无行 = false」处理
+——照 `lib/run.ts:119` 读 `store_plaintext` 的写法（`Boolean(rows[0]?.…)`）。把开关接进那条
+PATCH 时，新列要用 `COALESCE(EXCLUDED.mcp_enabled, project_settings.mcp_enabled)`
+（与同一语句里 `store_plaintext` 同款），否则只改默认环境的一次 PATCH 会把开关顺手清成
+`false`。
+
+### 9.2 传输与端点
+
+**协议版本**：MCP `2026-07-28`（GA，2026-07-28 发布）。该版本把协议核心改成无状态——移除协议级
+session、移除 GET 流端点、每条消息是一次自包含 POST，且 `Mcp-Method` / `Mcp-Name` 头随请求携带
+（网关可按头路由，不必解 body）。**这正是本阶段不需要任何状态设施的原因**（9.0「不引入
+session / 状态」）。
+
+**SDK**：`@modelcontextprotocol/server` v2 + `@modelcontextprotocol/node`。
+
+**对 2025 老客户端的姿态（2026-09-04 定）**：`createMcpHandler` 默认 `legacy: 'stateless'`——
+2025 系流量（`initialize` 握手、`Mcp-Session-Id`、无 per-request `_meta`）由**同一个工厂**每请求
+新建实例无状态地服务，平台侧零 session 设施；老客户端的 `GET`（独立 SSE 流）与 `DELETE`（终止
+会话）按规范答 405，纯工具型 server 不需要服务端主动推送。四道闸门在 SDK handler 之前做完，
+兼容腿同样被罩住。对照智能体平台 `mcp-proxy`（`智能体平台-第三方接入接口文档.md` 第 3 节）：
+
+| 智能体平台接入方式 | 协议年代 | `/mcp` 支持 |
+| --- | --- | --- |
+| `STREAMABLE_HTTP`（rmcp-soddygo 1.5.0） | 2025-06-18 Streamable HTTP | **支持**——默认兼容腿，零状态 |
+| `SSE`（rmcp 0.10，传统 SSE + POST） | 2024-11-05 老传输 | **不支持**——SDK v2 明确「never serves the HTTP+SSE transport」，冻结版在 `@modelcontextprotocol/server-legacy/sse` 且已定 v3 移除；平台侧用 `STREAMABLE_HTTP` 方式注册 |
+
+**新规范里用与不用的**：用 **MRTR**（delete 确认回合，9.4.1）与 `ttlMs` / `cacheScope`
+（工具清单缓存提示，SDK 自动携带）。不用 Tasks 扩展（无长任务）、`subscriptions/listen`
+（不做推送）、sampling / roots / logging（已废弃且从未需要）、OAuth（见下）。
+
+**挂载方式（必须照这个写）**：
+
+```ts
+// routes/mcp.ts
+const handler = createMcpHandler(() => buildMcpServer(/* 每请求一个实例 */));
+const node = toNodeHandler(handler);
+
+app.all("/mcp", async (request, reply) => {
+  /* 鉴权在 Fastify 侧做完，身份挂在 raw request 上传给工具（SDK 读作 ctx.http.authInfo）。 */
+  const identity = await authenticateMcp(request.headers.authorization);
+  if (!identity) return failMcpUnauthorized(reply);
+  /* Fastify 已经解过 JSON body，必须把它作为第三个参数传进去——否则适配器会去
+     重读一个已经被消费掉的流。 */
+  return node(Object.assign(request.raw, { auth: identity }), reply.raw, request.body);
+});
+```
+
+三条不能改的细节：
+
+- **不用 SDK 的 `createMcpFastifyApp`**。那个工厂返回一个**新的** Fastify 实例（自带 DNS
+  rebinding 防护），而 `buildApp()` 已经有一个实例了。两个实例意味着两个端口或一层反代。
+  DNS rebinding 防护改为单独注册 SDK 导出的 host / origin 校验中间件。
+- **`request.body` 必须作为第三个参数传入**（见上面注释）。这是 Fastify 适配唯一的坑。
+- **工厂每请求执行一次**，工具注册在工厂内部、不注册在共享实例上。无状态模型的直接后果，
+  也正好与「一个请求一份鉴权身份」对齐。
+
+**响应形态**：`responseMode` 不写死，用默认——单条 JSON 响应，只在工具发进度通知时升级为 SSE。
+本阶段的工具全部是「查一次库 / 写一次库 / 入一次队就返回」，没有长任务（delete 的 MRTR
+`input_required` 也是普通 JSON 结果，不是流），所以实际上永远是单条 JSON。
+
+**OAuth 不做**。规范里 authorization 是 `OPTIONAL`，完整实现要 OAuth 2.1 + PKCE + 资源元数据
++ 客户端注册（`RFC 9728` / `RFC 8707` / `RFC 7591`），那是给「任意第三方客户端接入公网 MCP
+服务」准备的。本阶段的消费方是**内网里一台受控的 agent 平台**，Bearer Token 足够，且与
+`/ingest`、`/runner/*` 的接入方式一致（同一套运维心智）。真要上公网再补 —— 那时补的是
+授权服务器发现与 scope 挑战，不需要动工具层。
+
+### 9.3 鉴权与 scope
+
+**`lib/mcpAuth.ts`**：`issueMcpToken()` / `authenticateMcp(header)`，逐字照抄
+`lib/ingestAuth.ts:29-80` 的结构，只改前缀（`apimcp_`）与表名。第三次照抄，不抽公共层
+（边界 14）。
+
+`authenticateMcp` 返回：
+
+```ts
+type McpIdentity = {
+  tokenId: string;
+  projectId: string;
+  scope: ("read" | "write" | "execute")[];
+  createdBy?: string;   // 边界 2 的活体判据入口
+};
+```
+
+**四道闸门，顺序固定**（任一不过就拒，且拒绝理由必须可区分——它们的修法完全不同）：
+
+| # | 检查 | 不过时 | 为什么这个顺序 |
+| --- | --- | --- | --- |
+| 1 | Token 有效（前缀取候选 + scrypt 比对 + 未吊销） | 401 | 最便宜的判据先做 |
+| 2 | `project_settings.mcp_enabled` | 404 | 关掉时端点**不存在**，不泄露「这个项目有 MCP 但关了」 |
+| 3 | 工具在 `tools/list` 的可见集内（按 scope） | `-32601` | 只读 Token 看不见写/执行工具，调用它等于调一个不存在的方法 |
+| 4 | 写与执行工具：`canAccess(createdBy, projectId, true)` | 403 | 最贵的判据（一次 SQL）放最后 |
+
+第 4 道每次写/执行调用都跑，不缓存（边界 2）。`created_by` 为 NULL（签发者已被删）时直接判不过。
+
+**`tools/list` 按 scope 裁剪，不是「列出来再拒」**。只读 Token 的 `tools/list` 里根本没有
+`create_endpoint`——模型看不见的工具不会去调，也就不会把一轮对话浪费在一次注定 403 的尝试上。
+这比返回完整清单再逐个拒绝更省 token，也更少误导。
+
+**签发接口**（项目级，`requireProjectAccess(write=true)`）：
 
 ```
-mcp_servers        (id, project_id, name, url, api_key, capabilities JSONB)
-mcp_tool_calls     (id, flow_execution_id, tool_name, args JSONB, result JSONB)
+GET    /api/v1/projects/:id/mcp/tokens            列表（永不含明文）
+POST   /api/v1/projects/:id/mcp/tokens            签发，明文只在这次响应里出现
+DELETE /api/v1/projects/:id/mcp/tokens/:tokenId   吊销（软删）
+GET    /api/v1/projects/:id/mcp/tools             工具清单（前端展示用，非 MCP 协议面）
 ```
 
-### 9.2 平台 MCP 对外暴露 (Server 模式) 与 AI 能力
+签发与吊销写 `audit_logs`（`mcp_token.create` / `mcp_token.revoke`，`detail` 记 name 与 scope
+——**名字与 scope 不是凭据**，明文与哈希都不进）。签发 `write` scope 的那次审计尤其重要：
+它是「这个项目从哪一刻起允许外部写入」的唯一凭证。
 
-> **方向 (交互文档 v1.7)**: **移除应用内「MCP 对话式创建接口」**（不提供前端对话 UI）。平台将自身能力作为 **MCP Server 对外暴露**，让外部 AI/工具通过 MCP 创建接口、接口用例、DAG 编排。**暂不对外暴露**，待接口用例（P1）、DAG 编排（P1/P2）等能力全部完成后**统一提供**。前端届时仅提供最小管理入口（暴露地址 / Token / 工具清单 / 启停开关）。
+### 9.4 工具清单
 
-- **AI 能力（可选 / 后置）**: AI 生成断言 / AI 根因分析 / AI 趋势洞察（报告分析）
+命名用 `snake_case` 动宾结构（MCP 生态惯例，也与 `Mcp-Name` 头的路由用途一致）。
+每个工具的 `description` 里写清**它不能做什么**——模型读 description 决定调不调，
+写清边界比写清能力更能减少无效调用。2026-09-04 扩界后共 43 个（读 21 / 写 17 / 执行 5），
+到此封顶：清单越长模型选工具越不准，之后要加先砍。**2026-09-06 上限 43 → 44**（用户
+决策，验收反馈：agent 建完接口需要顺手补 `{{baseUrl}}` 一类普通变量）——`upsert_environment`
+进来，只动普通变量、secret 无通路；「先砍再加」仍是对下一次扩界的要求。两条形状纪律：
+① 列表工具每行必须带交叉引用 id（`list_cases` 行带 `endpointId`、`list_runs` 行带资源
+id）——没有 id，AI 把两跳连不起来，「快」就无从谈起；② `description` 写清「不能做什么」
+从建议升级为**硬要求**（P5-5b 验收项）。
+
+**只读工具（`read` scope，21 个）**
+
+| 工具 | 复用 | 说明 |
+| --- | --- | --- |
+| `list_endpoints` | `endpoints.ts:134` | 支持 `keyword` / `method`，分页 |
+| `get_endpoint` | `endpoints.ts:193` | 完整定义 |
+| `list_cases` | `cases.ts:140` | 返回 `TestCaseSummary`（**不含** request / assertions，理由见 `types.ts:212`），行带 `endpointId` |
+| `get_case` | `cases.ts:177` | 完整定义，含 assertions / responseScripts |
+| `get_execution` | `endpoints.ts:486` | **读时重新脱敏**（9.5） |
+| `list_executions` | `endpoints.ts:494` | 支持 `caseId` / `endpointId` / `status` / `since` 过滤，行带 `endpointId` / `caseId` |
+| `get_script_contract` | `scriptContract.ts` | **工具集里最重要的一个**（边界 9、10） |
+| `list_scripts` | `scripts.ts:114` | 公共脚本清单（按 `kind` 过滤） |
+| `list_environments` | `environments.ts` | **只回 `secretKeys`（名字），不回值**——契约第 7 条 |
+| `list_flows` | `flows.ts:208` | 返回 `nodeCount` 而不是 `nodes` |
+| `get_flow` | `flows.ts:240` | 完整 DAG |
+| `get_project_overview` | 看板聚合 SQL（P0 起已在算） | 接口/用例/环境/流程/套件/CI 任务计数、覆盖率、最近通过率、最近失败 top N——「项目现状」是 AI 的第一问，一次调用代替几十跳分页遍历 |
+| `list_suites` | 套件列表路由 | `keyword` 过滤，分页 |
+| `get_suite` | 套件详情路由 + `ResourceSchedules` | 完整定义，**含其调度**（省一个 `list_schedules` 工具） |
+| `list_ci_tasks` | P4.5-11 列表 | `keyword` 过滤，LATERAL 最近执行随行 |
+| `get_ci_task` | P4.5-11 详情 | 完整定义（代码来源只读、secret patch 语义照界面），**含其调度与最近 run 概要** |
+| `list_runs` | `GET /pipeline-runs?ciTaskId=` 同款 SQL（套件侧用套件执行历史） | `kind`（suite / ci）+ 资源 id 过滤，状态/耗时随行 |
+| `get_run_report` | 报告拼装层（`lib/reportPayload.ts`，总报告列表两源 UNION 同款） | 概要读数（状态/阶段/提交/触发/结果 + 计数）+ 用例清单（失败优先） |
+| `get_run_case` | 报告明细抽屉同源数据（`pipeline_run_cases` / allure 归一） | 失败明细：断言逐条、错误信息、日志摘录，64KB 截断 |
+| `get_run_logs` | 日志下载路由的读取版 | `tail` 参数（默认 200 行）**尾部优先** + 64KB 上限 |
+| `list_repo_cases` | 仓库用例树 | `keyword` 过滤，行带 system → 接口 → 用例 路径 |
+
+**写工具（`write` scope，18 个）**
+
+| 工具 | 复用 | 幂等键 |
+| --- | --- | --- |
+| `create_endpoint` | 提取后的 `validateEndpoint()` + `endpoints.ts:223` | `(project, method, url)`，`conflictStrategy` 决定更新还是跳过（边界 15） |
+| `update_endpoint` | `endpoints.ts:235` | 按 id，天然幂等 |
+| `create_case` | 提取后的 `validateCase()` + `cases.ts:205` | `(endpoint, name)` |
+| `update_case` | `cases.ts:263` | 按 id。**校验脚本只能进 `responseScripts`**（边界 10） |
+| `upsert_flow` | `flows.ts:289` + `flows.ts:577` 的 `plan` | 建 DAG 前先跑一次 `plan` 校验拓扑，环/孤儿节点在写库前就被拒 |
+| `upsert_environment`（2026-09-06 增补，上限 43→44） | `environments.ts` 的 `cleanVariables` 同款归一 | `(project, name)`，大小写不敏感（REST 判重同口径）。**只动普通变量**：secrets 无参数位（入参出现即拒），凭据名变量被 `rejectCredentialNamedVariables` 指名拒绝；runnerLabel / defaultHeaders 仍 UI-only |
+| `create_suite` / `update_suite` / `delete_suite` | 套件 CRUD 路由 | `(project, name)`；delete 走 9.4.1 确认 |
+| `create_schedule` / `update_schedule` / `delete_schedule` | `ResourceSchedules` 同款路由 | `(resource, cron, target)`；delete 走 9.4.1 |
+| `create_alert_rule` / `update_alert_rule` / `delete_alert_rule` | P3 告警规则路由 | `(project, name)`；delete 走 9.4.1 |
+| `create_ci_task` / `update_ci_task` / `delete_ci_task` | P4.5-11 任务路由 | `(repo, name)`；**仓库凭据只引用既有条目**（边界 4）；delete 走 9.4.1 |
+
+**执行工具（`execute` scope，5 个）**
+
+| 工具 | 复用 | 说明 |
+| --- | --- | --- |
+| `run_endpoint` | 单接口调试入口（`lib/run.ts` 的 `executeRequest`） | 只按已保存定义执行，**不接受 overrides**；不去重（调试本来就会连点） |
+| `run_case` | 用例执行入队路径 | 同上；产物是一条 `executions` 行（`get_execution` 可读回） |
+| `run_flow` | `performFlowRun` 入队路径 | 在途去重：同流程有排队/在途 run 时返回那个 run id |
+| `trigger_suite_run` | `lib/trigger.ts` 的 `triggerSuite`（P3-4 统一触发路径） | 在途去重同上 |
+| `trigger_ci_task_run` | `triggerCiTaskRun`（P4.5-12） | 在途去重同上——任务级串行本来就排队，返回排队中那个 run id |
+
+#### 9.4.1 删除确认语义（MRTR）
+
+全部 `delete_*` 工具两段式：
+
+1. **第一段返回 `resultType: "input_required"`**：内容 = `scanUsage` 的依赖清单（哪些调度在
+   引用、多少用例挂在下面）+ 后果摘要。客户端（agent 平台）把它转述给人——这就是聊天里的
+   「确认删除吗」。
+2. **确认后带 `inputResponses` 重试原调用**，服务端这才执行删除（等价于 REST 面的
+   `force=true` 路径）。**`force` 不是工具入参**——agent 无法单方面替人答：确认是协议回合，
+   取决于客户端是否把问题交给人。
+
+旧客户端（2025 系）走 SDK 的 elicitation 桥接（`legacyInputRequiredShim`）；客户端没有
+elicitation 能力时 delete **降级为拒绝**并提示走 UI——降级而不是开洞。智能体平台是否真的
+转述 elicitation / MRTR 是 P5-3 实测项；不转述则 delete 在聊天里不可用，可逆写与执行不受
+影响。
+
+**明确不提供的工具，只剩三类**（写进 `get_script_contract` 的说明里，模型问起来能自己读到）：
+
+- **任意构造请求的执行**（内联 method / url / body 的自由执行）：执行只作用于已保存的命名
+  资产（边界 3）。
+- **secret / 凭据的创建与明文传递**：secret 只能人在界面上录（契约第 7 条）；CI 凭据只引用
+  既有条目（边界 4）。**环境的普通变量自 2026-09-06 起可经 `upsert_environment` 管理**
+  ——secret 的通路仍然一条都没有；凭据名字的普通变量也被写入侧拒绝。
+- `create_mcp_token`：不给自我提权的工具。
+
+**工具错误用 MCP 的错误通道，不套业务信封**。`success()` / `fail()` 那套信封（契约第 1 条）
+是给 REST 面用的；MCP 有自己的 JSON-RPC 错误与 `isError` 结果形态，把业务信封嵌进去会让
+`code: 0` 与 JSON-RPC 的 `result` 两层语义打架。**契约第 1 条在 `/mcp` 这条路径上不适用**
+——这是本阶段唯一一处刻意的信封例外，理由是协议层已经规定了错误形状。业务错误码
+（1001 / 2001 / …）仍然出现在**错误消息文本里**，便于排查时与 REST 面对照。
+
+### 9.5 脱敏纪律（本阶段最锋利的一条）
+
+`get_execution` 与 `list_executions` 要返回执行证据，而执行证据是平台里**最容易带出真凭据**的
+数据。既有脱敏发生在**写入时**（`lib/run.ts:244-246`），所以库里存的东西不能直接转发。
+
+**`lib/mcpRedact.ts`** 的判定顺序（2026-09-06 修订：NULL 拆成两支）：
+
+```
+1. 取 executions.environment_id
+   ├─ 有值 → 读该环境当前 secrets → sanitizeHeaders + sanitizeValue 重跑 → 返回
+             （回值带 masking: "environment"）
+   └─ 为 NULL
+        ├─ environment_name 快照有值（环境已删，迁移 002 的 SET NULL）
+        │    └─ 不返回 body / headers，返回 bodyOmitted 说明（边界 6 原样保留：
+        │       当时的 secret 值已随环境删除，无从重遮）
+        └─ 快照也无值（这次执行本就没带环境）
+             └─ 按项目全部环境当前 secrets 的并集重跑脱敏后返回
+                （回值带 masking: "project"）
+2. store_plaintext 不参与判定（边界 5）
+```
+
+**为什么拆（2026-09-06，用户验收反馈）**：原实现把「没带环境」与「环境已删」一起
+整体不给，堵死了 agent 的校验闭环——`run_case` → `get_execution` 读响应体 → 对照
+真实返回写断言，是写工具面存在的核心理由。修订后没带环境的执行按**并集**遮蔽返回：
+声明过的 secret 仍不进对话记录（并集是平台手里最宽的声明集，遮得只多不少），没声明
+任何 secret 的项目等于按原文返回。请求侧另有 P5-5a 写入守卫兜底（字面量凭据在
+create/update 时就被拒），这条通路不新增写入面。环境已删的一支维持整体不给：那不是
+「没声明」，是「声明过但值已消失」，遮蔽从定义上就不可复现。
+
+三条推论：
+
+- **`store_plaintext` 项目的历史行也走同一条路**。写入时没遮过，但只要执行的环境还在就
+  能按当前 secret 重算；环境被删了就不给。这个开关的受众是内部人读界面，不是外部
+  agent 读工具。
+- **脱敏用「当前」secret 而不是「当时」的**。当时的值没有留存（正是因为不该留存）。用当前值
+  会漏遮已经轮换掉的旧凭据——但旧凭据已经失效，而漏遮**在用**的凭据才是真损失。取舍明确。
+- **`request_snapshot` 与 `response_headers` 同样重跑**，不只是 body。`Authorization` 头在
+  `SENSITIVE_HEADERS` 里（`lib/sanitize.ts:1`）会被无条件遮掉，但环境 secret 拼进自定义头
+  （`X-Sign`、`X-Token`）只能靠 `secretValues` 比对。
+
+**响应体大小上限**。`executions.response_body` 没有长度约束（P10 的「大响应体截断」还没做，
+见 10.1）。工具返回值要截断到 **64KB** 并标 `truncated: true`：一个 5MB 的响应体会直接
+撑爆模型上下文，而模型要的只是结构。截断点按 UTF-8 字节而不是字符，与 `lib/notify.ts` 的
+`truncateBytes` 同款——按字符截会在多字节边界上切出半个字，模型读到的是乱码。
+
+**`list_executions` 不返回响应体**。列表只回 `id / status / statusCode / durationMs /
+createdAt` 与来源标识，body 留给 `get_execution` 按 id 取。理由与 `TestCaseSummary` 不含
+request 完全一致（`types.ts:212`）：一页 20 条执行、每条几十 KB 的 body，一次调用就把模型的
+上下文预算烧光，而模型此刻要的只是「哪一条失败了」。
+
+**任务与报告读取同红线（2026-09-04 扩界）**：`get_run_logs` / `get_run_case` 返回的日志与
+步骤输出，用该 CI 任务环境变量的当前值重跑脱敏（仓库凭据加密存储、只注入不出明文，不进遮蔽
+集）；日志**尾部优先**（`tail` 默认 200 行）+ 64KB 上限——整份日志动辄几 MB，模型要的是报错
+段，不是全量流水。`get_run_report` / `get_run_case` 的报告数据走与站内 / 分享页同一份拼装
+（`lib/reportPayload.ts`），不产生第二套口径。
+
+### 9.6 前端入口（最小，一个页面）
+
+交互文档 3.10 已定的边界照旧——**前端只提供管理入口，不做对话式创建 UI**：
+
+- 位置：项目层「接口资产」组下新增 `MCP` 导航项，路由 `/projects/:projectId/mcp`。
+  不进「系统管理」：Token 是项目级的，而系统管理页是平台级（`GlobalApp.tsx:198` 那三个 tab
+  全是平台设施）。
+- 内容：启停开关（`mcp_enabled`）、端点地址（带复制按钮，复用 `CopyButton.tsx`）、
+  Token 列表（名字 / 前缀 / scope / 最后使用 / 吊销）、签发弹窗（名字 + scope 三勾选：read
+  默认，write / execute 显式）、工具清单只读表（名字 / 说明 / 需要的 scope）。
+- 明文 Token 只在签发后的弹窗里出现一次，照 4.6 的 secret 展示纪律（`RepoCredentials.tsx`
+  是现成的同款实现，直接照抄交互）。
+- 签发 `write` 或 `execute` scope 时弹窗里必须写明边界 2 的含义：**这把钥匙的写/执行权限
+  跟着签发人走，签发人被降权它就立刻写不动了**。不写清的话，「为什么我的 Token 突然写不
+  进去」会变成一个查不到原因的问题。
+
+加导航项要同时改三处（`ProjectShell.tsx`）：`PAGES` 常量（12 行，`ProjectPage` 类型由它派生）、
+`NAV_ICONS` 记录（24 行，`Record<ProjectPage, LucideIcon>` 是全量的，漏一个就编译不过）、
+以及 `nav` 分组数组（90 行）。页标题走 `t("mcp.title")`，不需要进 `pageTitle` 那串 kebab 特例
+——`mcp` 没有连字符。
+
+### 9.7 实施顺序（P5-1 … P5-6）
+
+按依赖排，每一步都能独立验证：
+
+| 步 | 内容 | 产出 |
+| --- | --- | --- |
+| P5-1 | 迁移 050 + `mapMcpToken` + `lib/mcpAuth.ts`（scope 三值） | **已实现**（2026-09-05：`mcp_tokens` 表 + 部分索引、`project_settings.mcp_enabled`（含 9.1 点名的 COALESCE 护住）、`McpScope`/`McpToken`/`mapMcpToken`、`lib/mcpAuth.ts`（`apimcp_` 前缀 + scope/createdBy 透传）、`routes/mcpTokens.ts` 列表/签发/吊销 + `mcp_token.create`/`revoke` 审计、settings GET/PUT 接 `mcpEnabled`；`GET …/mcp/tools` 留给 P5-4 与工具一起落，`/mcp` 端点在 P5-3） |
+| P5-2 | 校验函数提取到 `lib/`（边界 8），**不改行为** | **已实现**（2026-09-06：新 `lib/validate.ts` —— `validateEndpoint` / `validateCase` + `EndpointInput` / `CaseInput` 类型，函数体从 `routes/endpoints.ts:63` / `routes/cases.ts:28` 原样搬移，签名与 `partial` 语义零改动；两条路由改 import 并删就地副本；顺手补 P5-1 漏登记的 `AUDIT_ACTIONS` 两值 `mcp_token.create` / `mcp_token.revoke`（`mcpTokens.ts` 已在用，`pnpm check` 因此红）。`pnpm check` / `pnpm build` 均过，REST 面行为不变） |
+| P5-3 | `/mcp` 端点 + SDK 挂载（默认 `legacy: 'stateless'`）+ 四道闸门 + `tools/list` 按 scope 裁剪 | **已实现**（2026-09-06：装 `@modelcontextprotocol/server` + `@modelcontextprotocol/node` 2.0.0。`routes/mcp.ts` 按 9.2 三条细节挂载——`createMcpHandler`（`legacy: 'stateless'` 显式写出）+ `toNodeHandler` + Fastify 已解析 body 作第三参 + 身份挂 raw request（SDK 读作 `ctx.authInfo`）；四道闸门全在 SDK handler 之前、兼容腿同被罩住——401（RFC 6750 带 `WWW-Authenticate`）/ 404（回 Fastify 默认 404 体，与未知路由同形）/ `-32601`（in-band HTTP 200，与「工具不存在」不可区分）/ 403（按 `createdBy` 重跑 `canAccess`，签发人被删一律拒）。`lib/mcpServer.ts`：工具注册表（`McpToolDefinition` + 裸 JSON Schema + `fromJsonSchema` 自带 vendored ajv，边界 7 零新校验库）+ `buildMcpServer` 工厂**注册时**按 scope 裁剪（P5-3 清单为空，工具自 P5-4a 起登记，43 封顶）。DNS rebinding 防护用 SDK 纯校验函数 `validateHostHeader`/`validateOriginHeader`（不用 node 包的 raw 写回中间件，避免与 Fastify 接管流程打架）：Host 白名单 = localhost 三件套 + `PUBLIC_BASE_URL` 主机名 + `MCP_ALLOWED_HOSTS`（`*` 逃生门，默认不开），Origin 白名单刻意为空（/mcp 调用方是服务端 agent，带 Origin 的只有 rebinding）。拒绝审计 `mcp.call_rejected`（边界 13，只落第 3/4 道闸门：第 1 道无可归属身份、第 2 道是通道关闭）。`pnpm check` 过；**两条实测待用户在智能体平台侧执行**（STREAMABLE_HTTP 真接一次、确认 elicitation/MRTR 转述与按会话注入凭据——9.8 L3 选型输入） |
+| P5-4a | 核心资产读：原 11 工具 + `get_project_overview` + `list_executions` 补 `since` + `lib/mcpRedact.ts` | **已实现**（2026-09-06：`lib/mcpToolsReadCore.ts` 12 工具——`list_endpoints`（keyword/method/分页，行带 caseCount）/ `get_endpoint` / `list_cases`（TestCaseSummary，行带 endpointId）/ `get_case` / `get_execution`（读时脱敏）/ `list_executions`（caseId/endpointId/status/since 过滤，行带来源 id，**不回 body**）/ `get_script_contract`（`SCRIPT_CTX_SCHEMAS` + 五条运行时规则：脚本断言已废弃、secret 只走 `{ secret: "NAME" }`、三类不提供的工具）/ `list_scripts`（kind/keyword/分页）/ `list_environments`（只回 secretKeys）/ `list_flows`（nodeCount 不带 nodes）/ `get_flow` / `get_project_overview`（六类计数 + 覆盖率 + 最近 100 条已判执行的通过率 + 失败 top 10，失败行只带定位字段，错误详情走 get_execution 的读时脱敏）。`lib/mcpRedact.ts` 落 9.5 判定顺序：环境在→按**当前** secret 重跑 sanitizeHeaders/sanitizeValue（request/responseHeaders/responseBody/error/四类证据数组全覆盖）+ responseBody 64KB 按字节截断；环境没了（SET NULL 或没带环境）→ 证据字段整体不给，回 bodyOmitted 说明；store_plaintext 不参与判定。共用件 `lib/mcpToolResult.ts`：回值双通道（structuredContent + content 文本块，MCP 规范对结构化结果的兼容建议）、错误走 `isError` + 消息文本带业务码（1001/2001，不套 REST 信封）。`pnpm check` 过） |
+| P5-4b | 任务与报告读：套件 / CI 任务 / run / 报告 / 日志 / 仓库用例 9 工具 | **已实现**（2026-09-06：`lib/mcpToolsReadTasks.ts` 9 工具——`list_suites`（keyword/分页，DISTINCT ON 最近一次运行随行）/ `get_suite`（完整定义 + 其全部调度，schedules.ts 同款双 LEFT JOIN，省一个 list_schedules）/ `list_ci_tasks`（keyword/分页，两段 LATERAL 在途 + 最近 run 与 REST 列表同一份 SQL）/ `get_ci_task`（完整定义 + 调度 + runTotal/lastRun；**env 只回 envKeys 不回值**——9.5 把 env 值当日志遮蔽素材，不该从另一个工具流出，凭据本身加密存储只回引用）/ `list_runs`（kind=ci 走 pipeline_runs、kind=suite 走 suite_executions，行带资源 id；套件行不带 member_snapshot）/ `get_run_report`（`lib/reportPayload.ts` 同一份拼装：套件走 loadSuiteReport（成员行去掉 input/output 快照，证据经 httpExecutionId 走 get_execution 读时脱敏）、ci 走 loadRunnerReport（**不带 allure 全量视图**，cases 失败优先、只带定位字段，明细是 get_run_case 的事））/ `get_run_case`（pipeline_run_cases + allure 步骤树/trace/参数，按 CI 任务 env 当前值脱敏：message 64KB、trace 8KB、步骤树超 32KB 整体不给并注明）/ `get_run_logs`（tail 默认 200 行 + 64KB **尾部优先**（从切点前进到整行边界）、CI env 值脱敏、totalBytes 与 truncatedAtHead 随行）/ `list_repo_cases`（扁平行带 repositoryId + endpoint 路径，keyword 跨用例与接口字段，unplacedCaseTotal 单独给数防「上报 36 条树上 31 条」被当 bug）。遮蔽集 = CI 任务 env 当前值，**< 8 字符不进遮蔽集**（`TEST_ENV=stg` 这类短配置值遮掉会把日志打成 `***`，短串不携带值得保护的熵）。另落 P5-1 预留的 `GET …/mcp/tools`（mcpTokens.ts，读 `MCP_TOOLS` 注册表单一事实，名字/说明/scope，前端展示用非协议面）。`pnpm check` 过；**实测待用户在智能体平台侧执行**（tools/list 可见集、get_execution 脱敏与截断、日志尾部优先） |
+| P5-5a | 核心写：endpoint / case / flow 5 工具 + 幂等 + 字面量 secret 拒绝 + 写审计 | **已实现**（2026-09-06：`lib/mcpToolsWriteCore.ts` 5 工具——`create_endpoint`（幂等键 `(project, method, url)`，`conflictStrategy: update\|skip` 与 import 语义逐字同款）/ `update_endpoint`（PATCH 语义，body/bodyText/defaultEnvironmentId 三态：缺省不动、null 清空、有值写入）/ `create_case`（幂等键 `(endpoint, name)`，冻结 request 快照 + 生命周期脚本同事务，`persistCaseLifecycleScripts` 复用）/ `update_case`（部分更新，`FOR UPDATE` 归属先于脚本写入）/ `upsert_flow`（幂等键 `(project, name)`，写库前跑 `validateFlowGraph` 拓扑校验 + `resourcesBelong` + `checkFlowReferences` 跨流程环检测，节点树经 `persistFlowScripts` 归一）。**字面量 secret 拒绝** `lib/mcpSecretGuard.ts`（边界 4）：headers/queryParams 命中 `authorization\|cookie\|x-api-key` 且值非 `{{var}}` 引用、auth 字段（token/username/password/value）非引用、body 对象键命中 `token\|secret\|password\|apikey\|credential` 正则且值非引用——一律拒绝并指向「环境里建 secret，用 `{{name}}` 引用」；`Bearer {{auth}}`（前缀+引用）放行；判据刻意宽于脱敏的 `SENSITIVE_HEADERS`，宁可误伤可改名字段。校验全部复用 P5-2 提取的 `lib/validate.ts`；每个写落 `mcp_tool.write` 审计（detail 只带目标 id 与 outcome，不带 payload）。`pnpm check` 过；**实测待用户在智能体平台侧执行**（幂等键 8、secret 拒绝 9 两条门槛） |
+| P5-5b | 全量 CRUD（套件 / 调度 / 告警 / CI 任务 12 工具）+ MRTR 删除确认（9.4.1）+ execute 5 工具 + 在途去重 | **已实现**（2026-09-06：先按边界 8 把四个路由文件的私有校验原样提取到 `lib/validateSuite.ts` / `validateSchedule.ts` / `validateAlertRule.ts` / `validateCiTask.ts`（函数体逐字搬移，REST 路由改 import），再落三块——① `lib/mcpToolsWriteCrud.ts` 12 工具：套件（幂等 `(project, name)`，selection/execution/notify 整块替换）、调度（幂等 `(target, cron, targetType)`，软上限 50，`computeNextRunAt` 认领锚点跟配置走，PUT 对合并后的 targetType+targetId 判归属）、告警规则（幂等 `(project, name)`，窗口约束对合并后配置判：事件型无窗口、窗口型必带）、CI 任务（幂等 `(repo, name)`，`mergeDraft` 草稿合并 + `assertCredentialOwned` 凭据只引用既有条目 + 关串行补 `notifySerializedQueue` 唤醒）；② **MRTR 删除确认**：`mcpToolResult.ts` 的 `mrtrGate`（三态：无回应=首问、accept+confirm=true=确认、decline/cancel/形状不对=拒绝并指 UI——降级不开洞）+ `mrtrRequired`（`inputRequired.elicit` 表单式 boolean 确认，message = scanUsage 依赖清单 + 后果摘要；`force` 不是入参）；四个 delete_* 全走两段式，套件/CI 连带删引用的 schedules/webhook_triggers（事务），CI 的 message 先报 pipeline_runs 级联数并给「保历史请禁用」的替代；SDK 的 `legacy: 'stateless'` 兼容腿自动桥接 2025 系；③ `lib/mcpToolsExecute.ts` 5 工具（execute scope）：`run_endpoint`（复用导出的 `queueEndpointRun`，环境链显式→接口默认→项目默认，**不去重**——调试连点是正常用法）/ `run_case`（冻结快照整行入队，**不接受 overrides**，产物一条 executions 行）/ `run_flow`（`triggerFlowRun` 已存定义路径，`variableOverrides` 触发语义与调度/Webhook 同一套合并规则；在途去重：`flow_executions` 有 queued/running 时返回那个 id）/ `trigger_suite_run`（同款去重 `suite_executions`）/ `trigger_ci_task_run`（去重集 = pipeline_runs 四态 queued/claimed/running/cancelling；`triggeredBy` = Token 签发人，`IdempotentReplayError` 回首次 run 不算失败）。触发上下文与 REST 手动路径一致（不传 trigger），「谁经哪把钥匙触发」由 `mcp_tool.execute` 审计行回答。工具总数 **21 读 + 5 + 12 + 5 = 43**，到位封顶。`pnpm check` 过；**实测待用户在智能体平台侧执行**（门槛 10 确认回合、11 在途去重、12 execute 触发通知+审计） |
+| P5-5c | `upsert_environment`（普通变量，上限 43→44）+ 无环境执行证据放行（9.5 修订，见当节） | **已实现**（2026-09-06，用户验收反馈两项：① agent 建完接口需要顺手补 `{{baseUrl}}` 一类普通变量 → `mcpToolsWriteCore.ts` 增 `upsert_environment`：幂等键 `(project, name)` 大小写不敏感（REST 判重同口径），`variables` 整块替换（REST PATCH 同语义，description 提醒先 `list_environments` 读再合并），`cleanVariables` 同款归一（trim 键/丢空键/值必须字符串），**secrets 无参数位**（入参出现 `secrets` 键即拒并指 UI），凭据名变量（token/secret/password/apiKey/credential 正则）被 `mcpSecretGuard.rejectCredentialNamedVariables` 指名拒绝（明文变量所有工具可读，不是放敏感值的通道），runnerLabel/defaultHeaders 用列默认值保持 UI-only；写审计同款。② 同日早些时候的 9.5 修订（无环境执行按项目 secret 并集脱敏后返回）记录在 9.5 节内。工具总数 **44（21 读 + 18 写 + 5 执行）**。`pnpm check` 过；实测待用户在智能体平台侧执行） |
+| P5-6 | 前端 MCP 管理页 + i18n 两语言（签发弹窗三勾选） | **已实现**（2026-09-06：`McpPage.tsx` 独立页（路由 `/projects/:projectId/mcp`，导航入「接口资产」组、`PAGES`/`NAV_ICONS`/nav 三处齐改、`Bot` 图标）——页头启停开关（`check-field` 与环境页明文开关同款；store 增 `mcpEnabled` + `updateMcpEnabled`，settings PUT 只带要改的字段——`storePlaintext` 缺省由服务端 COALESCE 保留，`defaultEnvironmentId` 恒随行当前值防清空）+ 服务与端点面板（`/mcp` 根地址 code-block + CopyButton + STREAMABLE_HTTP 注册与浏览器视角说明）+ Token 面板（名字 / 前缀 / scope chip / 最后使用 / 签发时间 / 吊销 `Modal.confirm`）+ 工具清单只读表（segmented 按 scope 过滤带计数，read→write→execute 排序，description 给模型读的原文不翻译）。**签发弹窗两段式**：表单段（名字 + scope 三勾选——read 勾死 disabled、write / execute 显式，勾中即现边界 2 的「权限跟着签发人走」警示）；明文段无 X、无遮罩关闭，唯一出口「我已保存，关闭」。`api.ts` 落 `McpScope`/`McpToken`/`McpToolSummary` + 四接口（列表 / 签发 / 吊销 / 工具清单），`ProjectSettings` 补 `mcpEnabled`；i18n 两语言 `mcp.*` 全套。`pnpm check` 过；验收门槛「签发 / 吊销 / 开关可用」待用户实测 |
+
+**P5-2 必须在 P5-5a 之前独立成一步**：它是纯重构，混进写工具那一步之后，一旦 REST 面出现
+回归就分不清是提取带来的还是新工具带来的。
+
+**验收门槛（12 项）**
+
+1. 只读 Token 的 `tools/list` 里没有写工具与执行工具，调用写工具得 `-32601` 而不是 403。
+2. `mcp_enabled=false` 时 `/mcp` 对该项目 404，且响应体不透露「这个项目存在 MCP 配置」。
+3. 签发者被降为 `viewer` 后，同一个 Token 的读工具照常、写工具立刻 403。
+4. 吊销一个 Token 后，下一次调用即时失败（部分索引生效，无缓存窗口）。
+5. `get_execution` 对 `store_plaintext=true` 项目的记录仍然返回脱敏后的值。
+6. 环境已删除的执行记录，`get_execution` 不返回 body，只返回说明字段。
+7. 5MB 响应体的执行记录，工具返回值被截断到 64KB 且带 `truncated: true`。
+8. `create_endpoint` 用同一 `(method, url)` 调两次，库里只有一条接口。
+9. 写工具入参里带 `Authorization: Bearer sk-xxx` 字面量时被拒，错误消息指向「用 `{{变量}}`」。
+10. `delete_suite` 未确认时库里无变化；带 `inputResponses` 确认重试后删除生效，且 `audit_logs`
+    有一行。
+11. 同一 CI 任务已有排队/在途 run 时，`trigger_ci_task_run` 返回那个 run id，库里不出现第二个。
+12. 签发了 `execute` 的 Token 触发套件后，套件自己的 `notify_config` 通知正常发出、
+    `audit_logs` 有触发行。
+
+### 9.8 后置：站内助手（人物 + 聊天 + 新手教程）
+
+> **已立项为 P9（2026-09-04）**：范围、边界与批次见 `DEVELOPMENT_PLAN_P6-P10.md` 十三章。
+> 上游能力核对（`智能体平台-第三方接入接口文档.md`）与 L3 定案（proposal-first）以
+> 该文件为准；本节保留为方向性说明。
+
+**本阶段不做**。2026-09-03 讨论确认的方向与前置：
+
+**方向**：聊天窗**不在平台内实现 agent**（不管 session / token / function call）。链路是
+「浏览器 → 平台助手代理（只转发 SSE）→ 外部 agent 平台 → 平台 `/mcp`（本阶段的产出）→ 库」。
+平台在这条链里出现两次，身份不同：一次是哑管道，一次是工具提供方。
+
+**为什么代理层不能省**（浏览器直连外部 agent 平台的三个后果）：agent 平台的 Key 会落到前端
+bundle；`canAccess` 断链（`viewer` 可以让 AI 替他写）；审计断链（「谁让 AI 建了这个接口」
+答不出来）。转发用 `routes/stream.ts:43` 那套已经跑通的 `reply.hijack()` SSE 写法。
+
+**聊天窗的身份绑定（L3，三选一，2026-09-04 更新）**：P5 扩界后工具面已含写与执行（9.4），
+聊天链路的凭据形态决定「用户授权」是否落在真人身上。三个候选**都建立在同一个 43 工具面上，
+选型不反过来改工具**：
+
+1. **助手代理直传用户 JWT**：`/mcp` 加一条 JWT 鉴权分支（与 `apimcp_` 并列），`canAccess`
+   每次落在聊天用户身上。前提：智能体平台能按会话转发凭据。
+2. **每会话短时 `apimcp_` Token**：代理在会话开始时签发（`created_by` = 聊天用户、短过期、
+   会话结束即吊销）——复用 P5-1 的全部 Token 机制，viewer 聊天自动写不动，审计落在真人。
+   前提同上。
+3. **proposal-first（原案）**：MCP 只读 + 用户 JWT 走 REST 落库。不依赖平台的任何透传能力；
+   `ResponseScriptEditor.tsx:20` 的受控组件形态（`{ scripts, onChange }`）就是草稿落点，
+   不新增任何写库路径。
+
+选 1 还是 2 取决于 P5-3 实测「智能体平台能否按会话注入凭据」；都不行则退 3。**硬约束：L3
+未定之前，站内助手不得挂在一把共享 write / execute Token 上**——那会让「用户授权」变成审计
+里查不到人的一句话（`canAccess` 断链 + 审计断链，正是上段三个后果之二、之三）。
+
+**本地意图不走 agent**：主题 / 语言 / 导航是前端本地指令（`routes/system.ts:21` 的
+`preferences` 是 JSONB 合并，加键零迁移）。绕一圈外部 agent 再回来纯属浪费，而且**agent 平台
+挂掉时这些仍要可用**。所以聊天窗分两层：本地指令集 + 自然语言通道。
+
+**人物**：`hand-drawn-character-creator.html` 的算法可用但需降级——它是 three.js + WebGL
+（CDN importmap，第 67-69 行）+ 每部件一张 canvas 贴 3D 平面 + 常驻 rAF（呼吸/眨眼/跟鼠标/跳）。
+直接搬会与 DAG 画布和 Monaco 抢帧，且正面违反 Quiet Console 第 4 条（全应用只允许一个环境
+动画）与 Banned 列表（CDN webfont）。**可搬的是 76-584 行那 500 行纯 Canvas 2D**
+（three.js 从 588 行才开始）：哈希种子 → 物种/五官/配色的确定性生成完整保留，改画单张 2D
+canvas，动画只留眨眼并遵守 `prefers-reduced-motion`。两个产品决定：**种子用 `users.id` 而不是
+`name`**（改名不该等于换人，同名不该长得一样）；`nightmare` 物种 12% 概率（629 行：长角、
+锯齿嘴、空洞眼）需显式决策是否保留。
+
+**新手教程**：要覆盖 `main.tsx:78-117` 的 20 余条路由，而其中编排 / 套件 / 仓库模式的页面结构
+仍在动。现在写一步一 selector 的 tour 等于每次布局调整都重写。若要提前埋，只埋数据驱动骨架
+（`{ route, selector, i18nKey }` 的 JSON + `preferences.onboarding` 记完成状态），内容等页面
+定型再填。
+
+**前置条件（本阶段之外，尚未规划）**：
+
+1. **用户注册**——平台现在**没有注册路由与注册页**，只有 `routes/auth.ts:8` 的 login，
+   `Login.tsx:14` 还硬编码 `admin@local.test`。「注册时按名字生成人物」这个触发点目前不存在。
+   开放注册还是邀请制、谁分配项目角色、种子管理员怎么来，都是未决问题。
+2. **用户权限与站内通知**——聊天窗要能说「这条规则会给谁发通知」，而通知现在只有外发渠道
+   （`lib/notify.ts` 的企微/钉钉/Slack/Webhook），没有站内收件箱。
+3. **外部 agent 平台的四项能力**（不满足则方案退化）：能配置连接任意外部 MCP Server（不满足
+   则整个方案作废，平台得自己做 function calling）；HTTP API 支持流式（不满足则体验退化成
+   整段返回，架构不变）；能接受外部传入的会话 id（不满足则平台自存 transcript 每次全量重发）；
+   **能转述 elicitation / MRTR**（不满足则 delete 在聊天里不可用，降级提示走 UI——9.4.1）
+   **与按会话注入凭据**（不满足则 L3 退 proposal-first）。后两项均为 P5-3 实测项。
+
+**助手代理落地时才需要的两样东西**（本阶段不建）：`project_settings` 上的 agent 平台地址 +
+API Key（Key 走 `lib/crypto.ts:19` 的 AES-GCM，与 Webhook 密钥同款——那把 Key 要拿出明文去
+调上游，所以是加密而不是哈希，与 MCP Token 的取舍正好相反），以及 `conversation_id → project`
+的归属映射一行。**对话正文不落库**：transcript 在 agent 平台那边，平台再存一份等于把同一批
+可能含业务数据的文本抄成两份。
+
+### 9.9 P5 验收结论（2026-09-06）
+
+**用户验收通过**（P5-1 ~ P5-6 全量：Token 签发 / 吊销 / 前端管理页、`/mcp` 端点与四道闸门、
+21 读 + 18 写 + 5 执行共 44 个工具，含 9.7 验收门槛十二项）。验收实测经智能体平台执行，
+覆盖核心调用链（接口与流程创建、执行证据读取、环境与 CI 日志查询）。验收期间发现并当日
+裁决 / 修复的三项：
+
+1. **无环境执行的证据整体不给**（堵死「run → 读响应 → 写断言」闭环）→ 9.5 边界修订：
+   `environment_id` 为 NULL 拆两支——没带环境的按项目全部环境当前 secret **并集**脱敏后
+   返回（没声明 secret 的项目等于原文），环境已删的仍整体不给；
+2. **MCP 创建的接口在流程编辑器显示为裸 id**（store 不感知带外写入 + 接口来源 Select 无
+   兜底）→ `issue_fix/问题记录-MCP创建接口流程内显示为id.md`，前端两处修复；同轮核查
+   CI 日志（`get_run_logs`）无同类问题；
+3. **环境变量无工具通路** → 上限 **43 → 44**（用户决策），增补 `upsert_environment`
+   （P5-5c，普通变量整块替换；secret 无参数位，凭据名变量拒绝，runnerLabel / defaultHeaders
+   仍 UI-only）。
+
+**后续持续测试**：用户将继续使用工具面，期间发现的缺陷照常走 `issue_fix/`（不改 9.x
+边界；涉及边界再议再记）。9.7 各行遗留的「实测待用户在智能体平台侧执行」事项随本结论关闭，
+后续问题以 issue_fix 记录为准。
 
 ---
 
-## 十、P6 — 性能、插件、版本 (3 周)
+## 十四、P10 — 性能、插件、版本（3 周，已并入扩编文档）
 
-### 10.1 性能优化
-
-- 执行历史归档 (分区表)
-- 大响应体截断 + 对象存储 (MinIO/S3)
-- 查询缓存 (Redis)
-
-> **对象存储抽象已于 P4.5 提前落地**（`lib/objectStore.ts`，`fs` + `s3` 两驱动，见 8.4）。
-> 本节剩下的是另外两件：**执行历史归档（分区表）** 与 **大响应体截断**。后者不是「把
-> `response_body` 搬进对象存储」这么一步——它是一次**口径变更**（多长算大？截断后详情页
-> 显示什么？历史行怎么算？），必须连着归档策略一起想，因此 P4.5 一个字都没改
-> `executions.response_body`（8.0 边界 14）。
-
-### 10.2 插件机制
-
-- 插件生命周期: 注册 → 启用 → 禁用 → 卸载
-- 钩子点: 执行前/后, 断言, 报告生成
-
-### 10.3 版本历史
-
-- 接口变更追踪
-- 环境配置快照
-- 执行结果回放
+> **本章已于 2026-09-05 整章移入 `DEVELOPMENT_PLAN_P6-P10.md` 十四章**（内容原样未改）。
+> 范围（14.1 性能优化 / 14.2 插件机制 / 14.3 版本历史）、顺延背景与口径说明见该文件。
 
 ---
 
@@ -5718,7 +6293,9 @@ mcp_tool_calls     (id, flow_execution_id, tool_name, args JSONB, result JSONB)
 | P2-7 | `mongodb` **已装**    | MongoDB 驱动     |
 | P3   | `cron-parser` **已装**（bullmq 传递依赖，显式提为直接依赖） | Cron 解析与下次执行时间 |
 | P4.5 | `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` | 产物对象存储（MinIO/S3）；按需 `import()`，不进启动路径 |
-| P5   | `@fastify/swagger`    | OpenAPI 文档生成 |
+| P5   | `@modelcontextprotocol/server` v2 | MCP Server（协议 `2026-07-28`，无状态） |
+| P5   | `@modelcontextprotocol/node`      | `toNodeHandler` + host/origin 校验中间件 |
+| ~~P5~~ | ~~`@fastify/swagger`~~          | **撤销**：原为「OpenAPI 文档生成」，与本阶段的 MCP 暴露无关；平台自身的 OpenAPI 输出没有需求方（前端读 `api.ts`，外部工具读 MCP 工具清单） |
 
 > 说明: P1-3 的执行进度推送用 **SSE**(`reply.hijack()` + `text/event-stream`)实现,
 > 未引入 `@fastify/websocket`——单向推送不需要双工通道。
@@ -5740,7 +6317,8 @@ mcp_tool_calls     (id, flow_execution_id, tool_name, args JSONB, result JSONB)
 | P1   | `@monaco-editor/react` | 代码编辑器    |
 | P1   | `ajv` **已装**          | JSON Schema 断言（P1-1 收尾） |
 | ~~P3~~ | ~~`@ant-design/charts`~~ | **撤销**：趋势图手写 SVG，理由见 6.0 边界 12 |
-| P5   | `@uiw/react-md-editor` | Markdown 编辑 |
+| ~~P5~~ | ~~`@uiw/react-md-editor`~~ | **撤销**：Markdown 渲染器不进平台是 P4.5 报告侧已立的口径（8.13 边界 19——allure `descriptionHtml` 按 pre-wrap 纯文本展示）；没有消费方要求它出现在 P5，一个 Markdown 编辑器没有理由为一章不需要它的阶段复活 |
+| P7 | `exceljs` | `.xlsx` 固定模板解析（+计划导出的升级路径）；后端按需 `import()`，不进启动路径。P6/P8/P9/P10 零新增依赖——详见 `DEVELOPMENT_PLAN_P6-P10.md` 15.1 |
 
 > 说明: 脚本断言沙箱**定案用 `node:vm`**（零依赖），不再引入 `isolated-vm`——原生
 > 依赖要编译且版本对齐成本高，而 worker 进程隔离已是第一道边界，`node:vm` 只需
@@ -5761,8 +6339,12 @@ mcp_tool_calls     (id, flow_execution_id, tool_name, args JSONB, result JSONB)
 | M3     | P3      | 套件调度 + Webhook 触发 + 套件执行报告 + 告警 + 趋势 | 定时执行（漏跑不补但留痕）+ HMAC 触发 + 报告名 `套件名_日期` 且带触发源与耗时 + 失败通知 + 趋势图 |
 | M4     | P4      | 仓库用例上报 + `apitrack-sdk` | 既有 pytest 仓库「装包 + 两个环境变量 + 原样跑」即可让用例挂上覆盖树；范围级对账不误删 |
 | M5     | P4.5    | 自研 Runner + CI 任务 + 勾选执行 + 调度通知 | 自托管 Runner 只出站 443 即可拉代码执行；日志实时可看、可取消、掉线判 `aborted`；树上勾选可触发；任务可定时跑、终态可通知、同任务串行不踩数据 |
-| M6     | P5      | 平台 MCP 对外暴露        | 外部可通过 MCP 创建接口/用例/DAG (统一上线) |
-| M7     | P6      | 性能 + 插件              | 支持 1000+ 并发执行                              |
+| M6     | P5      | 平台 MCP Server 对外暴露 | 外部 AI/工具经 `/mcp` 可读全部资产（接口/用例/流程/套件/CI 任务/报告/日志）与脚本契约，可写全部资产（删除走 MRTR 确认），可触发已保存资产执行；read/write/execute 三 scope 分离，执行证据读时脱敏 |
+| M8     | P6      | 注册 + 成员与角色 + 三级权限 + 审计可读 | 邀请码注册即入项目；viewer 界面无写入口；成员变更可审计（`DEVELOPMENT_PLAN_P6-P10.md` 十章） |
+| M9     | P7      | 文本用例库 + XMind/Excel 导入 + 绑定 + 测试计划 | 300 条 XMind 导入正确；自动化覆盖率可读；计划可标结果可导出（同文件十一章） |
+| M10    | P8      | 口径收口 + 失败归因 + 全局/项目统计 + 下钻 | 四处通过率一致；归因分布与覆盖率同屏；图表 hover/下钻可用；零图表库（同文件十二章） |
+| M11    | P9      | 站内助手 + 站内通知 + 教程 | 代理对话可用且 Key 不出服务端；proposal-first 闭环；通知小红点 + 弹窗（同文件十三章） |
+| M7     | P10     | 性能 + 插件（原 P6 顺延）              | 支持 1000+ 并发执行（同文件十四章）             |
 
 ### 12.2 交付标准
 

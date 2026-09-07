@@ -1,10 +1,12 @@
 # 接口自动化平台 — 代码仓库划分与跨仓协议
 
-> 版本: v1.1
+> 版本: v1.2
 > 状态: Draft
-> 基于: API_AUTOMATION_SPEC.md v1.9 / FRONTEND_INTERACTION_DESIGN.md v2.0
+> 基于: API_AUTOMATION_SPEC.md v1.9 / FRONTEND_INTERACTION_DESIGN.md v2.6
 >
 > **v1.1（P4 落地）**：2.3 的 SDK 仓改名 `apitrack-sdk-python`（分发名 `apitrack-sdk`，导入名 `apitrack`，环境变量前缀 `APITRACK_`）并重写为零改动接入的形状（pytest 插件 + 传输层打桩 + 零依赖）；3.4 上报协议冻结为 v1.0，相对初版草图增补 `run.scope`、`run.sdk`、`records[].phase`、`inventory[].result` 四个字段，并补齐平台侧的双闸门对账、关系表归属与响应码表。
+>
+> **v1.2（P5 方向修正）**：2.2 里「`mcp/` MCP Server 注册与调用」「`mcp-gateway/` MCP Client 运行时」与「DAG 引擎的 MCP 节点」都是**平台当 Client** 的旧方向（还带一套本仓库清单里不存在的模块划分）。P5 确认做**相反方向**——平台作为 MCP Server 被外部驱动，落点是 `apitest-server` 内的一条 `/mcp` 路由 + `mcp_tokens` 表（计划 9.1/9.2），**不新建 `mcp-gateway` 模块、不建 `mcp/` 注册路由**。本文件下述目录图中相关行按历史稿保留，实现以 DEVELOPMENT_PLAN.md 九章为准。
 
 ---
 
@@ -133,7 +135,8 @@ apitest-web/
 │   │   ├── flow/         # DAG 编辑器 (React Flow)
 │   │   ├── repo/         # 仓库模式一个入口五个标签：任务 / 用例树 / 上报记录 / 未匹配诊断 / 凭据
 │   │   ├── ci-task/      # 仓库任务执行详情(SSE 日志) / Runner 池（任务列表本身在 repo/ 下）
-│   │   ├── datasource/ mock/ mcp/
+│   │   ├── datasource/ mock/
+│   │   ├── mcp/          # P5：平台作为 MCP Server 的管理页（开关 / Token / 工具清单）
 │   │   ├── report/       # 报告监控 / 趋势
 │   │   └── schedule/
 │   ├── components/       # 通用组件 (KV 编辑器 / Monaco / 空状态)

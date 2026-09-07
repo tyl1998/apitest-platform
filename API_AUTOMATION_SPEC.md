@@ -1,6 +1,6 @@
 # 接口自动化平台 — 技术规格说明书 (Spec)
 
-> 版本: v1.9  
+> 版本: v1.10  
 > 状态: Draft
 > 目标: 定义接口自动化平台的功能范围、架构设计、数据模型与技术选型
 
@@ -18,6 +18,7 @@
 | v1.8 | **P2-6 验收与缺陷统计**：2026-08-16 用户验收通过。开发周期共发现并处理 21 个缺陷（其中 2 个造成数据丢失：保存流程误删内联脚本、并发请求令牌记账失真），统计与教训见 `DEVELOPMENT_PLAN.md` 5.0.8「P2-6 缺陷统计」。并发不变式修正为「每个在飞的 HTTP 请求恰好持有一个令牌」；脏检查改为稳定序列化（jsonb 不保键序）；循环容器的尺寸持久化（`LoopFlowNode.size`）。遗留：流程「测试」5 处悬空脚本引用（用户选择不修复）、公共脚本「断言」类型退役（范围未确认）。 |
 | v1.4 | 1) **数据源新增 SQL 定义（命名查询）**：数据源下可保存命名 SQL（名称/SQL/参数/说明），参数统一走 `{{variable}}` 绑定防注入，供 SQL 查询面板、场景数据库步骤、流程数据库节点复用；2) **场景支持数据库步骤与后置 SQL 校验**：场景步骤扩展为「接口用例 / 数据库步骤」两类，数据库步骤可引用已定义 SQL 或现场编写、参数引用前序用例输出、对查询结果断言、查询结果 JSONPath 提取为场景变量；场景末尾支持仅断言不传参的后置 SQL 校验（典型：接口执行后查库确认写入）；3) 流程数据库节点同步支持引用已定义 SQL。 |
 | v1.9 | **仓库模式 2.10.1 落地定稿**：1) SDK 改为**零改动接入** —— `pip install apitrack-sdk` + 两个环境变量 + 原样跑 `pytest`，插件靠 `pytest11` entry point 自动加载、请求靠**传输层打桩**采集，**撤销**原「把请求集中封装进 `http_req.py` 并改用 `apitest_sdk.client`」的示例（那等于让用户重写全部请求代码，与零改动接入直接冲突）；2) `is_full_inventory` 收窄为**范围内的全量**，协议新增 `scope` —— 原写法把「指定了目录参数」当作非全量，会让按目录划分系统的仓库永远不对账；3) 用例↔接口改为**关系表**（一个用例挂它实际打过的每一个接口），只有 `call` 阶段的请求建立关系，`setup`/`teardown` 仍计入接口覆盖但不挂到用例节点；4) 对账**只看 inventory 不看 records**，关系累积不每轮重建；5) 未匹配区从待办清单改为**诊断视图**，**撤销**「从未匹配区补登记接口」的动作；6) 新增「未归位用例」分组。统计口径（覆盖率、看板、趋势）本阶段一律不动。 |
+| v1.10 | **MCP 方向反转（P5）**：平台**作为 MCP Server 对外暴露**（一条无状态 `/mcp` 端点 + `apimcp_` Token，read/write scope），外部 AI / 工具驱动平台创建与读取接口 / 用例 / DAG；**撤销**原「平台内置 MCP 集成」方向——`MCPServer`（注册外部 Server）、流程的 MCP 节点、2.1.4 的「对话式创建」应用内交互（改为外部 agent 产草稿、人在编辑器确认）。2.1.4 与流程节点表相应改写。实现范围与边界见 DEVELOPMENT_PLAN.md 九章。 |
 
 ---
 
@@ -61,7 +62,8 @@
 
 - 测试资产 (接口、用例、流程、断言、参数) **全部定义并存储在平台内**。
 - 由**平台内部 Worker 引擎**执行，可视化 / 低代码。
-- 平台对执行过程**完全可见可控**：变量细粒度注入、Mock、数据源节点、MCP 节点、单步调试均生效。
+- 平台对执行过程**完全可见可控**：变量细粒度注入、Mock、数据源节点、单步调试均生效。
+  （v1.10 起「MCP 节点」从该清单撤销，见 2.2.2。）
 - 结果实体：`FlowExecution` / `SuiteExecution`。
 
 #### 模式 B — 仓库模式 (代码仓库，见 2.10)
@@ -69,7 +71,7 @@
 - 测试逻辑在开发者的 Git 仓库中，平台**不拥有**测试代码。含两个独立能力：
   - **仓库用例 (上报式)**: 开发者装上平台 **SDK** (`pip install apitrack-sdk`) 并配两个环境变量，**测试代码一行不改**、`pytest` 命令不变；跑完后经**唯一的上报接口**上报。平台把用例归位到「**系统 → 接口 → 接口用例**」树 (与接口模式同构)，接口下有无用例即代表是否被覆盖。合并/去重/删除按 commit 快照对账，删除只在「范围内的全量 + 跟踪分支」两道闸门都成立时发生。
   - **CI 任务 (自研 Runner 执行)**: 平台自研轻量 Runner (执行 Worker) 拉取代码并在沙箱中运行用户自定义脚本，**不依赖 Jenkins**；默认常驻 Worker Pool (秒级启动、依赖可复用)，可选每次构建全新隔离环境。
-- **平台内置能力 (Mock、数据源节点、MCP 节点、变量细粒度注入、单步调试) 对本模式不生效**。
+- **平台内置能力 (Mock、数据源节点、变量细粒度注入、单步调试) 对本模式不生效**（MCP 节点已撤销，v1.10）。
 - 结果实体：`IngestRun`/`IngestRecord` + `RepoTestCase` (上报式) 或 `PipelineRun` (触发式)。
 
 #### 两模式对比
@@ -81,7 +83,7 @@
 | 执行者 | 平台内部 Worker | 上报式: 外部 CI (GitHub Action 等) / CI 任务: 平台自研 Runner Worker |
 | 断言/数据 | 平台内定义、可见可管 | 代码内定义 (上报式可见被封装的请求) |
 | 环境/变量 | 细粒度注入到每个请求 | 由 CI/仓库自身管理 |
-| Mock/数据源/MCP/单步调试 | ✅ 生效 | ❌ 不介入测试内部 |
+| Mock/数据源/单步调试 | ✅ 生效 | ❌ 不介入测试内部 |
 | 接口覆盖 | 执行即覆盖 | **上报式: 接口下有无仓库用例即覆盖情况** |
 | 触发方式 | 手动/定时/Webhook/API | 上报式: CI 运行后上报 / CI 任务: 手动·定时·Webhook·API 触发自研 Runner |
 | 结果实体 | FlowExecution/SuiteExecution | 仓库用例(RepoTestCase)+IngestRun / PipelineRun |
@@ -95,14 +97,14 @@
 
 ### 2.0 项目与成员管理 (新增)
 
-> **核心定位**: 一个被测「系统」= 一个 **Project**。Project 是平台的资源隔离边界与权限边界，其下的接口、环境、数据源、MCP Server、用例、流程、测试套件、代码仓库均归属于该项目。
+> **核心定位**: 一个被测「系统」= 一个 **Project**。Project 是平台的资源隔离边界与权限边界，其下的接口、环境、数据源、用例、流程、测试套件、代码仓库均归属于该项目。MCP Token 同为项目级资源（P5）。
 
 #### 2.0.1 项目管理
 
 - **项目生命周期**: 创建 / 编辑 / 归档 (archive) / 删除。归档后只读保留历史，不再参与调度与执行。
 - **系统级元信息**: 项目负责人 (owner)、系统类型、标签、描述、关联代码仓库地址 (衔接 2.10 仓库模式)。
 - **项目级默认配置** (ProjectSetting): 默认环境、默认超时/重试策略、默认告警渠道、默认执行器 (内部 Worker / 外部 CI)。
-- **资源归属**: 所有业务资源均带 `project_id`，跨项目不可见 (含 MCP Server，统一为项目级)。
+- **资源归属**: 所有业务资源均带 `project_id`，跨项目不可见 (含 MCP Token，统一为项目级)。
 
 #### 2.0.1.1 全局层、项目层与默认落点
 
@@ -206,13 +208,20 @@
 - JWT (支持自定义 payload 生成)
 - 自定义 Header 注入
 
-#### 2.1.4 MCP 工具辅助生成接口用例
+#### 2.1.4 MCP 驱动生成接口用例（v1.10 方向反转）
 
-- **对话式创建**: 用户通过自然语言描述接口需求，通过 MCP 工具调用 LLM 自动生成完整的接口定义（URL、Method、Headers、Body、Auth）
-- **智能补全**: 输入部分接口信息，MCP 工具推荐补全剩余字段
-- **批量生成**: 一句话描述业务场景，MCP 工具批量生成一组相关接口用例（如"生成用户管理模块的 CRUD 接口"）
-- **导入增强**: 导入 OpenAPI/Swagger 文档后，MCP 工具自动补充缺失的断言和示例数据
-- **历史对话**: 保留对话上下文，支持多轮迭代修改接口定义
+> 原文（≤ v1.9）写的是「平台内建 MCP 集成，对话式创建」——方向为**平台当 Client**。P5 反转
+> 为**平台当 Server**：平台不调模型，模型调平台。本节改写为外部 AI 视角看到的能力面，
+> 实现范围见 DEVELOPMENT_PLAN.md 9.0–9.4。
+
+- **能力面**：外部 agent / IDE / CI 经平台的 MCP 工具读走接口定义（`get_endpoint`）、
+  执行证据（`get_execution`，读取时脱敏）、脚本契约（`get_script_contract`），再以写工具
+  （`create_endpoint` / `update_case` / `upsert_flow`）回写。写入幂等（按 `(project, method,
+  url)` 等业务键判重），拒绝字面量 secret（只接受 `{{变量}}` 引用）。
+- **草稿确认**：由 agent 驱动的写入仍走 proposal-first——产物作为草稿回到前端原本的编辑器，
+  由人确认保存（交互文档 4.7）。站内对话入口后置到用户体系之后。
+- **明确不做**：execute / delete 类工具、环境与 secret 写工具、套件 / 调度 / 告警规则工具、
+  Token 自签发工具（计划 9.4 的「不提供清单」及理由）。
 
 ### 2.2 流程编排
 
@@ -228,7 +237,7 @@
   - **条件节点**: 基于前序节点结果做 if/else 分支
   - **循环节点**: 遍历数组或按次数循环。见 2.2.3 的已实现语义与上限。
   - **脚本节点**: 执行自定义 JavaScript/Python 代码。JS 走 `isolated-vm` 进程内沙箱；**Python 走独立子进程/容器沙箱** (资源限额 + 网络禁用 + 只读文件系统)，两者隔离机制不同，见 3.3 技术选型
-  - **MCP 工具节点**: 调用外部 MCP Server 提供的工具（如 LLM 调用、数据查询、消息推送等），通过 MCP Gateway 执行
+  - **~~MCP 工具节点~~**: v1.10 撤销（见 2.2.2）——平台当 Client 方向，随 P5 范围收窄移出
   - **等待节点**: 固定延时或等待条件满足。**当前实现只做有上限的固定延时**，见 2.2.3。
   - **子流程节点**: 调用另一个已定义的流程
 - 拖拽式编辑，实时保存
@@ -295,14 +304,12 @@
 行、`iteration` 标记第几次迭代——一次失败的循环必须能追到是里面哪个请求失败。
 **父级计数只统计顶层步骤**，所以一个 20 次迭代的循环在 `total` 里是 1 步。
 
-#### 2.2.2 MCP 工具节点
+#### 2.2.2 ~~MCP 工具节点~~（v1.10 撤销）
 
-- **MCP Server 连接**: 在平台中注册外部 MCP Server（名称、URL、认证方式），通过 MCP Gateway 建立连接
-- **工具发现**: 连接后自动发现 MCP Server 提供的工具列表及其输入 Schema
-- **工具调用**: 选择工具并配置参数，参数支持引用流程上下文变量 `{{variable_name}}`
-- **结果处理**: 工具返回结果可作为后续节点的输入数据继续流转
-- **错误处理**: MCP 工具调用失败时支持重试和降级策略
-- **MCP Server 管理**: 支持添加/编辑/删除 MCP Server 连接，查看连接状态和可用工具列表
+> 原「注册外部 MCP Server + MCP Gateway + 流程节点调用工具」是**平台当 Client** 方向，
+> P5 反转后整节撤销（计划 9.0 第一条）。流程里要打外部服务，用 HTTP 请求节点直接表达；
+> 要让 AI 参与编排，让外部 agent 用 `upsert_flow` 写入它设计好的 DAG，而不是让流程在
+> 执行中反过来调 AI。
 
 #### 2.2.3 数据传递
 
@@ -424,11 +431,12 @@ ctx.setVariable("requestNonce", nonce);
   循环、分支及带副作用的静态初始化；库不能依赖另一个库，组合保持一层。
 - Monaco 仅补全当前脚本已声明依赖的库符号，未声明依赖的符号不得提示，保证提示与运行时一致。
 
-#### 2.3.5 MCP 工具辅助断言 (可选)
+#### 2.3.5 MCP 辅助断言（v1.10 反转为外部能力）
 
-- **智能断言生成**: 输入自然语言描述，通过 MCP 工具调用 LLM 自动生成断言规则（如"确保返回的用户列表不为空且每个用户都有 id 字段"）
-- **响应智能分析**: 接口返回不符合预期时，MCP 工具分析响应内容并给出可能的原因和建议
-- **异常分类**: MCP 工具自动对失败原因进行分类聚合（如"鉴权失败"、"参数格式错误"、"服务端 500"）
+- **能力面**：外部 agent 用 `get_case` / `get_execution`（读取时脱敏）/ `get_script_contract`
+  读走用例现状与真实响应，产出断言或响应校验脚本草稿；`update_case` 写入前人确认。
+- **明确不做**：平台内不出现「AI 断言生成」按钮或对话面板（计划 9.0 边界 16——平台不调
+  模型、不配 LLM 凭据）。「智能分析 / 异常分类」由外部 agent 读数据后自行完成。
 
 ### 2.4 报告与监控
 
@@ -453,11 +461,12 @@ ctx.setVariable("requestNonce", nonce);
 - 通知渠道: Webhook (通用) / Email / 企业微信 / 钉钉 / Slack
 - 通知模板: 可自定义消息内容
 
-#### 2.4.4 MCP 工具报告分析 (可选)
+#### 2.4.4 MCP 报告分析（v1.10 反转为外部能力）
 
-- **失败根因分析**: 执行失败时，MCP 工具自动分析请求/响应/日志，给出根因推测
-- **趋势洞察**: MCP 工具定期扫描执行数据，发现异常模式（如"某个接口响应时间持续上升"）
-- **优化建议**: 基于历史数据，MCP 工具推荐优化策略（如调整超时时间、增加重试、拆分流程）
+- **能力面**：外部 agent 用 `list_executions` / 报告类只读工具读走执行数据，自己生成根因
+  推测、趋势洞察与优化建议（计划 9.0 边界 16）。
+- **明确不做**：平台内不持有 LLM 凭据、不设「AI 分析」按钮、不做定时扫描——扫描的发起方
+  是外部 agent（它有自己的调度），平台只保证读得到。
 
 ### 2.5 调度与触发
 
@@ -791,12 +800,13 @@ claim job → 准备独立 workspace → git clone (SSH deploy key, 浅克隆)
                     └───────────────────────────────────────────┘
 
                     ┌───────────────────────────────┼──────────────────┐
-                    │         MCP Gateway (独立部署)                   │
+                    │   外部 agent 平台 / IDE / CI（平台之外）            │
                     │  ┌──────────────────────────────────────────┐   │
-                    │  │  MCP Client 连接外部 MCP Server          │   │
-                    │  │  MCP 工具节点执行 / 智能断言 / 报告分析   │   │
+                    │  │  MCP Client → 平台 /mcp 端点（apimcp_ Token）│   │
+                    │  │  读资产 / 产草稿 → 人在编辑器里确认        │   │
                     │  └──────────────────────────────────────────┘   │
                     └──────────────────────────────────────────────────┘
+                    (v1.10：原「MCP Gateway 独立部署」撤销——平台是被调方，不部署 Client 运行时)
 
                     ┌──────────────────────────────────────────────────┐
                     │      仓库模式 执行侧                              │
@@ -830,8 +840,8 @@ claim job → 准备独立 workspace → git clone (SSH deploy key, 浅克隆)
 | **Runner Orchestrator** | Worker 注册/心跳/存活判定、任务派发与并发控制、接收增量日志流、收集产物、解析 JUnit·Allure 归一化 | 随 API 或独立部署 |
 | **Runner Worker** | 执行 CI 任务：git clone(SSH)、沙箱跑脚本、推日志、传报告。**主动外连平台**，支持自托管于内网 | 水平扩展 (常驻池) |
 | **Ingestion / Coverage** | 接收上报式 SDK 的 run/records、API Token 鉴权、path 模板归一匹配契约、计算接口覆盖率与用例清单 | 水平扩展，无状态 |
-| **Worker Service** | 从 BullMQ 消费任务、执行 DAG 流程、HTTP 调用、脚本执行、数据库查询、MCP 工具调用、断言验证、结果回写 | 水平扩展，无状态 |
-| **MCP Gateway** (可选) | MCP Client 运行时，连接外部 MCP Server，执行 MCP 工具调用，提供智能断言和报告分析能力 | 独立部署，按需扩展 |
+| **Worker Service** | 从 BullMQ 消费任务、执行 DAG 流程、HTTP 调用、脚本执行、数据库查询、断言验证、结果回写 | 水平扩展，无状态 |
+| **MCP 端点** (P5) | `/mcp`：平台作为 MCP Server 被外部 agent 调用；`apimcp_` Token + read/write scope，读写均走审计 | 与 API Service 同进程（一条 Fastify 路由，无状态） |
 | **Redis** | BullMQ 任务队列、结果流、缓存、分布式锁 | 集群模式 |
 | **PostgreSQL** | 持久化存储（项目/用户/接口/流程/执行记录） | 主从/集群 |
 | **Object Store** | 报告归档、大日志、大响应快照 (DB 仅存引用) | 按需扩展 |
@@ -857,7 +867,7 @@ claim job → 准备独立 workspace → git clone (SSH deploy key, 浅克隆)
 | 设计风格 | 简洁清晰，大面积留白，克制使用色彩 | 降低认知负荷，聚焦核心操作路径 |
 | API 服务 | Node.js + Fastify | 高性能 HTTP 框架，适合 I/O 密集型场景 |
 | Worker 服务 | Node.js + BullMQ Worker | 独立进程，与 API 服务解耦，可独立水平扩展 |
-| MCP 网关 (可选) | Node.js + MCP Client SDK (mcp-cli) | 独立部署，连接外部 MCP Server，调用 MCP 工具 |
+| MCP Server 端 (P5) | `@modelcontextprotocol/server` v2 + Fastify 挂载 | 实现协议 `2026-07-28`（无状态、单 POST 端点）；工具入参用裸 JSON Schema + 已装 ajv，不引入 zod |
 | 流程引擎 | BullMQ (Redis) | 轻量可靠的任务队列，支持延迟/重试/并发控制 |
 | 数据库 | PostgreSQL 15+ | 稳定可靠，支持 JSONB 存储灵活 Schema |
 | 缓存/队列 | Redis 7+ | 任务队列 + 缓存 + 实时状态 |
@@ -1056,20 +1066,18 @@ SqlDefinition               # v1.4 数据源下的命名 SQL 查询
   - params: JSONB (参数声明: [{name, description, source}], source: 流程变量/前序节点输出/手动输入)
   - updated_at: timestamp
 
-MCPServer
+McpToken (P5, v1.10；替换原 MCPServer 表)
   - id: UUID
   - project_id: UUID (FK)
   - name: string
-  - url: string (MCP Server 地址)
-  - auth_type: enum (none/bearer/api_key)
-  - auth_config: JSONB (认证配置)
-  - tools: JSONB (自动发现的工具列表缓存)
-  - last_tools_synced_at: timestamp   # 工具列表最近同步时间
-  # 注: 连接状态(connected/disconnected)为运行时探活结果, 每个 Worker/Gateway 实例独立,
-  #     不持久化为业务字段; 前端展示时实时探测
-  - tags: string[]
+  - token_hash: string (scrypt, salt:digest)
+  - token_prefix: string (明文前 8 位, 辨认与候选集收窄)
+  - scope: string[] ('read' / 'write')
+  - created_by: UUID (FK users, 写权限的活体判据——签发人被降权则 Token 写不动)
+  - last_used_at: timestamp
+  - revoked_at: timestamp
   - created_at: timestamp
-  - updated_at: timestamp
+  # 原 MCPServer 表（注册外部 Server、tools 缓存、探活）随「平台当 Client」方向一并撤销。
 
 NotificationChannel            # 告警通知渠道
   - id: UUID
@@ -1376,13 +1384,11 @@ IngestCaseResult               # 上报式: 某次 run 中某个 case 的结果 
 | PUT | /sql-definitions/:id | 更新 SQL 定义 |   # v1.4
 | DELETE | /sql-definitions/:id | 删除 SQL 定义 |   # v1.4
 | POST | /sql-definitions/:id/test | 测试运行 SQL 定义 (填参数预览结果) |   # v1.4
-| GET | /projects/:id/mcp/servers | MCP Server 列表 (项目级) |
-| POST | /projects/:id/mcp/servers | 注册 MCP Server |
-| GET | /mcp/servers/:id | MCP Server 详情 |
-| PUT | /mcp/servers/:id | 更新 MCP Server |
-| DELETE | /mcp/servers/:id | 删除 MCP Server |
-| GET | /mcp/servers/:id/tools | 获取 MCP Server 工具列表 (含实时连接状态) |
-| POST | /mcp/servers/:id/execute | 调用 MCP 工具 |
+| POST | /mcp | MCP 协议端点（JSON-RPC：tools/list / tools/call；Bearer apimcp_ Token，项目由 Token 决定） |   # P5, v1.10
+| GET | /projects/:id/mcp/tokens | MCP Token 列表（项目级，不含明文） |   # P5
+| POST | /projects/:id/mcp/tokens | 签发 MCP Token（明文只在此次响应出现） |   # P5
+| DELETE | /projects/:id/mcp/tokens/:tokenId | 吊销 MCP Token |   # P5
+| GET | /projects/:id/mcp/tools | 工具清单（前端管理页展示用） |   # P5
 | GET | /projects/:id/test-suites | 测试套件列表 |
 | POST | /projects/:id/test-suites | 创建测试套件 |
 | POST | /test-suites/:id/execute | 执行测试套件 |
@@ -1466,7 +1472,7 @@ IngestCaseResult               # 上报式: 某次 run 中某个 case 的结果 
 - 插件机制: 支持自定义节点类型
 - Webhook 输出: 流程执行结果可推送到外部系统
 - OpenAPI 导出: 平台自身 API 可导出为 OpenAPI 规范
-- **MCP 扩展**: MCP Gateway 作为独立可选组件，通过标准 MCP 协议连接外部 MCP Server，可随时接入或替换 MCP 工具提供商
+- **~~MCP 扩展~~**: v1.10 撤销——平台不部署 MCP Client 网关。**反向能力（P5）**：平台作为 MCP Server 暴露自身工具，外部 AI 随时接入（计划 9.0）
 
 ---
 
@@ -1481,7 +1487,11 @@ IngestCaseResult               # 上报式: 某次 run 中某个 case 的结果 
 | P4 | **仓库模式: 仓库用例(上报式,「系统→接口→用例」树+唯一上报接口+合并/去重/删除)** | 3 周 |
 | P4.5 | **自研 Runner: Worker 注册·心跳·claim 协议 + 容器沙箱 + SSH 拉取 + 实时日志流 + 报告归一化 + 依赖缓存** | 4 周 |
 | P5 | MCP Gateway + MCP 工具节点 + MCP Server 管理 + 审计日志完善 | 4 周 |
-| P6 | 性能优化 + 插件机制 + 版本历史(diff/回滚) + 多语言完善 | 3 周 |
+| P6 | **用户与权限: 邀请码注册 + 成员角色管理 + 三级权限落地 + 审计可读**（2026-09-04 增补，详见 DEVELOPMENT_PLAN_P6-P10.md） | 3 周 |
+| P7 | **测试管理: 文本用例库 + XMind/Excel 导入 + 树/列表双视图 + 自动化绑定 + 测试计划** | 5 周 |
+| P8 | **数据统计: 口径收口 + 失败归因(人工 + MCP 自动) + 全局/项目趋势 + 下钻** | 4 周 |
+| P9 | **站内助手: 人物 + 聊天代理 + 新手教程 + 站内通知** | 4 周 |
+| P10 | 性能优化 + 插件机制 + 版本历史(diff/回滚) + 多语言完善（原 P6 顺延，详见 DEVELOPMENT_PLAN_P6-P10.md 十四章） | 3 周 |
 
 ---
 
@@ -1504,9 +1514,9 @@ IngestCaseResult               # 上报式: 某次 run 中某个 case 的结果 
 | Environment | 环境，包含变量集合 |
 | Mock | 模拟服务，返回预设响应 |
 | Sandbox | 沙箱，安全执行用户自定义脚本 |
-| MCP | Model Context Protocol，外部工具/服务接入标准协议 |
-| MCP Server | 提供 MCP 协议的工具服务，可被平台发现和调用 |
-| MCP Gateway | 平台内部的 MCP 客户端网关，负责连接和调用外部 MCP Server |
+| MCP | Model Context Protocol，AI 应用与工具的连接协议；本平台在 P5 中作为 **MCP Server**（工具提供方） |
+| MCP Client | 使用 MCP 工具的一端（外部 agent 平台 / IDE / CI） |
+| MCP Token | `apimcp_` 前缀的项目级凭据，带 read / write scope（P5） |
 | TestSuite | 测试套件，一组接口用例与流程的集合，支持批量执行 |
 | Repository | 上报首次自动登记的代码仓库 |
 | 仓库用例 | 来自上报、挂在「系统→接口→用例」树下的用例 (RepoTestCase) |
