@@ -6,6 +6,7 @@ import { Download, CopyPlus, ListChecks, Pencil, Play, Plus, Trash2, X } from "l
 import { api, noRunnerLabel, type BatchDebugResult, type Endpoint, type Execution } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useExecutionStream } from "../hooks/useExecutionStream";
+import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Method, toRunStatus, type RunStatus } from "../ui";
 import { BatchResultList } from "./BatchResultList";
@@ -24,6 +25,9 @@ export function EndpointList() {
   const [searchParams, setSearchParams] = useSearchParams();
   /* The workspace switcher reads the store, so a copy has to land there too. */
   const { projectId: loadedProjectId, environments, loading: projectLoading, reloadEndpoints } = useProjectStore();
+  /* viewer 入口隐藏（P6-4，边界 6「只藏入口不做禁用态」）：新建/导入/批量/行内写操作
+     全部不渲染；行本身仍可点进工作台（路由不藏，后端守卫才是权限事实）。 */
+  const canWrite = useCanWrite();
 
   const [keyword, setKeyword] = useState(searchParams.get("keyword") ?? "");
   const [method, setMethod] = useState(searchParams.get("method") ?? "all");
@@ -268,12 +272,12 @@ export function EndpointList() {
       {/* Page-level primary actions keep their wording; icon-only is for
           repeated per-row actions where the column header supplies context. */}
       <div className="topbar-actions">
-        <button className="btn btn-with-icon" onClick={() => setImportOpen(true)}>
+        {canWrite && <button className="btn btn-with-icon" onClick={() => setImportOpen(true)}>
           <Download size={14} />{t("action.import")}
-        </button>
-        <button className="btn btn-primary btn-with-icon" onClick={() => navigate(`/projects/${projectId}/endpoints/new`)}>
+        </button>}
+        {canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => navigate(`/projects/${projectId}/endpoints/new`)}>
           <Plus size={15} />{t("action.createEndpoint")}
-        </button>
+        </button>}
       </div>
     </div>
 
@@ -302,7 +306,7 @@ export function EndpointList() {
       </button>}
     </div>
 
-    {selected.size > 0 && <div className="bulk-bar">
+    {canWrite && selected.size > 0 && <div className="bulk-bar">
       <strong>{t("endpoints.selectedCount", { count: selected.size })}</strong>
       <button className="btn btn-primary btn-with-icon" disabled={batchRunning} onClick={() => setBatchOpen(true)}>
         <Play size={14} />{t("endpoints.batchDebug")}
@@ -317,7 +321,7 @@ export function EndpointList() {
 
     {endpoints.length ? <table className="grid endpoint-grid">
       <thead><tr>
-        <th className="col-select"><input type="checkbox" aria-label={t("endpoints.selectAll")} checked={endpoints.length > 0 && selected.size === endpoints.length} onChange={(event) => toggleAll(event.target.checked)} /></th>
+        {canWrite && <th className="col-select"><input type="checkbox" aria-label={t("endpoints.selectAll")} checked={endpoints.length > 0 && selected.size === endpoints.length} onChange={(event) => toggleAll(event.target.checked)} /></th>}
         <th>{t("endpoints.name")}</th>
         <th className="col-path">{t("endpoints.path")}</th>
         <th className="col-num col-cases">{t("endpoints.cases")}</th>
@@ -331,9 +335,9 @@ export function EndpointList() {
               running 覆盖——那是眼前的事实，优先于任何落库的旧结论。 */
           const status: RunStatus | undefined = running === endpoint.id || (batchRunning && selected.has(endpoint.id)) ? "running" : endpoint.lastStatus ? toRunStatus(endpoint.lastStatus) : undefined;
           return <tr key={endpoint.id} data-clickable="" className={selected.has(endpoint.id) ? "is-selected" : undefined} onClick={() => navigate(`/projects/${projectId}/endpoints/${endpoint.id}`)}>
-            <td className="col-select" onClick={(event) => event.stopPropagation()}>
+            {canWrite && <td className="col-select" onClick={(event) => event.stopPropagation()}>
               <input type="checkbox" aria-label={t("endpoints.selectEndpoint", { name: endpoint.name })} checked={selected.has(endpoint.id)} disabled={batchRunning} onChange={(event) => toggleSelected(endpoint.id, event.target.checked)} />
-            </td>
+            </td>}
             <td>
               <div className="cell-name">
                 <Method method={endpoint.method} />
@@ -352,12 +356,12 @@ export function EndpointList() {
             <td className="col-num mono">{endpoint.lastDurationMs !== undefined ? <>{endpoint.lastDurationMs}<span className="unit">ms</span></> : <span className="muted">—</span>}</td>
             <td className="col-status">{status ? <RunStatusTag status={status} /> : <span className="muted">{t("status.notRun")}</span>}</td>
             <td className="col-actions" onClick={(event) => event.stopPropagation()}>
-              <div className="row-actions">
+              {canWrite && <div className="row-actions">
                 <IconButton icon={<Play size={14} />} label={t("action.run")} disabled={Boolean(running) || batchRunning} onClick={() => void execute(endpoint)} />
                 <IconButton icon={<CopyPlus size={14} />} label={t("action.duplicate")} disabled={duplicating === endpoint.id} onClick={() => void duplicate(endpoint)} />
                 <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => navigate(`/projects/${projectId}/endpoints/${endpoint.id}`)} />
                 <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => remove(endpoint)} />
-              </div>
+              </div>}
             </td>
           </tr>;
         })}
@@ -365,7 +369,7 @@ export function EndpointList() {
     </table> : !loading && <Empty
       title={filtering ? t("endpoints.emptySearchTitle") : t("endpoints.emptyTitle")}
       hint={filtering ? t("endpoints.emptySearchHint") : t("endpoints.emptyHint")}
-      action={filtering ? undefined : <button className="btn btn-primary" onClick={() => navigate(`/projects/${projectId}/endpoints/new`)}>{t("action.createEndpoint")}</button>}
+      action={filtering || !canWrite ? undefined : <button className="btn btn-primary" onClick={() => navigate(`/projects/${projectId}/endpoints/new`)}>{t("action.createEndpoint")}</button>}
     />}
 
     {endpoints.length > 0 && <div className="pager">

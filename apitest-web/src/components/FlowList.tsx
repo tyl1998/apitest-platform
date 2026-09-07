@@ -6,6 +6,7 @@ import { CopyPlus, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { api, noRunnerLabel, type FlowSummary, type FlowUsage } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useExecutionStream } from "../hooks/useExecutionStream";
+import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, toRunStatus } from "../ui";
 import { IconButton } from "./IconButton";
@@ -28,6 +29,8 @@ export function FlowList() {
   const { projectId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const { projectId: loadedProjectId, environments, loading: projectLoading } = useProjectStore();
+  /* viewer：新建/运行/复制/编辑/删除入口全藏（P6-4），行点击进画布仍可用。 */
+  const canWrite = useCanWrite();
 
   const [keyword, setKeyword] = useState(searchParams.get("keyword") ?? "");
   const debouncedKeyword = useDebounced(keyword);
@@ -188,9 +191,9 @@ export function FlowList() {
     <div className="page-head">
       <div><h1>{t("flows.title")}</h1><p>{t("flows.hint")}</p></div>
       <div className="topbar-actions">
-        <button className="btn btn-primary btn-with-icon" onClick={() => setCreating(true)}>
+        {canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => setCreating(true)}>
           <Plus size={15} />{t("action.createFlow")}
-        </button>
+        </button>}
       </div>
     </div>
 
@@ -239,12 +242,12 @@ export function FlowList() {
                   : <span className="muted">{t("status.notRun")}</span>}
             </td>
             <td className="col-actions" onClick={(event) => event.stopPropagation()}>
-              <div className="row-actions">
+              {canWrite && <div className="row-actions">
                 <IconButton icon={<Play size={14} />} label={t("action.run")} disabled={busy} onClick={() => void run(flow)} />
                 <IconButton icon={<CopyPlus size={14} />} label={t("action.duplicate")} onClick={() => void duplicate(flow)} />
                 <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => navigate(`/projects/${projectId}/flows/${flow.id}`)} />
                 <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => void remove(flow)} />
-              </div>
+              </div>}
             </td>
           </tr>;
         })}
@@ -252,7 +255,7 @@ export function FlowList() {
     </table> : !loading && <Empty
       title={debouncedKeyword ? t("flows.emptySearchTitle") : t("flows.emptyTitle")}
       hint={debouncedKeyword ? t("flows.emptySearchHint") : t("flows.emptyHint")}
-      action={debouncedKeyword ? undefined : <button className="btn btn-primary" onClick={() => setCreating(true)}>{t("action.createFlow")}</button>}
+      action={debouncedKeyword || !canWrite ? undefined : <button className="btn btn-primary" onClick={() => setCreating(true)}>{t("action.createFlow")}</button>}
     />}
 
     {flows.length > 0 && <div className="pager">

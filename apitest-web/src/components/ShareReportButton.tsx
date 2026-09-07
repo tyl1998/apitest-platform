@@ -3,6 +3,7 @@ import { message } from "antd";
 import { useTranslation } from "react-i18next";
 import { Copy, Link2, Link2Off, Share2 } from "lucide-react";
 import { api, type ReportShare, type ReportShareTarget } from "../api";
+import { useCanWrite } from "../hooks/useMyRole";
 import { Tip } from "../ui";
 
 /**
@@ -22,6 +23,8 @@ export function ShareReportButton({ projectId, targetType, targetId }: {
   targetId: string;
 }) {
   const { t } = useTranslation();
+  /* viewer：创建/撤销分享都是写（P6-4），整个控件不渲染——已存在的链接由写角色维护。 */
+  const canWrite = useCanWrite();
   const [share, setShare] = useState<ReportShare | null | undefined>();
   const [busy, setBusy] = useState(false);
 
@@ -74,7 +77,7 @@ export function ShareReportButton({ projectId, targetType, targetId }: {
     }
   }
 
-  if (share === undefined) return null;
+  if (!canWrite || share === undefined) return null;
 
   if (!share) {
     return <button className="btn btn-with-icon" disabled={busy} onClick={() => void create()}>

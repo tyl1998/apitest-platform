@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
 import { api, type McpScope, type McpToken, type McpToolSummary } from "../api";
+import { useCanManageProject, useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty } from "../ui";
 import { apiMessage } from "./DataSourceList";
@@ -31,6 +32,10 @@ export function McpPage() {
   const { t } = useTranslation();
   const { projectId } = useParams();
   const { projectId: loadedProjectId, loading: projectLoading, mcpEnabled, updateMcpEnabled } = useProjectStore();
+  /* 开关是项目设置写（P6-1 起 requireProjectAdmin）——developer 不渲染；Token 的
+     签发/吊销是资源写，developer 可见、viewer 全藏（P6-4）。 */
+  const canManage = useCanManageProject();
+  const canWrite = useCanWrite();
 
   const [tokens, setTokens] = useState<McpToken[]>();
   const [tools, setTools] = useState<McpToolSummary[]>();
@@ -126,7 +131,7 @@ export function McpPage() {
       </div>
       <div className="topbar-actions">
         {/* 与「环境管理」页头的明文开关同款位置：项目级设置出现在它语义所属的页上。 */}
-        <label className="check-field" title={t("mcp.enableHint")}>
+        {canManage && <label className="check-field" title={t("mcp.enableHint")}>
           <input
             type="checkbox"
             checked={mcpEnabled}
@@ -134,7 +139,7 @@ export function McpPage() {
             onChange={(event) => void changeEnabled(event.target.checked)}
           />
           {t("mcp.enable")}
-        </label>
+        </label>}
       </div>
     </div>
 
@@ -163,9 +168,9 @@ export function McpPage() {
       <section className="panel">
         <div className="panel-head">
           <strong>{t("mcp.tokens")}</strong>
-          <button className="btn btn-primary btn-with-icon" onClick={() => setIssueOpen(true)}>
+          {canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => setIssueOpen(true)}>
             <Plus size={14} />{t("mcp.tokenCreate")}
-          </button>
+          </button>}
         </div>
         <div className="panel-body">
           <p className="form-note">{t("mcp.tokensHint")}</p>
@@ -187,9 +192,9 @@ export function McpPage() {
                 <td className="mono muted">{token.lastUsedAt ? new Date(token.lastUsedAt).toLocaleString() : t("mcp.tokenNeverUsed")}</td>
                 <td className="mono muted">{new Date(token.createdAt).toLocaleString()}</td>
                 <td className="col-actions">
-                  <div className="row-actions">
+                  {canWrite && <div className="row-actions">
                     <IconButton icon={<Trash2 size={14} />} label={t("mcp.tokenRevoke")} tone="danger" onClick={() => revokeToken(token)} />
-                  </div>
+                  </div>}
                 </td>
               </tr>)}
             </tbody>

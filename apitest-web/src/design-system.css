@@ -32,6 +32,7 @@
   --r-sm: 3px; --r: 5px; --r-lg: 6px;
 
   --shell-w: 210px;
+  --shell-rail-w: 56px;
   --measure: 1680px;
 
   --t: .12s;
@@ -153,6 +154,13 @@ body {
 
 /* ── Shell ─────────────────────────────────────────────────────── */
 
+/* Collapsed rail: 210px full sidebar ⇄ 56px icon rail. The grid column
+   follows a custom property so one data attribute drives both the shell
+   track and the sidebar content. */
+.console[data-collapsed] {
+  grid-template-columns: var(--shell-rail-w) minmax(0, 1fr);
+}
+
 .console {
   display: grid;
   grid-template-columns: var(--shell-w) minmax(0, 1fr);
@@ -165,12 +173,89 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--s5);
+  position: relative;
   min-width: 0;
+  min-height: 0;
   padding: 18px var(--s3);
   background: var(--surface);
   border-right: 1px solid var(--line);
   overflow: hidden;
 }
+
+/* 2026-09-07 缺陷：桌面侧栏自身 `overflow: hidden`，窗口矮于导航列表时
+   底部导航项与退出按钮直接消失、无路可达。规则 5 的「只有 .content 滚动」
+   指页面级滚动条；侧栏列表的局部滚动（与工作台侧栏、日志框同一条纪律）
+   不违背它。滚动条收窄（thin / 10px 自绘）、贴右缘，thumb 用 --line-strong，
+   深浅模式都不抢眼。 */
+.sidebar nav {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+  padding-right: 2px;
+}
+
+/* WebKit: 10px 浮动滚动条，thumb 用 --line-strong，深浅模式都不抢眼 */
+.sidebar nav::-webkit-scrollbar { width: 10px; height: 10px; }
+.sidebar nav::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 5px;
+}
+.sidebar nav::-webkit-scrollbar-track { background: none; }
+
+/* ── Collapsed rail（桌面）────────────────────────────────────────
+   图标栏不是第二套导航，是同一份 markup 换一套排版：组标题换成 4px 高的
+   分隔短横（10px 居中，`--line-strong`，提示「这里是组边界」而不当装饰）；
+   标签藏进 aria-label + Tooltip；lockup 只留 mark；返回与退出竖排。
+   间距沿用 nav 自身的 1px gap 与组边界。 */
+.console[data-collapsed] .sidebar { gap: var(--s3); }
+
+.console[data-collapsed] .sidebar nav { padding-right: 0; }
+
+.console[data-collapsed] .sidebar-head { gap: var(--s2); }
+
+.console[data-collapsed] .lockup { padding: 0; }
+
+.console[data-collapsed] .lockup-name { display: none; }
+
+/* 返回主页 / 收起-展开：图标化（IconNavButton 已带 Tooltip 与 aria-label） */
+.console[data-collapsed] .nav-back { justify-content: center; padding: 6px 0; }
+
+.console[data-collapsed] .nav-section {
+  height: 4px;
+  width: 10px;
+  padding: 0;
+  margin: var(--s2) auto var(--s1);
+  border-radius: 2px;
+  background: var(--line-strong);
+  /* 组名仍交给读屏（sr-only 的思路：视觉让位、语义保留） */
+  color: transparent;
+  font-size: 0;
+  text-indent: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.console[data-collapsed] .nav-item {
+  justify-content: center;
+  padding: 6px 0;
+  gap: 0;
+}
+
+.console[data-collapsed] .nav-item.is-active::before { top: 4px; bottom: 4px; }
+
+/* foot 收起态：竖排（56px 栏里两个 30px 图标并排放不下）。chip 是展开态
+   专属的信息（环境名在 rail 里放不下，940/700px 顶栏模式同样隐藏）。 */
+.console[data-collapsed] .sidebar-foot {
+  flex-direction: column;
+  gap: var(--s2);
+  padding-top: var(--s3);
+  justify-content: center;
+}
+
+.console[data-collapsed] .sidebar-foot .chip { display: none; }
 
 .lockup {
   display: flex;
@@ -1105,11 +1190,18 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .login-card .form-note { text-align: center; }
 .form-error { margin: var(--s3) 0 0; font-size: 12px; color: var(--fail); }
 
+/* 登录/注册卡的辅助链接（P6-3：登录 ↔ 注册互跳）。accent 只出现在可点元素上
+   （规则 1），文字链接就是它；比浏览器默认蓝安静，且深浅两模式同一令牌。 */
+.login-card .form-note a { color: var(--accent); text-decoration: none; }
+.login-card .form-note a:hover, .login-card .form-note a:focus-visible { text-decoration: underline; }
+
 /* ── Responsive ────────────────────────────────────────────────── */
 
 @media (max-width: 940px) {
-  /* Bar is auto-height and stays put; .content keeps the scroll */
-  .console {
+  /* Bar is auto-height and stays put; .content keeps the scroll.
+     顶栏模式优先于收起态：grid 由本块接管（收起态的 0,2,0 规则靠下方归零块兜底）。 */
+  .console,
+  .console[data-collapsed] {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
   }
@@ -1124,8 +1216,16 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
     overflow: visible;
   }
 
-  /* Nav wraps onto more lines rather than scrolling sideways */
-  .sidebar nav { flex: 1 1 auto; flex-flow: row wrap; gap: 2px; }
+  /* Nav wraps onto more lines rather than scrolling sideways; 顶栏模式
+     nav 恒不滚动（收起态的 overflow 规则被 940px 块整体覆写） */
+  .sidebar nav {
+    flex: 1 1 auto;
+    flex-flow: row wrap;
+    gap: 2px;
+    overflow: visible;
+    scrollbar-width: auto;
+    padding-right: 0;
+  }
 
   /* In bar mode the header zone collapses to an inline group; the divider
      would cut the bar in half for no structural gain. */
@@ -1153,6 +1253,17 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
   /* The left tick belongs to the vertical rail; the bar marks the active
      page with the underline above instead. */
   .nav-item.is-active::before { display: none; }
+
+  /* 收起态（0,2,0 的 [data-collapsed] 规则）在这里显式归零：React 的
+     matchMedia 在跨过断点的瞬间可能与 CSS 媒体查询差一拍，这一块保证
+     顶栏模式下两态同形，不出现「56px 宽的顶栏」。 */
+  .console[data-collapsed] .sidebar { gap: 10px 14px; padding: 10px var(--s3); border-right: 0; border-bottom: 1px solid var(--line); }
+  .console[data-collapsed] .sidebar-head { gap: var(--s2); }
+  .console[data-collapsed] .lockup { padding: 0 var(--s2); }
+  .console[data-collapsed] .nav-back { justify-content: flex-start; padding: 6px var(--s2); }
+  .console[data-collapsed] .nav-section { display: none; height: auto; width: auto; margin: 0 0 var(--s1); padding: 0 var(--s2); background: none; color: var(--ink-3); font-size: 10px; overflow: visible; }
+  .console[data-collapsed] .nav-item { justify-content: flex-start; padding: 6px var(--s2); gap: 6px; }
+  .console[data-collapsed] .sidebar-foot { flex-direction: row; gap: var(--s2); padding-top: 0; justify-content: space-between; }
 
   .sidebar-foot { padding-top: 0; border-top: 0; }
   .sidebar-who { display: none; }
@@ -2670,6 +2781,16 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 
 .table-scroll { max-width: 100%; overflow-x: auto; border-radius: var(--r-lg); }
 .table-scroll > .grid { min-width: 720px; }
+
+/* ── Audit log detail cells (P6-2) ─────────────────────────────── */
+
+/* detail 列里的键值行：mono（机器数据）+ 左标签右值。每行独立换行——证据的行数
+   本来就少（写入侧 4KB 护栏），不需要滚动容器，自然高度即可。 */
+.audit-detail { display: flex; flex-direction: column; gap: 1px; font-size: 12px; }
+.audit-detail > div { display: flex; gap: var(--s3); min-width: 0; }
+.audit-detail span:first-child { flex: 0 0 auto; }
+.audit-detail span:last-child { min-width: 0; overflow-wrap: anywhere; }
+
 .data-source-grid, .sql-definition-grid { table-layout: fixed; }
 .data-source-grid .col-actions { width: 130px; }
 /* SSL 只放是/否，收窄它把宽度让给主机/数据库/用户名。定宽表格不会为超长内容加宽列，

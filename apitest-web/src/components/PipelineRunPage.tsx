@@ -7,6 +7,7 @@ import { ChevronDown, ChevronRight, Download, Paperclip } from "lucide-react";
 import { api, type AllureReportAttachment, type AllureReportCase, type AllureReportStep, type AllureReportView, type Artifact, type PipelineRun, type PipelineRunCase } from "../api";
 import { useProjectStore } from "../stores/projectStore";
 import { useExecutionStream } from "../hooks/useExecutionStream";
+import { useCanWrite } from "../hooks/useMyRole";
 import { Empty, Readout, Status, Tip, type RunStatus } from "../ui";
 import { RepoPageHead } from "./RepoShell";
 import { type DetailCrumbContext } from "./ProjectShell";
@@ -164,6 +165,8 @@ export function PipelineRunPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   /* 面包屑长出「#序号」（ProjectShell 的 detailTitle 通道）。 */
   const { setDetailTitle } = useOutletContext<DetailCrumbContext>();
+  /* viewer：取消（一次写）与分享创建不渲染（P6-4）；日志/报告/产物照读。 */
+  const canWrite = useCanWrite();
 
   /* 旧链接里的 ?tab=cases 已并入 report：不在 TABS 里就落回默认，不硬跳。 */
   const tabParam = searchParams.get("tab") as TabKey | null;
@@ -328,8 +331,8 @@ export function PipelineRunPage() {
       hint={t("pipelineRun.hint")}
       actions={<>
         {/* 分享是报告的固有能力（2026-09-02）：免登录只读链接，任何状态的 run 都可分享。 */}
-        {projectId && <ShareReportButton projectId={projectId} targetType="runner" targetId={run.id} />}
-        {!isTerminal(run) && run.status !== "cancelling" && (
+        {projectId && canWrite && <ShareReportButton projectId={projectId} targetType="runner" targetId={run.id} />}
+        {canWrite && !isTerminal(run) && run.status !== "cancelling" && (
           <button className="btn" disabled={cancelBusy} onClick={() => void cancelRun()}>{t("pipelineRun.cancel")}</button>
         )}
       </>}

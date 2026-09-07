@@ -6,6 +6,7 @@ import { Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { api, noRunnerLabel, type SuiteSelection, type SuiteSummary } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useExecutionStream } from "../hooks/useExecutionStream";
+import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, toRunStatus } from "../ui";
 import { IconButton } from "./IconButton";
@@ -38,6 +39,8 @@ export function SuiteList() {
   const { projectId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const { projectId: loadedProjectId, loading: projectLoading } = useProjectStore();
+  /* viewer：新建/运行/编辑/删除入口全藏（P6-4）。 */
+  const canWrite = useCanWrite();
 
   const [keyword, setKeyword] = useState(searchParams.get("keyword") ?? "");
   const debouncedKeyword = useDebounced(keyword);
@@ -156,9 +159,9 @@ export function SuiteList() {
     <div className="page-head">
       <div><h1>{t("suites.title")}</h1><p>{t("suites.hint")}</p></div>
       <div className="topbar-actions">
-        <button className="btn btn-primary btn-with-icon" onClick={() => setCreating(true)}>
+        {canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => setCreating(true)}>
           <Plus size={15} />{t("suites.createTitle")}
-        </button>
+        </button>}
       </div>
     </div>
 
@@ -204,12 +207,12 @@ export function SuiteList() {
                   : <span className="muted">{t("status.notRun")}</span>}
             </td>
             <td className="col-actions" onClick={(event) => event.stopPropagation()}>
-              <div className="row-actions">
+              {canWrite && <div className="row-actions">
                 {/* 运行的是已保存的配置（变量覆盖在弹窗里确认）：列表上没有草稿这个概念。 */}
                 <IconButton icon={<Play size={14} />} label={t("suites.run")} disabled={busy} onClick={() => setRunModalOpen(suite)} />
                 <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => navigate(`/projects/${projectId}/suites/${suite.id}`)} />
                 <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => remove(suite)} />
-              </div>
+              </div>}
             </td>
           </tr>;
         })}
@@ -217,7 +220,7 @@ export function SuiteList() {
     </table> : !loading && <Empty
       title={debouncedKeyword ? t("suites.emptyFiltered") : t("suites.emptyTitle")}
       hint={debouncedKeyword ? t("suites.emptyFilteredHint") : t("suites.emptyHint")}
-      action={debouncedKeyword ? undefined : <button className="btn btn-primary" onClick={() => setCreating(true)}>{t("suites.createTitle")}</button>}
+      action={debouncedKeyword || !canWrite ? undefined : <button className="btn btn-primary" onClick={() => setCreating(true)}>{t("suites.createTitle")}</button>}
     />}
 
     {/* 有内容才有分页器：空态下它只是另一个「这里什么都没有」的提示（与执行记录页同款）。 */}

@@ -8,6 +8,7 @@ import { Braces, Database, GitBranch, Globe2, Hand, LayoutList, MousePointer2, P
 import { api, noRunnerLabel, type DataSource, type Flow, type FlowEdge, type FlowExecution, type FlowExecutionDetail, type FlowNode, type FlowStepResult, type FlowSummary, type Paged } from "../api";
 import { addStep as addStepToTree, afterConditionTarget, clampInsideLoop, collectEdges, findStep as findStepIn, findFreePosition, flattenSteps, foldPositions, loopAt, loopSize, moveStepIntoLoop, moveStepOutOfLoop, moveStepOutAt, nodeFootprint, reorderStepEdges, removeStep as removeStepDeep, reparentStep, restackLoopBody, restackTopLevel, splitEdges, unlinkedSteps, updateStep as updateStepDeep, LOOP_MIN_SIZE } from "../lib/flowCanvas";
 import { useExecutionStream } from "../hooks/useExecutionStream";
+import { useCanWrite } from "../hooks/useMyRole";
 import { variableOptions } from "../lib/flowVariables";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
@@ -208,6 +209,8 @@ function FlowCanvas() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { environments, endpoints, reloadEndpoints } = useProjectStore();
   const setGuard = useNavGuardStore((state) => state.setGuard);
+  /* viewer：加节点/运行/保存不渲染（P6-4）；画布浏览、变量弹窗、历史侧栏照旧。 */
+  const canWrite = useCanWrite();
 
   const [flow, setFlow] = useState<Flow>();
   const [loading, setLoading] = useState(true);
@@ -750,7 +753,7 @@ function FlowCanvas() {
     const onKey = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey)) return;
       const key = event.key.toLowerCase();
-      if (key === "s") { event.preventDefault(); void save(); return; }
+      if (key === "s") { event.preventDefault(); if (canWrite) void save(); return; }
       if (key !== "z") return;
       /**
        * 输入框和 Monaco 里的 Ctrl+Z 归它们自己。
@@ -765,7 +768,7 @@ function FlowCanvas() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [save, undo, redo]);
+  }, [canWrite, save, undo, redo]);
 
   function addNode(type: FlowNode["type"], intoLoopId?: string) {
     /**
@@ -1009,16 +1012,16 @@ function FlowCanvas() {
           {selectMode ? <MousePointer2 size={14} /> : <Hand size={14} />}
           {selectMode ? t("flows.selectMode") : t("flows.panMode")}
         </button>}
-        <IconButton icon={<Undo2 size={15} />} label={t("action.undo")} disabled={!historyDepth.past} onClick={undo} />
+          <IconButton icon={<Undo2 size={15} />} label={t("action.undo")} disabled={!historyDepth.past} onClick={undo} />
           <IconButton icon={<Redo2 size={15} />} label={t("action.redo")} disabled={!historyDepth.future} onClick={redo} />
           {/* 列表模式的新增接在所选行后面（画布保持无锚点、自由摆放的原语义）。 */}
-          <button className="btn btn-with-icon" onClick={() => (viewMode === "list" ? addFromList() : setNodePickerOpen(true))}><Plus size={14} />{t("flows.addNode")}</button>
-        {busy
+          {canWrite && <button className="btn btn-with-icon" onClick={() => (viewMode === "list" ? addFromList() : setNodePickerOpen(true))}><Plus size={14} />{t("flows.addNode")}</button>}
+        {canWrite && (busy
           ? <button className="btn btn-with-icon" onClick={() => void stop()}><Square size={14} />{t("run.cancel")}</button>
-          : <button className="btn btn-with-icon" disabled={!steps.length} onClick={() => void start()}><Play size={14} />{t("flows.run")}</button>}
-        <button className="btn btn-primary btn-with-icon" disabled={saving || !dirty} onClick={() => void save()}>
+          : <button className="btn btn-with-icon" disabled={!steps.length} onClick={() => void start()}><Play size={14} />{t("flows.run")}</button>)}
+        {canWrite && <button className="btn btn-primary btn-with-icon" disabled={saving || !dirty} onClick={() => void save()}>
           <Save size={14} />{saving ? "…" : t("action.save")}
-        </button>
+        </button>}
       </div>
     </div>
 
@@ -1195,7 +1198,7 @@ function FlowCanvas() {
       </ReactFlow> : <Empty
         title={t("flows.canvasEmptyTitle")}
          hint={endpoints.length || dataSources.length ? t("flows.canvasEmptyHint") : t("flows.canvasNeedsAssets")}
-         action={endpoints.length || dataSources.length ? <button className="btn btn-primary" onClick={() => setNodePickerOpen(true)}>{t("flows.addNode")}</button> : undefined}
+         action={canWrite && (endpoints.length || dataSources.length) ? <button className="btn btn-primary" onClick={() => setNodePickerOpen(true)}>{t("flows.addNode")}</button> : undefined}
       />}
       </div>}
       <HistorySidebar

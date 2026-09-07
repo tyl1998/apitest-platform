@@ -6,6 +6,7 @@
  * breakpoints against .kilo/skill/quiet-console/SKILL.md.
  */
 import { createRoot } from "react-dom/client";
+import { useTranslation } from "react-i18next";
 import { ArrowLeft, Bell, Globe, History, Plug } from "lucide-react";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
@@ -13,8 +14,11 @@ import "@fontsource/inter/600.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "./design-system.css";
+import "./i18n";
 import { useMode } from "./theme";
 import { Empty, Method, Readout, RunStrip, RunStatus, Status, Waterfall } from "./ui";
+import { IconNavButton, SidebarToggle } from "./components/SidebarControls";
+import { useSidebarCollapsed } from "./stores/sidebarStore";
 
 type Row = {
   id: string;
@@ -38,34 +42,47 @@ const rows: Row[] = [
 
 function Reference() {
   const { mode, toggle } = useMode();
+  const { t } = useTranslation();
+  const collapsed = useSidebarCollapsed();
 
   return (
-    <div className="console">
+    <div className="console" data-collapsed={collapsed || undefined}>
       <aside className="sidebar">
         <div className="sidebar-head">
           <div className="lockup">
             <span className="lockup-mark mono">AT</span>
             <span className="lockup-name">ApiTrack</span>
           </div>
-          <button className="nav-item nav-back">
-            <ArrowLeft size={14} />返回主页
-          </button>
+          {collapsed
+            ? <IconNavButton className="nav-item nav-back" icon={<ArrowLeft size={14} />} label={t("nav.backHome")} />
+            : <button className="nav-item nav-back">
+                <ArrowLeft size={14} />{t("nav.backHome")}
+              </button>}
         </div>
         <nav>
           <div className="nav-group">
-            <span className="nav-section">接口资产</span>
-            <button className="nav-item is-active" aria-current="page"><Plug size={14} />接口管理</button>
-            <button className="nav-item"><Globe size={14} />环境管理</button>
+            <span className="nav-section">{t("nav.interfaceAssets")}</span>
+            {collapsed
+              ? <IconNavButton className="nav-item is-active" icon={<Plug size={14} />} label={t("nav.endpoints")} ariaCurrent="page" />
+              : <button className="nav-item is-active" aria-current="page"><Plug size={14} />{t("nav.endpoints")}</button>}
+            {collapsed
+              ? <IconNavButton className="nav-item" icon={<Globe size={14} />} label={t("nav.environments")} />
+              : <button className="nav-item"><Globe size={14} />{t("nav.environments")}</button>}
           </div>
           <div className="nav-group">
-            <span className="nav-section">通用</span>
-            <button className="nav-item"><History size={14} />执行记录</button>
-            <button className="nav-item"><Bell size={14} />告警通知</button>
+            <span className="nav-section">{t("nav.common")}</span>
+            {collapsed
+              ? <IconNavButton className="nav-item" icon={<History size={14} />} label={t("nav.reports")} />
+              : <button className="nav-item"><History size={14} />{t("nav.reports")}</button>}
+            {collapsed
+              ? <IconNavButton className="nav-item" icon={<Bell size={14} />} label={t("nav.alerts")} />
+              : <button className="nav-item"><Bell size={14} />{t("nav.alerts")}</button>}
           </div>
         </nav>
         <div className="sidebar-foot">
           <span className="chip mono">staging</span>
           <button className="btn btn-icon" onClick={toggle}>{mode === "light" ? "深色" : "浅色"}</button>
+          <SidebarToggle />
         </div>
       </aside>
 

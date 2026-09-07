@@ -7,10 +7,14 @@ import { api, type Dashboard, type Preferences, type ProjectMetric, type WorkerF
 import { useDebounced } from "../hooks/useDebounced";
 import { useRecordLastPage } from "../hooks/useRecordLastPage";
 import { useAuthStore } from "../stores/authStore";
+import { useSidebarCollapsed } from "../stores/sidebarStore";
 import type { ModePreference } from "../theme";
 import { Empty, Readout, Status } from "../ui";
 import { IconButton } from "./IconButton";
+import { IconNavButton, SidebarToggle } from "./SidebarControls";
 import { RunnerPoolPanel } from "./RunnerPoolPanel";
+import { UsersPanel } from "./UsersPanel";
+import { AuditLogsPanel } from "./AuditLogsPanel";
 
 type GlobalPage = "dashboard" | "projects" | "system";
 
@@ -22,14 +26,17 @@ export function GlobalApp({ page, themePreference, onThemeChange }: { page: Glob
   const location = useLocation();
   const { t, i18n } = useTranslation();
   const logout = useAuthStore((state) => state.logout);
+  const sidebarCollapsed = useSidebarCollapsed();
   const nav: [GlobalPage, string, LucideIcon][] = [["dashboard", t("nav.dashboard"), LayoutDashboard], ["projects", t("nav.projects"), Folder], ["system", t("nav.system"), Settings]];
 
-  return <div className="console">
+  return <div className="console" data-collapsed={sidebarCollapsed || undefined}>
     <aside className="sidebar">
       <div className="sidebar-head">
         <div className="lockup"><span className="lockup-mark mono">AT</span><span className="lockup-name">{t("app.name")}</span></div>
       </div>
-      <nav><span className="nav-section">{t("nav.global")}</span>{nav.map(([key, label, Icon]) => <button key={key} className={`nav-item${page === key ? " is-active" : ""}`} onClick={() => navigate(`/${key}`)}><Icon size={14} />{label}</button>)}</nav>
+      <nav><span className="nav-section">{t("nav.global")}</span>{nav.map(([key, label, Icon]) => sidebarCollapsed
+        ? <IconNavButton key={key} className={`nav-item${page === key ? " is-active" : ""}`} icon={<Icon size={14} />} label={label} ariaCurrent={page === key ? "page" : undefined} onClick={() => navigate(`/${key}`)} />
+        : <button key={key} className={`nav-item${page === key ? " is-active" : ""}`} onClick={() => navigate(`/${key}`)}><Icon size={14} />{label}</button>)}</nav>
       {/* Same control as the project shell, so signing out looks identical everywhere */}
       <div className="sidebar-foot">
         <IconButton
@@ -37,6 +44,7 @@ export function GlobalApp({ page, themePreference, onThemeChange }: { page: Glob
           label={t("action.logout")}
           onClick={() => { logout(); navigate(`/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`); }}
         />
+        <SidebarToggle />
       </div>
     </aside>
     <div className="frame">
@@ -195,7 +203,7 @@ function ProjectsPage() {
   </>;
 }
 
-type SystemTab = "preferences" | "workers" | "runners";
+type SystemTab = "preferences" | "users" | "workers" | "runners" | "auditLogs";
 
 function SystemPage({ themePreference, onThemeChange, language }: { themePreference: ModePreference; onThemeChange: (mode: ModePreference) => void; language: "zh-CN" | "en" }) {
   const { t, i18n } = useTranslation();
@@ -229,9 +237,12 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
    * Runner 池（P4.5-11）是第三个 tab，**紧挨着执行器**：那是最容易被当成重复功能的
    * 一对（8.6）。「执行器」是平台内部的 BullMQ worker，「Runner」是自托管、跑用户仓库
    * 代码的机器；两张表两个概念，所以两个面板并列且各自写明区别，而不是合成一个。
+   *
+   * 用户与审计（P6-2）排在最前：它是「人」的面板，不是机器的面板，与后三个
+   * 基础设施 tab 分属两类读者。非管理员不渲染（边界 6 的 tab 版：藏入口不是禁用）。
    */
   const tabs: [SystemTab, string][] = isAdmin
-    ? [["preferences", t("system.tabPreferences")], ["workers", t("workers.title")], ["runners", t("runners.title")]]
+    ? [["preferences", t("system.tabPreferences")], ["users", t("users.title")], ["workers", t("workers.title")], ["runners", t("runners.title")], ["auditLogs", t("audit.title")]]
     : [["preferences", t("system.tabPreferences")]];
 
   return <>
@@ -249,8 +260,10 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
       <SettingRow title={t("system.restore")} hint={t("system.restoreHint")} control={<Switch checked={preferences.restoreLastPage} onChange={(restoreLastPage) => void update({ restoreLastPage })} />} />
     </section>}
 
+    {tab === "users" && isAdmin && <UsersPanel />}
     {tab === "workers" && isAdmin && <WorkerFleetPanel />}
     {tab === "runners" && isAdmin && <RunnerPoolPanel />}
+    {tab === "auditLogs" && isAdmin && <AuditLogsPanel />}
   </>;
 }
 

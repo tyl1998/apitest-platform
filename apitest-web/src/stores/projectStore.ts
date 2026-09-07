@@ -1,10 +1,16 @@
 import { create } from "zustand";
-import { api, type Environment, type Endpoint, type ProjectMetric } from "../api";
+import { api, type Environment, type Endpoint, type MyRole, type ProjectMetric } from "../api";
 
 type ProjectState = {
   projects: ProjectMetric[];
   projectId: string | null;
   project: ProjectMetric | null;
+  /**
+   * 我在当前项目里的角色（P6 边界 5）：随项目列表/详情下发，`useMyRole` 读这里。
+   * null = 还没加载或不在任何项目里——按「没有写权限」处理（宁可晚一点出现按钮，
+   * 也不能先给 viewer 亮一排按钮再收回去）。
+   */
+  myRole: MyRole | null;
   environments: Environment[];
   defaultEnvironmentId: string | null;
   /** Project opt-in: execution records are stored unmasked for easier debugging. */
@@ -27,20 +33,22 @@ type ProjectState = {
  * per page and must not be capped by a shared prefetch.
  */
 export const useProjectStore = create<ProjectState>((set, get) => ({
-  projects: [], projectId: null, project: null, environments: [], defaultEnvironmentId: null, storePlaintext: false, mcpEnabled: false, endpoints: [], loading: false,
+  projects: [], projectId: null, project: null, myRole: null, environments: [], defaultEnvironmentId: null, storePlaintext: false, mcpEnabled: false, endpoints: [], loading: false,
 
   refresh: async () => {
     const projects = await api.projects();
-    set({ projects, project: projects.find((item) => item.id === get().projectId) ?? get().project });
+    const project = projects.find((item) => item.id === get().projectId) ?? get().project;
+    set({ projects, project, myRole: project?.myRole ?? null });
   },
 
   loadProject: async (id) => {
-    if (get().projectId !== id) set({ projectId: id, environments: [], defaultEnvironmentId: null, storePlaintext: false, mcpEnabled: false, endpoints: [], project: null });
+    if (get().projectId !== id) set({ projectId: id, environments: [], defaultEnvironmentId: null, storePlaintext: false, mcpEnabled: false, endpoints: [], project: null, myRole: null });
     set({ loading: true });
     try {
       const [environments, endpoints, settings] = await Promise.all([api.environments(id), api.endpoints(id), api.projectSettings(id)]);
       if (get().projectId !== id) return;
-      set({ projectId: id, environments, defaultEnvironmentId: settings.defaultEnvironmentId ?? null, storePlaintext: settings.storePlaintext, mcpEnabled: settings.mcpEnabled, endpoints, project: get().projects.find((item) => item.id === id) ?? null });
+      const project = get().projects.find((item) => item.id === id) ?? null;
+      set({ projectId: id, environments, defaultEnvironmentId: settings.defaultEnvironmentId ?? null, storePlaintext: settings.storePlaintext, mcpEnabled: settings.mcpEnabled, endpoints, project, myRole: project?.myRole ?? null });
     } finally { if (get().projectId === id) set({ loading: false }); }
   },
 

@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router-dom";
 import { Cable, Pencil, Plus, Trash2 } from "lucide-react";
 import { api, type DataSource, type DataSourceConfig, type DataSourceInput, type DataSourceType, type DataSourceUsage } from "../api";
+import { useCanWrite } from "../hooks/useMyRole";
 import { Empty } from "../ui";
 import { IconButton } from "./IconButton";
 
@@ -31,6 +32,8 @@ export function DataSourceList() {
   const { t } = useTranslation();
   const { projectId } = useParams();
   const navigate = useNavigate();
+  /* viewer：新建/测试/编辑/删除入口全藏（P6-4）。 */
+  const canWrite = useCanWrite();
   const [items, setItems] = useState<DataSource[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -88,7 +91,7 @@ export function DataSourceList() {
   return <main className="content">
     <div className="page-head">
       <div><h1>{t("dataSources.title")}</h1><p>{t("dataSources.hint")}</p></div>
-      <button className="btn btn-primary btn-with-icon" onClick={() => setEditing("new")}><Plus size={14} />{t("dataSources.create")}</button>
+      {canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => setEditing("new")}><Plus size={14} />{t("dataSources.create")}</button>}
     </div>
     {loading ? <p className="muted">{t("common.loading")}</p> : items.length ? <div className="table-scroll"><table className="grid data-source-grid">
       <thead><tr><th>{t("dataSources.name")}</th><th>{t("dataSources.host")}</th><th>{t("dataSources.database")}</th><th>{t("dataSources.user")}</th><th className="col-ssl">{t("dataSources.ssl")}</th><th className="col-actions" /></tr></thead>
@@ -99,13 +102,13 @@ export function DataSourceList() {
         <td className="mono" title={item.config.database}>{item.config.database}</td>
         <td className="mono" title={item.config.username}>{item.config.username}</td>
         <td className="col-ssl">{item.config.ssl ? t("common.yes") : t("common.no")}</td>
-        <td className="col-actions"><div className="row-actions" onClick={(event) => event.stopPropagation()}>
+        <td className="col-actions">{canWrite && <div className="row-actions" onClick={(event) => event.stopPropagation()}>
           <IconButton icon={<Cable size={14} />} label={t("dataSources.testConnection")} disabled={testing === item.id} onClick={() => void test(item)} />
           <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => setEditing(item)} />
           <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => void remove(item)} />
-        </div></td>
+        </div>}</td>
       </tr>)}</tbody>
-    </table></div> : <Empty title={t("dataSources.emptyTitle")} hint={t("dataSources.emptyHint")} action={<button className="btn btn-primary" onClick={() => setEditing("new")}>{t("dataSources.create")}</button>} />}
+    </table></div> : <Empty title={t("dataSources.emptyTitle")} hint={t("dataSources.emptyHint")} action={canWrite ? <button className="btn btn-primary" onClick={() => setEditing("new")}>{t("dataSources.create")}</button> : undefined} />}
 
     {items.length > 0 && <div className="pager">
       <Pagination

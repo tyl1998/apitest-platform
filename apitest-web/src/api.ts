@@ -1,7 +1,19 @@
 import axios from "axios";
+import { message } from "antd";
+import i18next from "i18next";
 
-export type Project = { id: string; name: string; description: string };
-export type User = { id: string; email: string; name: string; isSystemAdmin: boolean };
+export type Project = { id: string; name: string; description: string; myRole?: MyRole };
+/**
+ * 项目三级角色 + 系统管理员短路（P6 边界 5 的词汇决策：与 DB CHECK 同一套，不做
+ * admin ↔ project_admin 映射）。`useMyRole` 读的就是这个值。
+ */
+export type ProjectRole = "project_admin" | "developer" | "viewer";
+export type MyRole = ProjectRole | "system_admin";
+/**
+ * `/auth/me`（P6-3 起带 `mustChangePassword`）：登录后的一次刷新会丢登录响应里的
+ * 旗，读时从 me() 恢复（服务端改密后即时清，无缓存窗口）。
+ */
+export type User = { id: string; email: string; name: string; isSystemAdmin: boolean; mustChangePassword?: boolean };
 /** Secret values stay on the server; only their key names are sent (Spec 4.6). */
 export type Environment = {
   id: string;
@@ -2066,6 +2078,45 @@ client.interceptors.request.use((config) => {
   return config;
 });
 
+/**
+ * 401 / 403 的统一出口（P6-5，计划 10.0 边界 8）。
+ *
+ * 公开页前缀（/login、/register、/share）对两个分支都豁免：登录/注册页的 401 / 403
+ * 是「凭据不对 / 邀请码无效或被吊销」的领域语义，页面有自己的分路报错——全局重定向
+ * 会把错误抹掉，全局 toast 又词不达意；分享页是公开落地页，匿名访客不该被一枚过期
+ * token 从公开报告页踢去登录。
+ *
+ * - **401**：token 失效（过期 / 改密后 pwdEpoch 不等 / 账号被禁用）。清 token 并带
+ *   `returnTo` 硬跳登录——硬导航连内存里的 store 一起重置，比在拦截器里反向 import
+ *   authStore（会与它 import api 成环）干净。
+ * - **403**：顶部提示无权限、**不跳转**——用户可能正停在刚被降权的编辑页上，跳走会
+ *   丢上下文。限 3 秒一条：一页并发请求同时撞 403 时不该弹出五条叠着的 toast。
+ */
+const PUBLIC_PATH_PREFIXES = ["/login", "/register", "/share"];
+let lastForbiddenToastAt = 0;
+
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    const isPublicPath = PUBLIC_PATH_PREFIXES.some((prefix) => window.location.pathname.startsWith(prefix));
+    if (status === 401) {
+      localStorage.removeItem("apitest.token");
+      if (!isPublicPath) {
+        const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.assign(`/login?returnTo=${returnTo}`);
+      }
+    } else if (status === 403 && !isPublicPath) {
+      const now = Date.now();
+      if (now - lastForbiddenToastAt > 3000) {
+        lastForbiddenToastAt = now;
+        message.error(i18next.t("errors.forbidden"));
+      }
+    }
+    return Promise.reject(error);
+  },
+);
+
 function data<T>(response: { data: { data: T } }) { return response.data.data; }
 
 /**
@@ -2158,7 +2209,84 @@ export function subscribeExecutions(projectId: string, onEvent: (event: Executio
   return () => controller.abort();
 }
 
+/* ── P6-2: 用户管理 + 审计日志（系统管理员） ──────────────────────────────── */
+
+/**
+ * 管理面用户行（`/system/users*`）。`initialPassword` 只出现在建号与重置密码那一次
+ * 响应里——与 Runner Token / 仓库凭据同一条「明文只出现一次」纪律。
+ */
+export type ManagedUser = {
+  id: string;
+  email: string;
+  name: string;
+  isSystemAdmin: boolean;
+  status: "active" | "disabled";
+  mustChangePassword: boolean;
+  lastLoginAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** 审计日志行：userEmail / projectName 是读时快照，系统级动作两者皆空。 */
+export type AuditLog = {
+  id: number;
+  projectId?: string;
+  projectName?: string;
+  userId?: string;
+  userEmail?: string;
+  action: string;
+  targetType: string;
+  targetId?: string;
+  detail: Record<string, unknown>;
+  ip: string;
+  createdAt: string;
+};
+
+/* ── P6-3: 邀请码 + 注册 + 强制改密 ─────────────────────────────────────────── */
+
+/**
+ * 邀请码行（`/system/invitations*`）。`token`（明文码）只附加在签发那一次的响应里；
+ * 列表行只有 `tokenPrefix`。`createdByEmail` / `consumedByEmail` 回答「谁签的、
+ * 被谁用了」——预分配的 `projectId` + `role` 决定注册后落什么角色。
+ */
+export type Invitation = {
+  id: string;
+  note: string;
+  projectId?: string;
+  role?: "project_admin" | "developer" | "viewer";
+  tokenPrefix: string;
+  createdBy?: string;
+  createdByEmail?: string;
+  expiresAt: string;
+  consumedAt?: string;
+  consumedBy?: string;
+  consumedByEmail?: string;
+  revokedAt?: string;
+  createdAt: string;
+};
+
+/* ── P6-4: 项目成员 ──────────────────────────────────────────────────────────── */
+
+/**
+ * 成员行（`GET /projects/:id/members`，viewer 可读——「知道找谁要权限」）。email/name
+ * 是读时快照（用户改名后成员表跟着新名走）；`grantedByEmail` 回答「谁把谁加进来的」。
+ */
+export type ProjectMember = {
+  userId: string;
+  email: string;
+  name: string;
+  status: "active" | "disabled";
+  role: ProjectRole;
+  grantedBy?: string;
+  grantedByEmail?: string;
+  grantedAt: string;
+};
+
+/** 添加成员的候选行（project_admin 的收窄目录读：三列、只 active、只非成员）。 */
+export type MemberCandidate = { id: string; email: string; name: string };
+
 /* ── P5: MCP（Token 签发 / 吊销 + 工具清单展示） ───────────────────────────── */
+
 
 /** scope 三值（计划 9.0 边界 1）：read 恒在，write / execute 签发时显式勾选。 */
 export type McpScope = "read" | "write" | "execute";
@@ -2183,8 +2311,33 @@ export type McpToken = {
 export type McpToolSummary = { name: string; description: string; scope: McpScope };
 
 export const api = {
-  login: (email: string, password: string) => client.post("/auth/login", { email, password }).then(data<{ token: string; user: User }>),
+  /**
+   * 登录响应带 `mustChangePassword`（P6-3）：为 true 时前端只放行 /change-password。
+   * `expiresAt`（P6-5，ISO 串）是 token 的过期时刻，随 JWT_EXPIRES_IN（默认 7 天）。
+   */
+  login: (email: string, password: string) => client.post("/auth/login", { email, password }).then(data<{ token: string; expiresAt: string | null; user: User; mustChangePassword: boolean }>),
   me: () => client.get("/auth/me").then(data<User>),
+  /**
+   * 邀请码注册（P6-3，公开路由）。注册即登录（token 直接落地，注册完不再登一次）。
+   * 过期（410）/吊销（403）/无效（401）/已用（409）各带不同 message，页面据此指路。
+   */
+  register: (input: { invite: string; email: string; name: string; password: string }) =>
+    client.post("/auth/register", input).then(data<{ token: string; expiresAt: string | null; user: User }>),
+  /**
+   * 强制改密提交端（P6-5）：改密使旧 token 全部失效（pwdEpoch +1），响应带换发的
+   * 新 token——前端必须落地替换，否则改完密下一个请求就 401 跳登录。
+   */
+  changePassword: (currentPassword: string, newPassword: string) =>
+    client.post("/auth/change-password", { currentPassword, newPassword }).then(data<{ token: string; expiresAt: string | null; user: User; mustChangePassword: boolean }>),
+
+  /** 邀请码列表（P6-3，系统管理员）：全量，未消费/未吊销在前。 */
+  invitations: () => client.get("/system/invitations").then(data<Invitation[]>),
+  /** 签发：明文码只在这一次响应里，丢了只能吊销重发。 */
+  createInvitation: (input: { note?: string; projectId?: string; role?: "project_admin" | "developer" | "viewer" }) =>
+    client.post("/system/invitations", input).then(data<Invitation & { token: string }>),
+  /** 吊销即时生效（注册的候选查询排除吊销行）。 */
+  revokeInvitation: (invitationId: string) =>
+    client.post(`/system/invitations/${invitationId}/revoke`).then(data<Invitation>),
 
   dashboard: (filters?: ProjectFilters) => client.get("/dashboard", { params: projectParams(filters) }).then(data<Dashboard>),
   preferences: () => client.get("/system/preferences").then(data<Preferences>),
@@ -2213,6 +2366,43 @@ export const api = {
   /** 吊销是软删（留 `revokedAt`）：硬删会级联掉 runners，「那台机器拿哪张 token 注册的」就答不出来了。 */
   revokeRunnerToken: (tokenId: string) =>
     client.delete(`/system/runner-tokens/${tokenId}`).then(data<RunnerToken>),
+
+  /* ── P6-2：用户管理 + 审计日志 ── */
+  /** 用户列表（keyword 在 SQL 过滤，覆盖全量；total 是全量命中数）。 */
+  systemUsers: (filters?: { keyword?: string; page?: number; pageSize?: number }) =>
+    client.get("/system/users", { params: { keyword: filters?.keyword?.trim() || undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<ManagedUser>),
+  /** 建号：`initialPassword` 只在这一次响应里，首登强制改密。 */
+  createSystemUser: (input: { email: string; name: string; isSystemAdmin?: boolean }) =>
+    client.post("/system/users", input).then(data<ManagedUser & { initialPassword: string }>),
+  /** 就地改 name / status / isSystemAdmin（partial，只发出现的键）。 */
+  updateSystemUser: (userId: string, input: { name?: string; status?: "active" | "disabled"; isSystemAdmin?: boolean }) =>
+    client.patch(`/system/users/${userId}`, input).then(data<ManagedUser>),
+  /** 重置密码：新密码只在这一次响应里，`mustChangePassword` 同时置上。 */
+  resetSystemUserPassword: (userId: string) =>
+    client.post(`/system/users/${userId}/reset-password`).then(data<ManagedUser & { initialPassword: string }>),
+  /** 全局审计日志（分页 + action / project 筛选）。 */
+  auditLogs: (filters?: { page?: number; pageSize?: number; action?: string; projectId?: string }) =>
+    client.get("/system/audit-logs", { params: { page: filters?.page, pageSize: filters?.pageSize, action: filters?.action?.trim() || undefined, projectId: filters?.projectId || undefined } }).then(paged<AuditLog>),
+  /** 项目级审计（最近 50 条，项目管理员）：P6-4 成员页消费。 */
+  projectAuditLogs: (projectId: string) =>
+    client.get(`/projects/${projectId}/audit-logs`).then(data<AuditLog[]>),
+
+  /* ── P6-4：项目成员 ── */
+  /** 成员表（viewer 可读；total = 成员数）。 */
+  members: (projectId: string) =>
+    client.get(`/projects/${projectId}/members`).then(data<ProjectMember[]>),
+  /** 添加成员的候选搜索（project_admin）：keyword 空 = 最新 20 个可加的人。 */
+  memberCandidates: (projectId: string, keyword: string) =>
+    client.get(`/projects/${projectId}/members/candidates`, { params: { keyword: keyword.trim() || undefined } }).then(data<MemberCandidate[]>),
+  /** 添加 / 就地改角色（upsert 语义；最后一个 project_admin 降级 409）。 */
+  upsertMember: (projectId: string, input: { userId: string; role: ProjectRole }) =>
+    client.post(`/projects/${projectId}/members`, input).then(data<ProjectMember>),
+  /** 角色下拉就地改的落点。 */
+  updateMemberRole: (projectId: string, userId: string, role: ProjectRole) =>
+    client.patch(`/projects/${projectId}/members/${userId}`, { role }).then(data<{ userId: string; role: ProjectRole }>),
+  /** 移除成员（角色行删除即失去访问，判定端每请求查库、即时生效）。 */
+  removeMember: (projectId: string, userId: string) =>
+    client.delete(`/projects/${projectId}/members/${userId}`).then(data<{ userId: string; removed: boolean }>),
 
   projects: (filters?: ProjectFilters) => client.get("/projects", { params: projectParams(filters) }).then(data<ProjectMetric[]>),
   /** 管理页的分页读法（与 environmentList 同一契约）：keyword 在 SQL 里过滤，total 是全量

@@ -3,6 +3,7 @@ import { Drawer, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { Braces, Database, GitBranch, Globe2, Play, Plus, Timer, Trash2, Workflow } from "lucide-react";
 import { api, type ExecutionStep, type FlowNode, type FlowStepResult, type FlowSummary, type LoopFlowNode, type SubflowFlowNode, type WaitFlowNode } from "../api";
+import { useCanWrite } from "../hooks/useMyRole";
 import { variableOptions } from "../lib/flowVariables";
 import { useLimitsStore } from "../stores/limitsStore";
 import { useProjectStore } from "../stores/projectStore";
@@ -95,9 +96,11 @@ function useSingleStep(projectId: string, flowId: string, node: FlowNode, variab
   return [running, run] as const;
 }
 
-/** 抽屉右上角：单步调试 + 删除，与其他节点抽屉一致。 */
+/** 抽屉右上角：单步调试 + 删除，与其他节点抽屉一致。viewer 不渲染（P6-4）。 */
 function DrawerActions({ running, onRun, onDelete }: { running: boolean; onRun: () => void; onDelete: () => void }) {
   const { t } = useTranslation();
+  const canWrite = useCanWrite();
+  if (!canWrite) return null;
   return <div className="row-actions">
     <button className="btn btn-with-icon" disabled={running} onClick={onRun}>
       <Play size={14} />{running ? t("action.running") : t("flows.runNode")}

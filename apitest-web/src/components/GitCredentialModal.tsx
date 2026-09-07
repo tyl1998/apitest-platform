@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { api, type GitCredential } from "../api";
+import { useCanWrite } from "../hooks/useMyRole";
 import { apiMessage } from "./DataSourceList";
 
 /**
@@ -23,6 +24,8 @@ export function GitCredentialModal({ projectId, editing, onClose, onSaved }: {
   onSaved: (saved: GitCredential) => void | Promise<void>;
 }) {
   const { t } = useTranslation();
+  /* viewer 打开弹窗只是看凭据形态：保存按钮换成纯关闭（P6-4）。 */
+  const canWrite = useCanWrite();
   const [name, setName] = useState("");
   const [method, setMethod] = useState<GitCredential["method"]>("https_token");
   const [credential, setCredential] = useState("");
@@ -69,6 +72,7 @@ export function GitCredentialModal({ projectId, editing, onClose, onSaved }: {
     cancelText={t("action.cancel")}
     confirmLoading={saving}
     onOk={() => void save()}
+    footer={canWrite ? undefined : <button className="btn" onClick={onClose}>{t("action.close")}</button>}
   >
     <div className="form-grid">
       <label className="field field-wide"><span>{t("repoCases.credentialName")}</span>

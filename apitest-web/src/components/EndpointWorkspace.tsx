@@ -5,6 +5,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Copy, CopyPlus, Crosshair, Maximize2, Play, Plus, Save, SaveAll, Trash2 } from "lucide-react";
 import { api, noRunnerLabel, type Assertion, type BodyType, type CaseUsage, type Endpoint, type EndpointAuth, type EndpointInput, type Execution, type ExecutionSourceFilter, type FlowExtract, type Paged, type PreRequestHook, type RequestSnapshot, type ResponseScript, type TestCase } from "../api";
 import { useExecutionStream } from "../hooks/useExecutionStream";
+import { useCanWrite } from "../hooks/useMyRole";
 import { variableOptions } from "../lib/flowVariables";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
@@ -179,6 +180,9 @@ export function EndpointWorkspace() {
   const isNew = endpointId === "new";
   const { environments, endpoints, defaultEnvironmentId, reloadEndpoints } = useProjectStore();
   const setGuard = useNavGuardStore((state) => state.setGuard);
+  /* viewer 隐藏写与执行按钮（P6-4）：编辑器本体保留——本地草稿改了也存不回去，
+     路由不藏，后端才是权限事实。 */
+  const canWrite = useCanWrite();
 
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [urlText, setUrlText] = useState("");
@@ -337,12 +341,13 @@ export function EndpointWorkspace() {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
       /* The browser's own save dialog is never what the user wants here. */
       event.preventDefault();
+      if (!canWrite) return;
       if (activeCase) { if (caseDirty) void saveCase(); return; }
       if (dirty) void save();
     }
     window.addEventListener("keydown", handleSaveKey);
     return () => window.removeEventListener("keydown", handleSaveKey);
-  }, [activeCase, caseDirty, dirty, draft, lifecycleDraft]);
+  }, [canWrite, activeCase, caseDirty, dirty, draft, lifecycleDraft]);
 
   /**
    * Confirms before discarding edits.
@@ -821,8 +826,8 @@ export function EndpointWorkspace() {
       ["post", t("flows.tabPost")] as [Tab, string],
       ["assertions", t("editor.assertions")] as [Tab, string],
       /* 同步排在校验之后：前面几个 tab 说「这条用例是什么」，这一个说「把它推到哪儿」，
-         是最后一步而不是编辑的一部分。 */
-      ["sync", t("caseSync.tab")] as [Tab, string],
+          是最后一步而不是编辑的一部分。viewer 没有「推」这一步，tab 也不给（P6-4）。 */
+      ...(canWrite ? [["sync", t("caseSync.tab")] as [Tab, string]] : []),
     ] : []),
   ];
 
@@ -885,9 +890,9 @@ export function EndpointWorkspace() {
             endpoint-level writes are withheld: saving would overwrite the
             endpoint with case content, and duplicating would copy the wrong
             definition. The case's own save takes their place. */}
-        {!isNew && !activeCase && <IconButton icon={<CopyPlus size={15} />} label={t("action.duplicate")} disabled={duplicating} onClick={() => void duplicate()} />}
-        {!isNew && !activeCase && <IconButton icon={<Trash2 size={15} />} label={t("action.delete")} tone="danger" onClick={remove} />}
-        {activeCase
+        {!isNew && !activeCase && canWrite && <IconButton icon={<CopyPlus size={15} />} label={t("action.duplicate")} disabled={duplicating} onClick={() => void duplicate()} />}
+        {!isNew && !activeCase && canWrite && <IconButton icon={<Trash2 size={15} />} label={t("action.delete")} tone="danger" onClick={remove} />}
+        {canWrite && (activeCase
           ? <>
               {/* 另存为新用例 keeps the original untouched, for branching a
                   variant; it is secondary to simply saving the case. */}
@@ -903,7 +908,7 @@ export function EndpointWorkspace() {
               <button className="btn btn-with-icon" disabled={saving || !dirty} onClick={() => void save()}>
                 <Save size={14} />{saving ? "…" : t("action.save")}
               </button>
-            </>}
+            </>)}
       </div>
     </div>
 
@@ -947,9 +952,9 @@ export function EndpointWorkspace() {
               /* A loaded case carries its own environment, frozen at save time. */
               disabled={Boolean(activeCase)}
             />
-            <button className="btn btn-primary btn-with-icon btn-send" disabled={running || saving} onClick={() => void send()}>
+            {canWrite && <button className="btn btn-primary btn-with-icon btn-send" disabled={running || saving} onClick={() => void send()}>
               <Play size={14} />{running ? t("action.running") : activeCase ? t("cases.run") : t("editor.send")}
-            </button>
+            </button>}
             <IconButton icon={<Copy size={15} />} label={t("editor.copyCurl")} onClick={() => void copyCurl()} />
           </div>
 
@@ -1063,7 +1068,7 @@ export function EndpointWorkspace() {
 
             {/* 同步：快照隔离让「改用例」与「流程跑什么」分开，这里补上把改动推过去的
                 那一步。它是显式操作，不是自动传播。 */}
-            {tab === "sync" && activeCase && <CaseFlowSync
+            {tab === "sync" && activeCase && canWrite && <CaseFlowSync
               projectId={projectId!}
               caseId={activeCase.id}
               caseName={activeCase.name}
@@ -1185,7 +1190,7 @@ export function EndpointWorkspace() {
     <ExecutionSnapshot
       result={inspecting}
       onClose={closeInspector}
-      onRerun={() => { closeInspector(); void send(); }}
+      onRerun={canWrite ? () => { closeInspector(); void send(); } : undefined}
       onLoadRequest={inspecting ? () => void loadRequest(inspecting) : undefined}
       busy={running}
     />

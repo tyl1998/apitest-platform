@@ -11,6 +11,7 @@ import { GitCredentialModal } from "./GitCredentialModal";
 import { apiMessage } from "./DataSourceList";
 import { RepoPageHead, RepoTabs } from "./RepoShell";
 import { useThemeMode } from "../theme";
+import { useCanWrite } from "../hooks/useMyRole";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 
@@ -92,6 +93,8 @@ export function CiTaskEditor() {
   /* `/repo/tasks/new` 是静态路由段，`useParams()` 不给 `taskId`（它不是参数）——undefined
      就是「新建」。动态路由 `:taskId` 永远有值（React Router 不匹配空段）。 */
   const isNew = taskId === undefined || taskId === "new";
+  /* viewer：保存/保存并触发不渲染（P6-4）——URL 直达编辑页只能看，后端照拒。 */
+  const canWrite = useCanWrite();
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -348,12 +351,12 @@ export function CiTaskEditor() {
     function handleSaveKey(event: KeyboardEvent) {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
       event.preventDefault();
-      if (dirty && !saving) void save(false);
+      if (canWrite && dirty && !saving) void save(false);
     }
     window.addEventListener("keydown", handleSaveKey);
     return () => window.removeEventListener("keydown", handleSaveKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dirty, saving, projectId, taskId, isNew, name, description, gitUrl, gitCredentialId, gitRef,
+  }, [canWrite, dirty, saving, projectId, taskId, isNew, name, description, gitUrl, gitCredentialId, gitRef,
     runnerLabel, sandboxMode, image, steps, envPairs, cachePaths, cacheKeyFiles, sdkIngestEnabled,
     singleConcurrency, timeoutMinutes, enabled, notify]);
 
@@ -370,8 +373,8 @@ export function CiTaskEditor() {
       hint={t("ciTasks.hint")}
       actions={<>
         <button className="btn" onClick={() => navigate(`/projects/${projectId}/repo`)}>{t("action.cancel")}</button>
-        <button className="btn" disabled={saving} onClick={() => void save(true)}>{t("ciTasks.saveAndRun")}</button>
-        <button className="btn btn-primary" disabled={saving} onClick={() => void save(false)}>{saving ? "…" : t("action.save")}</button>
+        {canWrite && <button className="btn" disabled={saving} onClick={() => void save(true)}>{t("ciTasks.saveAndRun")}</button>}
+        {canWrite && <button className="btn btn-primary" disabled={saving} onClick={() => void save(false)}>{saving ? "…" : t("action.save")}</button>}
       </>}
     />
     <RepoTabs active="tasks" />
@@ -419,9 +422,9 @@ export function CiTaskEditor() {
           </div>
           {!credentials.length && <p className="form-note">
             {t("ciTasks.noCredentialPool")}
-            <button className="btn btn-small" style={{ marginLeft: "var(--s3)" }} onClick={() => setCredentialEditing("new")}>
+            {canWrite && <button className="btn btn-small" style={{ marginLeft: "var(--s3)" }} onClick={() => setCredentialEditing("new")}>
               {t("repoCases.credentialCreate")}
-            </button>
+            </button>}
           </p>}
         </div>
       </section>
@@ -532,9 +535,9 @@ export function CiTaskEditor() {
       <div className="panel-head">
         <strong>{t("schedules.title")}</strong>
         <div className="topbar-actions">
-          <button className="btn btn-small btn-with-icon" disabled={saving} onClick={() => void armSchedules()}>
+          {canWrite && <button className="btn btn-small btn-with-icon" disabled={saving} onClick={() => void armSchedules()}>
             <Plus size={14} />{t("schedules.createTitle")}
-          </button>
+          </button>}
         </div>
       </div>
       <div className="panel-body">

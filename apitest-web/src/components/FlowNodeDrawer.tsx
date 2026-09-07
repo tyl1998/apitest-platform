@@ -7,6 +7,7 @@ import { api, noRunnerLabel, type Assertion, type AssertionResult, type Conditio
 import { defaultOperationText, formatOperation, operationLabelFromText, operationTemplates } from "../operationTemplates";
 import { variableOptions } from "../lib/flowVariables";
 import { useDebounced } from "../hooks/useDebounced";
+import { useCanWrite } from "../hooks/useMyRole";
 import { useLimitsStore } from "../stores/limitsStore";
 import { useProjectStore } from "../stores/projectStore";
 import { AssertionEditor, ScriptChecks } from "./AssertionEditor";
@@ -33,6 +34,22 @@ const CONDITION_OPERATORS: ConditionFlowNode["condition"]["rules"][number]["oper
 
 type Tab = "request" | "hooks" | "post" | "assertions";
 type SourceKind = "endpoint" | "case";
+
+/**
+ * 节点抽屉右上角的操作区（单步调试 + 删除节点），五个节点类型的抽屉共用。
+ * viewer 不渲染（P6-4）：调试是一次执行、删除是一次写，都不属于只读角色。
+ */
+function NodeDrawerActions({ running, onRun, onDelete }: { running: boolean; onRun: () => void; onDelete: () => void }) {
+  const { t } = useTranslation();
+  const canWrite = useCanWrite();
+  if (!canWrite) return null;
+  return <div className="row-actions">
+    <button className="btn btn-with-icon" disabled={running} onClick={onRun}>
+      <Play size={14} />{running ? t("action.running") : t("flows.runNode")}
+    </button>
+    <IconButton icon={<Trash2 size={15} />} label={t("action.delete")} tone="danger" onClick={onDelete} />
+  </div>;
+}
 
 /**
  * Node configuration (P1-2, extended P2-2).
@@ -78,6 +95,8 @@ export function FlowNodeDrawer(props: FlowNodeDrawerProps) {
 function RequestNodeDrawer({ projectId, flowId, node, nodes, edges, variables, environmentId, evidence, onChange, onClose, onDelete }: Omit<FlowNodeDrawerProps, "node"> & { node: RequestFlowNode }) {
   const { t } = useTranslation();
   const { endpoints, environments } = useProjectStore();
+  /* viewer：证据区的「重跑」也不给（P6-4）——那是一次执行。 */
+  const canWrite = useCanWrite();
   /* 请求并发的上限 = 一次执行的叶子令牌预算（服务端 FLOW_PARALLELISM，P2-4.2）。 */
   const concurrencyMax = useLimitsStore((state) => state.limits.flowParallelism);
   const [tab, setTab] = useState<Tab>("request");
@@ -292,12 +311,7 @@ function RequestNodeDrawer({ projectId, flowId, node, nodes, edges, variables, e
       open
       onClose={onClose}
       width={760}
-      extra={<div className="row-actions">
-        <button className="btn btn-with-icon" disabled={running} onClick={() => void runNode()}>
-          <Play size={14} />{running ? t("action.running") : t("flows.runNode")}
-        </button>
-        <IconButton icon={<Trash2 size={15} />} label={t("action.delete")} tone="danger" onClick={onDelete} />
-      </div>}
+      extra={<NodeDrawerActions running={running} onRun={() => void runNode()} onDelete={onDelete} />}
     >
       <div className="form-grid">
         <label className="field">
@@ -567,7 +581,7 @@ function RequestNodeDrawer({ projectId, flowId, node, nodes, edges, variables, e
           <button className="btn btn-small" onClick={() => setResult(undefined)}>{t("action.close")}</button>
         </div>
         <div className="panel-body">
-          <ExecutionDetail result={mine} onRerun={() => void runNode()} busy={running} />
+          <ExecutionDetail result={mine} onRerun={canWrite ? () => void runNode() : undefined} busy={running} />
         </div>
       </section>}
     </Drawer>
@@ -720,7 +734,7 @@ function DatabaseNodeDrawer({ projectId, flowId, node, nodes, edges, variables, 
   ];
 
   return <>
-    <Drawer title={t("flows.nodeTitle")} open onClose={onClose} width={760} extra={<div className="row-actions"><button className="btn btn-with-icon" disabled={running} onClick={() => void runNode()}><Play size={14} />{running ? t("action.running") : t("flows.runNode")}</button><IconButton icon={<Trash2 size={15} />} label={t("action.delete")} tone="danger" onClick={onDelete} /></div>}>
+    <Drawer title={t("flows.nodeTitle")} open onClose={onClose} width={760} extra={<NodeDrawerActions running={running} onRun={() => void runNode()} onDelete={onDelete} />}>
       <div className="form-grid">
         <label className="field"><span>{t("flows.nodeName")}</span><input className="input" value={node.name} onChange={(event) => change({ name: event.target.value })} placeholder={t("flows.databaseNodeNamePlaceholder")} /></label>
         <label className="field"><span>{t("flows.onFailure")}</span><Select value={node.onFailure} onChange={(onFailure) => change({ onFailure })} options={[{ value: "stop", label: t("flows.failureStop") }, { value: "continue", label: t("flows.failureContinue") }]} style={{ width: "100%" }} /></label>
@@ -869,7 +883,7 @@ function ScriptNodeDrawer({ projectId, flowId, node, variables, evidence, onChan
   const output = result?.output as { logs?: string[]; debug?: { label: string; value: string }[]; checks?: { label: string; passed: boolean; message?: string }[]; returned?: string; variables?: Record<string, string> } | undefined;
 
   return <>
-    <Drawer title={t("flows.nodeTitle")} open onClose={onClose} width={760} extra={<div className="row-actions"><button className="btn btn-with-icon" disabled={running} onClick={() => void runNode()}><Play size={14} />{running ? t("action.running") : t("flows.runNode")}</button><IconButton icon={<Trash2 size={15} />} label={t("action.delete")} tone="danger" onClick={onDelete} /></div>}>
+    <Drawer title={t("flows.nodeTitle")} open onClose={onClose} width={760} extra={<NodeDrawerActions running={running} onRun={() => void runNode()} onDelete={onDelete} />}>
       <div className="form-grid">
         <label className="field"><span>{t("flows.nodeName")}</span><input className="input" value={node.name} onChange={(event) => patch({ name: event.target.value })} placeholder={t("flows.scriptNodeNamePlaceholder")} /></label>
         <label className="field"><span>{t("flows.onFailure")}</span><Select value={node.onFailure} onChange={(onFailure) => patch({ onFailure })} options={[{ value: "stop", label: t("flows.failureStop") }, { value: "continue", label: t("flows.failureContinue") }]} style={{ width: "100%" }} /></label>
@@ -1006,7 +1020,7 @@ function ConditionNodeDrawer({ projectId, flowId, node, nodes, edges, variables,
 
   const output = result?.output as { mode?: "all" | "any"; rules?: Array<{ variable: string; operator: string; value?: string; actual?: unknown; result: boolean }>; result?: boolean } | undefined;
 
-  return <Drawer title={t("flows.nodeTitle")} open onClose={onClose} width={720} extra={<div className="row-actions"><button className="btn btn-with-icon" disabled={running} onClick={() => void runNode()}><Play size={14} />{running ? t("action.running") : t("flows.runNode")}</button><IconButton icon={<Trash2 size={15} />} label={t("action.delete")} tone="danger" onClick={onDelete} /></div>}>
+  return <Drawer title={t("flows.nodeTitle")} open onClose={onClose} width={720} extra={<NodeDrawerActions running={running} onRun={() => void runNode()} onDelete={onDelete} />}>
     <div className="form-grid">
       <label className="field"><span>{t("flows.nodeName")}</span><input className="input" value={node.name} onChange={(event) => patch({ name: event.target.value })} placeholder={t("flows.conditionNodeNamePlaceholder")} /></label>
       <label className="field"><span>{t("flows.onFailure")}</span><Select value={node.onFailure} onChange={(onFailure) => patch({ onFailure })} options={[{ value: "stop", label: t("flows.failureStop") }, { value: "continue", label: t("flows.failureContinue") }]} style={{ width: "100%" }} /></label>

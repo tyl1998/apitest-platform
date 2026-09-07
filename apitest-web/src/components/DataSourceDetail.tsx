@@ -7,6 +7,7 @@ import { Cable, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { api, type DataSource, type DataSourceOperation, type DataSourceType, type SqlDefinition, type SqlDefinitionInput, type SqlExecutionResult, type SqlParameter, type SqlParameterType } from "../api";
 import { defaultOperationText, formatOperation, operationLabelFromText, operationTemplates } from "../operationTemplates";
 import { useThemeMode } from "../theme";
+import { useCanWrite } from "../hooks/useMyRole";
 import { Empty } from "../ui";
 import { DataSourceDrawer, apiMessage } from "./DataSourceList";
 import { DatabaseResult } from "./DatabaseResult";
@@ -21,6 +22,8 @@ export function DataSourceDetail() {
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get("tab") === "sql" ? "sql" : "config";
   const editSql = searchParams.get("editSql") ?? undefined;
+  /* viewer：测试/编辑/新建 SQL/删除入口全藏（P6-4）；连接配置与 SQL 清单照读。 */
+  const canWrite = useCanWrite();
   const [source, setSource] = useState<DataSource>();
   const [definitions, setDefinitions] = useState<SqlDefinition[]>([]);
   const [loading, setLoading] = useState(true);
@@ -85,8 +88,8 @@ export function DataSourceDetail() {
     <div className="page-head">
       <div><div className="title-row"><h1>{source.name}</h1><span className="chip mono">{source.type}</span></div><p className="mono">{source.config.host}:{source.config.port}/{source.config.database}</p></div>
       <div className="topbar-actions">
-        <button className="btn btn-with-icon" disabled={testing} onClick={() => void testConnection()}><Cable size={14} />{testing ? t("action.running") : t("dataSources.testConnection")}</button>
-        <button className="btn btn-with-icon" onClick={() => setEditingSource(true)}><Pencil size={14} />{t("action.edit")}</button>
+        {canWrite && <button className="btn btn-with-icon" disabled={testing} onClick={() => void testConnection()}><Cable size={14} />{testing ? t("action.running") : t("dataSources.testConnection")}</button>}
+        {canWrite && <button className="btn btn-with-icon" onClick={() => setEditingSource(true)}><Pencil size={14} />{t("action.edit")}</button>}
       </div>
     </div>
     <div className="tabs detail-tabs" role="tablist">
@@ -104,14 +107,14 @@ export function DataSourceDetail() {
       <Row label={t("dataSources.maxRows")} value={String(source.config.maxRows)} mono />
       <Row label={t("dataSources.maxBytes")} value={formatBytes(source.config.maxResultBytes)} mono />
     </dl></div></section> : <section className="sql-section">
-      <div className="section-toolbar"><div><h2>{t("dataSources.namedSql")}</h2><p>{t("dataSources.namedSqlHint")}</p></div><button className="btn btn-primary btn-with-icon" onClick={() => setUrl({ tab: "sql", editSql: "new" })}><Plus size={14} />{t("dataSources.createSql")}</button></div>
+      <div className="section-toolbar"><div><h2>{t("dataSources.namedSql")}</h2><p>{t("dataSources.namedSqlHint")}</p></div>{canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => setUrl({ tab: "sql", editSql: "new" })}><Plus size={14} />{t("dataSources.createSql")}</button>}</div>
       {definitions.length ? <div className="table-scroll"><table className="grid sql-definition-grid"><thead><tr><th>{t("dataSources.sqlName")}</th><th>{t("dataSources.statementType")}</th><th>{t("dataSources.parameters")}</th><th>{t("common.updatedAt")}</th><th className="col-actions" /></tr></thead><tbody>
         {definitions.map((definition) => <tr key={definition.id} data-clickable onClick={() => setUrl({ tab: "sql", editSql: definition.id })}>
           <td><strong>{definition.name}</strong>{definition.description && <span className="cell-description truncate">{definition.description}</span>}</td>
           <td className="mono">{definition.kind !== "sql" ? definition.kind : definition.statementType}</td><td className="mono">{definition.params.length}</td><td className="mono muted">{new Date(definition.updatedAt).toLocaleString()}</td>
-          <td className="col-actions"><div className="row-actions" onClick={(event) => event.stopPropagation()}><IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => setUrl({ tab: "sql", editSql: definition.id })} /><IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => void removeDefinition(definition)} /></div></td>
+          <td className="col-actions">{canWrite && <div className="row-actions" onClick={(event) => event.stopPropagation()}><IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => setUrl({ tab: "sql", editSql: definition.id })} /><IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => void removeDefinition(definition)} /></div>}</td>
         </tr>)}
-      </tbody></table></div> : <Empty title={t("dataSources.sqlEmptyTitle")} hint={t("dataSources.sqlEmptyHint")} action={<button className="btn btn-primary" onClick={() => setUrl({ tab: "sql", editSql: "new" })}>{t("dataSources.createSql")}</button>} />}
+      </tbody></table></div> : <Empty title={t("dataSources.sqlEmptyTitle")} hint={t("dataSources.sqlEmptyHint")} action={canWrite ? <button className="btn btn-primary" onClick={() => setUrl({ tab: "sql", editSql: "new" })}>{t("dataSources.createSql")}</button> : undefined} />}
     </section>}
 
     <DataSourceDrawer projectId={projectId!} source={editingSource ? source : undefined} onClose={() => setEditingSource(false)} onSaved={(saved) => { setSource(saved); setEditingSource(false); }} />

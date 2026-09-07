@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 import { Pencil, Trash2 } from "lucide-react";
 import { api, type Script, type ScriptKind } from "../api";
+import { useCanWrite } from "../hooks/useMyRole";
 import { useThemeMode } from "../theme";
 import { Empty } from "../ui";
 import { IconButton } from "./IconButton";
@@ -63,6 +64,8 @@ export function PublicScripts({ create, onCreateHandled }: {
   const { t } = useTranslation();
   const { projectId } = useParams();
   const mode = useThemeMode();
+  /* viewer：编辑/删除入口不渲染（P6-4）；页头「新建公共脚本」按钮在 Environments 侧已藏。 */
+  const canWrite = useCanWrite();
 
   const [scripts, setScripts] = useState<Script[]>([]);
   const [total, setTotal] = useState(0);
@@ -250,10 +253,10 @@ export function PublicScripts({ create, onCreateHandled }: {
             </td>
             <td className="mono muted">{new Date(script.updatedAt).toLocaleString()}</td>
             <td>
-               <div className="row-actions" onClick={(event) => event.stopPropagation()}>
+               {canWrite && <div className="row-actions" onClick={(event) => event.stopPropagation()}>
                 <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => void openEdit(script)} />
                 <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => void confirmDelete(script)} />
-              </div>
+              </div>}
             </td>
           </tr>)}
         </tbody>
@@ -280,9 +283,9 @@ export function PublicScripts({ create, onCreateHandled }: {
       footer={
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="btn" onClick={() => setDraft(undefined)}>{t("action.cancel")}</button>
-          <button className="btn btn-primary" disabled={saving} onClick={() => void save()}>
+          {canWrite && <button className="btn btn-primary" disabled={saving} onClick={() => void save()}>
             {saving ? "…" : t("action.save")}
-          </button>
+          </button>}
         </div>
       }
     >

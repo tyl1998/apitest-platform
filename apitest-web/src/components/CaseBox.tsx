@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Pencil, Play, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, type Assertion, type Environment, type Execution, type RequestSnapshot, type TestCase, type TestCaseInput } from "../api";
+import { useCanWrite } from "../hooks/useMyRole";
 import { AssertionEditor, defaultAssertions } from "./AssertionEditor";
 import { IconButton } from "./IconButton";
 import { RunStatusTag } from "./RunStatusTag";
@@ -26,6 +27,8 @@ export function CaseBox({ cases, activeCaseId, running, onOpen, onRun, onEdit, o
   onInspect: (run: Execution) => void;
 }) {
   const { t } = useTranslation();
+  /* viewer 只读用例列表（P6-4）：跑/改/删的行内入口不渲染，最近结果仍可点开看快照。 */
+  const canWrite = useCanWrite();
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState("all");
   const [tag, setTag] = useState("all");
@@ -120,11 +123,11 @@ export function CaseBox({ cases, activeCaseId, running, onOpen, onRun, onEdit, o
             </span>
           </button>
           {/* Always visible, matching the endpoint list's row actions. */}
-          <div className="case-actions">
+          {canWrite && <div className="case-actions">
             <IconButton icon={<Play size={13} />} label={t("action.run")} disabled={Boolean(running)} onClick={() => onRun(testCase)} />
             <IconButton icon={<Pencil size={13} />} label={t("action.edit")} onClick={() => onEdit(testCase)} />
             <IconButton icon={<Trash2 size={13} />} label={t("action.delete")} tone="danger" onClick={() => onDelete(testCase)} />
-          </div>
+          </div>}
         </div>
       )) : <p className="muted history-empty">{filtering ? t("cases.emptyFilter") : t("cases.empty")}</p>}
     </div>

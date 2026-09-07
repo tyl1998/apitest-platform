@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import { App as AntApp, ConfigProvider } from "antd";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
@@ -10,6 +10,8 @@ import "@fontsource/jetbrains-mono/500.css";
 import "./design-system.css";
 import "./i18n";
 import { Login } from "./components/Login";
+import { Register } from "./components/Register";
+import { ChangePassword } from "./components/ChangePassword";
 import { GlobalApp } from "./components/GlobalApp";
 import { ProjectShell } from "./components/ProjectShell";
 import { EndpointList } from "./components/EndpointList";
@@ -35,6 +37,7 @@ import { CiTaskList } from "./components/CiTaskList";
 import { CiTaskEditor } from "./components/CiTaskEditor";
 import { PipelineRunPage } from "./components/PipelineRunPage";
 import { ShareReportPage } from "./components/ShareReportPage";
+import { Members } from "./components/Members";
 import { antdTheme, useMode } from "./theme";
 import { useAuthStore } from "./stores/authStore";
 import { useLimitsStore } from "./stores/limitsStore";
@@ -42,6 +45,22 @@ import { useLimitsStore } from "./stores/limitsStore";
 function Protected() {
   const token = useAuthStore((state) => state.token);
   return token ? <Outlet /> : <Navigate to="/login" replace />;
+}
+
+/**
+ * 强制改密闸（P6-3）：`mustChangePassword` 为 true 时，除 /change-password 外一律
+ * 弹回改密页。初始密码是管理员或重置给的（多半躺在一次聊天记录里），在它换掉之前
+ * 不该拿着别人的初始凭据逛平台。守卫在 Protected 内层：先有 token 才谈得上改密。
+ *
+ * 布局路由的 element 必须渲染 <Outlet />（不是 children——React Router 从不向
+ * element 传 children，渲染 children 等于渲染空，全部页面白屏）。
+ */
+function PasswordGate() {
+  const mustChangePassword = useAuthStore((state) => state.mustChangePassword);
+  const location = useLocation();
+  return mustChangePassword && location.pathname !== "/change-password"
+    ? <Navigate to="/change-password" replace />
+    : <Outlet />;
 }
 
 function Root() {
@@ -70,10 +89,19 @@ function Root() {
   return <ConfigProvider theme={antdTheme(mode)}><AntApp><Routes>
     <Route path="/login" element={token ? <Navigate to="/dashboard" replace /> : <Login />} />
 
+    {/* 邀请码注册（P6-3）：在 Protected 之外——码即凭据，与报告分享页同层。带
+        ?invite= 预填码，链接由签发人带外转给本人。 */}
+    <Route path="/register" element={<Register />} />
+
+    {/* 强制改密（P6-3）：在 Protected 内、PasswordGate 外——改密页自己不受闸门
+        限制，否则会被自己弹回去。 */}
     <Route element={<Protected />}>
-      <Route path="/dashboard" element={<GlobalApp page="dashboard" themePreference={preference} onThemeChange={setPreference} />} />
-      <Route path="/projects" element={<GlobalApp page="projects" themePreference={preference} onThemeChange={setPreference} />} />
-      <Route path="/system" element={<GlobalApp page="system" themePreference={preference} onThemeChange={setPreference} />} />
+      <Route path="/change-password" element={<ChangePassword />} />
+
+      <Route element={<PasswordGate />}>
+        <Route path="/dashboard" element={<GlobalApp page="dashboard" themePreference={preference} onThemeChange={setPreference} />} />
+        <Route path="/projects" element={<GlobalApp page="projects" themePreference={preference} onThemeChange={setPreference} />} />
+        <Route path="/system" element={<GlobalApp page="system" themePreference={preference} onThemeChange={setPreference} />} />
 
       {/* One shell for the whole project layer, so child navigation never rebuilds it. */}
       <Route path="/projects/:projectId" element={<ProjectShell />}>
@@ -104,6 +132,9 @@ function Root() {
         <Route path="suite-reports/:executionId" element={<SuiteReportPage />} />
         <Route path="trends" element={<Trends />} />
         <Route path="alerts" element={<Alerts />} />
+        {/* P6-4：成员与权限。页面本身 viewer 可读（「知道找谁要权限」），管理面在
+            页内按 useMyRole 隐藏；路由不藏——后端守卫才是权限的单一事实。 */}
+        <Route path="members" element={<Members />} />
         {/* P4 + P4.5-14：仓库模式收成一个导航项、五个平级页面。各有自己的真实路由而不是
             `?tab=`——凭据页会被贴进别人的 CI 说明、上报记录会被贴进排查群，两者都要是一条
             能直接打开的地址。P4.5-15 起任务编辑也是独立页（`/repo/tasks/new|:taskId`，
@@ -120,7 +151,8 @@ function Root() {
         <Route path="pipeline-runs/:runId" element={<PipelineRunPage />} />
       </Route>
 
-      <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+      </Route>
     </Route>
 
     {/* 报告分享的公开落地页（2026-09-02）：在 Protected 之外——链接即凭据，登录与否

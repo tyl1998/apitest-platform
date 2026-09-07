@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useParams, useSearchParams } from "react-router-dom";
 import { Pencil, Plus, Send, Trash2 } from "lucide-react";
 import { api, type AlertComparator, type AlertMetric, type AlertRule, type NotificationChannel, type NotificationChannelType } from "../api";
+import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty } from "../ui";
 import { IconButton } from "./IconButton";
@@ -56,6 +57,8 @@ export function Alerts() {
   const { t } = useTranslation();
   const { projectId } = useParams();
   const { projectId: loadedProjectId, loading: projectLoading } = useProjectStore();
+  /* viewer：渠道/规则的创建、测试、编辑、删除入口全藏（P6-4）；派发记录照读。 */
+  const canWrite = useCanWrite();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get("tab") === "rules" ? "rules" : searchParams.get("tab") === "deliveries" ? "deliveries" : "channels";
 
@@ -264,8 +267,8 @@ export function Alerts() {
     <div className="page-head">
       <div><h1>{t("alerts.title")}</h1><p>{t("alerts.hint")}</p></div>
       <div className="topbar-actions">
-        {tab === "channels" && <button className="btn btn-primary btn-with-icon" onClick={() => openChannel("new")}><Plus size={15} />{t("alerts.createChannel")}</button>}
-        {tab === "rules" && <button className="btn btn-primary btn-with-icon" onClick={() => openRule("new")}><Plus size={15} />{t("alerts.createRule")}</button>}
+        {tab === "channels" && canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => openChannel("new")}><Plus size={15} />{t("alerts.createChannel")}</button>}
+        {tab === "rules" && canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => openRule("new")}><Plus size={15} />{t("alerts.createRule")}</button>}
       </div>
     </div>
 
@@ -306,15 +309,15 @@ export function Alerts() {
             </span>
           </td>
           <td className="col-actions" onClick={(event) => event.stopPropagation()}>
-            <div className="row-actions">
+            {canWrite && <div className="row-actions">
               <IconButton icon={<Send size={14} />} label={t("alerts.channelTest")} disabled={testing === channel.id} onClick={() => void testChannel(channel)} />
               <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => openChannel(channel)} />
               <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => removeChannel(channel)} />
-            </div>
+            </div>}
           </td>
         </tr>)}
       </tbody>
-    </table> : !loading && <Empty title={t("alerts.channelsEmpty")} hint={t("alerts.channelsEmptyHint")} action={<button className="btn btn-primary" onClick={() => openChannel("new")}>{t("alerts.createChannel")}</button>} />)}
+    </table> : !loading && <Empty title={t("alerts.channelsEmpty")} hint={t("alerts.channelsEmptyHint")} action={canWrite ? <button className="btn btn-primary" onClick={() => openChannel("new")}>{t("alerts.createChannel")}</button> : undefined} />)}
 
     {/* ── 规则 ── */}
     {tab === "rules" && (rules.length ? <table className="grid">
@@ -344,15 +347,15 @@ export function Alerts() {
               </span>
             </td>
             <td className="col-actions" onClick={(event) => event.stopPropagation()}>
-              <div className="row-actions">
+              {canWrite && <div className="row-actions">
                 <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => openRule(rule)} />
                 <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => removeRule(rule)} />
-              </div>
+              </div>}
             </td>
           </tr>;
         })}
       </tbody>
-    </table> : !loading && <Empty title={t("alerts.rulesEmpty")} hint={t("alerts.rulesEmptyHint")} action={<button className="btn btn-primary" onClick={() => openRule("new")}>{t("alerts.createRule")}</button>} />)}
+    </table> : !loading && <Empty title={t("alerts.rulesEmpty")} hint={t("alerts.rulesEmptyHint")} action={canWrite ? <button className="btn btn-primary" onClick={() => openRule("new")}>{t("alerts.createRule")}</button> : undefined} />)}
 
     {/* ── 派发记录 ── */}
     {tab === "deliveries" && <>
@@ -415,7 +418,7 @@ export function Alerts() {
       width={520}
       footer={<div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
         <button className="btn" onClick={() => setChannelEditing(undefined)}>{t("action.cancel")}</button>
-        <button className="btn btn-primary" disabled={channelSaving} onClick={() => void saveChannel()}>{channelSaving ? "…" : t("action.save")}</button>
+        {canWrite && <button className="btn btn-primary" disabled={channelSaving} onClick={() => void saveChannel()}>{channelSaving ? "…" : t("action.save")}</button>}
       </div>}
     >
       <label className="field">
@@ -470,7 +473,7 @@ export function Alerts() {
       width={520}
       footer={<div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
         <button className="btn" onClick={() => setRuleEditing(undefined)}>{t("action.cancel")}</button>
-        <button className="btn btn-primary" disabled={ruleSaving} onClick={() => void saveRule()}>{ruleSaving ? "…" : t("action.save")}</button>
+        {canWrite && <button className="btn btn-primary" disabled={ruleSaving} onClick={() => void saveRule()}>{ruleSaving ? "…" : t("action.save")}</button>}
       </div>}
     >
       <label className="field">

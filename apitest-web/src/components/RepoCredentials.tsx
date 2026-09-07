@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
 import { api, type GitCredential, type IngestToken, type Repository } from "../api";
+import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty } from "../ui";
 import { CopyButton } from "./CopyButton";
@@ -36,6 +37,8 @@ export function RepoCredentials() {
   const { t } = useTranslation();
   const { projectId } = useParams();
   const { projectId: loadedProjectId, loading: projectLoading } = useProjectStore();
+  /* viewer：Token 签发/吊销、凭据增删全藏（P6-4）；接入三步说明与状态照读。 */
+  const canWrite = useCanWrite();
 
   const [repository, setRepository] = useState<Repository | null>();
   const [tokens, setTokens] = useState<IngestToken[]>([]);
@@ -150,9 +153,9 @@ export function RepoCredentials() {
     <section className="panel">
       <div className="panel-head">
         <strong>{t("repoCases.gitCredentials")}</strong>
-        <button className="btn btn-with-icon" onClick={() => setCredentialEditing("new")}>
+        {canWrite && <button className="btn btn-with-icon" onClick={() => setCredentialEditing("new")}>
           <Plus size={14} />{t("repoCases.credentialCreate")}
-        </button>
+        </button>}
       </div>
       <div className="panel-body">
         <p className="form-note">{t("repoCases.gitCredentialsHint")}</p>
@@ -171,9 +174,9 @@ export function RepoCredentials() {
               <td className="col-num mono">{credential.taskCount ?? 0}</td>
               <td className="mono muted">{new Date(credential.credentialUpdatedAt).toLocaleString()}</td>
               <td className="col-actions" onClick={(event) => event.stopPropagation()}>
-                <div className="row-actions">
+                {canWrite && <div className="row-actions">
                   <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => removeCredential(credential)} />
-                </div>
+                </div>}
               </td>
             </tr>)}
           </tbody>
@@ -195,7 +198,7 @@ export function RepoCredentials() {
           <li>{t("repoCases.tokensShared")}</li>
           <li>{t("repoCases.tokensToggle")}</li>
         </ul>
-        <div className="filter-bar">
+        {canWrite && <div className="filter-bar">
           <input
             className="input"
             value={tokenName}
@@ -206,7 +209,7 @@ export function RepoCredentials() {
           <button className="btn btn-primary btn-with-icon" disabled={creating} onClick={() => void createToken()}>
             <Plus size={14} />{t("repoCases.createToken")}
           </button>
-        </div>
+        </div>}
 
         {issued && <div className="code-block" style={{ marginBottom: "var(--s4)" }}>
           <div className="code-block-head">
@@ -236,7 +239,7 @@ export function RepoCredentials() {
                   : <span className="status" data-status="pass"><span className="status-mark" />{t("repoCases.statusActive")}</span>}
               </td>
               <td className="col-actions" onClick={(event) => event.stopPropagation()}>
-                {!token.revokedAt && <div className="row-actions">
+                {!token.revokedAt && canWrite && <div className="row-actions">
                   <IconButton icon={<Trash2 size={14} />} label={t("repoCases.tokenRevoke")} tone="danger" onClick={() => revokeToken(token)} />
                 </div>}
               </td>

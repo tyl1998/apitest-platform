@@ -2,14 +2,16 @@ import { useEffect, useState } from "react";
 import { Select } from "antd";
 import { useTranslation } from "react-i18next";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Bell, Bot, Database, FolderGit2, Globe, History, Layers, LogOut, MessageSquare, Plug, ScrollText, TrendingUp, Workflow, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Bell, Bot, Database, FolderGit2, Globe, History, Layers, LogOut, MessageSquare, Plug, ScrollText, TrendingUp, Users, Workflow, type LucideIcon } from "lucide-react";
 import { useRecordLastPage } from "../hooks/useRecordLastPage";
 import { useAuthStore } from "../stores/authStore";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
+import { useSidebarCollapsed } from "../stores/sidebarStore";
+import { IconNavButton, SidebarToggle } from "./SidebarControls";
 import { IconButton } from "./IconButton";
 
-const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "mcp", "repo", "reports", "suite-reports", "trends", "alerts"] as const;
+const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "mcp", "repo", "reports", "suite-reports", "trends", "alerts", "members"] as const;
 export type ProjectPage = typeof PAGES[number];
 
 /**
@@ -34,6 +36,7 @@ const NAV_ICONS: Record<ProjectPage, LucideIcon> = {
   "suite-reports": ScrollText,
   trends: TrendingUp,
   alerts: Bell,
+  members: Users,
 };
 
 /** What a detail page hands up so the crumb can show its real name. */
@@ -58,6 +61,9 @@ export function ProjectShell() {
   const logout = useAuthStore((state) => state.logout);
   const confirmLeave = useNavGuardStore((state) => state.confirmLeave);
   const { projects, project, refresh, loadProject } = useProjectStore();
+  /* 收起态驱动 `.console[data-collapsed]`（grid 轨道 + rail 排版一处声明）。
+     宽度并进结果：940px 以下顶栏模式没有可收起的栏。 */
+  const sidebarCollapsed = useSidebarCollapsed();
 
   const segments = location.pathname.split("/").filter(Boolean);
   const routeSegment = segments[2] ?? "endpoints";
@@ -98,7 +104,7 @@ export function ProjectShell() {
        另外几页不用」变成每次都要重新解释的问题；Git 来源搬到任务上之后那个前置条件也
        没了，于是一并收成一项。 */
     { group: t("nav.repoMode"), items: [["repo", t("nav.repoMode")]] },
-    { group: t("nav.common"), items: [["reports", t("nav.reports")], ["suite-reports", t("nav.suiteReports")], ["trends", t("nav.trends")], ["alerts", t("nav.alerts")]] },
+    { group: t("nav.common"), items: [["reports", t("nav.reports")], ["suite-reports", t("nav.suiteReports")], ["trends", t("nav.trends")], ["alerts", t("nav.alerts")], ["members", t("nav.members")]] },
   ];
   /* kebab 路由段与 i18n 的 camelCase 键对不上（suite-reports ≠ suiteReports），与
      data-sources 同款在这里折中。 */
@@ -108,29 +114,42 @@ export function ProjectShell() {
     : active === "mocks" ? "Mock"
     : t(`${active}.title`);
 
-  return <div className="console">
+  return <div className="console" data-collapsed={sidebarCollapsed || undefined}>
     <aside className="sidebar">
       <div className="sidebar-head">
         <div className="lockup"><span className="lockup-mark mono">AT</span><span className="lockup-name truncate">{project?.name ?? t("app.name")}</span></div>
-        <button className="nav-item nav-back" onClick={() => void go("/dashboard")}>
-          <ArrowLeft size={14} />{t("nav.backHome")}
-        </button>
+        {sidebarCollapsed
+          ? <IconNavButton className="nav-item nav-back" icon={<ArrowLeft size={14} />} label={t("nav.backHome")} onClick={() => void go("/dashboard")} />
+          : <button className="nav-item nav-back" onClick={() => void go("/dashboard")}>
+              <ArrowLeft size={14} />{t("nav.backHome")}
+            </button>}
       </div>
       <nav>
         {nav.map((section) => <div key={section.group} className="nav-group">
           <span className="nav-section">{section.group}</span>
           {section.items.map(([key, label]) => {
             const Icon = NAV_ICONS[key];
-            return (
-              <button
-                key={key}
-                className={`nav-item${active === key ? " is-active" : ""}`}
-                aria-current={active === key ? "page" : undefined}
-                onClick={() => void go(`/projects/${projectId}/${key}`)}
-              >
-                <Icon size={14} />{label}
-              </button>
-            );
+            /* 收起态：标签交给 Tooltip（0.1s，与 Tip 同档）；展开态是普通按钮，
+               文字直接在位。aria-label 恒在——图标不能是它唯一的名字。 */
+            return sidebarCollapsed
+              ? <IconNavButton
+                  key={key}
+                  className={`nav-item${active === key ? " is-active" : ""}`}
+                  icon={<Icon size={14} />}
+                  label={label}
+                  ariaCurrent={active === key ? "page" : undefined}
+                  onClick={() => void go(`/projects/${projectId}/${key}`)}
+                />
+              : (
+                <button
+                  key={key}
+                  className={`nav-item${active === key ? " is-active" : ""}`}
+                  aria-current={active === key ? "page" : undefined}
+                  onClick={() => void go(`/projects/${projectId}/${key}`)}
+                >
+                  <Icon size={14} />{label}
+                </button>
+              );
           })}
         </div>)}
       </nav>
@@ -140,6 +159,7 @@ export function ProjectShell() {
           label={t("action.logout")}
           onClick={() => { logout(); navigate(`/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`); }}
         />
+        <SidebarToggle />
       </div>
     </aside>
     <div className="frame">

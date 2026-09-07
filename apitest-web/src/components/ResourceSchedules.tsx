@@ -8,6 +8,7 @@ import {
   type Schedule, type SchedulePreview, type ScheduleRun, type ScheduleTargetType,
 } from "../api";
 import { useProjectStore } from "../stores/projectStore";
+import { useCanWrite } from "../hooks/useMyRole";
 import type { RunStatus } from "../ui";
 import { IconButton } from "./IconButton";
 import { RunStatusTag } from "./RunStatusTag";
@@ -61,6 +62,8 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
   const navigate = useNavigate();
   const { environments } = useProjectStore();
   const isCiTask = targetType === "ci_task";
+  /* viewer：新建/立即运行/编辑/删除入口全藏（P6-4）；调度清单与执行历史照读。 */
+  const canWrite = useCanWrite();
 
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [total, setTotal] = useState(0);
@@ -276,7 +279,7 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
     <div className="panel-head">
       <strong>{t("schedules.title")}</strong>
       <div className="topbar-actions">
-        <button className="btn btn-small btn-with-icon" onClick={() => openEdit("new")}><Plus size={14} />{t("schedules.createTitle")}</button>
+        {canWrite && <button className="btn btn-small btn-with-icon" onClick={() => openEdit("new")}><Plus size={14} />{t("schedules.createTitle")}</button>}
       </div>
     </div>
     <div className="panel-body">
@@ -319,10 +322,10 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
             </td>
             <td className="col-actions">
               <div className="row-actions">
-                <IconButton icon={<Play size={14} />} label={t("schedules.runNow")} disabled={running === schedule.id} onClick={() => void runNow(schedule)} />
+                {canWrite && <IconButton icon={<Play size={14} />} label={t("schedules.runNow")} disabled={running === schedule.id} onClick={() => void runNow(schedule)} />}
                 <IconButton icon={<CalendarClock size={14} />} label={t("schedules.runsTitle")} onClick={() => openRuns(schedule)} />
-                <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => openEdit(schedule)} />
-                <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => remove(schedule)} />
+                {canWrite && <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => openEdit(schedule)} />}
+                {canWrite && <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => remove(schedule)} />}
               </div>
             </td>
           </tr>)}

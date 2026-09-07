@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronRight, Play, X } from "lucide-react";
 import { api, noRunnerLabel, type CiTask, type CiTaskRecommendation, type RepoCaseDetail, type RepoCaseTree, type RepoTestCase } from "../api";
+import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Method, Readout, Tip, toRunStatus } from "../ui";
 import { RepoPageHead, RepoTabs } from "./RepoShell";
@@ -69,13 +70,15 @@ function CaseRow({ item, showEndpointCount, onOpen, selected, onSelect, selectab
     className={selected ? "is-selected" : undefined}
     onClick={onOpen ? (event) => { event.stopPropagation(); onOpen(item); } : undefined}
   >
-    {selectable && <td className="col-select" onClick={(event) => event.stopPropagation()}>
-      <input
+    {/* `selectable` 显式传 false（viewer）时保留空占位 td：树表是 grid-fixed + colgroup，
+       少一格整行列宽错位；抽屉用法（不传）维持原样不渲染。 */}
+    {selectable === undefined ? null : <td className="col-select" onClick={(event) => event.stopPropagation()}>
+      {selectable && <input
         type="checkbox"
         aria-label={t("repoCases.selectCase", { name: item.name })}
         checked={Boolean(selected)}
         onChange={(event) => onSelect?.(item.caseKey, event.target.checked)}
-      />
+      />}
     </td>}
     <td>
       <span className="cell-name">
@@ -269,6 +272,8 @@ export function RepoCaseTreePage() {
   const navigate = useNavigate();
   const { projectId: loadedProjectId, loading: projectLoading } = useProjectStore();
   const [searchParams, setSearchParams] = useSearchParams();
+  /* viewer：勾选执行是「跑已保存资产」（P6-4），勾选框与批量条全藏；树本身照读。 */
+  const canWrite = useCanWrite();
 
   /* 筛选走地址栏（与接口列表同款约定）：一份筛好的树要能被贴给别人。 */
   const keyword = searchParams.get("keyword") ?? "";
@@ -467,7 +472,7 @@ export function RepoCaseTreePage() {
     {/* 勾选执行的操作条（§8.3，照 EndpointList 的 bulk-bar 形状）。**不是接口模式批量
         调试的等价物**：平台不持有测试代码，只传 case_filter + 收结果 + 对账，所以文案
         与那边不同，且必须把「快不快取决于仓库脚本」说出来（§8.3 落地点末条）。 */}
-    {selected.size > 0 && <div className="bulk-bar">
+    {canWrite && selected.size > 0 && <div className="bulk-bar">
       <strong>{t("repoCases.selectedCount", { count: selected.size })}</strong>
       <button className="btn btn-primary btn-with-icon" disabled={triggering} onClick={openTrigger}>
         <Play size={14} />{t("repoCases.triggerRepoTask")}
@@ -492,12 +497,12 @@ export function RepoCaseTreePage() {
         <th className="col-select">
           {/* 全选覆盖的是**当前页树上的用例**，与展开状态无关：收起的接口下那些用例仍在
               本页数据里，勾了它们是用户的意图（他勾的是「这一页」）。 */}
-          <input
+          {canWrite && <input
             type="checkbox"
             aria-label={t("repoCases.selectPage")}
             checked={pageAllSelected}
             onChange={(event) => togglePage(event.target.checked)}
-          />
+          />}
         </th>
         <th>{t("repoCases.caseName")}</th>
         <th>{t("repoCases.filePath")}</th>
@@ -520,7 +525,7 @@ export function RepoCaseTreePage() {
               {/* 接口行的勾选框 = 勾上它下面全部用例（收起时也能整组勾，这是「按接口
                   跑一遍」最短的路径）。三态里的中间态用 indeterminate 表达。 */}
               <td className="col-select" onClick={(event) => event.stopPropagation()}>
-                <input
+                {canWrite && <input
                   type="checkbox"
                   aria-label={t("repoCases.selectEndpointCases", { name: endpoint.name })}
                   checked={allSelected}
@@ -530,7 +535,7 @@ export function RepoCaseTreePage() {
                     for (const key of endpointKeys) { if (event.target.checked) next.add(key); else next.delete(key); }
                     return next;
                   })}
-                />
+                />}
               </td>
               <td colSpan={5}>
                 <span className="cell-name">
@@ -545,7 +550,7 @@ export function RepoCaseTreePage() {
             {open && endpoint.cases.map((item) => <CaseRow
               key={`${endpoint.endpointId}:${item.id}`}
               item={item}
-              selectable
+              selectable={canWrite}
               selected={selected.has(item.caseKey)}
               onSelect={toggleSelected}
               onOpen={(clicked) => setDetail({ caseId: clicked.id, endpointId: endpoint.endpointId, endpointName: endpoint.name })}
@@ -607,7 +612,7 @@ export function RepoCaseTreePage() {
           <tbody>{unplaced.map((item) => <CaseRow
             key={item.id}
             item={item}
-            selectable
+            selectable={canWrite}
             selected={selected.has(item.caseKey)}
             onSelect={toggleSelected}
             onOpen={(clicked) => setDetail({ caseId: clicked.id })}

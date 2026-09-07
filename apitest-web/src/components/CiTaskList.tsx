@@ -5,6 +5,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ChevronDown, ChevronRight, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { api, noRunnerLabel, type CiTask, type PipelineRun, type RunnerPool } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
+import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Readout, Tip } from "../ui";
 import { IconButton } from "./IconButton";
@@ -73,6 +74,8 @@ export function CiTaskList() {
   const { projectId } = useParams();
   const navigate = useNavigate();
   const { projectId: loadedProjectId, loading: projectLoading } = useProjectStore();
+  /* viewer：新建/触发/编辑/删除入口全藏（P6-4）；Runner 池读数与执行历史照读。 */
+  const canWrite = useCanWrite();
 
   const [items, setItems] = useState<CiTask[]>([]);
   const [total, setTotal] = useState(0);
@@ -218,9 +221,9 @@ export function CiTaskList() {
     <RepoPageHead
       title={t("ciTasks.title")}
       hint={t("ciTasks.hint")}
-      actions={<button className="btn btn-primary btn-with-icon" onClick={() => navigate(`/projects/${projectId}/repo/tasks/new`)}>
+      actions={canWrite ? <button className="btn btn-primary btn-with-icon" onClick={() => navigate(`/projects/${projectId}/repo/tasks/new`)}>
         <Plus size={14} />{t("ciTasks.create")}
-      </button>}
+      </button> : undefined}
     />
     <RepoTabs active="tasks" />
 
@@ -286,7 +289,7 @@ export function CiTaskList() {
       hint={debouncedKeyword ? t("suites.emptyFilteredHint") : t("ciTasks.emptyHint")}
       action={debouncedKeyword
         ? <button className="btn" onClick={() => { setKeyword(""); setPage(1); }}>{t("filter.clear")}</button>
-        : <button className="btn btn-primary" onClick={() => navigate(`/projects/${projectId}/repo/tasks/new`)}>{t("ciTasks.create")}</button>}
+        : canWrite ? <button className="btn btn-primary" onClick={() => navigate(`/projects/${projectId}/repo/tasks/new`)}>{t("ciTasks.create")}</button> : undefined}
     />)}
 
     {items.length > 0 && <div className="pager">
@@ -317,6 +320,8 @@ function CiTaskRow({ task, expanded, historyRuns, historyTotal, historyLoading, 
   onOpenRun: (runId: string) => void;
 }) {
   const { t } = useTranslation();
+  /* viewer：行内触发/编辑/删除不渲染（P6-4）；整行点击与历史展开仍可用。 */
+  const canWrite = useCanWrite();
   /* 提前解构：onClick 闭包里 TS 不保留可选链的收窄（参数绑定不是 const），解构后
      activeRun 在块内是稳定引用。 */
   const activeRun = task.activeRun;
@@ -384,14 +389,14 @@ function CiTaskRow({ task, expanded, historyRuns, historyTotal, historyLoading, 
         </> : <span className="muted">{t("ciTasks.runNever")}</span>}
       </td>
       <td className="col-actions" onClick={(event) => event.stopPropagation()}>
-        <div className="row-actions">
+        {canWrite && <div className="row-actions">
           {/* 停用的任务触发会被服务端拒（400）：按钮直接禁用而不是让它去撞那个错误。 */}
           <Tip text={task.enabled ? undefined : t("ciTasks.disabledCannotRun")}>
             <span><IconButton icon={<Play size={14} />} label={t("ciTasks.run")} disabled={!task.enabled || running} onClick={onRun} /></span>
           </Tip>
           <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={onEdit} />
           <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={onDelete} />
-        </div>
+        </div>}
       </td>
     </tr>
     {expanded && <tr className="detail-row">

@@ -5,6 +5,7 @@ import { useParams, useSearchParams } from "react-router-dom";
 import { CopyPlus, Eye, EyeOff, Pencil, Trash2 } from "lucide-react";
 import { api, type Environment, type EnvironmentUsage, type RunnerLabelStatus } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
+import { useCanManageProject, useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty } from "../ui";
 import { CopyButton } from "./CopyButton";
@@ -87,6 +88,9 @@ export function Environments() {
   const { environments, defaultEnvironmentId, storePlaintext, reloadEnvironments, updateDefaultEnvironment, updateStorePlaintext } = useProjectStore();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get("tab") === "scripts" ? "scripts" : "envs";
+  /* viewer：环境/脚本的写入口全藏；默认环境与明文开关另按项目管理员收（上面注释）。 */
+  const canWrite = useCanWrite();
+  const canManage = useCanManageProject();
 
   /**
    * 管理页自己的分页数据源（服务端分页 + keyword 过滤，与套件列表同款）。
@@ -395,9 +399,11 @@ export function Environments() {
       </div>
       <div className="topbar-actions">
         {tab === "scripts"
-          ? <button className="btn btn-primary" onClick={() => setCreateScript(true)}>{t("scripts.createPublic")}</button>
+          ? (canWrite && <button className="btn btn-primary" onClick={() => setCreateScript(true)}>{t("scripts.createPublic")}</button>)
           : <>
-              <label className="inline-field">
+              {/* 默认环境 / 明文记录是项目设置写（P6-1 起挂 requireProjectAdmin）——
+                  developer 看得到读数但改不了，入口只给项目管理员。 */}
+              {canManage && <label className="inline-field">
                 <span>{t("environments.projectDefault")}</span>
                 <Select
                   value={defaultEnvironmentId ?? undefined}
@@ -409,8 +415,8 @@ export function Environments() {
                   disabled={savingDefault}
                   allowClear
                 />
-              </label>
-              <label className="check-field" title={t("environments.storePlaintextHint")}>
+              </label>}
+              {canManage && <label className="check-field" title={t("environments.storePlaintextHint")}>
                 <input
                   type="checkbox"
                   checked={storePlaintext}
@@ -418,8 +424,8 @@ export function Environments() {
                   onChange={(event) => void changeStorePlaintext(event.target.checked)}
                 />
                 {t("environments.storePlaintext")}
-              </label>
-              <button className="btn btn-primary" onClick={openCreate}>{t("action.createEnvironment")}</button>
+              </label>}
+              {canWrite && <button className="btn btn-primary" onClick={openCreate}>{t("action.createEnvironment")}</button>}
             </>}
       </div>
     </div>
@@ -473,7 +479,7 @@ export function Environments() {
           <td className="col-num mono">{Object.keys(env.variables).length}</td>
           <td className="col-num mono">{env.secretKeys.length}</td>
           <td className="col-actions">
-            <div className="row-actions" onClick={(event) => event.stopPropagation()}>
+            {canWrite && <div className="row-actions" onClick={(event) => event.stopPropagation()}>
               <IconButton
                 icon={<CopyPlus size={14} />}
                 label={t("action.duplicate")}
@@ -488,7 +494,7 @@ export function Environments() {
                 disabled={deleting === env.id}
                 onClick={() => void confirmDelete(env)}
               />
-            </div>
+            </div>}
           </td>
         </tr>)}
       </tbody>
@@ -518,9 +524,9 @@ export function Environments() {
       footer={
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="btn" onClick={closeDrawer}>{t("action.cancel")}</button>
-          <button className="btn btn-primary" disabled={saving} onClick={() => void save()}>
+          {canWrite && <button className="btn btn-primary" disabled={saving} onClick={() => void save()}>
             {saving ? "…" : t("action.save")}
-          </button>
+          </button>}
         </div>
       }
     >

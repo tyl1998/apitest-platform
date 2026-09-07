@@ -19,6 +19,7 @@ import {
 } from "../api";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useDebounced } from "../hooks/useDebounced";
+import { useCanWrite } from "../hooks/useMyRole";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useLimitsStore } from "../stores/limitsStore";
 import { useProjectStore } from "../stores/projectStore";
@@ -109,6 +110,8 @@ export function SuiteWorkspace() {
   const { environments } = useProjectStore();
   const setGuard = useNavGuardStore((state) => state.setGuard);
   const stream = useExecutionStream(projectId);
+  /* viewer：运行/保存（含 ⌘S）不渲染、不触发（P6-4）。 */
+  const canWrite = useCanWrite();
   /**
    * 成员并发的上限 = 服务端两条约束里更严的那个：保护性硬上限 `SUITE_MAX_CONCURRENCY`
    * 与共享令牌预算 `SUITE_LEAF_BUDGET`（后者是环境变量）。`C ≤ 池容量` 是「每个在跑的
@@ -337,11 +340,11 @@ export function SuiteWorkspace() {
     function handleSaveKey(event: KeyboardEvent) {
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "s") return;
       event.preventDefault();
-      if (dirty && !saving) void save();
+      if (canWrite && dirty && !saving) void save();
     }
     window.addEventListener("keydown", handleSaveKey);
     return () => window.removeEventListener("keydown", handleSaveKey);
-  }, [dirty, saving, draft, suiteId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [canWrite, dirty, saving, draft, suiteId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!draft) return <main className="content"><p className="muted">{t("filter.searching")}</p></main>;
 
@@ -498,10 +501,10 @@ export function SuiteWorkspace() {
       <div className="topbar-actions">
         {/* 「解析成员」放在选择条件旁边，不放这里：它回答的是那几个条件命中了谁，
             离开条件就没有语境。手动选择根本不需要它——成员清单就在下面。 */}
-        {busy
+        {canWrite && (busy
           ? <button className="btn btn-with-icon" disabled={canceling} onClick={() => void stop()}><Square size={14} />{t("run.cancel")}</button>
-          : <button className="btn btn-with-icon" disabled={includeInvalid} onClick={() => setRunOpen(true)}><Play size={14} />{t("suites.run")}</button>}
-        <button className="btn btn-primary" onClick={() => void save()} disabled={saving || !draft.name.trim() || includeInvalid}>{t("action.save")}</button>
+          : <button className="btn btn-with-icon" disabled={includeInvalid} onClick={() => setRunOpen(true)}><Play size={14} />{t("suites.run")}</button>)}
+        {canWrite && <button className="btn btn-primary" onClick={() => void save()} disabled={saving || !draft.name.trim() || includeInvalid}>{t("action.save")}</button>}
       </div>
     </div>
 
@@ -813,7 +816,8 @@ export function SuiteWorkspace() {
       projectId={projectId!}
       run={drawerOpen ? run : undefined}
       onClose={() => setDrawerOpen(false)}
-      onCancel={() => void stop()}
+      /* viewer 也能看到别人触发的运行抽屉（SSE 是广播），但取消不给（P6-4）。 */
+      onCancel={canWrite ? () => void stop() : undefined}
       canceling={canceling}
     />
   </main>;
