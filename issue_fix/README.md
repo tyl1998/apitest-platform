@@ -59,6 +59,7 @@
 | P4.5 S3 产物直传三缺陷 + .env 密钥漂移 | `问题记录-P4.5S3产物直传三缺陷与env密钥漂移.md` | MinIO 接入暴露三处：① `start.sh` 新增 .env 加载层后占位值进 env，`JWT_SECRET`/`DATA_SOURCE_ENCRYPTION_KEY` 空串与未配置不同义，派生密钥漂移致 Git 凭据解密失败、claim 连续 500（修为 `?.trim() \|\|`）；② s3 驱动 pre-signed PUT 成功后无任何 `uploaded_at` 落点，产物列表与报告装载按 `IS NOT NULL` 过滤永远查不到（新增 `POST /runner/artifacts/:id/uploaded` 确认路由 + Runner 直传后调用 + `objectExists` 核实）；③ `ingest_runs` INSERT 15 列 14 占位符（迁移 049 折形时漏补）致 /ingest 持续 500 |
 | P4.5 容器档 SDK 回连与缓存引导 | `问题记录-P4.5容器档SDK回连与缓存引导.md` | 容器档 SDK 上报 `localhost:3000` Connection refused：容器内 localhost 指向自身。两版域名改写（`host.docker.internal` 桌面限定、自查网桥网关在 Mac 上是 VM 地址）均证伪后，落定 `--add-host host.apitrack.internal:host-gateway`（docker 20.10+ 官方 token，daemon 负责宿主网关替换，桌面/Linux 同语义）+ `jobSpec.containerLoopback` 只改写回环地址；伴生修 ingest FK 23503（`RETURNING id` 回填真实行 id）与容器档 pip/uv 下载缓存自动引导（`PIP_CACHE_DIR` 挂卷路径注入，不做安装重定向） |
 | MCP 创建接口流程内显示为 id | `问题记录-MCP创建接口流程内显示为id.md` | P5-5 验收：store 不感知 MCP 带外写入 + 接口来源 Select 无兜底，流程编辑器里新接口缺失、已存节点显示裸 endpointId；顺带核查 CI 日志无同类问题 |
+| 侧边栏小屏溢出与收起 | `问题记录-侧边栏小屏溢出与收起.md` | 矮窗口下侧栏 `overflow: hidden` 把底部导航项与退出按钮裁掉无路可达（nav 改局部滚动 + 细滚动条）；侧栏无收缩功能（新增 56px 图标 rail 收起态：`data-collapsed` 属性驱动 + localStorage 偏好 + Tooltip 补标签，≥940px 专用） |
 
 ## 约定
 
