@@ -3,7 +3,7 @@ import { pool } from "../db.js";
 import { currentUser } from "../lib/auth.js";
 import { success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
-import type { User } from "../models/types.js";
+import type { MyRole, User } from "../models/types.js";
 
 export type ProjectFilters = { keyword?: string; projectIds?: string };
 
@@ -26,9 +26,15 @@ export async function queryProjectMetrics(
   const params: unknown[] = [];
   const clauses: string[] = [];
 
+  /* myRole（P6 边界 5）：非管理员从角色行读（下面的 EXISTS 已保证可见项目必有角色行，
+     所以这里不会读到 NULL）；系统管理员短路成 'system_admin'，不多付这次子查询。
+     占位符在 user.id 压栈那一刻记下，与动态过滤同一纪律。 */
+  let myRoleSelect = "NULL::text AS my_role";
   if (!user.isSystemAdmin) {
     params.push(user.id);
-    clauses.push(`EXISTS (SELECT 1 FROM user_project_roles upr WHERE upr.project_id = p.id AND upr.user_id = $${params.length})`);
+    const userParam = `$${params.length}`;
+    clauses.push(`EXISTS (SELECT 1 FROM user_project_roles upr WHERE upr.project_id = p.id AND upr.user_id = ${userParam})`);
+    myRoleSelect = `(SELECT upr.role FROM user_project_roles upr WHERE upr.project_id = p.id AND upr.user_id = ${userParam}) AS my_role`;
   }
 
   /* Substring match, case-insensitive, over name and description. */
@@ -58,6 +64,7 @@ export async function queryProjectMetrics(
   if (paging) params.push(paging.pageSize, (paging.page - 1) * paging.pageSize);
   const result = await pool.query(`
     SELECT p.id, p.name, p.description, p.created_at,
+      ${myRoleSelect},
       COALESCE(ep.endpoint_count, 0)::int      AS endpoint_count,
       COALESCE(env.environment_count, 0)::int  AS environment_count,
       COALESCE(ex.executed_endpoint_count, 0)::int AS executed_endpoint_count,
@@ -123,6 +130,8 @@ export async function queryProjectMetrics(
       id: String(row.id),
       name: String(row.name),
       description: String(row.description ?? ""),
+      /* P6 边界 5：项目列表同步带出，前端项目切换器/卡片墙不再发第二次请求。 */
+      myRole: user.isSystemAdmin ? "system_admin" : (row.my_role as MyRole),
       endpointCount,
       environmentCount: Number(row.environment_count),
       executedEndpointCount,

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
 import { currentUser } from "../lib/auth.js";
-import { requireProjectAccess } from "../lib/rbac.js";
+import { requireProjectAccess, requireProjectAdmin } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { mapProject } from "../models/types.js";
 import { queryProjectMetrics, type ProjectFilters } from "./dashboard.js";
@@ -41,7 +41,12 @@ export async function projectRoutes(app: FastifyInstance) {
     } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   });
 
-  app.get<{ Params: { id: string } }>("/api/v1/projects/:id", async (request, reply) => { const context = await requireProjectAccess(request, reply); return context && success(context.project); });
+  /* myRole 随详情下发（P6 边界 5）：前端只消费「当前项目我的角色」，projectStore
+     预取详情即得，零额外请求。 */
+  app.get<{ Params: { id: string } }>("/api/v1/projects/:id", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply);
+    return context && success({ ...context.project, myRole: context.myRole });
+  });
 
   /**
    * 项目里已经用过的标签，最常用的排在前面。
@@ -86,8 +91,11 @@ export async function projectRoutes(app: FastifyInstance) {
     });
   });
 
+  /* 项目设置写改挂 requireProjectAdmin（P6 边界 4）：默认环境 / store_plaintext /
+     mcp_enabled 是项目级配置，project_admin 专属；资源 CRUD 仍走 developer 可写的
+     requireProjectAccess。 */
   app.put<{ Params: { id: string }; Body: { defaultEnvironmentId?: string | null; storePlaintext?: boolean; mcpEnabled?: boolean } }>("/api/v1/projects/:id/settings", async (request, reply) => {
-    const context = await requireProjectAccess(request, reply, true); if (!context) return;
+    const context = await requireProjectAdmin(request, reply); if (!context) return;
     const environmentId = request.body.defaultEnvironmentId ?? null;
     if (environmentId) {
       const environment = await pool.query("SELECT 1 FROM environments WHERE id = $1 AND project_id = $2", [environmentId, context.project.id]);
@@ -131,8 +139,10 @@ export async function projectRoutes(app: FastifyInstance) {
     return success(mapProject(result.rows[0]));
   });
 
+  /* 项目删除是三类 requireProjectAdmin 路由之一（P6 边界 4）——删掉整个项目不是
+     资源 CRUD，是管理动作。 */
   app.delete<{ Params: { id: string } }>("/api/v1/projects/:id", async (request, reply) => {
-    const context = await requireProjectAccess(request, reply, true); if (!context) return;
+    const context = await requireProjectAdmin(request, reply); if (!context) return;
     await pool.query("DELETE FROM projects WHERE id = $1", [context.project.id]); return success({ id: context.project.id, deleted: true });
   });
 }

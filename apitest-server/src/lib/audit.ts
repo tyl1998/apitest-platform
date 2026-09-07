@@ -46,6 +46,36 @@ export const AUDIT_ACTIONS = {
    * 经哪把钥匙触发的（mcp_tool.execute）。
    */
   mcpToolExecute: "mcp_tool.execute",
+  /* ── P6 用户与成员（计划 10.0 边界 10：3 → 12 动作）。detail 只放 email 与角色，
+     绝不含密码或邀请码明文（本文件头的纪律在 P6 的具体化）。 ── */
+  /** 管理员建号。target = user；detail 带 email（是否系统管理员也算「前后角色」的证据）。 */
+  userCreate: "user.create",
+  /** 禁用用户（只禁不删，边界 9）。target = user；即时生效靠 currentUser 的每请求查库。 */
+  userDisable: "user.disable",
+  /** 重新启用用户。target = user；与 disable 各一行，读侧不用解析 detail 才能分开两个动作。 */
+  userEnable: "user.enable",
+  /** 管理员重置密码。target = user；detail 带 email，新密码明文绝不进（只在响应出现一次）。 */
+  userResetPassword: "user.reset_password",
+  /** 系统管理员旗变更（PATCH 的 isSystemAdmin 分支）。target = user；detail 带前后角色。 */
+  userUpdateRole: "user.update_role",
+  /* ── P6-3 邀请码（计划 10.0 边界 1 的①）。detail 只放 note 与预分配的 project/role
+      证据——**明文码绝不进**（与密码同一条纪律：明文只在签发响应出现一次）。 ── */
+  /** 签发邀请码。target = invitation；detail 带 note 与预分配角色（可空）。 */
+  inviteCreate: "invite.create",
+  /** 吊销邀请码。target = invitation；吊销即时生效（候选查询排除 revoked 行）。 */
+  inviteRevoke: "invite.revoke",
+  /** 邀请码被消费（注册成功）。target = invitation；user 落的是**新建的用户**，
+      detail 带新账号 email——「这张码变成了谁」是审计要回答的问题。 */
+  inviteConsume: "invite.consume",
+  /* ── P6-4 成员变更（计划 10.0 边界 10 的 member.upsert / member.remove）。target =
+      user（被改的那个人），detail 只放 email 与前后角色（与 user.* 同一形状）。 ── */
+  /**
+   * 添加成员 / 改角色（POST upsert 与 PATCH 同一动作）。detail 带 email 与
+   * from/to 角色；from 缺席 = 新加入。
+   */
+  memberUpsert: "member.upsert",
+  /** 移除成员。target = user；detail 带 email 与被移除时的角色。 */
+  memberRemove: "member.remove",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

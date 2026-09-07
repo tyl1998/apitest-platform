@@ -86,9 +86,9 @@ async function mcpEnabled(projectId: string): Promise<boolean> {
  */
 async function tokenMayWrite(identity: McpIdentity): Promise<boolean> {
   if (!identity.createdBy) return false;
-  /* 列集与 currentUser 同款——mapUser 需要 password_hash。 */
+  /* 列集与 currentUser 同款——mapUser 需要 password_hash 与 status。 */
   const result = await pool.query(
-    "SELECT id, email, name, password_hash, is_system_admin FROM users WHERE id = $1 AND status = 'active'",
+    "SELECT id, email, name, password_hash, is_system_admin, status FROM users WHERE id = $1 AND status = 'active'",
     [identity.createdBy],
   );
   if (!result.rowCount) return false;

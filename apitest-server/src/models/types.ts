@@ -3,7 +3,42 @@
 import { parseAllureDir } from "../lib/allureDir.js";
 
 export type Role = "project_admin" | "developer" | "viewer";
-export type User = { id: string; email: string; name: string; passwordHash: string; isSystemAdmin: boolean };
+/**
+ * 「我在这个项目里是谁」（P6 边界 5）：项目三级角色原样透出，系统管理员短路成
+ * `system_admin`——前端按它隐藏入口（useMyRole），成员 CRUD 的 role 词汇与 DB CHECK
+ * 保持同一套，不再做一层 admin ↔ project_admin 的映射。
+ */
+export type MyRole = Role | "system_admin";
+/**
+ * 内部用户行（`currentUser` / 登录校验用）：`passwordHash` 只在这条路径上活着，
+ * **任何 `/system/users*` 响应都不用它**——管理面用 `mapManagedUser` 的形状。
+ */
+export type User = { id: string; email: string; name: string; passwordHash: string; isSystemAdmin: boolean; status: "active" | "disabled" };
+/**
+ * 用户管理行的 API 形状（P6-2，计划 10.2）：`status` 供禁用/启用的就地展示，
+ * `mustChangePassword` 让管理员看到「谁的初始密码还没改」，`lastLoginAt` 供排序。
+ * 哈希永远不出现在这里（规则 7 的用户面版本）。
+ */
+export type ManagedUser = {
+  id: string; email: string; name: string; isSystemAdmin: boolean;
+  status: "active" | "disabled"; mustChangePassword: boolean;
+  lastLoginAt: string | null; createdAt: string; updatedAt: string;
+};
+/**
+ * 项目成员行（P6-4，计划 10.2 的 `GET /projects/:id/members`）：email/name 是读时
+ * JOIN 快照（用户改名后成员表跟着新名走——成员不是历史，是当下的事实）；`grantedBy`
+ * 为空表示 P6 之前的存量行或建项目时自动写入，没有签发人可指。
+ */
+export type ProjectMember = {
+  userId: string; email: string; name: string;
+  status: "active" | "disabled"; role: Role;
+  grantedBy: string | null; grantedByEmail: string | null; grantedAt: string;
+};
+/**
+ * 添加成员的候选行（P6-4，`GET /projects/:id/members/candidates`）：三列最小投影，
+ * 不带管理面字段——project_admin 搜人加人，不需要也不该看到 must_change_password。
+ */
+export type MemberCandidate = { id: string; email: string; name: string };
 export type Project = { id: string; name: string; description: string; ownerId: string; createdAt: string };
 /**
  * Secret values never leave the server (Spec 4.6 默认掩码). Only the key names
@@ -1232,8 +1267,118 @@ export type NotificationDelivery = {
   createdAt: string;
 };
 
+/**
+ * 邀请码行（P6-3，计划 10.1 的 `invitations`）。`tokenHash` 刻意不在映射里——
+ * 它没有任何客户端用途，映射里留一行就迟早有一行被顺手透出（`mapIngestToken` 的
+ * 同款推理）。`createdByEmail` / `consumedByEmail` 是读时 LEFT JOIN 的快照，回答
+ * 「谁签的、被谁用了」。
+ */
+export type Invitation = {
+  id: string;
+  note: string;
+  projectId: string | null;
+  role: Role | null;
+  tokenPrefix: string;
+  createdBy: string | null;
+  createdByEmail: string | null;
+  expiresAt: string;
+  consumedAt: string | null;
+  consumedBy: string | null;
+  consumedByEmail: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+};
+
+export function mapInvitation(row: Record<string, unknown>): Invitation {
+  return {
+    id: String(row.id),
+    note: String(row.note ?? ""),
+    projectId: row.project_id ? String(row.project_id) : null,
+    role: (row.role as Role | null) ?? null,
+    tokenPrefix: String(row.token_prefix),
+    createdBy: row.created_by ? String(row.created_by) : null,
+    createdByEmail: row.created_by_email ? String(row.created_by_email) : null,
+    expiresAt: new Date(String(row.expires_at)).toISOString(),
+    consumedAt: row.consumed_at ? new Date(String(row.consumed_at)).toISOString() : null,
+    consumedBy: row.consumed_user_id ? String(row.consumed_user_id) : null,
+    consumedByEmail: row.consumed_by_email ? String(row.consumed_by_email) : null,
+    revokedAt: row.revoked_at ? new Date(String(row.revoked_at)).toISOString() : null,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
 export function mapUser(row: Record<string, unknown>): User {
-  return { id: String(row.id), email: String(row.email), name: String(row.name), passwordHash: String(row.password_hash), isSystemAdmin: Boolean(row.is_system_admin) };
+  return { id: String(row.id), email: String(row.email), name: String(row.name), passwordHash: String(row.password_hash), isSystemAdmin: Boolean(row.is_system_admin), status: row.status === "disabled" ? "disabled" : "active" };
+}
+
+/** 管理面行映射（P6-2）：列清单由路由写死，这里只做 snake → camel。哈希列不在其中。 */
+export function mapManagedUser(row: Record<string, unknown>): ManagedUser {
+  return {
+    id: String(row.id),
+    email: String(row.email),
+    name: String(row.name),
+    isSystemAdmin: Boolean(row.is_system_admin),
+    status: row.status === "disabled" ? "disabled" : "active",
+    mustChangePassword: Boolean(row.must_change_password),
+    lastLoginAt: row.last_login_at ? new Date(String(row.last_login_at)).toISOString() : null,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at)).toISOString(),
+  };
+}
+
+/** 成员行映射（P6-4）：granted_by 的 email 单独一列 JOIN 出来，成员表不用第二次查用户。 */
+export function mapProjectMember(row: Record<string, unknown>): ProjectMember {
+  return {
+    userId: String(row.user_id),
+    email: String(row.email),
+    name: String(row.name),
+    status: row.status === "disabled" ? "disabled" : "active",
+    role: String(row.role) as Role,
+    grantedBy: row.granted_by ? String(row.granted_by) : null,
+    grantedByEmail: row.granted_by_email ? String(row.granted_by_email) : null,
+    grantedAt: new Date(String(row.granted_at)).toISOString(),
+  };
+}
+
+/** 候选行映射（P6-4）：三列同名的最小投影，单独一个映射保持「行不过映射不出文件」的纪律。 */
+export function mapMemberCandidate(row: Record<string, unknown>): MemberCandidate {
+  return { id: String(row.id), email: String(row.email), name: String(row.name) };
+}
+
+/**
+ * 审计日志行（P6-2，边界 11「从只写到可读」）。`userEmail` / `projectName` 是读时
+ * LEFT JOIN 出来的快照——用户被禁用/改名后审计仍要读得出「当时是谁」；系统级动作
+ * （Runner Token 签发等）两者皆 null。`detail` 原样透传：写入侧的 4KB 护栏
+ * （`lib/audit.ts`）已经保证它是决策证据而不是 payload 转储。
+ */
+export type AuditLog = {
+  id: number;
+  projectId: string | null;
+  projectName: string | null;
+  userId: string | null;
+  userEmail: string | null;
+  action: string;
+  targetType: string;
+  targetId: string | null;
+  detail: Record<string, unknown>;
+  ip: string;
+  createdAt: string;
+};
+
+export function mapAuditLog(row: Record<string, unknown>): AuditLog {
+  return {
+    id: Number(row.id),
+    projectId: row.project_id ? String(row.project_id) : null,
+    projectName: row.project_name ? String(row.project_name) : null,
+    userId: row.user_id ? String(row.user_id) : null,
+    userEmail: row.user_email ? String(row.user_email) : null,
+    action: String(row.action),
+    targetType: String(row.target_type),
+    targetId: row.target_id ? String(row.target_id) : null,
+    detail: (row.detail ?? {}) as Record<string, unknown>,
+    ip: String(row.ip ?? ""),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
 }
 
 export function mapProject(row: Record<string, unknown>): Project {
