@@ -35,6 +35,10 @@ import { mcpRoutes } from "./routes/mcp.js";
 import { systemUserRoutes } from "./routes/systemUsers.js";
 import { invitationRoutes } from "./routes/invitations.js";
 import { memberRoutes } from "./routes/members.js";
+import { specModuleRoutes } from "./routes/specModules.js";
+import { specCaseRoutes } from "./routes/specCases.js";
+import { specImportRoutes } from "./routes/specImport.js";
+import { testPlanRoutes } from "./routes/testPlans.js";
 
 declare module "@fastify/jwt" {
   /* pwdEpoch 可选（P6-5）：P6-5 之前签发的存量 token 没有 claim，按 0 对齐库里的缺省值。 */
@@ -92,6 +96,18 @@ export async function buildApp(): Promise<FastifyInstance> {
   /* P6-4：项目成员 CRUD（读 = viewer 可见，写 = requireProjectAdmin）+ 添加成员的
      候选搜索。审计动作 member.upsert / member.remove 在 lib/audit.ts。 */
   await app.register(memberRoutes);
+  /* P7-1：文本用例的模块树 CRUD（迁移 052）。用例 CRUD / 绑定 / 导入 / 计划在
+     P7-2…P7-7 逐批落地；树接口先行，前端树视图在 P7-6。 */
+  await app.register(specModuleRoutes);
+  /* P7-2：文本用例 CRUD（列表分页筛选 / 手工建 / 详情 / 改 / 删）。绑定（links）
+     与读时关联的最近自动化结果在 P7-3 挂到详情接口上。 */
+  await app.register(specCaseRoutes);
+  /* P7-4：文本用例导入（XMind 两代格式解析 + preview/commit 两阶段）。octet-stream
+     的 content-type parser 在该插件作用域内注册，与 runners 那份互不越界。 */
+  await app.register(specImportRoutes);
+  /* P7-7：测试计划（一批文本用例的一次手工执行记录）：建/列表/详情/改/删 + 项
+     加/标/删 + CSV 导出（UTF-8 BOM）。五张表迁移 052 已建齐，零新迁移。 */
+  await app.register(testPlanRoutes);
   return app;
 }
 

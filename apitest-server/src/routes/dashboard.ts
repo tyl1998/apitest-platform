@@ -75,6 +75,8 @@ export async function queryProjectMetrics(
       COALESCE(tc.covered_endpoint_count, 0)::int AS covered_endpoint_count,
       COALESCE(sc.schedule_count, 0)::int      AS schedule_count,
       COALESCE(ct.ci_task_count, 0)::int       AS ci_task_count,
+      COALESCE(sp.spec_total, 0)::int          AS spec_case_total,
+      COALESCE(sp.spec_automated, 0)::int      AS spec_automated_count,
       ex.last_execution_at
     FROM projects p
     LEFT JOIN (SELECT project_id, COUNT(*) AS endpoint_count FROM endpoints GROUP BY project_id) ep ON ep.project_id = p.id
@@ -110,10 +112,24 @@ export async function queryProjectMetrics(
     ) sc ON sc.project_id = p.id
     LEFT JOIN (
       /* CI 任务数（P4.5-11）：与调度数同一条口径——建了多少条就是多少条，含停用的。
-         看板上的这个数字此前是硬写的「未启用」占位（交互 2.2 的表格里就留着这一格）。
-         **覆盖率一个字不改**（P4 边界 2 / P4.5 边界 2）：这里只是数任务，不进任何比率。 */
+          看板上的这个数字此前是硬写的「未启用」占位（交互 2.2 的表格里就留着这一格）。
+          **覆盖率一个字不改**（P4 边界 2 / P4.5 边界 2）：这里只是数任务，不进任何比率。 */
       SELECT project_id, COUNT(*) AS ci_task_count FROM ci_tasks GROUP BY project_id
     ) ct ON ct.project_id = p.id
+    LEFT JOIN (
+      /* 自动化覆盖率（P7-6，边界 11，第三个口径——与接口覆盖率、仓库覆盖率并列
+         展示、互不合并）：有 ≥1 条**非 endpoint** 绑定的已评审文本用例 / 全部
+         已评审文本用例。endpoint 绑定表达「该测什么」，不算自动化进度；分母只数
+         reviewed（迁移 053 前的 active——评审通过才算「在册」的用例）。项目没有
+         文本用例时两个子查询都不命中，分子分母为 0，读数端给 null（「还没有用例」
+         与「0% 覆盖」是两个事实）。 */
+      SELECT project_id,
+             COUNT(*) FILTER (WHERE status = 'reviewed')::int AS spec_total,
+             COUNT(*) FILTER (WHERE status = 'reviewed' AND EXISTS (
+               SELECT 1 FROM spec_case_links l WHERE l.spec_case_id = spec_cases.id AND l.target_type <> 'endpoint'
+             ))::int AS spec_automated
+      FROM spec_cases GROUP BY project_id
+    ) sp ON sp.project_id = p.id
     ${where}
     ORDER BY p.created_at DESC
     ${limitFragment}`, params);
@@ -142,6 +158,14 @@ export async function queryProjectMetrics(
       coveredEndpointCount,
       scheduleCount: Number(row.schedule_count),
       ciTaskCount: Number(row.ci_task_count),
+      /* 自动化覆盖率（P7-6，边界 11）：specCaseTotal 是已评审文本用例数（分母），
+         specAutomatedCount 是其中有非 endpoint 绑定的条数（分子）。null = 还没有
+         已评审用例（不是 0%）。 */
+      specCaseTotal: Number(row.spec_case_total),
+      specAutomatedCount: Number(row.spec_automated_count),
+      automationRate: Number(row.spec_case_total)
+        ? (Number(row.spec_automated_count) / Number(row.spec_case_total)) * 100
+        : null,
       /* null, not 0: "no runs yet" and "everything failed" are different facts. */
       passRate: judgedCount ? (passedCount / judgedCount) * 100 : null,
       completionRate: endpointCount ? (executedEndpointCount / endpointCount) * 100 : null,
@@ -167,6 +191,8 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const passedCount = projects.reduce((sum, item) => sum + item.passedCount, 0);
     const executedEndpointCount = projects.reduce((sum, item) => sum + item.executedEndpointCount, 0);
     const coveredEndpointCount = projects.reduce((sum, item) => sum + item.coveredEndpointCount, 0);
+    const specCaseTotal = projects.reduce((sum, item) => sum + item.specCaseTotal, 0);
+    const specAutomatedCount = projects.reduce((sum, item) => sum + item.specAutomatedCount, 0);
 
     return success({
       projectCount: projects.length,
@@ -182,6 +208,11 @@ export async function dashboardRoutes(app: FastifyInstance) {
       ciTaskCount: projects.reduce((sum, item) => sum + item.ciTaskCount, 0),
       /* Real numbers now that schedules exist (P3-6). */
       scheduleCount: projects.reduce((sum, item) => sum + item.scheduleCount, 0),
+      /* 自动化覆盖率（P7-6，边界 11）：与项目行同一公式，跨项目先合分子分母再除
+         （不是各项目百分比的均值——那是另一种口径）。 */
+      specCaseTotal,
+      specAutomatedCount,
+      automationRate: specCaseTotal ? (specAutomatedCount / specCaseTotal) * 100 : null,
       projects,
     });
   });

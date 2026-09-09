@@ -1322,7 +1322,178 @@ export function mapManagedUser(row: Record<string, unknown>): ManagedUser {
     mustChangePassword: Boolean(row.must_change_password),
     lastLoginAt: row.last_login_at ? new Date(String(row.last_login_at)).toISOString() : null,
     createdAt: new Date(String(row.created_at)).toISOString(),
-    updatedAt: new Date(String(row.updated_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+  };
+}
+
+/**
+ * 一条文本用例 → 自动化资产的绑定（P7-6，计划 11.0 边界 8/9/10）。
+ *
+ * `targetType` 四类：endpoint（接口，表达「该测什么」，**不算自动化**）/
+ * case（接口用例）/ flow（流程）/ repo_case（仓库用例）。repo_case 的身份是
+ * `(project, case_key)` 而不是行 id——行会被对账标 removed，`targetId` 存的当前行
+ * id 只供读时关联，`targetKey` 是 key 快照。
+ *
+ * 读时关联的三样：`targetName`（目标名字快照，目标删了读「目标已删除」）、
+ * `targetStatus`（repo_case 行的 active/removed）、`lastResult`（最近自动化结果——
+ * case/flow 查 executions 最新一条终态、repo_case 读 last_result + 最近任务报告，
+ * endpoint 无执行语义恒空）。**绝不回写**（迁移 047 同一条纪律）。
+ */
+export type SpecLinkTargetType = "endpoint" | "case" | "flow" | "repo_case";
+
+export type SpecLinkLastResult = {
+  /** 终态判定：success / failed / canceled / queued / running（executions 口径）
+      或 repo_case 的 passed / failed / unknown / not_run。无执行记录时缺席。 */
+  status: string;
+  /** 那次执行的完成时刻（executions.finished_at / 报告 runAt）。 */
+  at?: string;
+  /** 深链目标：executions 行 id 或 pipeline run id——前端跳详情页用。 */
+  runId?: string;
+};
+
+export type SpecCaseLink = {
+  id: string;
+  specCaseId: string;
+  targetType: SpecLinkTargetType;
+  targetId: string;
+  /** 仅 repo_case：case_key 快照（绑定后 key 不变，行 id 会换）。 */
+  targetKey?: string;
+  /** 目标名字（读时 JOIN；目标已删时缺席，前端显示「目标已删除」）。 */
+  targetName?: string;
+  /** 仅 repo_case：行状态（removed = 对账判消失，「目标已失效」）。 */
+  targetStatus?: string;
+  /** 最近自动化结果（读时关联；endpoint 目标恒空）。 */
+  lastResult?: SpecLinkLastResult;
+  createdAt: string;
+};
+
+export function mapSpecCaseLink(row: Record<string, unknown>): SpecCaseLink {
+  const hasResult = row.last_status !== undefined && row.last_status !== null;
+  return {
+    id: String(row.id),
+    specCaseId: String(row.spec_case_id),
+    targetType: String(row.target_type) as SpecCaseLink["targetType"],
+    targetId: String(row.target_id),
+    targetKey: row.target_key === undefined || row.target_key === null ? undefined : String(row.target_key),
+    targetName: row.target_name === undefined || row.target_name === null ? undefined : String(row.target_name),
+    targetStatus: row.target_status === undefined || row.target_status === null ? undefined : String(row.target_status),
+    /* last_status 是 JOIN 列而不是绑定行自己的列：缺席（NULL）= 目标没有执行记录，
+       与「查询没带 last_* 列」是同一个读法，所以判断列存在与否就足够。 */
+    lastResult: hasResult
+      ? {
+        status: String(row.last_status),
+        at: row.last_at ? new Date(String(row.last_at)).toISOString() : undefined,
+        runId: row.last_run_id ? String(row.last_run_id) : undefined,
+      }
+      : undefined,
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+/**
+ * 一个测试计划（P7-7，计划 11.0 边界 12）：一批文本用例的一次手工执行记录。
+ * `summary` 五计数由列表/详情查询的分组子查询带出（服务端算好，通过率/进度的
+ * 口径只在这一个地方产）：total = 项数，passed/failed/blocked/skipped 是已标记
+ * 计数，未执行 = total - 四者之和。通过率 = passed/total（2026-09-09 改口径：
+ * 分母是全部计划项——执行中的计划没标完就是没通过完，与平台执行类
+ * passRate 的终态分母不是一个语义），进度 = 已标记/total。
+ */
+export type TestPlan = {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string;
+  status: "open" | "closed";
+  owner?: string;
+  /** owner 名（读时 JOIN 快照；用户被删时缺席）。 */
+  ownerName?: string;
+  startedOn?: string;
+  dueOn?: string;
+  summary: { total: number; passed: number; failed: number; blocked: number; skipped: number };
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** DATE 列（started_on/due_on）→ "YYYY-MM-DD"：pg 把 DATE 解析成**本地时区午夜**
+ *  的 Date 对象（2026-09-23 00:00 +08:00），`String(date)` 是 "Wed Sep 23 2026 …"——
+ *  既不是 API 该有的形状，塞进 `<input type="date">` 还是非法 value（回填被清空，
+ *  2026-09-09 反馈「编辑后看不到截止时间」的根因）。取**本地**分量三件套：
+ *  「本地午夜」里的本地年月日恰好就是入库的日期字符串（UTC 分量会差一天，
+ *  东八区取 UTC 是 09-22T16:00——实测踩过方向才敢写这句）。 */
+function mapDateOnly(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value instanceof Date) {
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+  }
+  return String(value);
+}
+
+export function mapTestPlan(row: Record<string, unknown>): TestPlan {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    name: String(row.name ?? ""),
+    description: String(row.description ?? ""),
+    status: row.status === "closed" ? "closed" : "open",
+    owner: row.owner === undefined || row.owner === null ? undefined : String(row.owner),
+    ownerName: row.owner_name === undefined || row.owner_name === null || row.owner_name === ""
+      ? undefined : String(row.owner_name),
+    startedOn: mapDateOnly(row.started_on),
+    dueOn: mapDateOnly(row.due_on),
+    /* 计数五元组来自路由层拼串拆解（splitSummary）后铺平的键。 */
+    summary: {
+      total: Number(row.total ?? 0),
+      passed: Number(row.passed ?? 0),
+      failed: Number(row.failed ?? 0),
+      blocked: Number(row.blocked ?? 0),
+      skipped: Number(row.skipped ?? 0),
+    },
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+  };
+}
+
+/**
+ * 一个计划项：`titleSnapshot` / `modulePathSnapshot` 是入计划时的冻结快照（计划
+ * 是历史——用例后来改名/移动，旧计划仍读得通）；`result` NULL = 未执行（五态的
+ * 第五个）。`specCaseKey` / `specCaseStatus` 是活数据（非快照）：用例被删后两者
+ * 缺席、快照仍在，前端读「用例已删除」。表没有 created_at 列（迁移 052 只定义了
+ * executed_at），所以这里没有 createdAt——入计划时间不是一个被存储的事实，不臆造它。
+ * （自动化参考列 2026-09-09 第二轮反馈整列删除——读时关联的 LATERAL 连同字段
+ * 一并移除，用户不需要这一读数。）
+ */
+export type TestPlanItem = {
+  id: string;
+  planId: string;
+  specCaseId?: string;
+  titleSnapshot: string;
+  modulePathSnapshot: string;
+  assignee?: string;
+  assigneeName?: string;
+  result?: "passed" | "failed" | "blocked" | "skipped";
+  note: string;
+  defectUrl?: string;
+  executedAt?: string;
+  specCaseKey?: string;
+  specCaseStatus?: string;
+};
+
+export function mapTestPlanItem(row: Record<string, unknown>): TestPlanItem {
+  return {
+    id: String(row.id),
+    planId: String(row.plan_id),
+    specCaseId: row.spec_case_id === undefined || row.spec_case_id === null ? undefined : String(row.spec_case_id),
+    titleSnapshot: String(row.title_snapshot ?? ""),
+    modulePathSnapshot: String(row.module_path_snapshot ?? ""),
+    assignee: row.assignee === undefined || row.assignee === null ? undefined : String(row.assignee),
+    assigneeName: row.assignee_name === undefined || row.assignee_name === null || row.assignee_name === ""
+      ? undefined : String(row.assignee_name),
+    result: row.result === undefined || row.result === null ? undefined : String(row.result) as TestPlanItem["result"],
+    note: String(row.note ?? ""),
+    defectUrl: row.defect_url === undefined || row.defect_url === null ? undefined : String(row.defect_url),
+    executedAt: row.executed_at === undefined || row.executed_at === null ? undefined : new Date(String(row.executed_at)).toISOString(),
+    specCaseKey: row.item_key === undefined || row.item_key === null ? undefined : String(row.item_key),
+    specCaseStatus: row.spec_case_status === undefined || row.spec_case_status === null ? undefined : String(row.spec_case_status),
   };
 }
 
@@ -2656,5 +2827,108 @@ export function mapMcpToken(row: Record<string, unknown>): McpToken {
     lastUsedAt: row.last_used_at ? new Date(String(row.last_used_at)).toISOString() : undefined,
     revokedAt: row.revoked_at ? new Date(String(row.revoked_at)).toISOString() : undefined,
     createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+/**
+ * 一个文本用例模块（P7，迁移 052）。`path` 物化（'/模块A/子模块/'），是身份
+ * （UNIQUE (project_id, path)）；`parentId` 为空即顶层模块。`caseCount` 只在
+ * 树查询里由分组子查询带出（该模块**直属**的用例数，含全部状态——导航计数
+ * 不是覆盖口径，deprecated 也该在树上可见）。`activeCount` / `automatedCount`
+ * 是覆盖口径（P7-6，边界 11）：前者数直属已评审（迁移 053 前 active）用例，
+ * 后者数其中有 ≥1 条非 endpoint 绑定的——分母与分子都只数直属，子树求和
+ * 归前端（与 caseCount 同一纪律）。
+ */
+export type SpecModule = {
+  id: string;
+  projectId: string;
+  parentId?: string;
+  name: string;
+  path: string;
+  position: number;
+  caseCount?: number;
+  /** 直属已评审（active）用例数——自动化覆盖率分母，子树求和归前端。 */
+  activeCount?: number;
+  /** 直属「已自动化」（有 ≥1 条非 endpoint 绑定）用例数——分子，子树求和归前端。 */
+  automatedCount?: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function mapSpecModule(row: Record<string, unknown>): SpecModule {
+  return {
+    id: String(row.id), projectId: String(row.project_id),
+    parentId: row.parent_id ? String(row.parent_id) : undefined,
+    name: String(row.name), path: String(row.path),
+    position: Number(row.position ?? 0),
+    caseCount: row.case_count === undefined || row.case_count === null ? undefined : Number(row.case_count),
+    activeCount: row.active_count === undefined || row.active_count === null ? undefined : Number(row.active_count),
+    automatedCount: row.automated_count === undefined || row.automated_count === null ? undefined : Number(row.automated_count),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+  };
+}
+
+/**
+ * 文本用例的一个步骤（P7，迁移 052）：步骤 + 预期成对出现（`[{ step, expected }]`）。
+ * 行内两列的形态是 QA 在 XMind/Excel 里已经写惯的形状，JSONB 原样存。
+ */
+export type SpecCaseStep = { step: string; expected: string };
+
+/**
+ * 一个文本用例（P7，计划 11.0）：第三类用例资产——只有设计内容（标题/前置/步骤/
+ * 预期），不含请求定义、平台不执行它。`modulePath` 由列表/详情查询 JOIN spec_modules
+ * 带出（用例行本身只存 module_id，模块改名/移动不用回写用例）；`linkCount` 只在
+ * 列表查询里由子查询带出——绑定能创造它，但读它不依赖绑定接口存在（P7-3 接 UI）。
+ */
+export type SpecCase = {
+  id: string;
+  projectId: string;
+  moduleId: string;
+  modulePath?: string;
+  /** 用例编号（如 TC-001）；导入判重键优先用它，无编号回落 (path, title)。 */
+  itemKey?: string;
+  title: string;
+  preconditions: string;
+  steps: SpecCaseStep[];
+  priority: "P0" | "P1" | "P2" | "P3";
+  tags: string[];
+  /** 生命周期（㉘）：unreviewed 未评审 → reviewed 已评审 → deprecated 废弃。 */
+  status: "unreviewed" | "reviewed" | "deprecated";
+  /** 来源：manual / xmind / excel；建了就不再改（PATCH 不接受它）。 */
+  source?: string;
+  linkCount?: number;
+  /** 已自动化（P7-6 列表行）：有 ≥1 条非 endpoint 绑定（与筛选、覆盖口径同一表达式）。 */
+  automated?: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function mapSpecCase(row: Record<string, unknown>): SpecCase {
+  /* steps 是 jsonb：逐行 String() 重建而不是信任形状——导入与手工写都过这里，
+     异常行读成空串而不是炸掉映射（校验在写入侧）。 */
+  const steps: SpecCaseStep[] = Array.isArray(row.steps)
+    ? (row.steps as unknown[]).map((item) => ({
+      step: String((item as { step?: unknown })?.step ?? ""),
+      expected: String((item as { expected?: unknown })?.expected ?? ""),
+    }))
+    : [];
+  return {
+    id: String(row.id), projectId: String(row.project_id),
+    moduleId: String(row.module_id),
+    modulePath: row.module_path === undefined || row.module_path === null ? undefined : String(row.module_path),
+    itemKey: row.item_key === undefined || row.item_key === null ? undefined : String(row.item_key),
+    title: String(row.title),
+    preconditions: String(row.preconditions ?? ""),
+    steps,
+    priority: String(row.priority ?? "P2") as SpecCase["priority"],
+    /* TEXT[] 经 pg 读回即 string[]；异常值读成空数组（同 mapMcpToken 的 scope）。 */
+    tags: Array.isArray(row.tags) ? (row.tags as unknown[]).map(String) : [],
+    status: String(row.status ?? "unreviewed") as SpecCase["status"],
+    source: row.source === undefined || row.source === null ? undefined : String(row.source),
+    linkCount: row.link_count === undefined || row.link_count === null ? undefined : Number(row.link_count),
+    automated: row.automated === undefined || row.automated === null ? undefined : Boolean(row.automated),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
   };
 }
