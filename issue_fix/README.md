@@ -60,6 +60,16 @@
 | P4.5 容器档 SDK 回连与缓存引导 | `问题记录-P4.5容器档SDK回连与缓存引导.md` | 容器档 SDK 上报 `localhost:3000` Connection refused：容器内 localhost 指向自身。两版域名改写（`host.docker.internal` 桌面限定、自查网桥网关在 Mac 上是 VM 地址）均证伪后，落定 `--add-host host.apitrack.internal:host-gateway`（docker 20.10+ 官方 token，daemon 负责宿主网关替换，桌面/Linux 同语义）+ `jobSpec.containerLoopback` 只改写回环地址；伴生修 ingest FK 23503（`RETURNING id` 回填真实行 id）与容器档 pip/uv 下载缓存自动引导（`PIP_CACHE_DIR` 挂卷路径注入，不做安装重定向） |
 | MCP 创建接口流程内显示为 id | `问题记录-MCP创建接口流程内显示为id.md` | P5-5 验收：store 不感知 MCP 带外写入 + 接口来源 Select 无兜底，流程编辑器里新接口缺失、已存节点显示裸 endpointId；顺带核查 CI 日志无同类问题 |
 | 侧边栏小屏溢出与收起 | `问题记录-侧边栏小屏溢出与收起.md` | 矮窗口下侧栏 `overflow: hidden` 把底部导航项与退出按钮裁掉无路可达（nav 改局部滚动 + 细滚动条）；侧栏无收缩功能（新增 56px 图标 rail 收起态：`data-collapsed` 属性驱动 + localStorage 偏好 + Tooltip 补标签，≥940px 专用） |
+| P7 用例库抽屉 | `问题记录-P7用例抽屉20260907.md` | P7-2/P7-3 落地后十五轮使用反馈三十四项，第一~十四轮见文件（抽屉编辑区 → 分栏树 → 步骤表细节 → 视图体系与 XMind 脑图 → 脑图重做在 @xyflow/react 上 → 白屏/乐观合入/最小提交 → 键位与占位槽/删除/撤销/右键菜单 → 编号自增/表单布局 → IME 键位守卫 → 抽屉细线/空目录建例重框）。第十五轮 ㊴：就地编辑打不了中文的真正根因不是键位检测，是编辑框受控 value 走画布 store 往返（passive effect 晚一拍），React 受控输入的事后校正拿旧 props 回写 DOM、拆掉进行中的输入法组合——草稿改 MindEditInput 本地态，提交时 onCommit(value) 交终值 |
+| P7 脑图菜单与折叠 | `问题记录-P7脑图菜单与折叠20260908.md` | 2026-09-08 两轮共六项：① 右键菜单点画布关不掉——画布 mousedown 被 d3-zoom `nopropagation` 截在目标层，冒泡阶段的 document 监听收不到，改捕获阶段 + Esc；② 折叠子目录「用例消失」两轮归因——第一轮修引用稳定（㉓ 同类加固），第二轮查库取证（151/152 条用例在被折叠子树下）定位真凶为**视口悬空**：剩余节点聚到原点、视口停在原区域；目录 ⊕/⊖ 改按新图重新框定、用例 ⊕/⊖ 保持视口；伴随的 `reportAllChanges`/`startTime` 报错取证为 Chrome DevTools 内嵌 web-vitals 已知 bug（GoogleChrome/web-vitals#792）；③ 模块路径列挪末列 + 220px 上限悬停看全；④ 树目录名 min-width:0 修横向滚动；⑤ 删目录两层确认收敛为单层（计数本地算）；⑥ 脑图目录级「加载更多」局部加载（moduleId 按批取、id 去重、空页取尽撤节点） |
+| P7 脑图第三轮 | `问题记录-P7脑图第三轮20260908.md` | 2026-09-08 第三轮八项 + 伴生：① Tab 建例后编辑不生效、② Delete 删例不消失——同根因：本地合入/删除只写首页行集（data.items），漏了「加载更多」的追加批（moduleExtra），且服务端按 item_key 排序新建例排在范围末尾、首页 100 条装不下，revision 重取整页替换后旧行接管/新例消失；修为两处行集统一合入（total 只对未知行 +1）+ 删目录按子树 moduleId 清场防孤儿挂 root；⑦ 伴生：撤销/重做闭包经 modulePathRef 守卫接上本地合入；③ 目录折叠/展开撤掉 fitView 跳变，改选中+按当前缩放平移兜底；④ 双击左树目录跳回全部用例——400ms 窗口守卫 + onDoubleClick 强制选中双保险；⑤ 脑图节点/左树/路径列原生 title（~1s）换 Tip（100ms）；⑥ 右键用例菜单 12 行收敛为 6 行——优先级/状态收进悬停子菜单（当前值打勾、右缘 is-flip 左翻、悬停桥防闪关）；⑧ 每次添加/删除后步骤内容闪一帧——revision 重取整页换行对象打穿 sameMindNode 的渲染等价保留，重取落库改按 id+updatedAt（modules 按字段）保引用合并；⑨ 节点单行 224px 装不下导入的长步骤/标题——case/pre/step/exp 改两行折行（line-clamp:2 + 高度 44 与 NODE_H 严格同步），顺带脑图提示条标注「未接入 OT，不支持多人协同」（边界 17 前端落点） |
+| P7 脑图第四轮 | `问题记录-P7脑图第四轮20260908.md` | 2026-09-08 第四轮四项（承接第三轮 ⑨ 完整折行）：① 就地编辑单行 input 看不到长草稿——换 textarea（rows 随 estimateLines、Shift+Enter 换行、IME 守卫保留）；② 长标签 chip 撑爆徽记行——chip 72px 线夹 + 标签容器折行封顶；③ 完整展示后内容族悬停 Tip 多余——仅 root/dir 保留（仍单行截断）；④ 「目录下没 case 徽章却显示 1」——DB 取证数据正确（TC-150 确在该目录），矛盾在口径：徽章取树导航口径（全状态），画布内容随筛选收敛；筛选取数传 filtered，筛选态隐藏 root/dir 计数徽章 |
+| P7 脑图第五轮 | `问题记录-P7脑图第五轮20260908.md` | 2026-09-08 第五轮三项 + 同日追加一项（同源：节点几何）：① 节点数据「折叠」——节点宽 300px 而列距仍 280（宽节点越进右列 20px 盖住内容）+ 行数估算按 16 字/行平估低估（case 实际 ≈15.5 字/行，DOM 比预留高、文字压到下邻）；修 PITCH 280→360、估算改显示宽度加权（CJK 1 / ASCII 0.6）+ 按实际内容宽算容量 + 高度常数对齐 CSS 几何（33+2）；② ⊕ 号挡数据——toggle 从 top:5px/right:-7px（骑在徽记行右端）改绝对定位到节点右缘外竖直中线（right:-20px，锚点 .mindmap-node）；③ 编辑框限制大——编辑节点放宽 360px + textarea 自动量高（useLayoutEffect 钉 scrollHeight，不再依赖估算），内容族编辑 .mindmap-edit.is-block 徽记首行 + 输入框整行全宽；④ 双击存量用例光标不在末尾——挂载一律全选是新建占位的策略，edit state 加 selectAll 位区分入口：新建全选（打字即覆盖）、双击存量 setSelectionRange 置尾 |
+| 测试计划详情 500 | `问题记录-P7测试计划详情500.md` | 计划详情打不开、报「读取计划列表失败」：只读自动化参考列的 LATERAL SQL 多写一行 `) u` 把子查询提前闭合，`ORDER BY/LIMIT` 掉到外层、`) best ON true` 悬空（42601 syntax error at or near "ORDER"）。修法：删该行，排序/取一收回 LATERAL 内（UNION 整体排序，正是「每项取最新一条」语义）；SQL 原文已对 dev 库验证解析通过。同日第二轮反馈该列整列删除，查询随之移除（追记见文件） |
+| 计划详情 result_null 键名 | `问题记录-P7计划详情result_null.md` | 自动化参考列对无自动化记录的用例显示字面 i18n 键名 `specCases.links.result_null`：LATERAL 零行被 LEFT JOIN 补 NULL，路由层 `String(null)`="null" 被当状态解析、前端查缺失键渲染键名。修法：NULL 不进 map，automation 读成缺席（前端按设计显示「—」）。同日第二轮反馈该列整列删除（追记见文件） |
+| 计划详情 summary 不推进 | `问题记录-P7计划详情summary不推进.md` | 标结果后头部 Readout 与表头悬停计数不动、编辑弹窗改名后进度清零：就地合行只换项行不重算 `plan.summary`（三处：withItem / removeItem / 编辑合流铺开 PATCH 响应的零值计数）。修法：`summaryOf(items)` 按项行就地重算（与 PLAN_SUMMARY_SELECT 同口径），编辑合流显式钉住手上这份 summary |
+| 计划日期时区错位 | `问题记录-P7计划日期时区错位.md` | 编辑弹窗回填后截止时间消失：pg 把 DATE 列解析成本地时区午夜的 Date 对象，`String(date)` 产出 `"Wed Sep 23 2026 …"`——date input 只认 `YYYY-MM-DD`（非法 value 即清空）。修法：`mapDateOnly` 取本地分量三件套拼回原字符串（startedOn/dueOn 共用），对 dev 库实测一致 |
+| P7 脑图步骤盖住下一步骤 | `问题记录-P7脑图步骤盖住下一步骤20260909.md` | tidy tree 给父节点让位只看子代跨度：带预期的长步骤自身高度不占位、居中于短预期上下各溢出 (h−span)/2，压进下一个兄弟的槽（4 行步骤盖 15px、8 行盖 51px）。修法先量后排：measure 占位高 = max(自身高, 子代跨度)，自身更高时子代下移让位 + bottom 扩张到自身底；常规场景行为不变 |
 
 ## 约定
 
@@ -78,3 +88,9 @@
   `upsert_environment`——与缺陷一项：MCP 创建接口流程内显示为 id）。用户后续**持续
   测试继续**：新发现的缺陷照常记录到本目录，`DEVELOPMENT_PLAN.md` 9.7 各行遗留的
   「待用户实测」事项随该轮验收关闭。
+- **P7 已于 2026-09-09 通过用户验收**（结论见 `DEVELOPMENT_PLAN_P6-P10.md` 十一章
+  11.5 末「P7 验收结论」）。验收期（09-07 ~ 09-09）计划详情四轮反馈里的交互调整与
+  五个缺陷全部修复关闭：详情 500（LATERAL 括号错位）、result_null 键名显示、
+  summary 不推进、计划日期时区错位、Babel 注释笔误；两项口径修订（通过率
+  passed/total、自动化参考列整列移除）已同步进计划文档与验收门槛。用户后续持续
+  测试照常：新缺陷记本目录。
