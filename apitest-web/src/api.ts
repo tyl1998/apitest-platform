@@ -1186,6 +1186,11 @@ export type ProjectMetric = Project & {
   passRate: number | null;
   completionRate: number | null;
   coverageRate: number | null;
+  /** 自动化覆盖率（P7-6，边界 11）：有 ≥1 条非 endpoint 绑定的已评审文本用例 /
+      全部已评审文本用例。null = 还没有已评审用例（与 0% 是两个事实）。 */
+  specCaseTotal: number;
+  specAutomatedCount: number;
+  automationRate: number | null;
   lastExecutionAt: string | null;
 };
 
@@ -1203,6 +1208,10 @@ export type Dashboard = {
   ciTaskCount: number | null;
   /** Real numbers now that schedules exist (P3-6). */
   scheduleCount: number;
+  /** 自动化覆盖率（P7-6）：跨项目先合分子分母再除。 */
+  specCaseTotal: number;
+  specAutomatedCount: number;
+  automationRate: number | null;
   projects: ProjectMetric[];
 };
 
@@ -2285,6 +2294,230 @@ export type ProjectMember = {
 /** 添加成员的候选行（project_admin 的收窄目录读：三列、只 active、只非成员）。 */
 export type MemberCandidate = { id: string; email: string; name: string };
 
+/* ── P7: 测试管理（文本用例） ────────────────────────────────────────────────── */
+
+/**
+ * 模块树行（`GET /projects/:id/spec-modules`，P7-1）：拍平的森林，前端按 parentId
+ * 挂接。`caseCount` 是该模块**直属**用例数（含全部状态——导航口径，非覆盖口径）；
+ * `activeCount` / `automatedCount` 是覆盖口径（P7-6）：直属已评审用例数与其中
+ * 「已自动化」（≥1 条非 endpoint 绑定）的条数，子树求和归前端。
+ */
+export type SpecModule = {
+  id: string;
+  projectId: string;
+  parentId?: string;
+  name: string;
+  path: string;
+  position: number;
+  caseCount?: number;
+  activeCount?: number;
+  automatedCount?: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** 文本用例的一个步骤：步骤 + 预期成对（行内两列）。 */
+export type SpecCaseStep = { step: string; expected: string };
+
+export type SpecCasePriority = "P0" | "P1" | "P2" | "P3";
+/** 用例生命周期（㉘）：unreviewed 未评审 → reviewed 已评审 → deprecated 废弃。 */
+export type SpecCaseStatus = "unreviewed" | "reviewed" | "deprecated";
+
+/**
+ * 文本用例行（P7，第三类用例资产——只有设计内容，平台不执行它）。`modulePath` /
+ * `linkCount` 只在列表与详情读法里带出；`itemKey` 是服务端生成的项目内自增编号
+ * （TC-001，新建时分配，只读）。绑定接口在 P7-3 之前 linkCount 恒为 0。
+ */
+export type SpecCase = {
+  id: string;
+  projectId: string;
+  moduleId: string;
+  modulePath?: string;
+  itemKey?: string;
+  title: string;
+  preconditions: string;
+  steps: SpecCaseStep[];
+  priority: SpecCasePriority;
+  tags: string[];
+  status: SpecCaseStatus;
+  source?: string;
+  linkCount?: number;
+  /** 已自动化（P7-6）：有 ≥1 条非 endpoint 绑定（与筛选、覆盖口径同一表达式）。 */
+  automated?: boolean;
+  /** 绑定清单：只有详情读法带（列表行不带，抽屉挂载时按 id 现拉）。 */
+  links?: SpecCaseLink[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** 手工建/改的提交体（后端 `validateSpecCase` 同一套约束）。编号由服务端自增生成，不进提交体。 */
+export type SpecCaseInput = {
+  moduleId?: string;
+  title?: string;
+  preconditions?: string;
+  steps?: SpecCaseStep[];
+  priority?: SpecCasePriority;
+  tags?: string[];
+  status?: SpecCaseStatus;
+};
+
+/** 绑定目标四类（P7-6，边界 8）：endpoint 表达「该测什么」，不算自动化。 */
+export type SpecLinkTargetType = "endpoint" | "case" | "flow" | "repo_case";
+
+/** 绑定行的最近自动化结果（读时关联，服务端绝不回写）。 */
+export type SpecLinkLastResult = {
+  status: string;
+  at?: string;
+  /** 深链目标：executions 行 id（case/flow）或 pipeline run id（repo_case）。 */
+  runId?: string;
+};
+
+/**
+ * 一条绑定行（P7-6，详情 `links[]`）。`targetName` 缺席 = 目标已删除；
+ * repo_case 的 `targetStatus === 'removed'` = 对账判失效（「目标已失效」）。
+ */
+export type SpecCaseLink = {
+  id: string;
+  specCaseId: string;
+  targetType: SpecLinkTargetType;
+  targetId: string;
+  targetKey?: string;
+  targetName?: string;
+  targetStatus?: string;
+  lastResult?: SpecLinkLastResult;
+  createdAt: string;
+};
+
+/** 列表筛选（服务端分页 + 筛选，计划 11.2）：`path` 是模块路径前缀（含全部子级），
+    `moduleId` 是单模块直属精确匹配；`automation` 已自动化筛选（P7-6 起 UI 接入——
+    有 ≥1 条非 endpoint 绑定才算，与覆盖口径同一表达式）。 */
+export type SpecCaseFilters = {
+  keyword?: string;
+  path?: string;
+  moduleId?: string;
+  priority?: SpecCasePriority;
+  status?: SpecCaseStatus;
+  automation?: "yes" | "no";
+  page?: number;
+  pageSize?: number;
+};
+
+/** 导入的层级映射只有 tc: 标记一种（2026-09-08 用户收窄：「叶子即用例」解析出的
+ *  全是碎片，删除；无 tc 约定的文件解析为 0 条，如实返回）。 */
+
+/** 逐条判定（preview）：新增 / 已存在未变 / 已存在有变 / 文件内重复（后者是平台侧
+    补的第四态——同文件里同名同路径的行不该被二次落库）。 */
+export type SpecImportJudgment = "new" | "unchanged" | "changed" | "duplicate";
+
+/** 归一化用例（preview 返回与 commit 提交共用一个形状；XMind 无编号位，itemKey 恒空）。 */
+export type SpecImportCase = {
+  modulePath: string;
+  title: string;
+  preconditions: string;
+  steps: SpecCaseStep[];
+  priority: SpecCasePriority;
+  tags: string[];
+  itemKey?: string | null;
+  /** 模块链超过 6 层被截断——预览里如实标出来，否则「目录少一层」读作丢数据。 */
+  pathClamped?: boolean;
+};
+
+export type SpecImportPreviewCase = SpecImportCase & {
+  judgment: SpecImportJudgment;
+  existingId?: string;
+};
+
+export type SpecImportPreview = {
+  /** 工作簿格式：json = 新版（content.json），xml = 旧版 XMind 8（content.xml，兼容读取），
+      excel = 固定模板 .xlsx（P7-5）。 */
+  format: "json" | "xml" | "excel";
+  cases: SpecImportPreviewCase[];
+  summary: {
+    total: number;
+    new: number;
+    unchanged: number;
+    changed: number;
+    duplicate: number;
+    exceededLimit: boolean;
+  };
+};
+
+export type SpecImportCommitResult = {
+  created: number;
+  updated: number;
+  skipped: number;
+  duplicate: number;
+  modulesCreated: number;
+};
+
+/** 导出格式（2026-09-08 用户要求）：XMind 脑图快照（回导走 (路径,标题) 判重）/
+    Excel 模板同列（带编号，回导按编号判重）。 */
+export type SpecExportFormat = "xmind" | "excel";
+
+/* ── P7-7: 测试计划 ───────────────────────────────────────────────────────── */
+
+/** 计划项结果四值（第五态「未执行」是 result 缺席，边界 12）。 */
+export type TestPlanItemResult = "passed" | "failed" | "blocked" | "skipped";
+
+/**
+ * 一个测试计划（列表行与详情头共用）：一批文本用例的一次手工执行记录。
+ * `summary` 五计数由服务端一条分组子查询算好（通过率 = passed/(passed+failed)、
+ * 进度 = 已标记/total 的口径只产在一个地方）；未执行数 = total - 四者之和。
+ */
+export type TestPlan = {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string;
+  status: "open" | "closed";
+  owner?: string;
+  ownerName?: string;
+  startedOn?: string;
+  dueOn?: string;
+  summary: { total: number; passed: number; failed: number; blocked: number; skipped: number };
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * 一个计划项：`titleSnapshot` / `modulePathSnapshot` 是入计划时的冻结快照（用例
+ * 改名/移动后旧计划仍读得通）；`specCaseKey` / `specCaseStatus` 是活数据，用例
+ * 被删后缺席（读「用例已删除」）。（自动化参考列 2026-09-09 整列删除。）
+ */
+export type TestPlanItem = {
+  id: string;
+  planId: string;
+  specCaseId?: string;
+  titleSnapshot: string;
+  modulePathSnapshot: string;
+  assignee?: string;
+  assigneeName?: string;
+  result?: TestPlanItemResult;
+  note: string;
+  defectUrl?: string;
+  executedAt?: string;
+  specCaseKey?: string;
+  specCaseStatus?: string;
+};
+
+export type TestPlanDetail = TestPlan & { items: TestPlanItem[] };
+
+export type TestPlanInput = {
+  name?: string;
+  description?: string;
+  status?: "open" | "closed";
+  owner?: string | null;
+  startedOn?: string | null;
+  dueOn?: string | null;
+};
+
+export type TestPlanItemInput = {
+  assignee?: string | null;
+  result?: TestPlanItemResult | null;
+  note?: string;
+  defectUrl?: string;
+};
+
 /* ── P5: MCP（Token 签发 / 吊销 + 工具清单展示） ───────────────────────────── */
 
 
@@ -2403,6 +2636,124 @@ export const api = {
   /** 移除成员（角色行删除即失去访问，判定端每请求查库、即时生效）。 */
   removeMember: (projectId: string, userId: string) =>
     client.delete(`/projects/${projectId}/members/${userId}`).then(data<{ userId: string; removed: boolean }>),
+
+  /* ── P7: 测试管理（文本用例）────────────────────────────────────────────── */
+
+  /** 模块树全量（P7-1）：拍平森林 + 直属用例计数，模块选择器与路径筛选共用。 */
+  specModules: (projectId: string) =>
+    client.get(`/projects/${projectId}/spec-modules`).then(data<SpecModule[]>),
+  /** 建模块（P7-2 只做「让手工建用例可用」的最小模块管理；树的完整管理面在 P7-6）。 */
+  createSpecModule: (projectId: string, input: { name: string; parentId?: string | null }) =>
+    client.post(`/projects/${projectId}/spec-modules`, input).then(data<SpecModule>),
+  /** 模块改名 / 移动（后端一条 UPDATE 换整棵子树的物化 path 前缀）：
+      parentId 三态（缺省不动 / null 移到顶层 / uuid 移过去）。改名入口（脑图就地
+      命名 + 树面板）只带 name。 */
+  updateSpecModule: (projectId: string, moduleId: string, input: { name?: string; parentId?: string | null; position?: number }) =>
+    client.patch(`/projects/${projectId}/spec-modules/${moduleId}`, input).then(data<SpecModule>),
+  /** 同级批量重排（P7-6 拖拽调序）：一次写平一个父级下全部直属子模块的顺序
+      （moduleIds 即最终顺序；服务端校验集合恰好等于当前直属，过期即 400）。 */
+  reorderSpecModules: (projectId: string, input: { parentId?: string | null; moduleIds: string[] }) =>
+    client.post(`/projects/${projectId}/spec-modules/reorder`, input).then(data<{ updated: number }>),
+  /** 删目录（P7-3 脑图）：子树含用例时 409 + 计数；`force` 只在用户看过计数之后才发
+      （environments 扫引用同款语义——空目录树的级联不算破坏性操作）。 */
+  deleteSpecModule: (projectId: string, moduleId: string, force = false) =>
+    client.delete(`/projects/${projectId}/spec-modules/${moduleId}`, { params: force ? { force: "true" } : undefined }).then(data<{ id: string }>),
+  /** 文本用例列表（P7-2）：服务端分页 + keyword/path/moduleId/priority/status 筛选。 */
+  specCasesPaged: (projectId: string, filters?: SpecCaseFilters) =>
+    client.get(`/projects/${projectId}/spec-cases`, {
+      params: {
+        keyword: filters?.keyword?.trim() || undefined,
+        path: filters?.path || undefined,
+        moduleId: filters?.moduleId || undefined,
+        priority: filters?.priority || undefined,
+        status: filters?.status || undefined,
+        automation: filters?.automation || undefined,
+        page: filters?.page, pageSize: filters?.pageSize,
+      },
+    }).then(paged<SpecCase>),
+  specCase: (projectId: string, caseId: string) =>
+    client.get(`/projects/${projectId}/spec-cases/${caseId}`).then(data<SpecCase>),
+  createSpecCase: (projectId: string, input: SpecCaseInput) =>
+    client.post(`/projects/${projectId}/spec-cases`, input).then(data<SpecCase>),
+  updateSpecCase: (projectId: string, caseId: string, input: SpecCaseInput) =>
+    client.patch(`/projects/${projectId}/spec-cases/${caseId}`, input).then(data<SpecCase>),
+  deleteSpecCase: (projectId: string, caseId: string) =>
+    client.delete(`/projects/${projectId}/spec-cases/${caseId}`).then(data<{ id: string }>),
+  /** 建绑定（P7-6）：repo_case 按 case_key 绑定（后端取身份行 + 同 key 就地换行 id）。 */
+  createSpecCaseLink: (projectId: string, caseId: string, input: { targetType: SpecLinkTargetType; targetId: string }) =>
+    client.post(`/projects/${projectId}/spec-cases/${caseId}/links`, input).then(data<SpecCaseLink>),
+  deleteSpecCaseLink: (projectId: string, caseId: string, linkId: string) =>
+    client.delete(`/projects/${projectId}/spec-cases/${caseId}/links/${linkId}`).then(data<{ id: string }>),
+  /** 勾选批量条（P7-3）：一份 patch 应用到一批（移动模块 / 改优先级 / 改状态，2026-09-08）。 */
+  batchUpdateSpecCases: (projectId: string, input: { caseIds: string[]; moduleId?: string; priority?: SpecCasePriority; status?: SpecCaseStatus }) =>
+    client.post(`/projects/${projectId}/spec-cases/batch-update`, input).then(data<{ updated: number }>),
+  batchDeleteSpecCases: (projectId: string, caseIds: string[]) =>
+    client.post(`/projects/${projectId}/spec-cases/batch-delete`, { caseIds }).then(data<{ ids: string[]; deleted: number }>),
+  /** 导入预览（P7-4/P7-5）：`.xmind` / `.xlsx` 原始流上传（octet-stream，文件名与
+      导入根目录走 query），返回归一化树 + 逐条判定；不落库、不落暂存——归一化
+      JSON 由前端持有到 commit。rootModuleId 不传 = 按文件自身结构建目录。 */
+  previewSpecImport: (projectId: string, file: File, rootModuleId?: string) =>
+    client.post(`/projects/${projectId}/spec-cases/import/preview`, file, {
+      headers: { "content-type": "application/octet-stream" },
+      params: { filename: file.name, rootModuleId: rootModuleId || undefined },
+    }).then(data<SpecImportPreview>),
+  /** 导入提交（P7-4/P7-5）：只发用户勾选的归一化用例；判定在服务端事务里重跑，不信预览结论。 */
+  commitSpecImport: (projectId: string, input: { source: "xmind" | "excel"; cases: SpecImportCase[] }) =>
+    client.post(`/projects/${projectId}/spec-cases/import`, input).then(data<SpecImportCommitResult>),
+  /** 模板下载（P7-5；`?format=xmind` 为 2026-09-08 增补）：走 axios 拿 Blob（路由要
+      Bearer 头，裸链接触发不了认证），本地化文件名由调用方在落盘时另存。 */
+  downloadSpecImportTemplate: (projectId: string, format: "excel" | "xmind" = "excel") =>
+    client.get(`/projects/${projectId}/spec-cases/import/template`, { responseType: "blob", params: { format } })
+      .then((response) => response.data as Blob),
+  /** 用例导出（2026-09-08）：POST（勾选集一批 uuid 放不进 query string）。勾选集
+      （caseIds）非空 = 精确导这批（跨视图勾选集）；空 = 按筛选导全量命中集
+      （「看到什么导什么」，不分页）；Blob 由调用方定文件名。 */
+  exportSpecCases: (projectId: string, format: SpecExportFormat, filters?: SpecCaseFilters, caseIds?: string[]) =>
+    client.post(`/projects/${projectId}/spec-cases/export`, {
+      format,
+      caseIds: caseIds?.length ? caseIds : undefined,
+      keyword: filters?.keyword?.trim() || undefined,
+      path: filters?.path || undefined,
+      moduleId: filters?.moduleId || undefined,
+      priority: filters?.priority || undefined,
+      status: filters?.status || undefined,
+      automation: filters?.automation || undefined,
+    }, { responseType: "blob" }).then((response) => response.data as Blob),
+
+  /* ── P7-7：测试计划 ── */
+
+  /** 列表（viewer 可读）：keyword / status / owner 筛选 + 服务端分页 + 汇总计数。 */
+  testPlansPaged: (projectId: string, filters?: { keyword?: string; status?: string; owner?: string; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/test-plans`, {
+      params: {
+        keyword: filters?.keyword?.trim() || undefined,
+        status: filters?.status || undefined,
+        owner: filters?.owner || undefined,
+        page: filters?.page, pageSize: filters?.pageSize,
+      },
+    }).then(paged<TestPlan>),
+  /** 全量 open 计划（批量条「加入计划」的计划选择器数据源——下拉里缺一个真实
+      存在的计划比多列几个更糟，environmentList 全量读法同款取舍）。 */
+  testPlans: (projectId: string) =>
+    client.get(`/projects/${projectId}/test-plans`, { params: { pageSize: 100 } }).then(paged<TestPlan>),
+  testPlan: (projectId: string, planId: string) =>
+    client.get(`/projects/${projectId}/test-plans/${planId}`).then(data<TestPlanDetail>),
+  createTestPlan: (projectId: string, input: TestPlanInput & { specCaseIds?: string[] }) =>
+    client.post(`/projects/${projectId}/test-plans`, input).then(data<TestPlan>),
+  updateTestPlan: (projectId: string, planId: string, input: TestPlanInput) =>
+    client.patch(`/projects/${projectId}/test-plans/${planId}`, input).then(data<TestPlan>),
+  deleteTestPlan: (projectId: string, planId: string) =>
+    client.delete(`/projects/${projectId}/test-plans/${planId}`).then(data<{ id: string }>),
+  /** 加项（批量条「加入计划」）：重复项服务端静默跳过，返回真实插入数。 */
+  addTestPlanItems: (projectId: string, planId: string, specCaseIds: string[]) =>
+    client.post(`/projects/${projectId}/test-plans/${planId}/items`, { specCaseIds }).then(data<{ inserted: number }>),
+  updateTestPlanItem: (projectId: string, planId: string, itemId: string, input: TestPlanItemInput) =>
+    client.patch(`/projects/${projectId}/test-plans/${planId}/items/${itemId}`, input).then(data<TestPlanItem>),
+  deleteTestPlanItem: (projectId: string, planId: string, itemId: string) =>
+    client.delete(`/projects/${projectId}/test-plans/${planId}/items/${itemId}`).then(data<{ id: string }>),
+  /** CSV 导出（UTF-8 BOM，Excel 直开）：viewer 可导（纯读）；Blob 文件名由调用方定。 */
+  exportTestPlan: (projectId: string, planId: string) =>
+    client.get(`/projects/${projectId}/test-plans/${planId}/export`, { responseType: "blob" }).then((response) => response.data as Blob),
 
   projects: (filters?: ProjectFilters) => client.get("/projects", { params: projectParams(filters) }).then(data<ProjectMetric[]>),
   /** 管理页的分页读法（与 environmentList 同一契约）：keyword 在 SQL 里过滤，total 是全量

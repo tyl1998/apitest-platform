@@ -230,13 +230,20 @@ body {
   margin: var(--s2) auto var(--s1);
   border-radius: 2px;
   background: var(--line-strong);
-  /* 组名仍交给读屏（sr-only 的思路：视觉让位、语义保留） */
+  /* 组名仍交给读屏（sr-only 的思路：视觉让位、语义保留）。手风琴化后标题是
+     button 且内含 caret/图标：font-size: 0 挡不住 SVG，子元素整体隐藏；rail
+     里没有手风琴（组内条目恒平铺），指针穿透不误触。 */
   color: transparent;
   font-size: 0;
   text-indent: 0;
   overflow: hidden;
   white-space: nowrap;
+  cursor: default;
 }
+
+.console[data-collapsed] .nav-section:hover { background: var(--line-strong); }
+
+.console[data-collapsed] .nav-section svg { display: none; }
 
 .console[data-collapsed] .nav-item {
   justify-content: center;
@@ -313,17 +320,45 @@ body {
   min-width: 0;
 }
 
-.nav-group + .nav-group { margin-top: var(--s3); }
+/* 组间距离（2026-09-09 密度反馈）：12px → 16px。6 组 × 15 项平铺时组边界
+   读不出来是「一整坨」的主因；+4px 只加呼吸感，不引入新间距档位。 */
+.nav-group + .nav-group { margin-top: var(--s4); }
 
+/* 组标题下方 4px → 8px：标题与首项贴太近，加宽一档让分组从上到下都成立。 */
+/* 2026-09-09 手风琴化：标题从纯文本 span 变成可点的 button（收起组内导航项）。
+   造型仍是「小节标签」——10px 大写 --ink-3——但要有 hover 与焦点反馈，否则
+   点了没反应。caret 沿用 .batch-caret 形状；组图标 12px，与导航项 14px 拉开
+   一档层级。 */
 .nav-section {
-  margin: 0 0 var(--s1);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  margin: 0 0 var(--s2);
   padding: 0 var(--s2);
+  border: 0;
+  background: none;
+  font: inherit;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: .06em;
   text-transform: uppercase;
   color: var(--ink-3);
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: color var(--t), background var(--t);
 }
+
+.nav-section:hover { color: var(--ink); background: var(--hover); }
+
+.nav-section:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.nav-section svg { flex: 0 0 auto; }
+
+.nav-section .batch-caret { margin-left: -2px; }
 
 .nav-back {
   color: var(--ink-3);
@@ -1323,17 +1358,36 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .form-grid .field { margin-bottom: 0; }
 .field-wide { grid-column: 1 / -1; }
 
+/* 三枚短字段（用例抽屉的 优先级/状态/标签）钉成一行：外层 form-grid 是 auto-fit，
+   列数随抽屉宽度漂移，短字段散排没法保证同排；minmax 160px 让窄抽屉优雅换行
+   而不是压扁成竖条。 */
+.field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: var(--s3) var(--s4); }
+.field-row .field { margin-bottom: 0; }
+
 /* Method and URL read as one control, the way a request line does */
 .request-line { display: flex; gap: var(--s2); align-items: center; }
 .request-url { flex: 1; min-width: 0; }
 
+/* tab 条横向滚动（tab 多到放不下时）：滚动条只在**真的溢出**且交互时出现
+   （table-scroll 同款纪律，2026-09-09 反馈——没溢出时不留一条常驻空轨道）。 */
 .tabs {
   display: flex;
   gap: var(--s1);
   padding: 0 var(--s4);
   border-bottom: 1px solid var(--line);
   overflow-x: auto;
+  scrollbar-width: none;
 }
+/* WebKit 自绘轨道：hover/滚动时显形；不交互时透明。 */
+.tabs::-webkit-scrollbar { height: 6px; }
+.tabs::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 3px;
+}
+.tabs::-webkit-scrollbar-track { background: none; }
+.tabs:not(:hover):not(:active)::-webkit-scrollbar-thumb { background: transparent; }
 
 .tab {
   padding: 11px var(--s3);
@@ -1414,6 +1468,576 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 }
 
 .kv-toggle { width: 14px; height: 14px; accent-color: var(--accent); }
+
+/* ── 用例库：左侧模块树 + 右侧用例表的经典分栏（2026-09-07 用户反馈） ──────
+    树不再与用例混在一张表里（表内树展开时列宽跳、层级与数据挤在一起）；树完全
+    抽离到左侧做导航，右侧表格只专注用例。子项显式 min-width: 0——grid 子项默认
+    auto 会让宽表格把整栏撑出横向滚动（布局不变量 1）。
+
+    通贯式侧边栏（第四轮反馈）：面板钉死为可视高度而不是 max-height 收缩——
+    少模块时缩成矮框，「模块」与右侧内容顶不齐；sticky + 固定高让它从页头下
+    一直贯到视口底，内部自己滚（.content 仍是唯一页面滚动容器）。 */
+.spec-split > * { min-width: 0; }
+.spec-tree {
+  position: sticky; top: 0;
+  height: calc(100dvh - 150px);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: var(--s2);
+}
+.spec-split { display: grid; grid-template-columns: 264px minmax(0, 1fr); gap: var(--s4); align-items: start; }
+.spec-tree-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 3px var(--s2) var(--s2);
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+.tree-item { display: flex; align-items: center; gap: 2px; border-radius: var(--r); }
+.tree-item:hover { background: var(--hover); }
+/* 选中态与表格 is-selected 同款：selected 底 + 左缘 2px accent。 */
+.tree-item.is-active { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
+.tree-caret {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 24px; flex: 0 0 auto;
+  border: 0; background: none; color: var(--ink-2); cursor: pointer;
+}
+/* 悬停整行时箭头升到 --ink：目录有没有子级是树里最先被扫到的信息。 */
+.tree-item:hover .tree-caret { color: var(--ink); }
+.tree-label {
+  display: flex; align-items: center; gap: 6px;
+  flex: 1; min-width: 0;
+  border: 0; background: none; padding: 4px 4px 4px 0;
+  font: inherit; font-size: 13px; color: var(--ink); text-align: left; cursor: pointer;
+}
+.tree-count { margin-left: auto; font-size: 11px; color: var(--ink-3); }
+/* 目录名可收缩出省略号（2026-09-08 反馈：长目录名把 264px 面板撑出横向滚动）：
+   flex 子项默认 min-width:auto 不肯缩，钉 0 + 让它吃剩余空间；悬停 title 看
+   全路径（tree-label 上）。 */
+.tree-label .truncate { flex: 1 1 auto; min-width: 0; }
+
+/* 模块路径列（2026-09-08 反馈挪到末列后）钉上限：path 随目录层级任意长，
+   auto 布局会把整列撑爆；溢出省略，完整路径靠 Tip 悬停（原生 title ~1s 太
+   慢，同日第三轮反馈）。截断从 td 移进内层 span（Tip 需要元素子节点挂事
+   件），span 钉 block 铺满单元格——空白处悬停也出提示。 */
+.spec-case-grid td.col-path { max-width: 220px; }
+.spec-case-grid td.col-path .truncate { display: block; }
+
+/* 行内改名钮：静息隐形、悬停/聚焦才现（表格 row-actions 的同一克制；树面板
+   264px 宽，每行一枚常驻铅笔太吵）。位置常驻 22px——悬停浮现时行内容不跳。 */
+.tree-rename {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 24px; flex: 0 0 auto; padding: 0;
+  border: 0; background: none; color: var(--ink-3); cursor: pointer;
+  visibility: hidden;
+}
+.tree-item:hover .tree-rename,
+.tree-rename:focus-visible { visibility: visible; }
+.tree-rename:hover { color: var(--ink); }
+/* 删除钮悬停显语义红（Quiet Console：破坏性动作用 --fail，不只靠图标区分）；
+   静息仍与改名钮同款弱字——两枚常驻红点在树里太吵。 */
+.tree-remove:hover { color: var(--fail); }
+
+/* ── 模块树拖拽（P7-6，2026-09-08 反馈：上/下/移动三枚按钮改为纯拖拽）──────
+   落点指示只用 accent 一种颜色（Quiet Console：accent 标「这里」，语义色留给
+   结果状态）；before/after = 上下缘 2px 插入线（同级行对齐、无模糊），inside =
+   selected 底（与点中目录同一视觉 = 「进这个目录」）。 */
+.tree-item[draggable="true"] { cursor: grab; }
+.tree-item[draggable="true"]:active { cursor: grabbing; }
+.tree-item.is-drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.tree-item.is-drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.tree-item.is-drop-inside { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
+
+/* ── 用例库：绑定区与覆盖率（P7-6，2026-09-08）──────────────────────────────── */
+
+/* 树面板顶部的自动化覆盖率读数（边界 11）：数字 + 分子分母说明同一块，弱字不抢
+   导航的戏；与接口覆盖率/仓库覆盖率并列展示、互不合并（三个口径三个问题）。 */
+.spec-coverage {
+  margin: 0 var(--s2) var(--s3);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+.spec-coverage-row { display: flex; align-items: baseline; justify-content: space-between; }
+.spec-coverage-label { font-size: 12px; color: var(--ink-3); }
+.spec-coverage-value { font-size: 15px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.spec-coverage-note { display: block; margin-top: 2px; font-size: 11px; color: var(--ink-3); }
+
+/* 拖拽提示（P7-6）已删（2026-09-09 反馈：面板信息密集，常驻说明行是噪音）——
+   拖拽的可发现性交给行上的 grab 光标与拖动时的落点指示。 */
+
+/* 抽屉绑定行：类型 chip + 目标名（悬停 repo_case 显 case_key）+ 状态尾巴。 */
+.link-target { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.link-target .truncate { flex: 0 1 auto; min-width: 0; }
+.link-stale { font-style: normal; color: var(--ink-3); }
+.link-note { margin-left: auto; font-size: 11px; color: var(--ink-3); white-space: nowrap; }
+
+/* ── 测试计划（P7-7）──────────────────────────────────────────────────── */
+
+/* 列表行进度：accent 只标「进度」这一件事（Quiet Console：语义色留给结果列，
+   blocked 的计划不是 fail，跑了一半也不是 pass）。轨道 6px 与 runstrip 同族；
+   分子/分母是 tabular-nums 的机器数据，紧跟轨道右侧对齐可扫。 */
+.plan-progress { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.plan-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--raised);
+  box-shadow: inset 0 0 0 1px var(--line);
+  overflow: hidden;
+}
+.plan-fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 3px; transition: width var(--t); }
+.plan-progress-num { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+
+/* 项表：标识列里的编号（等宽弱字）+ 标题快照 + 备注/缺陷 chip 同一行收缩。 */
+.plan-item-grid .plan-case { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.plan-item-grid .plan-case .truncate { flex: 0 1 auto; }
+.plan-item-key { flex: 0 0 auto; min-width: 52px; }
+/* 组头行（模块路径快照分组）：picker-group 的 sticky 头原样复用。2026-09-09
+   反馈起组头可折叠——整行点击收起/展开（cursor 由行上的 data-clickable 给），
+   折叠件与用例库左树同款（.tree-caret 尺寸 + Folder 图标 + 计数）。内层 div
+   承载 flex（td 本体不动 table-cell 显示——colSpan 行直接转 flex 是拿表格布局
+   赌浏览器兜底）。user-select none：组头是按钮语义，双击选中路径文本是误伤。 */
+.plan-group td { padding-left: 0; user-select: none; }
+.plan-group-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* flex 子项默认 min-width:auto 不收缩，长路径会顶破组头——路径名允许截断
+   （完整路径本来就是组头自己的内容，不再另挂悬停）。 */
+.plan-group-head .picker-name { flex: 0 1 auto; min-width: 0; }
+/* 组头 hover 要压过 .picker-group td:hover 的 raised-on-raised（同底色不可
+   见）；双类选择器抬一档优先级，不靠文件顺序。 */
+.picker-group.plan-group td:hover { background: var(--hover); }
+/* 单元格级点击目标（计划项标识格点开用例只读抽屉）：不用行级 data-clickable
+   ——那会把结果下拉、行操作的点击也吃进去，格子级更准；hover 给一格的
+   反馈而不是整行（点击落点在哪，反馈就在哪）。 */
+.plan-item-grid td.cell-clickable { cursor: pointer; }
+.plan-item-grid td.cell-clickable:hover { background: var(--hover); }
+/* 悬停计数堆叠（计划详情结果表头五态计数，2026-09-09）：Tooltip 里竖排
+   Status 行，行距收紧——五行的默认行高在气泡里会散成一堵墙。 */
+.tip-stack { display: inline-flex; flex-direction: column; gap: 2px; }
+/* Readout 值位里的四态计数行（计划详情「N 条未执行」，2026-09-09 第三轮）：
+   四枚 Status（色点+数字）横排，间隔一档——比一行裸数字可扫。 */
+.readout-marks { display: inline-flex; align-items: center; gap: 10px; }
+
+/* 940px 以下（侧栏断点同档）：分栏退化为上下堆叠，树收成一块可滚动的横条
+   （高度回到收缩态——竖屏手机上一块永远半屏高的空面板没有意义）。 */
+@media (max-width: 940px) {
+  .spec-split { grid-template-columns: 1fr; }
+  .spec-tree { position: static; height: auto; max-height: 220px; }
+}
+
+/* ── 用例库：XMind 风格脑图视图（P7-3 第四~六轮，2026-09-07）───────────────
+   画布跑在 @xyflow/react 上（与流程画布同一个库）：平移/缩放/选中交给库，
+   节点、布局、就地编辑自己写。解析**当前目录下的用例**（模块树不进图）：
+   root = 当前目录 → 用例 → 前置/步骤/预期。交互按 XMind 惯例——单击选中、
+   双击就地编辑、⊕/⊖ 折叠；Tab 加子级、Enter 加同级。
+   xyflow 自带一套调色板，这里全部用本站 token 重表达（与 .flow-canvas 同
+   一条纪律，画布不能变成第二套视觉语言）；内容节点高度由布局的 nodeHeight
+   估算与 CSS min-height 共同钉住——CSS 不钉会漂。 */
+.mindmap-canvas {
+  position: relative; /* 键位提示条（.mindmap-hint）的定位锚点 */
+  height: calc(100dvh - 205px);
+  min-height: 320px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+.mindmap-canvas .react-flow { background: var(--surface); }
+.mindmap-canvas .react-flow__background { background: var(--surface); }
+.mindmap-canvas .react-flow__background-pattern { color: var(--line); }
+.mindmap-canvas .react-flow__edge-path { stroke: var(--line-strong); stroke-width: 1.5; }
+.mindmap-canvas .react-flow__controls-button {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  fill: var(--ink-2);
+}
+.mindmap-canvas .react-flow__controls-button:hover { background: var(--raised); }
+.mindmap-canvas .react-flow__node { cursor: pointer; }
+.mindmap-canvas .react-flow__node.is-selected { z-index: 1; }
+
+.mindmap-node {
+  position: relative; /* ⊕/⊖ 绝对定位的锚点（骑在右缘外的竖直中线，XMind 惯例） */
+  display: flex; align-items: center; gap: 6px;
+  width: max-content; max-width: 300px;
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  font-size: 13px; color: var(--ink);
+}
+.mindmap-node.is-root { height: 36px; background: var(--raised); border-color: var(--line-strong); font-weight: 600; }
+/* 目录节点（㉔ 目录层进图）：与用例同级的结构行——边框稍强、半粗，区分
+   「这里是结构」与「这里是内容」；计数与左树同口径。 */
+.mindmap-node.is-dir { height: 32px; border-color: var(--line-strong); font-weight: 500; }
+/* 用例/前置/步骤/预期完整折行（2026-09-08 第二轮反馈：阈值式「超两行切多行
+   态」仍漏——单行卡片模式里徽记/优先级把正文列挤到 ~90px，常见标题（15~30
+   字）到不了阈值，线夹处照样省略；且用户心智是 XMind 话题框按内容折行）：
+   内容族一律块布局（.is-multiline → .mindmap-block），徽记首行、正文全宽完
+   整折行，无任何 line-clamp。高度由组件 nodeHeight 同一估算预留（CSS 只设
+   min-height 兜底，实际高度随内容——宁多留空不重叠）。悬停 Tip 保留（估算
+   极端偏差时看全）。目录/root 保持单行（结构行，名字短、还带计数）。 */
+.mindmap-node.is-case { height: auto; min-height: 36px; padding: 4px 11px; }
+.mindmap-node.is-pre,
+.mindmap-node.is-step,
+.mindmap-node.is-exp { height: auto; min-height: 36px; font-size: 12px; padding: 4px 8px; color: var(--ink-2); }
+.mindmap-node.is-step { color: var(--ink); }
+.mindmap-node.is-multiline { display: block; }
+.mindmap-node.is-more { height: 24px; font-size: 12px; color: var(--ink-3); }
+/* 「＋ 前置 / ＋ 步骤」占位槽（㉔）：空槽的邀约——虚线框、弱字，点了就补。 */
+.mindmap-node.is-add {
+  height: 24px;
+  font-size: 11px;
+  padding: 0 8px;
+  border: 1px dashed var(--line-strong);
+  color: var(--ink-3);
+  background: none;
+}
+.mindmap-node.is-add:hover { color: var(--ink); border-color: var(--ink-3); }
+/* 选中态与表格 is-selected / flow-node 同款：accent 边 + selected 底。 */
+.mindmap-node.is-selected { border-color: var(--accent); background: var(--selected); }
+/* 前置/步骤/预期静息无边框（读作用例的孩子，不是平级节点），选中才起边。 */
+.mindmap-node.is-pre:not(.is-selected),
+.mindmap-node.is-step:not(.is-selected),
+.mindmap-node.is-exp:not(.is-selected) { border-color: transparent; background: none; }
+/* 废弃用例整点减淡（与列表 data-removed 同款）。 */
+.mindmap-node[data-removed] { opacity: .55; }
+
+.mindmap-label { min-width: 0; }
+
+/* 内容族块布局（2026-09-08 第二轮：长标题/前置/步骤/预期完整展示）：徽记
+   首行 + 全宽正文块，与组件 nodeHeight 的「35 + lines × 行高」同一套几何
+   （35 = 边框 2 + 上下 padding 8 + 徽记行 20 + 行距 3 + 呼吸 2）。
+   pre-wrap 保留导入文本的换行；anywhere 兜底长 URL/英文串。 */
+.mindmap-block { display: block; }
+.mindmap-block-head {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 3px;
+  min-height: 20px;
+  flex-wrap: wrap;
+}
+.mindmap-block-body {
+  font-size: inherit;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mindmap-count { margin-left: 8px; font-size: 11px; color: var(--ink-3); flex: 0 0 auto; }
+.mindmap-mark { font-size: 11px; color: var(--ink-3); flex: 0 0 auto; }
+/* 形状徽记（⑳ 用户反馈）：目录/用例/前置/步骤/预期各带一个小标签——树里
+   多个位置长着一模一样的长框，位置不再是唯一线索。中性小字（chip 的字级
+   字距），不上色：形状的判别交给文字本身。 */
+.mindmap-tag {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+.mindmap-node.is-root .mindmap-tag { background: none; }
+
+/* 用例标签（㉗）：长在原编号位的小 chip，最多两枚 + 溢出计数；与 kind 徽记
+   同一套 token，靠边框虚实区分（标签描边更淡、字更小）。第四轮②：长标签
+   chip 自身线夹（max-width + ellipsis）、标签容器可折行——不再撑爆徽记行。 */
+.mindmap-tags { display: inline-flex; gap: 3px; flex-wrap: wrap; min-width: 0; max-width: 150px; flex: 0 1 auto; }
+.mindmap-tagchip {
+  padding: 0 5px;
+  border-radius: var(--r-sm);
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 优先级徽章（㉗）：线框分层不上色——P0 实线重字、P1/P2 默认、P3 弱字淡框，
+   语义色留给 pass/fail（Quiet Console：色彩是状态语言，不是装饰）。 */
+.mindmap-priority {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--ink-2);
+  flex: 0 0 auto;
+}
+.mindmap-priority[data-priority="P0"] { color: var(--ink); border-color: var(--ink-3); }
+.mindmap-priority[data-priority="P3"] { color: var(--ink-3); border-color: var(--line); font-weight: 500; }
+
+/* 生命周期点：reviewed→pass 实心、unreviewed→skip 实心、deprecated→canceled 空心
+   （与 .status 的色表逐字同源；㉘ 状态口径改为未评审/已评审/废弃）。 */
+.mindmap-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+.mindmap-dot[data-status="pass"] { background: var(--pass); }
+.mindmap-dot[data-status="skip"] { background: var(--skip); }
+.mindmap-dot[data-status="canceled"] { background: transparent; box-shadow: inset 0 0 0 1px var(--skip); }
+
+/* ⊕/⊖ 折叠开关（第五轮②：+ 号盖住了数据）：绝对定位到节点右缘**外**的
+   竖直中线（XMind 本体的位置），锚点是 .mindmap-node（position:relative）。
+   此前 flex 尾参只探出 4px、multiline 态钉在 top:5px——贴着徽记行右端的
+   标签/优先级，读作「盖住了数据」；right:-20px 完全离开边框，落在列间
+   通道里（PITCH 360 − 节点宽 ≤300 ⇒ 通道 ≥60px），不压任何内容。点击走
+   onNodeClick 的 closest(".mindmap-toggle") 分支 toggle，不抢节点的选中。 */
+.mindmap-toggle {
+  position: absolute;
+  top: 50%;
+  right: -20px;
+  transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--ink-3);
+}
+.mindmap-node:hover .mindmap-toggle { color: var(--ink); }
+
+/* 就地编辑（⑳ 复测：编辑态徽记保留，新增那一刻要能确认在建什么）。
+   第五轮③（「编辑时还是没有完全展示框内的数据，限制很大」）：
+   ① 编辑节点放宽到 360px——与列距同宽，不越进子级列；② textarea 高度由
+   组件 useLayoutEffect 钉到 scrollHeight（自动量高，不依赖估算），任何
+   草稿都完整可见；Shift+Enter 换行（前置/预期本就是多行文本）。
+   结构行（root/dir）.mindmap-edit 保持徽记 + 输入框单行；内容族挂
+   .is-block——flex-wrap 让徽记独占首行、输入框 flex-basis:100% 换到下一行
+   拿满整节点宽，长前置/步骤/预期编辑时全部可见。 */
+.mindmap-node.is-editing {
+  border-color: var(--accent);
+  display: flex; align-items: flex-start;
+  width: 360px; max-width: 360px;
+}
+.mindmap-edit { display: flex; align-items: flex-start; gap: 6px; min-width: 0; flex: 1 1 auto; }
+.mindmap-edit.is-block { flex-wrap: wrap; }
+.mindmap-edit.is-block .mindmap-input { flex: 1 1 100%; }
+.mindmap-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0; background: none; outline: none; padding: 0;
+  font: inherit; font-size: inherit; color: var(--ink);
+  line-height: 1.5;
+  resize: none;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 键位提示条（⑳ 复测：Tab/Enter 会建出什么，规则无处可学）：画布左上一行
+   静态小字，与徽记同一套 token；pointer-events:none 不挡画布平移。 */
+.mindmap-hint {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 4;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: 11px;
+  color: var(--ink-3);
+  pointer-events: none;
+}
+
+/* 右键菜单（㉗）：fixed 定位跟随鼠标，手写小菜单（antd Dropdown 定位在
+   子元素，右键场景自己摆更直接）。条目 hover 用 --t，danger 走 --fail 字
+   色不上底——Quiet Console：菜单是工具不是通知。
+   子菜单（2026-09-08 第三轮反馈：用例菜单 12 行太长）：优先级/状态收进
+   悬停展开的子菜单，与父菜单同一套 token；左缘压进父菜单 4px——不留缝，
+   指针跨缝时 subwrap 的 :hover 不断（子菜单是它的 DOM 子孙）。右缘放不
+   下时整组向左翻（.is-flip）。当前值勾号 + accent 字色（选择态语义，
+   与侧边栏激活指示同源，不是装饰色）。 */
+.mindmap-menu {
+  position: fixed;
+  z-index: 30;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--raised);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 12%);
+  display: flex;
+  flex-direction: column;
+}
+.mindmap-menu-item {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  color: var(--ink);
+  cursor: pointer;
+  transition: background var(--t), color var(--t);
+}
+.mindmap-menu-item:hover { background: var(--accent-soft); color: var(--ink); }
+.mindmap-menu-item.is-danger { color: var(--fail); }
+.mindmap-menu-item.is-danger:hover { color: var(--fail); }
+.mindmap-menu-item.is-current { color: var(--accent); font-weight: 600; }
+.mindmap-menu-item.has-sub { width: 100%; box-sizing: border-box; }
+.mindmap-menu-item.has-sub svg,
+.mindmap-menu-check { margin-left: auto; flex: 0 0 auto; color: var(--ink-3); }
+.mindmap-menu-check { color: var(--accent); }
+.mindmap-menu-item.has-sub:hover svg { color: var(--ink); }
+.mindmap-subwrap { position: relative; display: flex; flex-direction: column; }
+/* 悬停桥（仅 hover 时存在）：盖住子菜单整块与右侧一段的对角线路径，指针从
+   触发行斜向滑进子菜单时 subwrap 的 :hover 不断、子菜单不闪关。::before 画
+   在真实子元素之下——不挡子菜单条目的点击；未 hover 时 content:none，也不
+   挡画布。 */
+.mindmap-subwrap:hover::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  bottom: -110px;
+  left: calc(100% - 4px);
+  width: 160px;
+}
+.mindmap-submenu {
+  display: none;
+  position: absolute;
+  top: -5px;
+  left: calc(100% - 4px);
+  min-width: 128px;
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--raised);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 12%);
+  flex-direction: column;
+}
+.mindmap-subwrap:hover .mindmap-submenu { display: flex; }
+.mindmap-menu.is-flip .mindmap-submenu { left: auto; right: calc(100% - 4px); }
+.mindmap-menu.is-flip .mindmap-subwrap:hover::before { left: auto; right: calc(100% - 4px); }
+
+/* 隐藏 xyflow 默认的连接点小方块：脑图不可连线，Handles 只承担布局锚点。 */
+.mindmap-canvas .react-flow__handle {
+  width: 1px; height: 1px;
+  min-width: 0; min-height: 0;
+  border: 0; background: none; opacity: 0;
+  pointer-events: none;
+}
+
+/* ── 用例抽屉：步骤行内编辑表（2026-09-07 反馈第二轮） ─────────────────────
+    散装的 kv-row 读不出「步骤是一张两列表」；容器带边框、表头用 raised 底
+    （与 .grid th 同款字级字距）、行间细分隔线、输入框静息去边框（聚焦恢复），
+    与全站表格同一套视觉语言。行顶对齐（align-items: start）配自动长高的
+    textarea——多行内容时序号与删除键跟着第一行而不是悬在行中间。 */
+.steps-table {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+.steps-table .kv-row { padding: 4px var(--s2); border-bottom: 1px solid var(--line); align-items: start; }
+.steps-table .kv-row:last-child { border-bottom: 0; }
+.steps-table .kv-row.steps-head { align-items: center; padding: 8px var(--s2); background: var(--raised); }
+/* 表头 12px/ink-2（2026-09-07 第三轮反馈：11px ink-3 太小、像悬浮文本）；列名
+   与输入框**内文字**对齐——textarea 自带 var(--s3) 横向内边距，列名补同款
+   padding 才跟框内文字站在一条竖线上，而不是贴着框边缘。 */
+.steps-table .steps-head span { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+.steps-col-label { padding-left: var(--s3); }
+/* 序号与输入框首行文字基线对齐：textarea = 行内边距 8px + 1px 边框 + 行高
+   1.6×13≈21px，序号同补 9px 顶距 + 21px 行高（第三轮反馈：序号悬在半空）。 */
+.steps-table .mono { padding-top: 9px; line-height: 21px; }
+.steps-table .input { border-color: transparent; background: none; }
+.steps-table .input:focus { border-color: var(--accent); background: var(--surface); }
+/* 尾随空行保留虚线邀约（覆盖上面 transparent，但让位给 focus 的实线）。 */
+.steps-table .kv-row.is-blank .input { border-color: var(--line); }
+.steps-table .kv-row.is-blank .input:focus { border-color: var(--accent); }
+
+/* ── 文本用例导入向导（P7-4）───────────────────────────────────────────
+     三步 Modal（上传 / 预览 / 结果）。视觉全部走既有令牌：判定 chip 用中性
+     .chip（语义色留给运行状态），分组树复用 .tree-caret / .tree-count，
+     步骤预览复用 .steps-table——导入预览与用例抽屉是同一份内容的两种视图。 */
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.import-drop {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s6) var(--s5);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--raised);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: border-color var(--t), color var(--t);
+}
+.import-drop:hover, .import-drop:focus-visible { border-color: var(--accent); color: var(--ink); }
+.import-drop.is-dragging { border-color: var(--accent); color: var(--ink); }
+.import-file-meta { margin-left: auto; font-size: 11px; color: var(--ink-3); }
+
+.import-toolbar { display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s2); }
+.import-warning { color: var(--fail); }
+
+.import-tree {
+  max-height: calc(100dvh - 420px);
+  min-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: var(--s2);
+}
+.import-group-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 2px;
+  border-radius: var(--r);
+}
+.import-group-head:hover { background: var(--hover); }
+.import-case-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 3px 2px 3px 22px;
+  border-radius: var(--r);
+}
+.import-case-row:hover { background: var(--hover); }
+.import-case-row[data-expanded] { background: var(--selected); }
+.import-case-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.import-case-detail {
+  margin: 0 var(--s2) var(--s3) 22px;
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--raised);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.import-field-label { display: block; font-size: 12px; font-weight: 600; color: var(--ink-2); margin-bottom: 2px; }
+.import-field p { margin: 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.import-step-row { align-items: start; }
+.import-step-text { font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.import-result p { font-size: 13px; }
 
 .body-editor {
   width: 100%;
@@ -2211,6 +2835,10 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .picker-scroll { max-height: 46vh; overflow: auto; border: 1px solid var(--line); border-radius: var(--r); }
 .picker-grid { table-layout: fixed; }
 .picker-grid td { padding: 6px 10px; }
+/* 绑定选择器的行内省略（2026-09-08 反馈：长标题盖掉后面一列）：`truncate` 是
+   行内 span，table-layout:fixed 的单元格里 inline 不吃 overflow——钉 block
+   铺满单元格，省略号收缩；完整信息靠行上的 Tip 悬停（两端都挂了同一个 tip）。 */
+.picker-name { display: block; }
 /* 接口分组头：同名用例只能靠所属接口区分，所以分组名必须先读到。 */
 .picker-group td {
   position: sticky;
@@ -2779,8 +3407,24 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 
 /* ── Data sources and database steps (P2-1) ────────────────────── */
 
+/* 横向滚动容器（表格宽度超出视口时的兜底）：滚动条只在**真的溢出**且交互时
+   出现——内容没超出视口时不留一条常驻空轨道（信息密集的表格上方一条灰杠
+   读作「有东西被截断」，2026-09-09 反馈）。Firefox：thin 滚动条无溢出时轨道
+   不渲染；WebKit：auto + overlay scrollbar 滚动时浮现；老 WebKit（常驻轨道）
+   用 hover/active 时才显形的自绘滚动条兜底。 */
 .table-scroll { max-width: 100%; overflow-x: auto; border-radius: var(--r-lg); }
 .table-scroll > .grid { min-width: 720px; }
+.table-scroll::-webkit-scrollbar { height: 8px; }
+.table-scroll::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 4px;
+}
+.table-scroll::-webkit-scrollbar-track { background: none; }
+/* 常驻轨道只在容器交互（悬停/正在滚动）时显形；无溢出时 WebKit 不渲染轨道，
+   Firefox 的 thin 轨道同样只在溢出时出现——两条路径都达到「没溢出就没有栏」。 */
+.table-scroll:not(:hover):not(:active)::-webkit-scrollbar-thumb { background: transparent; }
 
 /* ── Audit log detail cells (P6-2) ─────────────────────────────── */
 

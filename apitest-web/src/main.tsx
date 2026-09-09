@@ -38,6 +38,8 @@ import { CiTaskEditor } from "./components/CiTaskEditor";
 import { PipelineRunPage } from "./components/PipelineRunPage";
 import { ShareReportPage } from "./components/ShareReportPage";
 import { Members } from "./components/Members";
+import { SpecCases } from "./components/SpecCases";
+import { TestPlans, TestPlanPage } from "./components/TestPlans";
 import { antdTheme, useMode } from "./theme";
 import { useAuthStore } from "./stores/authStore";
 import { useLimitsStore } from "./stores/limitsStore";
@@ -135,6 +137,13 @@ function Root() {
         {/* P6-4：成员与权限。页面本身 viewer 可读（「知道找谁要权限」），管理面在
             页内按 useMyRole 隐藏；路由不藏——后端守卫才是权限的单一事实。 */}
         <Route path="members" element={<Members />} />
+        {/* P7-2：用例库（文本用例）。列表视图 + 详情抽屉先行；树视图/导入/绑定/
+            测试计划在 P7-3…P7-7 逐批落进本页或同分组。 */}
+        <Route path="spec-cases" element={<SpecCases />} />
+        {/* P7-7：测试计划。列表 + 详情独立路由（照 suite-reports 先例——详情是
+            按模块分组的大表，可收藏转发）。 */}
+        <Route path="test-plans" element={<TestPlans />} />
+        <Route path="test-plans/:planId" element={<TestPlanPage />} />
         {/* P4 + P4.5-14：仓库模式收成一个导航项、五个平级页面。各有自己的真实路由而不是
             `?tab=`——凭据页会被贴进别人的 CI 说明、上报记录会被贴进排查群，两者都要是一条
             能直接打开的地址。P4.5-15 起任务编辑也是独立页（`/repo/tasks/new|:taskId`，

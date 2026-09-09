@@ -2,16 +2,16 @@ import { useEffect, useState } from "react";
 import { Select } from "antd";
 import { useTranslation } from "react-i18next";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Bell, Bot, Database, FolderGit2, Globe, History, Layers, LogOut, MessageSquare, Plug, ScrollText, TrendingUp, Users, Workflow, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Bell, Bot, CalendarCheck, ChevronDown, ChevronRight, Database, FolderGit2, Globe, History, Layers, ListChecks, LogOut, MessageSquare, Plug, ScrollText, TrendingUp, Users, Workflow, type LucideIcon } from "lucide-react";
 import { useRecordLastPage } from "../hooks/useRecordLastPage";
 import { useAuthStore } from "../stores/authStore";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
-import { useSidebarCollapsed } from "../stores/sidebarStore";
+import { useIsWideViewport, useSidebarCollapsed } from "../stores/sidebarStore";
 import { IconNavButton, SidebarToggle } from "./SidebarControls";
 import { IconButton } from "./IconButton";
 
-const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "mcp", "repo", "reports", "suite-reports", "trends", "alerts", "members"] as const;
+const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "mcp", "repo", "spec-cases", "test-plans", "reports", "suite-reports", "trends", "alerts", "members"] as const;
 export type ProjectPage = typeof PAGES[number];
 
 /**
@@ -32,6 +32,8 @@ const NAV_ICONS: Record<ProjectPage, LucideIcon> = {
   mocks: MessageSquare,
   mcp: Bot,
   repo: FolderGit2,
+  "spec-cases": ListChecks,
+  "test-plans": CalendarCheck,
   reports: History,
   "suite-reports": ScrollText,
   trends: TrendingUp,
@@ -64,6 +66,9 @@ export function ProjectShell() {
   /* 收起态驱动 `.console[data-collapsed]`（grid 轨道 + rail 排版一处声明）。
      宽度并进结果：940px 以下顶栏模式没有可收起的栏。 */
   const sidebarCollapsed = useSidebarCollapsed();
+  /* 手风琴只在「桌面展开态」存在：顶栏模式（组溶解、条目平铺）与收起 rail
+     都是平铺形态，折叠状态在那里没有排版意义。 */
+  const accordionOn = useIsWideViewport() && !sidebarCollapsed;
 
   const segments = location.pathname.split("/").filter(Boolean);
   const routeSegment = segments[2] ?? "endpoints";
@@ -76,11 +81,13 @@ export function ProjectShell() {
   const suiteOpen = active === "suites" && Boolean(segments[3]);
   const dataSourceOpen = active === "data-sources" && Boolean(segments[3]);
   const suiteReportOpen = active === "suite-reports" && Boolean(segments[3]);
+  /* 测试计划详情同款：`test-plans/:planId` 打开时面包屑要走 detail 分叉。 */
+  const testPlanOpen = active === "test-plans" && Boolean(segments[3]);
   /* 仓库执行详情是 repo 分组的子页（路由不在 repo/ 下，靠上面的别名归组）。它必须算
      detail 页：否则面包屑停在「仓库模式」这个不可点的标题上，进了执行详情就回不去
      任务列表（2026-09-02 验收缺陷）。 */
   const pipelineRunOpen = routeSegment === "pipeline-runs" && Boolean(segments[3]);
-  const detailOpen = endpointOpen || flowOpen || suiteOpen || dataSourceOpen || suiteReportOpen || pipelineRunOpen;
+  const detailOpen = endpointOpen || flowOpen || suiteOpen || dataSourceOpen || suiteReportOpen || pipelineRunOpen || testPlanOpen;
   /* The report detail pushes its real name up through the outlet context so the
      crumb reads 项目/报告列表/{报告名称} rather than a generic「当前报告」. */
   const [detailTitle, setDetailTitle] = useState<string>();
@@ -94,22 +101,45 @@ export function ProjectShell() {
     if (await confirmLeave()) navigate(to);
   }
 
-  const nav: { group: string; items: [ProjectPage, string][] }[] = [
-    { group: t("nav.interfaceAssets"), items: [["endpoints", t("nav.endpoints")], ["environments", t("nav.environments")], ["data-sources", t("nav.dataSources")], ["mocks", "Mock"], ["mcp", "MCP"]] },
-    /* 定时调度没有独立页（P3-11）：配置入口在套件详情页的「定时调度」面板。 */
-    { group: t("nav.orchestration"), items: [["flows", t("nav.flows")], ["suites", t("nav.suites")]] },
-    /* 仓库模式是**一个导航项**（P4.5-14，计划 8.11 的 C 类）：任务 / 用例树 / 上报记录 /
-       未匹配诊断 / 凭据五块共享同一个前提（测试代码在用户的仓库里），页内用标签条切换。
-       P4.5-11 曾把它劈成「仓库用例」与「CI 任务」两项，结果「为什么 CI 任务要先绑仓库、
-       另外几页不用」变成每次都要重新解释的问题；Git 来源搬到任务上之后那个前置条件也
-       没了，于是一并收成一项。 */
-    { group: t("nav.repoMode"), items: [["repo", t("nav.repoMode")]] },
-    { group: t("nav.common"), items: [["reports", t("nav.reports")], ["suite-reports", t("nav.suiteReports")], ["trends", t("nav.trends")], ["alerts", t("nav.alerts")], ["members", t("nav.members")]] },
+  /* 手风琴分组（2026-09-09 密度反馈）：15 项平铺读成一整坨，组标题改成可点的
+     折叠头。默认态：前四组展开、项目配置收起（MCP/告警/成员是低频管理页）。
+     导航到收起组内的页面时自动展开该组（elsewhere 展开不了当前页所在组会是
+     「active 项看不见」的缺陷）。 */
+  const nav: { group: ProjectPage; label: string; items: [ProjectPage, string][]; defaultOpen: boolean }[] = [
+    /* 测试跟踪（2026-09-09）：文本用例与测试计划是「设计用例 → 跟踪执行」的
+       起点，放在最上面——测试工作流从这里开始，往下才是编排与回归。 */
+    { group: "spec-cases", label: t("nav.testTracking"), items: [["spec-cases", t("nav.specCases")], ["test-plans", t("nav.testPlans")]], defaultOpen: true },
+    { group: "endpoints", label: t("nav.interfaceAssets"), items: [["endpoints", t("nav.endpoints")]], defaultOpen: true },
+    { group: "flows", label: t("nav.orchestration"), items: [["flows", t("nav.flows")], ["suites", t("nav.suites")], ["repo", t("nav.repoMode")]], defaultOpen: true },
+    /* 测试资源（2026-09-09 重组）：环境/数据源/Mock 从「接口资产」拆出——它们
+       服务所有测试形态，不独属接口模式。 */
+    { group: "environments", label: t("nav.testResources"), items: [["environments", t("nav.environments")], ["data-sources", t("nav.dataSources")], ["mocks", "Mock"]], defaultOpen: true },
+    { group: "reports", label: t("nav.common"), items: [["reports", t("nav.reports")], ["suite-reports", t("nav.suiteReports")], ["trends", t("nav.trends")]], defaultOpen: true },
+    /* 项目配置：默认收起。MCP / 告警 / 成员是配置完就不再来的页面。 */
+    { group: "members", label: t("nav.projectConfig"), items: [["mcp", "MCP"], ["alerts", t("nav.alerts")], ["members", t("nav.members")]], defaultOpen: false },
   ];
+  const GROUP_OF: Partial<Record<ProjectPage, ProjectPage>> = Object.fromEntries(
+    nav.flatMap((section) => section.items.map(([key]) => [key, section.group])),
+  );
+  const [closedGroups, setClosedGroups] = useState<ReadonlySet<ProjectPage>>(() => {
+    const defaults = nav.filter((section) => !section.defaultOpen).map((section) => section.group);
+    return new Set(defaults);
+  });
+  /* 切换分组开合；当前组不能被收到看不见（active 项必须始终可见）。 */
+  function toggleGroup(group: ProjectPage) {
+    if (group === active) return;
+    setClosedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(group)) next.delete(group); else next.add(group);
+      return next;
+    });
+  }
   /* kebab 路由段与 i18n 的 camelCase 键对不上（suite-reports ≠ suiteReports），与
      data-sources 同款在这里折中。 */
   const pageTitle = active === "data-sources" ? t("dataSources.title")
     : active === "suite-reports" ? t("suiteReports.title")
+    : active === "spec-cases" ? t("specCases.title")
+    : active === "test-plans" ? t("testPlans.title")
     : active === "repo" ? t("nav.repoMode")
     : active === "mocks" ? "Mock"
     : t(`${active}.title`);
@@ -125,33 +155,52 @@ export function ProjectShell() {
             </button>}
       </div>
       <nav>
-        {nav.map((section) => <div key={section.group} className="nav-group">
-          <span className="nav-section">{section.group}</span>
-          {section.items.map(([key, label]) => {
-            const Icon = NAV_ICONS[key];
-            /* 收起态：标签交给 Tooltip（0.1s，与 Tip 同档）；展开态是普通按钮，
-               文字直接在位。aria-label 恒在——图标不能是它唯一的名字。 */
-            return sidebarCollapsed
-              ? <IconNavButton
-                  key={key}
-                  className={`nav-item${active === key ? " is-active" : ""}`}
-                  icon={<Icon size={14} />}
-                  label={label}
-                  ariaCurrent={active === key ? "page" : undefined}
-                  onClick={() => void go(`/projects/${projectId}/${key}`)}
-                />
-              : (
-                <button
-                  key={key}
-                  className={`nav-item${active === key ? " is-active" : ""}`}
-                  aria-current={active === key ? "page" : undefined}
-                  onClick={() => void go(`/projects/${projectId}/${key}`)}
+        {nav.map((section) => {
+          /* 手风琴只存在于桌面展开态：940px 顶栏模式组已溶解成一条平铺
+             流（收着的组在那里 = 页面凭空消失），收起 rail 同理恒平铺。
+             当前页所在组视为展开（不写 state：URL 是唯一事实源，收着的组一旦
+             成为 active 自动亮出来，离开后回落到用户的开合偏好）。 */
+          const open = accordionOn && (!closedGroups.has(section.group) || GROUP_OF[active] === section.group);
+          const GroupIcon = NAV_ICONS[section.group];
+          return <div key={section.group} className="nav-group">
+            {accordionOn
+              ? <button
+                  type="button"
+                  className="nav-section"
+                  aria-expanded={open}
+                  onClick={() => toggleGroup(section.group)}
                 >
-                  <Icon size={14} />{label}
+                  <span className="batch-caret" aria-hidden>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
+                  <GroupIcon size={12} />
+                  {section.label}
                 </button>
-              );
-          })}
-        </div>)}
+              : <span className="nav-section" aria-hidden>{section.label}</span>}
+            {(!accordionOn || open) && section.items.map(([key, label]) => {
+              const Icon = NAV_ICONS[key];
+              /* 收起态：标签交给 Tooltip（0.1s，与 Tip 同档）；展开态是普通按钮，
+                 文字直接在位。aria-label 恒在——图标不能是它唯一的名字。 */
+              return sidebarCollapsed
+                ? <IconNavButton
+                    key={key}
+                    className={`nav-item${active === key ? " is-active" : ""}`}
+                    icon={<Icon size={14} />}
+                    label={label}
+                    ariaCurrent={active === key ? "page" : undefined}
+                    onClick={() => void go(`/projects/${projectId}/${key}`)}
+                  />
+                : (
+                  <button
+                    key={key}
+                    className={`nav-item${active === key ? " is-active" : ""}`}
+                    aria-current={active === key ? "page" : undefined}
+                    onClick={() => void go(`/projects/${projectId}/${key}`)}
+                  >
+                    <Icon size={14} />{label}
+                  </button>
+                );
+            })}
+          </div>;
+        })}
       </nav>
       <div className="sidebar-foot">
         <IconButton
@@ -173,7 +222,7 @@ export function ProjectShell() {
           {detailOpen ? <>
              <button className="crumb-link" onClick={() => void go(`/projects/${projectId}/${active}`)}>{pageTitle}</button>
              <span className="crumb-sep">/</span>
-             <strong className="truncate">{flowOpen ? t("flows.current") : suiteOpen ? t("suites.current") : dataSourceOpen ? t("dataSources.current") : suiteReportOpen ? (detailTitle ?? t("suiteReports.current")) : pipelineRunOpen ? (detailTitle ?? t("pipelineRun.title")) : t("editor.current")}</strong>
+              <strong className="truncate">{flowOpen ? t("flows.current") : suiteOpen ? t("suites.current") : dataSourceOpen ? t("dataSources.current") : suiteReportOpen ? (detailTitle ?? t("suiteReports.current")) : pipelineRunOpen ? (detailTitle ?? t("pipelineRun.title")) : testPlanOpen ? (detailTitle ?? t("testPlans.current")) : t("editor.current")}</strong>
             </> : <strong>{pageTitle}</strong>}
         </nav>
         <div className="topbar-actions">

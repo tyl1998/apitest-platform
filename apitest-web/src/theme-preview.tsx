@@ -7,7 +7,7 @@
  */
 import { createRoot } from "react-dom/client";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, Bell, Globe, History, Plug } from "lucide-react";
+import { ArrowLeft, Bell, ChevronDown, ChevronRight, Globe, History, Plug } from "lucide-react";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
 import "@fontsource/inter/600.css";
@@ -61,7 +61,10 @@ function Reference() {
         </div>
         <nav>
           <div className="nav-group">
-            <span className="nav-section">{t("nav.interfaceAssets")}</span>
+            <button type="button" className="nav-section" aria-expanded="true">
+              <span className="batch-caret" aria-hidden><ChevronDown size={12} /></span>
+              <Plug size={12} />{t("nav.interfaceAssets")}
+            </button>
             {collapsed
               ? <IconNavButton className="nav-item is-active" icon={<Plug size={14} />} label={t("nav.endpoints")} ariaCurrent="page" />
               : <button className="nav-item is-active" aria-current="page"><Plug size={14} />{t("nav.endpoints")}</button>}
@@ -70,13 +73,10 @@ function Reference() {
               : <button className="nav-item"><Globe size={14} />{t("nav.environments")}</button>}
           </div>
           <div className="nav-group">
-            <span className="nav-section">{t("nav.common")}</span>
-            {collapsed
-              ? <IconNavButton className="nav-item" icon={<History size={14} />} label={t("nav.reports")} />
-              : <button className="nav-item"><History size={14} />{t("nav.reports")}</button>}
-            {collapsed
-              ? <IconNavButton className="nav-item" icon={<Bell size={14} />} label={t("nav.alerts")} />
-              : <button className="nav-item"><Bell size={14} />{t("nav.alerts")}</button>}
+            <button type="button" className="nav-section" aria-expanded="false">
+              <span className="batch-caret" aria-hidden><ChevronRight size={12} /></span>
+              <History size={12} />{t("nav.common")}
+            </button>
           </div>
         </nav>
         <div className="sidebar-foot">

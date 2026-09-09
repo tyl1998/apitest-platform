@@ -506,7 +506,12 @@ export function ExecutionRecords() {
                 <span className="chip">{t("cases.title")}</span>
                 {run.caseName}
                 <span className="muted run-subject-parent">{run.endpointName}</span>
-              </> : run.endpointName}
+              </> : <>
+                {/* 与用例行同款 chip：混排清单里先读类型再读名字（接口调试发起的
+                   行没有 caseName，此前只有光秃秃的接口名）。 */}
+                <span className="chip">{t("reports.chipEndpoint")}</span>
+                {run.endpointName}
+              </>}
               {run.batchId && <span className="chip batch-source">{t("reports.batchSource")}</span>}
             </td>
             <td className="col-num mono">{run.statusCode ?? "—"}</td>
