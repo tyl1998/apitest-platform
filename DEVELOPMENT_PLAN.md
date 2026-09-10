@@ -1,10 +1,12 @@
 # 接口自动化平台 — 开发计划
 
-> 版本: v0.8.12
+> 版本: v0.8.13
 > 基于: API_AUTOMATION_SPEC.md v1.9 / FRONTEND_INTERACTION_DESIGN.md v2.3 / REPOSITORY_ARCHITECTURE.md v1.1
-> **P6–P10 已规划（2026-09-04 用户确认；P6-1 ~ P6-5 已于 2026-09-07 实现并暂记验收通过，其余尚未实现）**：用户与权限 / 测试管理 / 数据统计 /
+> **P6–P10 已规划（2026-09-04 用户确认；P6-1 ~ P6-5 已于 2026-09-07 实现并暂记验收
+> 通过；P7-1 ~ P7-7 已于 2026-09-09 实现并通过用户验收，其余尚未实现）**：用户与权限 / 测试管理 / 数据统计 /
 > 站内助手四个新阶段插在 P5 之后，**原 P6（性能/插件/版本）顺延为 P10**。五个阶段的
-> 范围、边界、迁移（051–054）、路由、批次与验收门槛见
+> 范围、边界、迁移（051/052 + P8 054 / P9 055——053 已被 P7 状态评审占用，2026-09-09
+> 顺延）、路由、批次与验收门槛见
 > **`DEVELOPMENT_PLAN_P6-P10.md`**（章节映射：该文件十~十四章 = 本计划的 P6~P10；
 > P10 于 2026-09-05 自本计划十四章并入该文件）。
 > **P11 已立项（2026-09-07，尚未实现）**：资产归属——14 张核心表补
@@ -19,7 +21,26 @@
 > 详见 8.11 / 8.12 末尾的实现状态）。**P4.5 十五个批次至此全部落地，并于 2026-09-03
 > 通过用户验收**（含 2026-09-02/03 的报告体验改版与分享、可读性、上报幂等按 commit
 > 折行、树×任务报告、通过率口径、容器档取消等反馈修复轮，见 8.13 ~ 8.17 与
-> `issue_fix/`；验收结论见 8.18）。
+> `issue_fix/`；验收结论见 8.18）；**P5（MCP）已于 2026-09-05 实现并通过验收**；
+> **P6-1 ~ P6-5 于 2026-09-07 实现、暂记验收通过**（十六章十章）；**P7-1 ~ P7-7 于
+> 2026-09-09 全部实现并通过用户验收**（含验收期四轮反馈修复，见该文件十一章）。
+> **P8（数据统计）八个批次已全部实现**——P8-1（口径收口，纯重构）于 2026-09-09
+> 实现（新 `lib/metrics.ts` 口径库，三处通过率与自指排除收口，缺陷记
+> `issue_fix/问题记录-P8-1口径收口三缺陷.md`）；**P8-2（迁移 054 + 归因 REST +
+> 系统设置归因类型管理）与 P8-3（归因前端入口，范围按用户收窄：入口只在报告侧——
+> 报告列表行直接归因 + 报告详情失败行/批量，执行记录失败行入口不做）均已于
+> 2026-09-09 实现**（详见 `DEVELOPMENT_PLAN_P6-P10.md` 十二章 12.6 末尾实现状态）；
+> **P8-4（`/stats/*` 六条接口 + 可见项目集过滤 + from/to + 慢 SQL 防线 + 30s TTL
+> 缓存）已于 2026-09-09 实现、P8-5（`components/charts/` 图表底座 + hover/刻度 +
+> Trends/TimelineGantt 接入）与 **P8-6（项目层「数据统计」三段式 + 看板扩展
+> sparkline/delta/资产面四读数/Top 10 反向榜与检索 + 下钻接线 + 默认页改 trends；
+> `/stats/*` 的 includeRepo 就此换成 `scope` 三态）均已于 2026-09-10 实现**（状态
+> 见该文件十二章 12.6 末尾）；**P8-7（MCP 归因工具 + source 筛选 + by-index 入口 +
+> TopN 六维）已于 2026-09-10 实现；P8-8（读时聚合性能收口，两刀：`/projects` 拆轻
+> + `queryProjectMetrics` 子查询可见集下推 + 索引复核零新索引）已于 2026-09-11
+> 实现**（状态见该文件十二章 12.6 末尾）；**P8 于 2026-09-10 暂记验收通过**（性能
+> 门槛 8 的 `pg_stat_statements` 复核等实测项随 P8-8 重启后补验）；启动前核对（2026-09-09：批次顺序
+> 不变、迁移编号顺延 054、无需预置数据）与批次安排见该文件十二章 12.6。
 >
 > **v0.8.9 增量（验收反馈七项，2026-09-03，见 8.17 与 issue_fix）**：三缺陷——① 接口
 > 列表为「最近运行」条全量拉 200 条 `/executions`（约 254KB），删列 + 耗时/状态改由
@@ -264,8 +285,12 @@ executions      (id, project_id, endpoint_id, endpoint_name, environment_id, sta
 ### 3.1 P0 产品信息架构与可观测性（当前最高优先级）
 
 1. `[已实现]` 全局层：新增数据看板、项目管理、系统管理；登录默认进入数据看板。
-2. `[已实现]` 项目管理：卡片默认视图，支持项目 CRUD、关键词筛选与显式进入项目。（归档已从产品概念移除，故无状态筛选；项目暂无标签维度）
-3. `[已实现]` 数据看板：按可见项目汇总项目、接口、通过率、完成率；**覆盖率与接口用例数已在 P1-1 接入真实值**（覆盖 = 该接口至少有 1 条用例），CI 任务、定时任务等未交付模块仍显示“未启用/待接入”；项目行可进入项目。看板指标下钻规则见交互文档 3.0.2。
+   - `[已实现]` **全局层导航形态改为顶栏（2026-09-10 用户确认）**：全局层只有三个页面，侧栏在这里只烧宽度、给不了分组价值（分组真正干活的地方是项目壳 15 项导航）。`GlobalApp` 删除侧栏，导航项（数据看板/项目管理/系统管理）与 lockup 移进 topbar，退出按钮同栖 topbar 右缘；壳用 `data-topnav` 属性把 grid 收成单列——与既有 ≤940px 断点的「侧栏溶解成顶栏」模式同构（平铺 `.nav-item`、active 贴底 2px 下划线标记），不引入第二套布局。系统管理页的页面标题从 topbar 面包屑回到页内 h1（另两页本来就有）。项目壳侧栏形态不变。
+   - `[已实现]` **全局层走查三轮反馈（2026-09-10 同日，第三轮用户确认方向）**：① 顶栏改三区布局——lockup 左缘、导航 `.topbar-nav` 居中（flex:1 吃满中段，不贴 logo）、退出右缘；② 深色模式层次：PALETTE 与 CSS 回退块同步把 `hover` #262b33→#2a3038（悬浮反馈可见）、`line-strong` #3a404b→#454d59（卡片边缘浮出背景）；③ 按钮反馈：`.btn` 悬浮背景 `--raised`→`--hover`（深色下一档差距不够看），`.btn`/`.btn-primary` 补 `:active` 1px 下沉按压态。
+   - `[已实现]` **全局层走查第四轮（2026-09-10，用户否决窄列居中方案）**：① 内容包进 `page-card`（surface 底 + 边框 + 圆角 + `--s5` 内距）——与 topbar（border-bottom 分界）、`--bg` 页底构成三层，内容区与导航栏从视觉上分家；② 撤掉 `--measure-read: 1080px` 居中窄列（「旁边还是很空」被否决），卡片回到全宽（沿用 `--measure: 1680px` 实际全宽上限），内容铺满屏幕；③ 系统管理页 settings-list 在卡内退成无外框行列表（去边框/圆角，行分隔由 `.setting-row` 自身 border-top 承担），避免卡中卡。
+   - `[已实现]` **全局层走查第五轮（2026-09-10「卡片缺呼吸感、页面沉闷」）**：① 页底整体加深一档（PALETTE + CSS 回退块同步：浅 `--bg` #f7f7f6→#efeeea、深 #16181d→#121419），surface 卡片从页底浮出——全站生效，主页面页面卡与项目壳全部卡片受益；② `page-card` 补静置细影（`0 1px 4px --overlay`，elevation 非 glow）；③ 项目卡 `.project-card` 补 hover 浮起（`translateY(-1px)` + 边框加深 + `0 4px 12px --overlay` 细影，`--t` 120ms）；④ 表格行 hover 由 `--raised` 升档 `--hover`（深色下原底色差不可见），全站表格统一；⑤ 全局层 KPI readouts 在页面卡内改 `--bg` 底（surface-on-surface 凹进一格成「仪表槽」，仅 `[data-topnav]`）。
+2. `[已实现]` 项目管理：卡片默认视图，支持项目 CRUD、关键词筛选与显式进入项目。（归档已从产品概念移除，故无状态筛选；项目暂无标签维度）**卡片统计收口（2026-09-10 用户确认，同日二次修订）**：项目卡统计块为七格资产计数——环境 / 接口 / 接口用例 / 流程 / 套件 / 仓库用例（active）/ 文本用例（非废弃），通过率等执行面读数不上卡、归数据看板。**配套服务端拆轻（P8-8 第一刀）**：`GET /projects` 换用新 `queryProjectList`（`dashboard.ts`）——只聚合资产计数小表，executions 聚合（P8-8 实测 817ms 的大头）不再随列表下发；`queryProjectMetrics`（七表全量）留给 `/dashboard` 聚合路由自持（**P8-8 第二刀已于 2026-09-11 补齐：其七个聚合子查询带可见集下推**）。前端 `ProjectMetric` 类型随行收缩，执行面字段（passRate/executionCount/lastExecutionAt 等）全部来自 `/stats/*`。
+3. `[已实现]` 数据看板：按可见项目汇总项目、接口、通过率、完成率；**覆盖率与接口用例数已在 P1-1 接入真实值**（覆盖 = 该接口至少有 1 条用例），CI 任务、定时任务等未交付模块仍显示“未启用/待接入”；项目行可进入项目。看板指标下钻规则见交互文档 3.0.2。**失败归因分布段（2026-09-10 用户增补）**：趋势三图与 Top 10 榜之间新增归因环形——复用 `/stats/failures`（口径写死 30d + 全部来源，human/mcp 来源筛选仍是项目层统计页的深挖位），已归因各分类走强调色明度阶梯、未归因片永远在末位；覆盖率纪律行（边界 7）同屏展示；选定项目时片可点，下钻报告列表 + attribution 筛选（与统计页同落点）。
 4. `[已实现]` 执行信息：项目执行记录升级为未来 `ExecutionIndex` 的统一明细入口（单接口 / 批量调试两种视图）；接口详情内就地展示该接口历史和完整 HTTP 快照。
 5. `[已实现]` 系统管理：新增主题、语言、恢复上次页面等个人偏好页面；快捷切换不能替代设置页。
 6. `[已实现]` 导入：OpenAPI/Swagger 扩展为 cURL 解析，并提供冲突预览（新增/已存在/变更 + 全局策略 + 逐项勾选）。
@@ -5977,12 +6002,15 @@ GET    /api/v1/projects/:id/mcp/tools             工具清单（前端展示用
 写清边界比写清能力更能减少无效调用。2026-09-04 扩界后共 43 个（读 21 / 写 17 / 执行 5），
 到此封顶：清单越长模型选工具越不准，之后要加先砍。**2026-09-06 上限 43 → 44**（用户
 决策，验收反馈：agent 建完接口需要顺手补 `{{baseUrl}}` 一类普通变量）——`upsert_environment`
-进来，只动普通变量、secret 无通路；「先砍再加」仍是对下一次扩界的要求。两条形状纪律：
+进来，只动普通变量、secret 无通路。**2026-09-09 上限 44 → 55**（用户决策：文本用例、
+环境变量、公共脚本增删改查）——文本用例 CRUD + 模块读写 7、公共脚本 CRUD 3、环境删除 1
+进来；secret / 绑定 / 导入导出 / 模块改名移动仍无通路。「先砍再加」仍是对下一次扩界的
+要求。两条形状纪律：
 ① 列表工具每行必须带交叉引用 id（`list_cases` 行带 `endpointId`、`list_runs` 行带资源
 id）——没有 id，AI 把两跳连不起来，「快」就无从谈起；② `description` 写清「不能做什么」
 从建议升级为**硬要求**（P5-5b 验收项）。
 
-**只读工具（`read` scope，21 个）**
+**只读工具（`read` scope，25 个）**
 
 | 工具 | 复用 | 说明 |
 | --- | --- | --- |
@@ -6007,8 +6035,11 @@ id）——没有 id，AI 把两跳连不起来，「快」就无从谈起；②
 | `get_run_case` | 报告明细抽屉同源数据（`pipeline_run_cases` / allure 归一） | 失败明细：断言逐条、错误信息、日志摘录，64KB 截断 |
 | `get_run_logs` | 日志下载路由的读取版 | `tail` 参数（默认 200 行）**尾部优先** + 64KB 上限 |
 | `list_repo_cases` | 仓库用例树 | `keyword` 过滤，行带 system → 接口 → 用例 路径 |
+| `list_spec_cases`（2026-09-09 增补，上限 44→55） | `specCases.ts` 列表同款 SQL | 文本用例摘要行带 `modulePath`/`linkCount`/`automated`；keyword/moduleId/path/priority/status/automation 过滤 |
+| `get_spec_case` | `specCases.ts` 详情 | 完整定义 + `links[]`（target 名读时 JOIN，不带 lastResult 拼串——工具面只要名字与 id） |
+| `list_spec_modules` | `specModules.ts` 树全量 | 拍平模块列表 + 直属 case/active/automated 三计数，path 深度优先序 |
 
-**写工具（`write` scope，18 个）**
+**写工具（`write` scope，29 个）**
 
 | 工具 | 复用 | 幂等键 |
 | --- | --- | --- |
@@ -6022,6 +6053,14 @@ id）——没有 id，AI 把两跳连不起来，「快」就无从谈起；②
 | `create_schedule` / `update_schedule` / `delete_schedule` | `ResourceSchedules` 同款路由 | `(resource, cron, target)`；delete 走 9.4.1 |
 | `create_alert_rule` / `update_alert_rule` / `delete_alert_rule` | P3 告警规则路由 | `(project, name)`；delete 走 9.4.1 |
 | `create_ci_task` / `update_ci_task` / `delete_ci_task` | P4.5-11 任务路由 | `(repo, name)`；**仓库凭据只引用既有条目**（边界 4）；delete 走 9.4.1 |
+| `create_spec_case`（2026-09-09 增补） | 提取后的 `validateSpecCase()` + `specCases.ts` 手工建 | 无幂等去重（item_key 服务端生成；重复合并只属导入路径）；23505 重试 ≤3 |
+| `update_spec_case`（2026-09-09 增补） | `specCases.ts` PATCH 同款 | 按 id；itemKey/source 不可改；steps/tags 整块替换 |
+| `delete_spec_case`（2026-09-09 增补） | `specCases.ts` DELETE（CASCADE，无 409/force） | 按 id；delete 走 9.4.1（message 带 link 数与级联后果） |
+| `create_spec_module`（2026-09-09 增补） | `specModules.ts` 建 | `(parent, name)` = 同 path 重读既有行；深 6 层；`'/'` 拒入名字 |
+| `create_script`（2026-09-09 增补） | 提取后的 `validateScript()` + `scripts.ts` 建 | `(project, name)`：重名按更新处理（改公共脚本＝改全部追随者，回执带 outcome）；kind 只可 hook/response/library/node；库内容过 `inspectLibrarySource`；依赖整块替换只指 library |
+| `update_script`（2026-09-09 增补） | `scripts.ts` PATCH | 按 id；**kind 不可改**（return 语义随 kind 变，REST 同款纪律）；回执带 followers 清单 |
+| `delete_script`（2026-09-09 增补） | `scripts.ts` DELETE（409/force 的 MRTR 等价） | 按 id；delete 走 9.4.1，message 带 `scriptUsage` 追随者清单 |
+| `delete_environment`（2026-09-09 增补） | `environments.ts` DELETE（scanUsage + force 的 MRTR 等价） | 按 id；delete 走 9.4.1，message 带独占变量引用的接口清单；删前回填 `executions.environment_name` 快照；secret 仍无通路 |
 
 **执行工具（`execute` scope，5 个）**
 
@@ -6155,6 +6194,7 @@ request 完全一致（`types.ts:212`）：一页 20 条执行、每条几十 KB
 | P5-5a | 核心写：endpoint / case / flow 5 工具 + 幂等 + 字面量 secret 拒绝 + 写审计 | **已实现**（2026-09-06：`lib/mcpToolsWriteCore.ts` 5 工具——`create_endpoint`（幂等键 `(project, method, url)`，`conflictStrategy: update\|skip` 与 import 语义逐字同款）/ `update_endpoint`（PATCH 语义，body/bodyText/defaultEnvironmentId 三态：缺省不动、null 清空、有值写入）/ `create_case`（幂等键 `(endpoint, name)`，冻结 request 快照 + 生命周期脚本同事务，`persistCaseLifecycleScripts` 复用）/ `update_case`（部分更新，`FOR UPDATE` 归属先于脚本写入）/ `upsert_flow`（幂等键 `(project, name)`，写库前跑 `validateFlowGraph` 拓扑校验 + `resourcesBelong` + `checkFlowReferences` 跨流程环检测，节点树经 `persistFlowScripts` 归一）。**字面量 secret 拒绝** `lib/mcpSecretGuard.ts`（边界 4）：headers/queryParams 命中 `authorization\|cookie\|x-api-key` 且值非 `{{var}}` 引用、auth 字段（token/username/password/value）非引用、body 对象键命中 `token\|secret\|password\|apikey\|credential` 正则且值非引用——一律拒绝并指向「环境里建 secret，用 `{{name}}` 引用」；`Bearer {{auth}}`（前缀+引用）放行；判据刻意宽于脱敏的 `SENSITIVE_HEADERS`，宁可误伤可改名字段。校验全部复用 P5-2 提取的 `lib/validate.ts`；每个写落 `mcp_tool.write` 审计（detail 只带目标 id 与 outcome，不带 payload）。`pnpm check` 过；**实测待用户在智能体平台侧执行**（幂等键 8、secret 拒绝 9 两条门槛） |
 | P5-5b | 全量 CRUD（套件 / 调度 / 告警 / CI 任务 12 工具）+ MRTR 删除确认（9.4.1）+ execute 5 工具 + 在途去重 | **已实现**（2026-09-06：先按边界 8 把四个路由文件的私有校验原样提取到 `lib/validateSuite.ts` / `validateSchedule.ts` / `validateAlertRule.ts` / `validateCiTask.ts`（函数体逐字搬移，REST 路由改 import），再落三块——① `lib/mcpToolsWriteCrud.ts` 12 工具：套件（幂等 `(project, name)`，selection/execution/notify 整块替换）、调度（幂等 `(target, cron, targetType)`，软上限 50，`computeNextRunAt` 认领锚点跟配置走，PUT 对合并后的 targetType+targetId 判归属）、告警规则（幂等 `(project, name)`，窗口约束对合并后配置判：事件型无窗口、窗口型必带）、CI 任务（幂等 `(repo, name)`，`mergeDraft` 草稿合并 + `assertCredentialOwned` 凭据只引用既有条目 + 关串行补 `notifySerializedQueue` 唤醒）；② **MRTR 删除确认**：`mcpToolResult.ts` 的 `mrtrGate`（三态：无回应=首问、accept+confirm=true=确认、decline/cancel/形状不对=拒绝并指 UI——降级不开洞）+ `mrtrRequired`（`inputRequired.elicit` 表单式 boolean 确认，message = scanUsage 依赖清单 + 后果摘要；`force` 不是入参）；四个 delete_* 全走两段式，套件/CI 连带删引用的 schedules/webhook_triggers（事务），CI 的 message 先报 pipeline_runs 级联数并给「保历史请禁用」的替代；SDK 的 `legacy: 'stateless'` 兼容腿自动桥接 2025 系；③ `lib/mcpToolsExecute.ts` 5 工具（execute scope）：`run_endpoint`（复用导出的 `queueEndpointRun`，环境链显式→接口默认→项目默认，**不去重**——调试连点是正常用法）/ `run_case`（冻结快照整行入队，**不接受 overrides**，产物一条 executions 行）/ `run_flow`（`triggerFlowRun` 已存定义路径，`variableOverrides` 触发语义与调度/Webhook 同一套合并规则；在途去重：`flow_executions` 有 queued/running 时返回那个 id）/ `trigger_suite_run`（同款去重 `suite_executions`）/ `trigger_ci_task_run`（去重集 = pipeline_runs 四态 queued/claimed/running/cancelling；`triggeredBy` = Token 签发人，`IdempotentReplayError` 回首次 run 不算失败）。触发上下文与 REST 手动路径一致（不传 trigger），「谁经哪把钥匙触发」由 `mcp_tool.execute` 审计行回答。工具总数 **21 读 + 5 + 12 + 5 = 43**，到位封顶。`pnpm check` 过；**实测待用户在智能体平台侧执行**（门槛 10 确认回合、11 在途去重、12 execute 触发通知+审计） |
 | P5-5c | `upsert_environment`（普通变量，上限 43→44）+ 无环境执行证据放行（9.5 修订，见当节） | **已实现**（2026-09-06，用户验收反馈两项：① agent 建完接口需要顺手补 `{{baseUrl}}` 一类普通变量 → `mcpToolsWriteCore.ts` 增 `upsert_environment`：幂等键 `(project, name)` 大小写不敏感（REST 判重同口径），`variables` 整块替换（REST PATCH 同语义，description 提醒先 `list_environments` 读再合并），`cleanVariables` 同款归一（trim 键/丢空键/值必须字符串），**secrets 无参数位**（入参出现 `secrets` 键即拒并指 UI），凭据名变量（token/secret/password/apiKey/credential 正则）被 `mcpSecretGuard.rejectCredentialNamedVariables` 指名拒绝（明文变量所有工具可读，不是放敏感值的通道），runnerLabel/defaultHeaders 用列默认值保持 UI-only；写审计同款。② 同日早些时候的 9.5 修订（无环境执行按项目 secret 并集脱敏后返回）记录在 9.5 节内。工具总数 **44（21 读 + 18 写 + 5 执行）**。`pnpm check` 过；实测待用户在智能体平台侧执行） |
+| P5-7 | 文本用例 / 公共脚本 / 环境删除工具（上限 44→55，用户 2026-09-09 要求：文本 case 与环境变量、公共脚本增删改查） | **已实现**（2026-09-09：先按边界 8 把 `specCases.ts` 的 `validateSpecCase`/`normalizeSteps`/`normalizeTags`/`nextItemKey` 提取到 `lib/validateSpecCase.ts`、`scripts.ts` 的 `validate` 提取到 `lib/validateScript.ts`（函数体逐字搬移，REST 路由改 import），再落两批——① `lib/mcpToolsSpec.ts` 7 工具：读侧 `list_spec_cases`（列表路由同款 SQL：keyword/moduleId/path/priority/status/automation 过滤，行带 modulePath/linkCount/automated）+ `get_spec_case`（完整定义 + links[] 名字读时 JOIN，不带 lastResult 拼串）+ `list_spec_modules`（树全量 + 直属三计数）；写侧 `create_spec_case`（item_key 服务端生成、23505 重试 ≤3、**刻意不做幂等去重**——重复合并只属导入路径，description 写明）+ `update_spec_case`（PATCH 同款，itemKey/source 不可改）+ `delete_spec_case`（CASCADE 无 409，MRTR 确认带 link 数）+ `create_spec_module`（幂等 `(parent, name)` = 同 path 重读既有行，深 6 层）。② `lib/mcpToolsWriteExtra.ts` 4 工具：`create_script`（幂等 `(project, name)` 重名按更新处理，kind 只可 hook/response/library/node，库内容过 `inspectLibrarySource`，依赖经 `replaceDependencies` 同判据复刻只指 library）+ `update_script`（kind 不可改、回执带 `scriptUsage` followers 清单）+ `delete_script`（MRTR message 带追随者清单）+ `delete_environment`（scanUsage 独占变量口径复刻：兄弟环境同名键不算阻塞，message 带接口清单；删前回填 `executions.environment_name` 快照；secret 仍无通路）。`mcpServer.ts` 注册 `READ_SPEC_TOOLS`/`WRITE_SPEC_TOOLS`/`WRITE_EXTRA_TOOLS`，上限注释 44→55；`list_scripts`/`upsert_environment` 的 description 同步改口（旧「不能建/改/删」边界已失效）。**顺手修缺陷**：`upsert_environment` UPDATE 分支写不存在的 `environments.updated_at` 列致已存在环境的变量替换必 500（见 `issue_fix/问题记录-MCP环境更新分支updated_at列缺失.md`，删该 SET 子句）。工具总数 **55（25 读 + 25 写 + 5 执行）**。`pnpm check` 过；实测待用户在智能体平台侧执行） |
 | P5-6 | 前端 MCP 管理页 + i18n 两语言（签发弹窗三勾选） | **已实现**（2026-09-06：`McpPage.tsx` 独立页（路由 `/projects/:projectId/mcp`，导航入「接口资产」组、`PAGES`/`NAV_ICONS`/nav 三处齐改、`Bot` 图标）——页头启停开关（`check-field` 与环境页明文开关同款；store 增 `mcpEnabled` + `updateMcpEnabled`，settings PUT 只带要改的字段——`storePlaintext` 缺省由服务端 COALESCE 保留，`defaultEnvironmentId` 恒随行当前值防清空）+ 服务与端点面板（`/mcp` 根地址 code-block + CopyButton + STREAMABLE_HTTP 注册与浏览器视角说明）+ Token 面板（名字 / 前缀 / scope chip / 最后使用 / 签发时间 / 吊销 `Modal.confirm`）+ 工具清单只读表（segmented 按 scope 过滤带计数，read→write→execute 排序，description 给模型读的原文不翻译）。**签发弹窗两段式**：表单段（名字 + scope 三勾选——read 勾死 disabled、write / execute 显式，勾中即现边界 2 的「权限跟着签发人走」警示）；明文段无 X、无遮罩关闭，唯一出口「我已保存，关闭」。`api.ts` 落 `McpScope`/`McpToken`/`McpToolSummary` + 四接口（列表 / 签发 / 吊销 / 工具清单），`ProjectSettings` 补 `mcpEnabled`；i18n 两语言 `mcp.*` 全套。`pnpm check` 过；验收门槛「签发 / 吊销 / 开关可用」待用户实测 |
 
 **P5-2 必须在 P5-5a 之前独立成一步**：它是纯重构，混进写工具那一步之后，一旦 REST 面出现
