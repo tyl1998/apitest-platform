@@ -11,6 +11,8 @@ import { inspectLibrarySource, SCRIPT_CTX_SCHEMAS } from "../lib/scriptContract.
 import { scriptUsage } from "../lib/scripts.js";
 import { isUuid } from "../lib/uuid.js";
 import { mapScript } from "../models/types.js";
+/* P5-6 边界 8：公共脚本校验提取到 lib/validateScript.ts（MCP 写工具同款判据）。 */
+import { CREATABLE_SCRIPT_KINDS, MAX_SCRIPT_LENGTH, SCRIPT_KINDS, validateScript, type ScriptInput } from "../lib/validateScript.js";
 
 /**
  * 具名公共脚本 CRUD (计划 4.0.1 确认: follow / copy).
@@ -25,38 +27,6 @@ import { mapScript } from "../models/types.js";
  * that blast radius needs its own confirmation — which is exactly what
  * `GET .../usage` and the `force` delete exist to support.
  */
-
-const MAX_SCRIPT_LENGTH = 20_000;
-/* `assertion` remains readable for historical rows, but new custom response
-   logic is stored as `response` after P2-2.1. */
-const SCRIPT_KINDS = ["assertion", "hook", "response", "library", "node"];
-const CREATABLE_SCRIPT_KINDS = ["hook", "response", "library", "node"];
-
-type ScriptInput = { name?: string; content?: string; kind?: string; dependencies?: string[] };
-
-function validate(input: ScriptInput, partial = false): string | undefined {
-  if (!partial || input.name !== undefined) {
-    if (!input.name?.trim()) return "name is required";
-    if (input.name.trim().length > 100) return "name must be at most 100 characters";
-  }
-  if (!partial || input.content !== undefined) {
-    if (!input.content?.trim()) return "content is required";
-    if (input.content.length > MAX_SCRIPT_LENGTH) return `content must be at most ${MAX_SCRIPT_LENGTH} characters`;
-  }
-  if (input.kind !== undefined && !SCRIPT_KINDS.includes(input.kind)) {
-    return `kind must be one of ${SCRIPT_KINDS.join(", ")}`;
-  }
-  if (input.kind === "library" && input.content !== undefined) {
-    const inspected = inspectLibrarySource(input.content);
-    if (inspected.error) return inspected.error;
-  }
-  if (input.dependencies !== undefined) {
-    if (!Array.isArray(input.dependencies)) return "dependencies must be an array";
-    if (input.dependencies.some((id) => !isUuid(id))) return "dependencies must be script ids";
-    if (input.dependencies.length > 10) return "a script may reference at most 10 libraries";
-  }
-  return undefined;
-}
 
 /**
  * Rewrites which libraries a public script pulls in.
@@ -183,7 +153,7 @@ export async function scriptRoutes(app: FastifyInstance) {
 
   app.post<{ Params: { id: string }; Body: ScriptInput }>("/api/v1/projects/:id/scripts", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
-    const invalid = validate(request.body);
+    const invalid = validateScript(request.body);
     if (invalid) return fail(reply, 400, 1001, invalid);
 
     const duplicate = await pool.query(
@@ -234,7 +204,7 @@ export async function scriptRoutes(app: FastifyInstance) {
   app.patch<{ Params: { id: string; scriptId: string }; Body: ScriptInput }>("/api/v1/projects/:id/scripts/:scriptId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
     if (!isUuid(request.params.scriptId)) return fail(reply, 404, 2001, "script not found");
-    const invalid = validate(request.body, true);
+    const invalid = validateScript(request.body, true);
     if (invalid) return fail(reply, 400, 1001, invalid);
 
     if (request.body.name !== undefined) {

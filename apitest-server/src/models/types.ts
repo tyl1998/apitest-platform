@@ -832,6 +832,12 @@ export type ExecutionStep = {
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
+  /**
+   * 该失败行当前的人工归因（P8-3，报告成员行随行 LEFT JOIN；失败成员有 httpExecutionId
+   * 时归因挂在 executions 行、否则挂在本步骤行——推导与读侧同一句 SQL）。只有失败行
+   * 可能有值；undefined = 未归因。其余使用方（流程步骤树等）不 SELECT 归因列，恒 undefined。
+   */
+  attribution?: FailureAttributionLite;
 };
 
 export type FlowExecution = {
@@ -1362,6 +1368,8 @@ export type SpecCaseLink = {
   targetName?: string;
   /** 仅 repo_case：行状态（removed = 对账判消失，「目标已失效」）。 */
   targetStatus?: string;
+  /** 仅 case：宿主接口 id（读时 JOIN；前端拼 `endpoints/:id?case=` 深链用）。 */
+  targetEndpointId?: string;
   /** 最近自动化结果（读时关联；endpoint 目标恒空）。 */
   lastResult?: SpecLinkLastResult;
   createdAt: string;
@@ -1377,6 +1385,7 @@ export function mapSpecCaseLink(row: Record<string, unknown>): SpecCaseLink {
     targetKey: row.target_key === undefined || row.target_key === null ? undefined : String(row.target_key),
     targetName: row.target_name === undefined || row.target_name === null ? undefined : String(row.target_name),
     targetStatus: row.target_status === undefined || row.target_status === null ? undefined : String(row.target_status),
+    targetEndpointId: row.target_endpoint_id === undefined || row.target_endpoint_id === null ? undefined : String(row.target_endpoint_id),
     /* last_status 是 JOIN 列而不是绑定行自己的列：缺席（NULL）= 目标没有执行记录，
        与「查询没带 last_* 列」是同一个读法，所以判断列存在与否就足够。 */
     lastResult: hasResult
@@ -1846,6 +1855,7 @@ export function mapExecutionStep(row: Record<string, unknown>): ExecutionStep {
   return {
     id: String(row.id), indexId: String(row.index_id), stepId: String(row.step_id), stepType: String(row.step_type), stepName: String(row.step_name),
     status: String(row.status) as ExecutionStep["status"], stage: Number(row.stage), position: Number(row.position),
+    attribution: attributionOf(row),
     parentStepId: row.parent_step_id ? String(row.parent_step_id) : undefined,
     iteration: row.iteration === null || row.iteration === undefined ? undefined : Number(row.iteration),
     input: (row.input_snapshot ?? {}) as Record<string, unknown>, output: (row.output_snapshot ?? {}) as Record<string, unknown>,
@@ -2594,6 +2604,9 @@ export type PipelineRun = {
   id: string;
   projectId: string;
   ciTaskId: string;
+  /** 详情路由 JOIN ci_tasks 带出的任务名（P8-6：详情面包屑显示「任务名 #序号」，
+      与执行记录行的身份同一个词）；列表路由不带。 */
+  taskName?: string;
   /** 归一进统一执行记录的那一行（kind='runner'，P4.5-4 写入）；触发时还没有。 */
   executionIndexId?: string;
   /** 任务内自增，界面上的 #128。 */
@@ -2640,6 +2653,9 @@ export function mapPipelineRun(row: Record<string, unknown>): PipelineRun {
   const filter = row.case_filter as { case_keys?: unknown[] } | null | undefined;
   return {
     id: String(row.id), projectId: String(row.project_id), ciTaskId: String(row.ci_task_id),
+    /* 详情路由 JOIN 带出的任务名（列表路由没有——行身份在 execution_index 的
+       target_name 里，不需要重复一份）。 */
+    taskName: row.task_name ? String(row.task_name) : undefined,
     executionIndexId: row.execution_index_id ? String(row.execution_index_id) : undefined,
     runNumber: Number(row.run_number),
     status: String(row.status) as PipelineRun["status"],
@@ -2735,6 +2751,8 @@ export type PipelineRunCase = {
   finishedAtMs?: number;
   host?: string;
   thread?: string;
+  /** 该失败行当前的人工归因（P8-3；failed/error 行才可能有值，undefined = 未归因）。 */
+  attribution?: FailureAttributionLite;
 };
 
 export function mapPipelineRunCase(row: Record<string, unknown>): PipelineRunCase {
@@ -2753,6 +2771,7 @@ export function mapPipelineRunCase(row: Record<string, unknown>): PipelineRunCas
     finishedAtMs: row.finished_at_ms === null || row.finished_at_ms === undefined ? undefined : Number(row.finished_at_ms),
     host: row.host === null || row.host === undefined ? undefined : String(row.host),
     thread: row.thread === null || row.thread === undefined ? undefined : String(row.thread),
+    attribution: attributionOf(row),
   };
 }
 
@@ -2928,6 +2947,102 @@ export function mapSpecCase(row: Record<string, unknown>): SpecCase {
     source: row.source === undefined || row.source === null ? undefined : String(row.source),
     linkCount: row.link_count === undefined || row.link_count === null ? undefined : Number(row.link_count),
     automated: row.automated === undefined || row.automated === null ? undefined : Boolean(row.automated),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+  };
+}
+
+/* ── P8: 失败归因（计划十二章 12.1，迁移 054）。──────────────────────────────── */
+
+/** 归因目标三类（边界 4：只在叶子失败上归因，不在父级 run/suite execution 上打标）。 */
+export type AttributionTargetType = "execution" | "pipeline_run_case" | "execution_step";
+
+/**
+ * 归因分类字典行。平台级一份（边界 5：项目不可改口径，跨项目可比才有意义）。
+ * `position` 是管理面排序；`active=false` 停用后归因抽屉不再出现该选项，但历史行与
+ * 统计仍按名称聚合（不删行——删语义走 409 引用扫描，见管理路由）。
+ */
+export type FailureCategory = {
+  code: string;
+  name: string;
+  position: number;
+  active: boolean;
+};
+
+export function mapFailureCategory(row: Record<string, unknown>): FailureCategory {
+  return {
+    code: String(row.code),
+    name: String(row.name),
+    position: Number(row.position),
+    active: Boolean(row.active),
+  };
+}
+
+/**
+ * 行内嵌的归因读数（P8-3）：报告成员行 / CI 用例行 / 报告列表聚合随行 LEFT JOIN 带出
+ * 的**展示形状**。`categoryName` 一并冗余——读侧（列表、chip、分享页）不该为了显示一个
+ * 名字再发一次字典请求，更不该在公开分享页上发任何请求。完整行（id/createdBy/时间戳
+ * 全套）只在归因 REST（`mapFailureAttribution`）里出现。
+ */
+export type FailureAttributionLite = {
+  category: string;
+  categoryName: string;
+  note: string;
+  /** 绑定的 bug 链接（P8-3 验收反馈；空串 = 未绑定）。 */
+  bugUrl: string;
+  source: "human" | "mcp";
+  updatedAt: string;
+};
+
+/**
+ * JOIN 侧的列名约定：`attribution_category` / `attribution_category_name` /
+ * `attribution_note` / `attribution_bug_url` / `attribution_source` /
+ * `attribution_updated_at`。没有归因时这些列全 NULL → undefined（没有行 = 未归因，
+ * 边界 7）。
+ */
+export function attributionOf(row: Record<string, unknown>): FailureAttributionLite | undefined {
+  if (row.attribution_category === null || row.attribution_category === undefined) return undefined;
+  return {
+    category: String(row.attribution_category),
+    categoryName: String(row.attribution_category_name ?? row.attribution_category),
+    note: String(row.attribution_note ?? ""),
+    bugUrl: String(row.attribution_bug_url ?? ""),
+    source: String(row.attribution_source ?? "human") as FailureAttributionLite["source"],
+    updatedAt: new Date(String(row.attribution_updated_at)).toISOString(),
+  };
+}
+
+/**
+ * 一条失败的归因（边界 6：一条失败只有一个，UNIQUE (target_type, target_id)）。
+ * `source` 区分人打的还是 agent 打的（边界 8：统计页可按来源筛）。`createdBy` 为空
+ * 即 agent 通道（MCP Token 场景写 token 签发人——P8-7 落地，REST 路径恒有真人）。
+ */
+export type FailureAttribution = {
+  id: string;
+  projectId: string;
+  targetType: AttributionTargetType;
+  targetId: string;
+  category: string;
+  note: string;
+  /** 绑定的 bug 链接（P8-3 验收反馈；空串 = 未绑定）。 */
+  bugUrl: string;
+  source: "human" | "mcp";
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function mapFailureAttribution(row: Record<string, unknown>): FailureAttribution {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    targetType: String(row.target_type) as AttributionTargetType,
+    targetId: String(row.target_id),
+    category: String(row.category),
+    note: String(row.note ?? ""),
+    bugUrl: String(row.bug_url ?? ""),
+    source: String(row.source ?? "human") as FailureAttribution["source"],
+    createdBy: row.created_by === null || row.created_by === undefined ? undefined : String(row.created_by),
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
   };

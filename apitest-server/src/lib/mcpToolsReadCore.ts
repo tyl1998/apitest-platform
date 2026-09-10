@@ -265,7 +265,7 @@ export const READ_CORE_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: "list_scripts",
-    description: "List the project's named public scripts (assertion / hook / response / library / node kinds), optionally filtered by kind or keyword, paged. Anonymous case-owned scripts are an implementation detail and never listed. Editing a public script changes every follower at once — there is no read tool that can tell you the blast radius of an edit; the REST UI shows usage. Cannot create or edit scripts through this tool set.",
+    description: "List the project's named public scripts (assertion / hook / response / library / node kinds), optionally filtered by kind or keyword, paged. Rows carry the script id for get_script-level reads and the dependency (library) ids in concatenation order. Anonymous case-owned scripts are an implementation detail and never listed. Editing a public script via update_script changes every follower at once — update_script returns the follower list, and delete_script always asks for confirmation with it. Cannot list anonymous scripts or try-run scripts (the REST sandbox does that).",
     scope: "read",
     inputSchema: {
       type: "object",

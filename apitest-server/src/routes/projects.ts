@@ -5,7 +5,7 @@ import { currentUser } from "../lib/auth.js";
 import { requireProjectAccess, requireProjectAdmin } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { mapProject } from "../models/types.js";
-import { queryProjectMetrics, type ProjectFilters } from "./dashboard.js";
+import { queryProjectList, type ProjectFilters } from "./dashboard.js";
 
 export async function projectRoutes(app: FastifyInstance) {
   /**
@@ -14,18 +14,21 @@ export async function projectRoutes(app: FastifyInstance) {
    * Metrics ship with the list so the project directory needs one request.
    *
    * 分页是 opt-in（与接口/环境列表同一契约，2026-08-30 项目管理页补齐）：不给 `pageSize`
-   * 就回全量——项目切换器（projectStore）与 dashboard 聚合都依赖无分页契约。给了则
-   * total 是这份过滤命中的全量数，翻页器才画得出来。
+   * 就回全量——项目切换器（projectStore）依赖无分页契约。给了则 total 是这份过滤
+   * 命中的全量数，翻页器才画得出来。
+   *
+   * 2026-09-10 换到 queryProjectList（轻查询）：本路由的读者只要身份 + 资产计数，
+   * 执行面聚合（executions 七表、P8-8 实测 817ms 的大头）与它无关，不再为它买单。
    */
   app.get<{ Querystring: ProjectFilters & { page?: string; pageSize?: string } }>("/api/v1/projects", async (request, reply) => {
     const user = await currentUser(request, reply); if (!user) return;
     if (request.query.pageSize === undefined) {
-      const data = await queryProjectMetrics(user, request.query);
+      const data = await queryProjectList(user, request.query);
       return success(data.projects, { total: data.total });
     }
     const page = Math.max(1, Number(request.query.page ?? 1));
     const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize)));
-    const data = await queryProjectMetrics(user, request.query, { page, pageSize });
+    const data = await queryProjectList(user, request.query, { page, pageSize });
     return success(data.projects, { page, pageSize, total: data.total });
   });
 

@@ -67,8 +67,12 @@ export async function pipelineRunRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string; runId: string } }>("/api/v1/projects/:id/pipeline-runs/:runId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, false); if (!context) return;
     if (!isUuid(request.params.runId)) return fail(reply, 404, 2001, "pipeline run not found");
+    /* 带出任务名（P8-6 验收反馈）：执行记录的 runner 行显示「任务名 #序号」，点进
+       详情后面包屑只有「#序号」对不上——行的身份与详情的身份必须是同一个词。 */
     const result = await pool.query(
-      "SELECT * FROM pipeline_runs WHERE id = $1 AND project_id = $2",
+      `SELECT pr.*, t.name AS task_name
+         FROM pipeline_runs pr LEFT JOIN ci_tasks t ON t.id = pr.ci_task_id
+        WHERE pr.id = $1 AND pr.project_id = $2`,
       [request.params.runId, context.project.id],
     );
     if (!result.rowCount) return fail(reply, 404, 2001, "pipeline run not found");
@@ -156,17 +160,25 @@ export async function pipelineRunRoutes(app: FastifyInstance) {
   );
 
   /** cases（P4.5-11/13）：全量行，时间轴与列表共用一个接口（几万行内不分页——
-   *  渲染侧自己虚拟化；分页会把时间轴切成不是用户心智的形状）。 */
+   *  渲染侧自己虚拟化；分页会把时间轴切成不是用户心智的形状）。
+   *  归因随行 LEFT JOIN（P8-3）：CI 用例失败的归因目标就是行自身；分类名一并带出。 */
   app.get<{ Params: { id: string; runId: string } }>(
     "/api/v1/projects/:id/pipeline-runs/:runId/cases",
     async (request, reply) => {
       const context = await requireProjectAccess(request, reply, false); if (!context) return;
       if (!isUuid(request.params.runId)) return fail(reply, 404, 2001, "pipeline run not found");
       const result = await pool.query(
-        `SELECT * FROM pipeline_run_cases
-          WHERE pipeline_run_id = $1
-          ORDER BY started_at_ms NULLS LAST, suite_name, case_name`,
-        [request.params.runId],
+        `SELECT prc.*,
+                fa.category AS attribution_category, fc.name AS attribution_category_name,
+                fa.note AS attribution_note, fa.bug_url AS attribution_bug_url,
+                fa.source AS attribution_source, fa.updated_at AS attribution_updated_at
+          FROM pipeline_run_cases prc
+          LEFT JOIN failure_attributions fa
+            ON fa.project_id = $2 AND fa.target_type = 'pipeline_run_case' AND fa.target_id = prc.id
+          LEFT JOIN failure_categories fc ON fc.code = fa.category
+         WHERE prc.pipeline_run_id = $1
+         ORDER BY started_at_ms NULLS LAST, suite_name, case_name`,
+        [request.params.runId, context.project.id],
       );
       return success(result.rows.map(mapPipelineRunCase), { total: result.rowCount });
     },

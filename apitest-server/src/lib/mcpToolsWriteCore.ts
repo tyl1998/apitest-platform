@@ -549,7 +549,7 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: "upsert_environment",
-    description: "Create an environment or replace its PLAIN variables, by name (idempotency key is (project, name), matched case-insensitively). `variables` replaces the whole plain-variable map when present — read list_environments first and write the merged map to keep keys you did not mean to drop. NEVER touches secrets: there is no secrets parameter, and credential-looking variable names (token/secret/password/apiKey/…) are rejected — sensitive values are entered by humans in the UI and referenced as {{name}}. runnerLabel and defaultHeaders stay UI-only. Cannot delete an environment, read secret values, or manage project default environment.",
+    description: "Create an environment or replace its PLAIN variables, by name (idempotency key is (project, name), matched case-insensitively). `variables` replaces the whole plain-variable map when present — read list_environments first and write the merged map to keep keys you did not mean to drop. NEVER touches secrets: there is no secrets parameter, and credential-looking variable names (token/secret/password/apiKey/…) are rejected — sensitive values are entered by humans in the UI and referenced as {{name}}. runnerLabel and defaultHeaders stay UI-only. Deleting an environment is delete_environment; secrets and the project default environment remain UI-only.",
     scope: "write",
     inputSchema: {
       type: "object",
@@ -602,7 +602,9 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
             [environmentId, identity.projectId, name, JSON.stringify(variables ?? {}), DEFAULT_RUNNER_LABEL],
           )
         : await pool.query(
-            `UPDATE environments SET variables = COALESCE($2::jsonb, variables), updated_at = now()
+            /* updated_at 写不得（environments 表没有这一列——迁移 001/027/030 都没加，
+               ㉙：UPDATE 分支一执行就 500）。变量替换语义本身不依赖时间戳。 */
+            `UPDATE environments SET variables = COALESCE($2::jsonb, variables)
               WHERE id = $1 AND project_id = $3 RETURNING *`,
             [environmentId, variables ? JSON.stringify(variables) : null, identity.projectId],
           );

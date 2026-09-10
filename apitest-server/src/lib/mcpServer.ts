@@ -10,8 +10,11 @@ import type { McpIdentity } from "./mcpAuth.js";
 import type { MrtrContext } from "./mcpToolResult.js";
 import { READ_CORE_TOOLS } from "./mcpToolsReadCore.js";
 import { READ_TASKS_TOOLS } from "./mcpToolsReadTasks.js";
+import { READ_SPEC_TOOLS } from "./mcpToolsSpec.js";
+import { ATTRIBUTION_TOOLS } from "./mcpToolsAttribution.js";
 import { WRITE_CORE_TOOLS } from "./mcpToolsWriteCore.js";
 import { WRITE_CRUD_TOOLS } from "./mcpToolsWriteCrud.js";
+import { WRITE_EXTRA_TOOLS } from "./mcpToolsWriteExtra.js";
 import { EXECUTE_TOOLS } from "./mcpToolsExecute.js";
 
 /**
@@ -52,10 +55,17 @@ export type McpToolDefinition = {
  * 工具登记处。P5-4 落了全部 21 个只读工具；P5-5 落全部写与执行工具（核心写 5 + 全量
  * CRUD 12 + 执行 5）。2026-09-06 上限 43 → **44**（用户决策）：`upsert_environment`
  * 进来——普通变量可经工具管理，secret 仍无通路（UI-only，契约第 7 条）。
+ * 2026-09-09 上限 44 → **55**（用户决策）：文本用例 CRUD + 模块读写 7、公共脚本
+ * CRUD 3、环境删除 1 进来——文本用例与公共脚本补齐增删改查，环境补删除；
+ * secret / 绑定 / 导入导出仍无通路。
+ * 2026-09-10 上限 55 → **57**（P8-7，计划 12.2）：归因两工具
+ * `list_unattributed_failures`（read）/ `set_failure_attribution`（write）进来——
+ * agent 归因闭环（边界 8：平台不写一行 LLM 代码，外部 agent 读证据自行判断写回）。
  */
 export const MCP_TOOLS: readonly McpToolDefinition[] = [
-  ...READ_CORE_TOOLS, ...READ_TASKS_TOOLS,
-  ...WRITE_CORE_TOOLS, ...WRITE_CRUD_TOOLS, ...EXECUTE_TOOLS,
+  ...READ_CORE_TOOLS, ...READ_TASKS_TOOLS, ...READ_SPEC_TOOLS,
+  ...ATTRIBUTION_TOOLS,
+  ...WRITE_CORE_TOOLS, ...WRITE_CRUD_TOOLS, ...WRITE_EXTRA_TOOLS, ...EXECUTE_TOOLS,
 ];
 
 /** 按名字找工具（路由层第 3 道闸门用它判可见集）。 */

@@ -179,7 +179,10 @@ async function readRawBody(stream: Readable, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of stream) {
-    const piece = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as ArrayBufferLike | string);
+    /* Fastify 的 octet-stream parser 给的是 Buffer；万一有 string chunk（Node 流的
+       通用形状）也收进 Buffer。断言只写 string——`ArrayBufferLike` 会让 Buffer.from
+       的重载匹配不上（TS lib 的新版把 ArrayBuffer 从重载里拆出去了）。 */
+    const piece = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
     total += piece.length;
     if (total > limit) throw new Error(`file exceeds the ${Math.round(limit / (1024 * 1024))}MB import limit`);
     chunks.push(piece);

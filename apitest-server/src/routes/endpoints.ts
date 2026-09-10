@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { pool } from "../db.js";
 import { NoRunnerError, cancelBatch, cancelRun, enqueueRun } from "../lib/enqueue.js";
 import { requireProjectAccess } from "../lib/rbac.js";
@@ -38,6 +38,22 @@ function writeValues(input: EndpointInput) {
  * as 流程执行, so the source filter must be able to narrow to them.
  */
 const SOURCE_FILTERS = ["endpoint_debug", "test_case", "flow_step"];
+
+/**
+ * `?from=&to=` 时间窗参数（P8-4，下钻前置）：ISO 时间戳，解析失败 400（不静默
+ * 丢弃——下钻点的是「这一段的记录」，丢窗会给出全量历史）。与 reports.ts 的
+ * 同名解析保持同一份语义；各留一份是因为两处各自的路由文件没有共享层可放
+ * （lib/validate.ts 是实体输入校验，不是 query 参数解析）。
+ */
+function readTimeRange(query: { from?: string; to?: string }, reply: FastifyReply): { from: Date | null; to: Date | null } | undefined {
+  const from = query.from ? new Date(query.from) : null;
+  const to = query.to ? new Date(query.to) : null;
+  if ((query.from && Number.isNaN(from!.getTime())) || (query.to && Number.isNaN(to!.getTime()))) {
+    fail(reply, 400, 1001, "from/to must be ISO timestamps");
+    return undefined;
+  }
+  return { from, to };
+}
 
 async function validEnvironment(projectId: string, environmentId: string | null | undefined) {
   if (!environmentId || !isUuid(environmentId)) return !environmentId;
@@ -105,13 +121,18 @@ export async function queueEndpointRun(projectId: string, endpointId: string, re
 }
 
 export async function endpointRoutes(app: FastifyInstance) {
-  app.get<{ Params: { id: string }; Querystring: { keyword?: string; method?: string; environmentId?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/endpoints", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { keyword?: string; method?: string; environmentId?: string; coverage?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/endpoints", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
     /* Server-side filtering, so a keyword matches every endpoint, not just the loaded page. */
     const keyword = request.query.keyword?.trim();
     if (keyword) { params.push(`%${keyword}%`); clauses.push(`(name ILIKE $${params.length} OR url ILIKE $${params.length} OR description ILIKE $${params.length})`); }
     if (request.query.method && request.query.method !== "all") { params.push(request.query.method.toUpperCase()); clauses.push(`method = $${params.length}`); }
+    /* 覆盖率筛选（看板「已覆盖/未覆盖」下钻的落点）：口径与 /stats/overview 的
+       coverageRate 同一表达式——有用例接口 = EXISTS(test_cases)。covered/uncovered
+       之外不进 SQL（口径参数不静默报错也不放大，method 同款纪律）。 */
+    if (request.query.coverage === "covered") clauses.push("EXISTS (SELECT 1 FROM test_cases tc WHERE tc.endpoint_id = endpoints.id)");
+    else if (request.query.coverage === "uncovered") clauses.push("NOT EXISTS (SELECT 1 FROM test_cases tc WHERE tc.endpoint_id = endpoints.id)");
     if (request.query.environmentId === "unset") clauses.push("default_environment_id IS NULL");
     else if (request.query.environmentId) {
       if (!isUuid(request.query.environmentId)) return fail(reply, 400, 1001, "environmentId must be a UUID or unset");
@@ -421,14 +442,24 @@ export async function endpointRoutes(app: FastifyInstance) {
     return success({ ...mapBatchExecution(result.rows[0]), canceled });
   });
 
-  app.get<{ Params: { id: string }; Querystring: { page?: string; pageSize?: string } }>("/api/v1/projects/:id/batch-executions", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/batch-executions", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
+    /* 时间窗与 executions / execution-index 两份清单同款（P8-6 验收反馈：执行记录
+       页三个大类都要有按时间范围筛选）。 */
+    const range = readTimeRange(request.query, reply);
+    if (!range) return;
     const page = Math.max(1, Number(request.query.page ?? 1));
     const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
-    const count = await pool.query("SELECT COUNT(*)::int AS total FROM batch_executions WHERE project_id = $1", [context.project.id]);
+    const params: unknown[] = [context.project.id];
+    const clauses = ["project_id = $1"];
+    if (range.from) { params.push(range.from); clauses.push(`created_at >= $${params.length}`); }
+    if (range.to) { params.push(range.to); clauses.push(`created_at <= $${params.length}`); }
+    const where = clauses.join(" AND ");
+    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM batch_executions WHERE ${where}`, params);
+    params.push(pageSize, (page - 1) * pageSize);
     const result = await pool.query(
-      "SELECT * FROM batch_executions WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
-      [context.project.id, pageSize, (page - 1) * pageSize],
+      `SELECT * FROM batch_executions WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
     );
     return success(result.rows.map(mapBatchExecution), { page, pageSize, total: Number(count.rows[0].total) });
   });
@@ -465,11 +496,17 @@ export async function endpointRoutes(app: FastifyInstance) {
     return success(mapExecution(result.rows[0]));
   });
 
-  app.get<{ Params: { id: string }; Querystring: { status?: string; endpointId?: string; source?: string; caseId?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/executions", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { status?: string; endpointId?: string; source?: string; caseId?: string; from?: string; to?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/executions", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     const page = Math.max(1, Number(request.query.page ?? 1));
     const pageSize = Math.min(200, Math.max(1, Number(request.query.pageSize ?? 20)));
     const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
+    /* 时间窗（P8-4，下钻前置）：趋势图点击跳转列表时带 from/to。ISO 时间戳解析失败
+       400 而不是静默丢弃——用户点的是「这一天的失败」，静默丢窗会给他全量历史。 */
+    const range = readTimeRange(request.query, reply);
+    if (!range) return;
+    if (range.from) { params.push(range.from); clauses.push(`created_at >= $${params.length}`); }
+    if (range.to) { params.push(range.to); clauses.push(`created_at <= $${params.length}`); }
     if (request.query.status && request.query.status !== "all") { params.push(request.query.status); clauses.push(`status = $${params.length}`); }
     /* A non-uuid would abort the whole query, so ignore anything malformed. */
     if (isUuid(request.query.endpointId)) { params.push(request.query.endpointId); clauses.push(`endpoint_id = $${params.length}`); }

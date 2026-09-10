@@ -32,6 +32,9 @@ export class ExcelFormatError extends Error {}
 type ExcelModule = { default: { Workbook: new () => ExcelWorkbook } };
 type ExcelWorkbook = {
   worksheets: ExcelWorksheet[];
+  /* 导出路径（P7-5）用的两个成员是后来加的，读取路径的形状没跟着扩——类型上缺了
+     它们，导出代码只能靠运行时事实通过。 */
+  addWorksheet(name: string): ExcelWorksheet;
   xlsx: {
     load(buffer: Buffer): Promise<unknown>;
     writeBuffer(): Promise<unknown>;

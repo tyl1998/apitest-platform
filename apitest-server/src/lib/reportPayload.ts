@@ -2,6 +2,7 @@ import { join, resolve } from "node:path";
 import { pool } from "../db.js";
 import { parseAllureReportBundle, type ReportView } from "./allureReport.js";
 import { mapExecutionStep, mapPipelineRun, mapPipelineRunCase, type PipelineRun, type PipelineRunCase } from "../models/types.js";
+import { PASS_RATE_SQL } from "./metrics.js";
 import { readZip } from "./zip.js";
 
 /**
@@ -9,7 +10,9 @@ import { readZip } from "./zip.js";
  *
  * 两个调用方（项目内详情路由、公开分享路由）要回**同一份**拼装结果——两处各写一遍
  * SQL 的那一天，就是「分享出去的报告与站内看到的数字对不上」的那一天。派生值
- * （耗时/排队/通过率）由这一份实现算（边界 13：减法只有一份）。
+ * （耗时/排队/通过率）由这一份实现算（边界 13：减法只有一份）。通过率公式收敛在
+ * `lib/metrics.ts`（P8-1 口径收口）：passed/(passed+failed)，skipped 不进分母——
+ * 与报告列表、通知模版、趋势汇总同一口径。
  */
 
 /** 派生指标都由这里算（边界 13）：墙钟耗时、排队等待、通过率。 */
@@ -19,8 +22,7 @@ function derivedColumns(): string {
       THEN EXTRACT(EPOCH FROM (se.finished_at - se.started_at)) * 1000 END AS duration_ms,
     CASE WHEN se.started_at IS NOT NULL
       THEN EXTRACT(EPOCH FROM (se.started_at - se.created_at)) * 1000 END AS queue_ms,
-    CASE WHEN se.total > 0
-      THEN ROUND(se.success_count::numeric * 100 / se.total, 1) END AS pass_rate`;
+    ${PASS_RATE_SQL("se")} AS pass_rate`;
 }
 
 export async function loadSuiteReport(projectId: string, executionId: string) {
@@ -33,10 +35,25 @@ export async function loadSuiteReport(projectId: string, executionId: string) {
   if (!result.rowCount) return null;
   const row = result.rows[0];
   /* 顶层步骤 = 成员明细（与套件运行抽屉同一口径）；循环/子流程的内层证据按需走
-     execution-steps 的 children 路由。 */
+     execution-steps 的 children 路由。
+     归因随行 LEFT JOIN（P8-3）：失败成员的归因目标按「有 httpExecutionId → executions
+     行（接口用例的 HTTP 失败），否则 → 本步骤行（流程成员等非 HTTP 失败）」推导——与
+     报告列表聚合、REST 写侧校验的目标口径一致。分类名一并带出（分享页免登录，读侧
+     不该再依赖字典请求）。 */
   const steps = await pool.query(
-    "SELECT * FROM execution_steps WHERE index_id = $1 AND parent_step_id IS NULL ORDER BY position, created_at",
-    [row.execution_index_id],
+    `SELECT es.*,
+            fa.category AS attribution_category, fc.name AS attribution_category_name,
+            fa.note AS attribution_note, fa.bug_url AS attribution_bug_url,
+            fa.source AS attribution_source, fa.updated_at AS attribution_updated_at
+       FROM execution_steps es
+       LEFT JOIN failure_attributions fa
+         ON fa.project_id = $2
+        AND fa.target_type = CASE WHEN es.http_execution_id IS NOT NULL THEN 'execution' ELSE 'execution_step' END
+        AND fa.target_id = COALESCE(es.http_execution_id, es.id)
+       LEFT JOIN failure_categories fc ON fc.code = fa.category
+      WHERE es.index_id = $1 AND es.parent_step_id IS NULL
+      ORDER BY es.position, es.created_at`,
+    [row.execution_index_id, projectId],
   );
   return {
     id: String(row.id),
@@ -164,11 +181,20 @@ export async function loadRunnerReport(projectId: string, runId: string): Promis
     [runId, projectId],
   );
   if (!runRow.rowCount) return null;
+  /* 归因随行 LEFT JOIN（P8-3）：CI 用例失败的归因目标就是 pipeline_run_cases 行自身；
+     分类名一并带出——分享页免登录，读侧不再依赖字典请求。 */
   const cases = await pool.query(
-    `SELECT * FROM pipeline_run_cases
-      WHERE pipeline_run_id = $1
+    `SELECT prc.*,
+            fa.category AS attribution_category, fc.name AS attribution_category_name,
+            fa.note AS attribution_note, fa.bug_url AS attribution_bug_url,
+            fa.source AS attribution_source, fa.updated_at AS attribution_updated_at
+       FROM pipeline_run_cases prc
+       LEFT JOIN failure_attributions fa
+         ON fa.project_id = $2 AND fa.target_type = 'pipeline_run_case' AND fa.target_id = prc.id
+       LEFT JOIN failure_categories fc ON fc.code = fa.category
+      WHERE prc.pipeline_run_id = $1
       ORDER BY started_at_ms NULLS LAST, suite_name, case_name`,
-    [runId],
+    [runId, projectId],
   );
   const artifact = await findReportArtifactRow(runId);
   let report: ReportView | null = null;

@@ -76,6 +76,20 @@ export const AUDIT_ACTIONS = {
   memberUpsert: "member.upsert",
   /** 移除成员。target = user；detail 带 email 与被移除时的角色。 */
   memberRemove: "member.remove",
+  /* ── P8-2：失败归因（计划 12.2）。target = failure_attribution（targetId 是被归因
+      的叶子失败行 id，不是归因行 id——归因行随打标生灭，「哪条失败被谁归成了什么」
+      才是审计要回答的问题）。detail 只带分类码与目标类型，note 自由文本不进
+      （它可能含业务细节，审计只回答「谁改了什么」）。 ── */
+  /** 打标/重打标（单条与批量同一动作，detail.batch 区分；批量带 count）。 */
+  failureAttributionSet: "failure_attribution.set",
+  /** 清除归因。target 同上；detail 带 target 类型。 */
+  failureAttributionClear: "failure_attribution.clear",
+  /* ── P8-2：归因分类字典管理（系统设置「归因类型」tab）。target =
+      failure_category（targetId 是 code 而非 uuid——字典的主键就是 code）。
+      detail 带 name 与前后状态，seed 的七类同受管理（见路由注释）。 ── */
+  failureCategoryCreate: "failure_category.create",
+  failureCategoryUpdate: "failure_category.update",
+  failureCategoryDelete: "failure_category.delete",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

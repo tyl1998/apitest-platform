@@ -39,6 +39,9 @@ import { specModuleRoutes } from "./routes/specModules.js";
 import { specCaseRoutes } from "./routes/specCases.js";
 import { specImportRoutes } from "./routes/specImport.js";
 import { testPlanRoutes } from "./routes/testPlans.js";
+import { attributionRoutes } from "./routes/attributions.js";
+import { failureCategoryRoutes } from "./routes/failureCategories.js";
+import { statsRoutes } from "./routes/stats.js";
 
 declare module "@fastify/jwt" {
   /* pwdEpoch 可选（P6-5）：P6-5 之前签发的存量 token 没有 claim，按 0 对齐库里的缺省值。 */
@@ -108,6 +111,15 @@ export async function buildApp(): Promise<FastifyInstance> {
   /* P7-7：测试计划（一批文本用例的一次手工执行记录）：建/列表/详情/改/删 + 项
      加/标/删 + CSV 导出（UTF-8 BOM）。五张表迁移 052 已建齐，零新迁移。 */
   await app.register(testPlanRoutes);
+  /* P8-2：失败归因（迁移 054）。REST 四条（字典读 / 单条 / 批量 / 清除）；`/stats/*`
+     全局统计、MCP 归因工具、归因前端入口分别在 P8-4 / P8-7 / P8-3。归因分类字典的
+     管理面（系统设置「归因类型」tab）在 `failureCategoryRoutes`（系统管理员）。 */
+  await app.register(attributionRoutes);
+  await app.register(failureCategoryRoutes);
+  /* P8-4：全局统计（无项目前缀的新路由组）。可见项目集过滤、30s TTL 内存缓存与
+     5s statement_timeout 全部收在 stats.ts 内（边界 16/23），注册顺序无讲究——
+     它不依赖其他路由的任何状态。前端页面（数据统计三段式 + 看板扩展）在 P8-6。 */
+  await app.register(statsRoutes);
   return app;
 }
 

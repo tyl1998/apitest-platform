@@ -1,6 +1,7 @@
 import { pool } from "../db.js";
 import { decryptSecret } from "./crypto.js";
 import type { ExecutionEvent } from "./events.js";
+import { passRateOf } from "./metrics.js";
 import { dispatchAlert, renderBody, renderTemplate, type AlertChannel, type AlertMessage } from "./notify.js";
 import { mapAlertRule, normalizeSuiteNotify } from "../models/types.js";
 
@@ -331,11 +332,14 @@ export async function notifySuiteResult(event: Extract<ExecutionEvent, { kind: "
   if (!channels.length) return;
 
   const status = event.status === "success" ? "成功" : "失败";
-  const settled = event.successCount + event.failedCount + event.skippedCount;
+  /* 通过率口径（P8-1 收口）：passed/(passed+failed)，skipped 不进分母——与报告
+     列表/详情/分享页同一公式（lib/metrics.ts 的 passRateOf）。此前这里把
+     skipped 算进分母，被跳过的用例拉低了通知里的读数，与报告页对不上。 */
+  const passRate = passRateOf(event.successCount, event.failedCount);
   const values = {
     suiteName: String(row.suite_name),
     status,
-    passRate: settled > 0 ? `${((event.successCount / settled) * 100).toFixed(1)}%` : "—",
+    passRate: passRate === null ? "—" : `${passRate.toFixed(1)}%`,
     successCount: String(event.successCount),
     failedCount: String(event.failedCount),
     skippedCount: String(event.skippedCount),

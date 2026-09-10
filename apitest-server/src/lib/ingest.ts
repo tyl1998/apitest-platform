@@ -531,8 +531,21 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
      *
      * `UNIQUE (kind, detail_id)` 让重投复用同一行索引；`target_id` 留空——上报没有平台
      * 侧的目标对象，`target_name` 用「仓库 @ 分支」把它在列表里说清。
+     *
+     * `finished_at` 的两个纪律（2026-09-10 趋势页 p99=3.94 天的教训）：
+     * - **首投兜底 `now()`**：上报没有「进行中」态（收到即终态），列表页读
+     *   finished_at 显示完成时刻，NULL 会让该行失去可读的结束时间——兜底是
+     *   接收时刻，误差只有网络延迟。但 `started_at` 有真值时**不兜底**：
+     *   `finished - started` 是趋势页的耗时样本，拿「接收时刻 − CI 里的启动时刻」
+     *   当耗时，晚几个小时重投就造出几小时的假耗时。
+     * - **重投只在拿到真值时覆盖**（`COALESCE(EXCLUDED.finished_at, 原值)`）：
+     *   SDK 分批上报时第一投常没有 finishedAt，靠第二投补真值；反过来，带着
+     *   兜底 now() 的重投不能把已经定局的完成时刻再往后推——9/4 跑完、9/8 重投
+     *   一份没带 finishedAt 的 payload，无条件覆盖会让 finished−started 跳到
+     *   3.94 天，把整窗 p99 拉爆（dev 库 479ecada 实测）。
      */
      const indexId = existingIndexId ?? randomUUID();
+     const settledAt = data.finishedAt ?? new Date().toISOString();
      const indexRow = await client.query(
       `INSERT INTO execution_index (
          id, project_id, kind, target_id, target_name, detail_id, status,
@@ -541,13 +554,14 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
        ON CONFLICT (kind, detail_id) DO UPDATE SET
          target_name = EXCLUDED.target_name, status = EXCLUDED.status, total = EXCLUDED.total,
          success_count = EXCLUDED.success_count, failed_count = EXCLUDED.failed_count,
-         finished_at = EXCLUDED.finished_at
+         finished_at = COALESCE(EXCLUDED.finished_at, execution_index.finished_at)
        RETURNING id`,
       [
         indexId, projectId, `${repository.gitUrl}${data.branch ? ` @ ${data.branch}` : ""}`, effectiveRunId,
         failedCount > 0 ? "failed" : "success",
         data.inventory.length, passedCount, failedCount,
-        data.sdkName || "ingest", data.startedAt ?? null, data.finishedAt ?? new Date().toISOString(),
+        data.sdkName || "ingest", data.startedAt ?? null,
+        data.startedAt !== undefined && data.finishedAt === undefined ? null : settledAt,
       ],
     );
     /* 实际行 id 与 indexId 可能不同：折形后的幂等键是 (repository, commit)（ingest_runs

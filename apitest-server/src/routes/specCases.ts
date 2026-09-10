@@ -4,9 +4,11 @@ import { pool } from "../db.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
-import { mapSpecCase, mapSpecCaseLink, type SpecCaseStep, type SpecLinkTargetType } from "../models/types.js";
+import { mapSpecCase, mapSpecCaseLink, type SpecLinkTargetType } from "../models/types.js";
 import { buildExcelExport, type ExcelExportCase } from "../lib/excel.js";
 import { buildXmindWorkbook, type XmindExportCase } from "../lib/xmindWriter.js";
+/* P5-6 边界 8：校验/归一/编号提取到 lib/validateSpecCase.ts（MCP 写工具同款判据）。 */
+import { nextItemKey, normalizeSteps, normalizeTags, validateSpecCase, type SpecCaseBody } from "../lib/validateSpecCase.js";
 
 /**
  * 文本用例 CRUD（P7-2，计划 11.2）。只做「设计内容」的增删改查：绑定（links）在
@@ -14,75 +16,11 @@ import { buildXmindWorkbook, type XmindExportCase } from "../lib/xmindWriter.js"
  * P7-3 追加两条批量路由（batch-update / batch-delete，树视图勾选批量条的后端）。
  */
 
-const PRIORITIES = ["P0", "P1", "P2", "P3"];
-/* 生命周期三态（㉘ 改名）：未评审起步 → 评审通过 → 废弃收档。 */
-const STATUSES = ["unreviewed", "reviewed", "deprecated"];
+/* 枚举常量已随校验提取到 lib/validateSpecCase.ts；本文件只在 batch-update 校验里
+   用到 PRIORITIES/STATUSES，改从提取文件取（同一份，避免第二拷贝漂移）。 */
+import { SPEC_PRIORITIES as PRIORITIES, SPEC_STATUSES as STATUSES } from "../lib/validateSpecCase.js";
 
-type SpecCaseBody = {
-  moduleId?: string;
-  title?: string;
-  preconditions?: string;
-  steps?: SpecCaseStep[];
-  priority?: string;
-  tags?: string[];
-  status?: string;
-};
 
-/** 手工建/改的入参校验（消息串风格照 lib/validate.ts；PATCH 只验出现的键）。 */
-function validateSpecCase(input: SpecCaseBody, partial = false): string | undefined {
-  if (!partial || input.title !== undefined) if (!input.title?.trim()) return "title is required";
-  if (!partial && input.moduleId === undefined) return "moduleId is required";
-  if (input.moduleId !== undefined && !isUuid(input.moduleId)) return "moduleId must be a UUID";
-  if (input.preconditions !== undefined && typeof input.preconditions !== "string") return "preconditions must be a string";
-  if (input.priority !== undefined && !PRIORITIES.includes(input.priority)) return `priority must be one of ${PRIORITIES.join(", ")}`;
-  if (input.status !== undefined && !STATUSES.includes(input.status)) return `status must be one of ${STATUSES.join(", ")}`;
-  if (input.tags !== undefined && (!Array.isArray(input.tags) || input.tags.some((tag) => typeof tag !== "string"))) return "tags must be an array of strings";
-  if (input.steps !== undefined) {
-    if (!Array.isArray(input.steps)) return "steps must be an array";
-    for (const item of input.steps) {
-      if (typeof item !== "object" || item === null) return "each step must be an object";
-      const record = item as { step?: unknown; expected?: unknown };
-      if (record.step !== undefined && typeof record.step !== "string") return "step text must be a string";
-      if (record.expected !== undefined && typeof record.expected !== "string") return "expected text must be a string";
-    }
-  }
-  return undefined;
-}
-
-/**
- * 步骤归一：trim + 丢弃两列全空的行（行内表格极易留空行，存进去只会在详情里渲染出
- * 空步骤）。String() 兜底而不是 `.trim()` 直调——JSON 里混进 `{}` 或数组的行（校验
- * 只拦 null 与显式非串值）不该把接口打成 500。undefined 表示请求里没带 steps
- * （保持不动）。
- */
-function normalizeSteps(input: SpecCaseStep[] | undefined): SpecCaseStep[] | undefined {
-  if (input === undefined) return undefined;
-  return input
-    .map((item) => ({ step: String(item?.step ?? "").trim(), expected: String(item?.expected ?? "").trim() }))
-    .filter((item) => item.step !== "" || item.expected !== "");
-}
-
-function normalizeTags(input: string[] | undefined): string[] | undefined {
-  if (input === undefined) return undefined;
-  return input.map((tag) => tag.trim()).filter(Boolean);
-}
-
-/**
- * 项目内自增编号（2026-09-07 反馈：编号不再手工录入，新建时由服务端生成）。
- * `TC-` + 项目内已有最大序号 + 1，三位补零（TC-001）——补零后字典序即数值序，
- * 列表 ORDER BY item_key 免二次排序。只统计 `TC-<纯数字>` 形态的行：导入
- * （P7-4/5）写进来的其它形态编号不参与序列，也不会被生成的键撞上（形态即前缀
- * 不同，UNIQUE 键不同）。
- */
-async function nextItemKey(projectId: string): Promise<string> {
-  const result = await pool.query(
-    `SELECT 'TC-' || lpad((COALESCE(MAX((substring(item_key FROM 4))::int), 0) + 1)::text, 3, '0') AS next
-       FROM spec_cases
-      WHERE project_id = $1 AND item_key ~ '^TC-[0-9]+$'`,
-    [projectId],
-  );
-  return String(result.rows[0].next);
-}
 
 /* ── 绑定的读时关联（P7-6，计划 11.2「绝不回写」纪律） ──────────────────────
  *
@@ -113,6 +51,14 @@ const LINK_READ_SQL = `
     CASE l.target_type WHEN 'repo_case'
       THEN (SELECT c.status FROM repo_test_cases c WHERE c.id = l.target_id AND c.project_id = $2)
     END AS target_status,
+    /* 跳转语境（2026-09-10 用户反馈：绑定行支持点击跳转）：case 目标的宿主接口 id。
+       接口用例的页面是 endpoints/:endpointId 工作台（?case= 深链已存在），光有
+       targetId 拼不出那条地址。endpoint / flow / repo_case 的页面都由自己的
+       targetId 直接可达，只有 case 需要这一列；目标删了 LEFT 得 NULL，前端照
+       「目标已删除」读，不会拿旧 id 拼出 404 链接。 */
+    CASE l.target_type WHEN 'case'
+      THEN (SELECT tc.endpoint_id::text FROM test_cases tc WHERE tc.id = l.target_id AND tc.project_id = $2)
+    END AS target_endpoint_id,
     CASE l.target_type
       WHEN 'case' THEN (
         SELECT x.status::text || '|' || COALESCE(x.finished_at::text, '') || '|' || x.id::text

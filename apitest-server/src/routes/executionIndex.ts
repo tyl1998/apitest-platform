@@ -8,8 +8,15 @@ import { isUuid } from "../lib/uuid.js";
 import { mapExecutionIndex, mapExecutionStep } from "../models/types.js";
 
 export async function executionIndexRoutes(app: FastifyInstance) {
-  app.get<{ Params: { id: string }; Querystring: { kind?: string; status?: string; triggerSource?: string; keyword?: string; caseFilter?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/execution-index", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { kind?: string; status?: string; triggerSource?: string; keyword?: string; caseFilter?: string; from?: string; to?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/execution-index", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
+    /* `?from=&to=` 时间窗（P8-6 下钻前置，endpoints.ts / reports.ts 同款）：ISO 时间戳，
+       解析失败 400——静默忽略会让「带窗下钻」悄悄变成全量清单。 */
+    const from = request.query.from ? new Date(request.query.from) : null;
+    const to = request.query.to ? new Date(request.query.to) : null;
+    if ((request.query.from && Number.isNaN(from!.getTime())) || (request.query.to && Number.isNaN(to!.getTime()))) {
+      return fail(reply, 400, 1001, "from/to must be ISO timestamps");
+    }
     const page = Math.max(1, Number(request.query.page ?? 1)); const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
     const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
     /**
@@ -21,6 +28,8 @@ export async function executionIndexRoutes(app: FastifyInstance) {
      * 不可能撞上）。
      */
     clauses.push("detail_id <> id");
+    if (from) { params.push(from); clauses.push(`created_at >= $${params.length}`); }
+    if (to) { params.push(to); clauses.push(`created_at <= $${params.length}`); }
     if (request.query.kind && request.query.kind !== "all") { params.push(request.query.kind); clauses.push(`kind = $${params.length}`); }
     if (request.query.status && request.query.status !== "all") { params.push(request.query.status); clauses.push(`status = $${params.length}`); }
     /* 触发源筛选（P3-6，报告页/趋势页共用这份口径）：manual|scheduled|webhook|ci，
@@ -60,6 +69,39 @@ export async function executionIndexRoutes(app: FastifyInstance) {
        `?parent=` 深链）都只读父行本身与顶层行。 */
     const steps = await pool.query("SELECT * FROM execution_steps WHERE index_id = $1 AND parent_step_id IS NULL ORDER BY position, created_at", [request.params.indexId]);
     return success({ ...mapExecutionIndex(result.rows[0]), steps: steps.rows.map(mapExecutionStep) });
+  });
+
+  /**
+   * 统一执行入口（P8-7，计划 12.2 / 交互 6.2d 的预留路由）：`GET …/executions/by-index/:indexId`
+   * 按 kind 把一次执行**重定向**到它自己的详情页。统计侧（图表下钻 / 通知深链）从此
+   * 不感知来源路由——只认这一个入口，kind 的分派在这里收敛一次。
+   *
+   * 302 而不是 200+JSON：这个路由的消费者是浏览器深链，语义就是「跳过去」；REST
+   * 调用方本就该读上面的 execution-index/:indexId 拿结构化数据。重定向目标全部是
+   * 项目内前端路由（分享令牌不需要——项目内页面走登录态），`?from=` 参数原样透传
+   * （面包屑/侧栏归属的既有机制，P8-6 反馈③）。
+   */
+  app.get<{ Params: { id: string; indexId: string }; Querystring: { from?: string } }>("/api/v1/projects/:id/executions/by-index/:indexId", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply); if (!context) return;
+    if (!isUuid(request.params.indexId)) return fail(reply, 404, 2001, "execution index not found");
+    const result = await pool.query("SELECT kind, detail_id FROM execution_index WHERE id = $1 AND project_id = $2", [request.params.indexId, context.project.id]);
+    if (!result.rowCount) return fail(reply, 404, 2001, "execution index not found");
+    const kind = String(result.rows[0].kind);
+    const detailId = String(result.rows[0].detail_id);
+    /* from 只认前端 PAGES 白名单（ProjectShell 的分叉判据，P8-6 泛化同款）：不校验
+       就拼进 Location，这里就成了一个开放重定向器。 */
+    const from = request.query.from;
+    const fromQuery = from && ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "mcp", "repo", "spec-cases", "test-plans", "reports", "suite-reports", "trends", "alerts", "members"].includes(from) ? `&from=${encodeURIComponent(from)}` : "";
+    const base = `/projects/${context.project.id}`;
+    /* Fastify v5 的 redirect 签名是 (dest, code)——(code, dest) 的旧重载已删。 */
+    if (kind === "runner") return reply.redirect(`${base}/pipeline-runs/${detailId}${fromQuery ? `?${fromQuery.slice(1)}` : ""}`, 302);
+    /* 仓库上报没有平台侧详情页（P4 边界 1）：统一入口把它送到上报记录页——
+       与执行记录页 openIngest 同一个落点。 */
+    if (kind === "ingest") return reply.redirect(`${base}/repo/runs`, 302);
+    /* flow / suite：详情是执行记录页的抽屉，深链形状是 ?parent=<indexId>（稳定详情，
+       P2-4.4）。自指的单步调试行也走这里——它的 detail_id 不是 flow_executions 的 id，
+       前端抽屉按 indexId 装载，不碰 detail_id。 */
+    return reply.redirect(`${base}/reports?type=parent&parent=${request.params.indexId}${fromQuery}`, 302);
   });
 
   app.post<{ Params: { id: string; indexId: string } }>("/api/v1/projects/:id/execution-index/:indexId/cancel", async (request, reply) => {
