@@ -17,6 +17,7 @@ import "./design-system.css";
 import "./i18n";
 import { useMode } from "./theme";
 import { Empty, Method, Readout, RunStrip, RunStatus, Status, Waterfall } from "./ui";
+import { Donut, LineChart, Sparkline, StackedBars } from "./components/charts";
 import { IconNavButton, SidebarToggle } from "./components/SidebarControls";
 import { useSidebarCollapsed } from "./stores/sidebarStore";
 
@@ -39,6 +40,15 @@ const rows: Row[] = [
   { id: "e6", method: "DELETE", name: "取消订单", path: "/api/v1/orders/{id}", ms: 221, status: "skip", history: ["skip","skip","pass","pass","pass","skip","skip","skip","pass","pass","pass","skip"] },
   { id: "e7", method: "GET", name: "健康检查", path: "/api/v1/health", ms: null, status: null, history: [] },
 ];
+
+/* 图表底座的示例数据：两种语义色 + 一条中性线，含 null 断线与空桶。 */
+const previewBuckets = Array.from({ length: 14 }, (_, i) => new Date(2026, 8, 10 - i).toISOString());
+const previewSeries = {
+  passRate: [98, 96, null, null, 92, 88, 90, 94, 95, null, 91, 93, 97, 98],
+  p90: [120, 132, null, null, 180, 260, 210, 160, 150, null, 190, 170, 140, 128],
+  pass: [120, 96, 0, 0, 88, 70, 84, 92, 95, 0, 91, 93, 97, 98],
+  fail: [2, 4, 0, 0, 8, 12, 6, 4, 5, 0, 9, 7, 3, 2],
+};
 
 function Reference() {
   const { mode, toggle } = useMode();
@@ -176,6 +186,51 @@ function Reference() {
                 hint="登记一个接口后即可在选定环境中运行验证。"
                 action={<button className="btn btn-primary">创建接口</button>}
               />
+            </div>
+          </section>
+
+          {/* 图表底座（P8-5）：折线/堆叠柱/环形/sparkline 消费同一份 hover 与刻度
+              约定——任何一张在两种模式下不对劲，去 charts/ 改一份，不要在页面里另写。 */}
+          <section className="panel">
+            <div className="panel-head"><strong>图表底座</strong></div>
+            <div className="panel-body">
+              <LineChart
+                buckets={previewBuckets}
+                series={[
+                  { values: previewSeries.passRate, color: "var(--pass)", width: 1.8 },
+                  { values: previewSeries.p90, color: "var(--ink-2)" },
+                ]}
+                labels={["通过率", "P90"]}
+                yMax={100}
+                yFormat={(value) => `${value}%`}
+                hourly={false}
+                yTicks={[0, 50, 100]}
+                ariaLabel="通过率示例"
+              />
+              <StackedBars
+                buckets={previewBuckets.map((bucket, index) => ({
+                  bucket,
+                  values: [previewSeries.pass[index], previewSeries.fail[index]],
+                  total: (previewSeries.pass[index] ?? 0) + (previewSeries.fail[index] ?? 0),
+                }))}
+                layers={[{ color: "var(--pass)" }, { color: "var(--fail)" }]}
+                labels={["通过", "失败"]}
+                hourly={false}
+                ariaLabel="执行量示例"
+              />
+              <Donut
+                centerLabel="失败"
+                segments={[
+                  { label: "断言未通过", value: 12, color: "var(--fail)" },
+                  { label: "脚本检查未通过", value: 5, color: "var(--skip)" },
+                  { label: "请求超时", value: 3, color: "var(--busy)" },
+                  { label: "请求层失败", value: 2, color: "var(--ink-3)" },
+                ]}
+              />
+              <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
+                <Sparkline values={previewSeries.passRate} color="var(--pass)" ariaLabel="近 30 天通过率" />
+                <Sparkline values={previewSeries.p90} color="var(--ink-3)" ariaLabel="近 30 天 P90" />
+              </div>
             </div>
           </section>
         </main>

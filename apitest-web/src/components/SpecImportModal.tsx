@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Modal, TreeSelect, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight, FileSpreadsheet, Folder, Network, Upload } from "lucide-react";
@@ -171,7 +171,7 @@ export function SpecImportModal({ projectId, modules, open, onClose, onImported 
       tabIndex={0}
       aria-label={t("specCases.importPickFile")}
       onClick={() => fileInput.current?.click()}
-      onKeyDown={(event: DragEvent) => { if (event.key === "Enter" || event.key === " ") fileInput.current?.click(); }}
+      onKeyDown={(event: ReactKeyboardEvent<HTMLDivElement>) => { if (event.key === "Enter" || event.key === " ") fileInput.current?.click(); }}
       onDragOver={(event: DragEvent) => { event.preventDefault(); setDragging(true); }}
       onDragLeave={() => setDragging(false)}
       onDrop={(event: DragEvent) => { event.preventDefault(); setDragging(false); pickFile(event.dataTransfer.files[0]); }}

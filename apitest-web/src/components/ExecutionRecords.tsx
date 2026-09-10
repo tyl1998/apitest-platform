@@ -21,6 +21,21 @@ const SETTLED = new Set(["success", "failed", "canceled", "completed"]);
 /** 一次运行会发很多条进度事件，重取要合并成尾随的一次。 */
 const RELOAD_DELAY_MS = 600;
 
+/** ISO → datetime-local 输入值（本地时区，YYYY-MM-DDTHH:mm）。非法值给空串。 */
+function isoToLocalInput(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** datetime-local 输入值 → ISO；空串与非法值（输入中途的部分文本）给 undefined。 */
+function localInputToIso(value: string): string | undefined {
+  if (!value) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
 /** 地址栏里的大类。`flow` 是 5.0.9 那版的「流程执行记录」，现在并进父执行记录。 */
 function toRecordType(value: string | null) {
   if (value === "flow") return "parent";
@@ -62,6 +77,17 @@ export function ExecutionRecords() {
   const [source, setSource] = useState(searchParams.get("source") ?? "all");
   const [endpointId, setEndpointId] = useState(searchParams.get("endpointId") ?? undefined);
   const [keyword, setKeyword] = useState(searchParams.get("keyword") ?? "");
+  /**
+   * 时间范围筛选（P8-6 验收反馈：三个大类都要有）：状态存 ISO（URL 与 API 直接用），
+   * 输入框另持一份原始文本（datetime-local 输入中途的部分值解析不了，受控值直接绑
+   * ISO 会在打字途中把输入框重置——见 onChange 的提交规则）。下钻带来的窗口在这里
+   * 就地可见、可改、可清。
+   */
+  const [from, setFrom] = useState(searchParams.get("from") ?? undefined);
+  const [to, setTo] = useState(searchParams.get("to") ?? undefined);
+  const [fromInput, setFromInput] = useState(() => isoToLocalInput(searchParams.get("from") ?? ""));
+  const [toInput, setToInput] = useState(() => isoToLocalInput(searchParams.get("to") ?? ""));
+  const [caseId, setCaseId] = useState(searchParams.get("caseId") ?? undefined);
   const [page, setPage] = useState(Number(searchParams.get("page") ?? 1));
   const [pageSize, setPageSize] = useState(Number(searchParams.get("pageSize") ?? 20));
   /** 事件触发的重取。当成第九个筛选条件，列表的取数就仍然只有一处。 */
@@ -89,6 +115,9 @@ export function ExecutionRecords() {
       ...(recordType !== "batch" && status !== "all" ? { status } : {}),
       ...(recordType === "single" && source !== "all" ? { source } : {}),
       ...(recordType === "single" && endpointId ? { endpointId } : {}),
+      ...(recordType === "single" && caseId ? { caseId } : {}),
+      ...(from ? { from } : {}),
+      ...(to ? { to } : {}),
       ...(recordType === "parent" && keyword ? { keyword } : {}),
       ...(page > 1 ? { page: String(page) } : {}),
       ...(pageSize !== 20 ? { pageSize: String(pageSize) } : {}),
@@ -101,10 +130,10 @@ export function ExecutionRecords() {
 
     setLoading(true);
     const request: Promise<Paged<Execution> | Paged<BatchDebugSummary> | Paged<ExecutionIndex>> = recordType === "batch"
-      ? api.batchExecutions(projectId, page, pageSize)
+      ? api.batchExecutions(projectId, page, pageSize, { from, to })
       : recordType === "parent"
-        ? api.executionIndex(projectId, { kind: kind as ExecutionIndex["kind"] | "all", status, keyword, caseFilter: kind === "runner" && caseFilterOnly, page, pageSize })
-        : api.executions(projectId, { status, endpointId, source: source as ExecutionSourceFilter, page, pageSize });
+          ? api.executionIndex(projectId, { kind: kind as ExecutionIndex["kind"] | "all", status, keyword, caseFilter: kind === "runner" && caseFilterOnly, from, to, page, pageSize })
+          : api.executions(projectId, { status, endpointId, source: source as ExecutionSourceFilter, caseId, from, to, page, pageSize });
     request
       .then((next) => {
         if (recordType === "batch") setBatches(next as Paged<BatchDebugSummary>);
@@ -114,7 +143,7 @@ export function ExecutionRecords() {
       })
       .catch(() => message.error(t("reports.loadFailed")))
       .finally(() => setLoading(false));
-  }, [projectId, recordType, kind, status, source, endpointId, keyword, caseFilterOnly, page, pageSize, revision]);
+  }, [projectId, recordType, kind, status, source, endpointId, keyword, caseFilterOnly, from, to, caseId, page, pageSize, revision]);
 
   /**
    * 事件比列表快，但列表要重取才有完整字段（单接口的状态码/耗时只在记录里）。
@@ -160,9 +189,11 @@ export function ExecutionRecords() {
     if (row.kind === "ingest") { openIngest(); return; }
     /* runner 的明细页是独立路由（P4.5-11/13 已落地）：阶段进度 + 实时日志 + cases
        时间轴 + 报告视图 + 产物。不能用 loadParent 兜底——它会把 runner 的 detailId
-       当流程 id 去读 flow_executions，那一定 404。 */
+       当流程 id 去读 flow_executions，那一定 404。`?from=reports` 让面包屑/侧栏归
+       「执行记录」而不是仓库——入口归属的既有机制（报告列表同款，P8-3 反馈③），
+       从执行记录进的必须能回执行记录（P8-6 验收反馈）。 */
     if (row.kind === "runner") {
-      if (projectId) navigate(`/projects/${projectId}/pipeline-runs/${row.detailId}`);
+      if (projectId) navigate(`/projects/${projectId}/pipeline-runs/${row.detailId}?from=reports`);
       return;
     }
     void loadParent(row)
@@ -220,10 +251,11 @@ export function ExecutionRecords() {
           openIngest();
           return;
         }
-        /* runner 同理（见 `openParent`）：跳详情页而不是开抽屉。 */
+        /* runner 同理（见 `openParent`）：跳详情页而不是开抽屉，`?from=reports`
+           保住「从执行记录进、回执行记录」的归属。 */
         if (row.kind === "runner") {
           setSearchParams((current) => { current.delete("parent"); return current; }, { replace: true });
-          if (projectId) navigate(`/projects/${projectId}/pipeline-runs/${row.detailId}`);
+          if (projectId) navigate(`/projects/${projectId}/pipeline-runs/${row.detailId}?from=reports`);
           return;
         }
         return loadParent(row);
@@ -327,9 +359,12 @@ export function ExecutionRecords() {
   const total = recordType === "batch" ? batches.total : recordType === "parent" ? parents.total : data.total;
   /* 空清单要说清是「还没跑过」还是「被筛掉了」——两者的下一步动作完全不同。批量调试
      没有筛选条件，所以它永远是前者。 */
-  const filtered = recordType === "single"
-    ? status !== "all" || source !== "all" || Boolean(endpointId)
-    : recordType === "parent" && (status !== "all" || kind !== "all" || caseFilterOnly || Boolean(keyword.trim()));
+  const timeFiltered = Boolean(from || to);
+  const filtered = recordType === "batch"
+    ? timeFiltered
+    : recordType === "single"
+      ? status !== "all" || source !== "all" || Boolean(endpointId) || Boolean(caseId) || timeFiltered
+      : status !== "all" || kind !== "all" || caseFilterOnly || Boolean(keyword.trim()) || timeFiltered;
 
   return <main className="content">
     <div className="page-head">
@@ -382,6 +417,14 @@ export function ExecutionRecords() {
         showSearch
         optionFilterProp="label"
       />
+      {caseId && <button
+        type="button"
+        className="chip chip-action mono"
+        onClick={() => { setCaseId(undefined); setPage(1); }}
+        title={t("reports.clearCase")}
+      >
+        {t("reports.caseFilterChip")} ×
+      </button>}
       </>}
       {recordType === "parent" && <>
         {/* 类型筛选取代了「流程记录 / 套件记录」两个大类：同一份清单，缩一下范围。 */}
@@ -427,6 +470,53 @@ export function ExecutionRecords() {
           style={{ width: 220 }}
         />
       </>}
+      {/* 时间范围筛选（三个大类共用，P8-6 验收反馈）：原生 datetime-local + .input
+          皮肤——TestPlans 的既定纪律（antd DatePicker 的面板与国际化是多余的新增面）。
+          提交规则见 fromInput 的注释：清空即清筛，输入中途的部分值不动已提交的窗。 */}
+      <input
+        type="datetime-local"
+        className="input mono"
+        style={{ width: 200 }}
+        aria-label={t("reports.timeFrom")}
+        title={t("reports.timeFrom")}
+        value={fromInput}
+        onChange={(event) => {
+          setFromInput(event.target.value);
+          if (!event.target.value) { setFrom(undefined); setPage(1); return; }
+          const iso = localInputToIso(event.target.value);
+          if (iso) { setFrom(iso); setPage(1); }
+        }}
+      />
+      <span className="muted mono">–</span>
+      <input
+        type="datetime-local"
+        className="input mono"
+        style={{ width: 200 }}
+        aria-label={t("reports.timeTo")}
+        title={t("reports.timeTo")}
+        value={toInput}
+        onChange={(event) => {
+          setToInput(event.target.value);
+          if (!event.target.value) { setTo(undefined); setPage(1); return; }
+          const iso = localInputToIso(event.target.value);
+          if (iso) { setTo(iso); setPage(1); }
+        }}
+      />
+      {/* 一键清窗（P8-6 验收反馈：清两个输入框太费手）：同时复位提交值与输入框
+          原文——只清 state 不清输入框，框里还留着字，会读成「清了没生效」。 */}
+      {(from || to) && <button
+        type="button"
+        className="chip chip-action"
+        onClick={() => { setFrom(undefined); setTo(undefined); setFromInput(""); setToInput(""); setPage(1); }}
+      >{t("reports.clearTime")}</button>}
+      {recordType === "single" && caseId && <button
+        type="button"
+        className="chip chip-action mono"
+        onClick={() => { setCaseId(undefined); setPage(1); }}
+        title={t("reports.clearCase")}
+      >
+        {t("reports.caseFilterChip")} ×
+      </button>}
       <span className="filter-spacer" />
       <span className="muted mono">{t("reports.total", { total })}</span>
     </div>

@@ -25,6 +25,7 @@ import { Trends } from "./components/Trends";
 import { SuiteWorkspace } from "./components/SuiteWorkspace";
 import { Environments } from "./components/Environments";
 import { ExecutionRecords } from "./components/ExecutionRecords";
+import { ExecutionResolver } from "./components/ExecutionResolver";
 import { DataSourceList } from "./components/DataSourceList";
 import { DataSourceDetail } from "./components/DataSourceDetail";
 import { MockList } from "./components/MockList";
@@ -107,7 +108,10 @@ function Root() {
 
       {/* One shell for the whole project layer, so child navigation never rebuilds it. */}
       <Route path="/projects/:projectId" element={<ProjectShell />}>
-        <Route index element={<Navigate to="endpoints" replace />} />
+        {/* 进入项目默认落在「数据统计」（P8 边界 22）：统计页是项目的质量读数起点；
+            overview 的重定向维持指 endpoints——「概览」是资产语义，改指统计会把它
+            变成第二个统计入口。 */}
+        <Route index element={<Navigate to="trends" replace />} />
         <Route path="overview" element={<Navigate to="../endpoints" replace />} />
         <Route path="endpoints" element={<EndpointList />} />
         {/* Opening an endpoint is opening its editor; there is no separate read-only view. */}
@@ -127,6 +131,10 @@ function Root() {
             不做对话式创建 UI（交互文档 3.10 的边界）。 */}
         <Route path="mcp" element={<McpPage />} />
         <Route path="reports" element={<ExecutionRecords />} />
+        {/* P8-7：统一执行入口（交互 6.2d）——按 indexId 解析到真实详情路由；统计侧
+            深链从此只认这一个执行地址。在 ExecutionRecords 之前注册（路由匹配按
+            声明顺序，reports 是前缀但这里是更长的具体段）。 */}
+        <Route path="executions/by-index/:indexId" element={<ExecutionResolver />} />
         {/* P3：报告 / 趋势 / 告警。报告详情是只读派生物，独立路由而不是抽屉——
             它要能被分享、被收藏（执行记录页的父执行抽屉仍是另一个入口）。
             定时调度没有独立页：配置入口在套件详情页（P3-11）。 */}

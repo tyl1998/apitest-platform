@@ -17,7 +17,10 @@ const KEY = "apitest.theme";
  */
 const PALETTE = {
   light: {
-    bg: "#f7f7f6",
+    /* 页底加深一档（2026-09-10 走查「卡片与背景一致，缺少呼吸感」）：原 #f7f7f6
+       与 surface #ffffff 只差一档灰，卡片贴在背景上读不出来。#efeeea 仍是同族
+       暖灰，surface 卡片（页面卡/项目卡/表格/panel）从此有明确层次。 */
+    bg: "#efeeea",
     surface: "#ffffff",
     raised: "#fbfbfa",
     /* Hover fill for nav items on --surface. --raised is only a shade away
@@ -46,12 +49,17 @@ const PALETTE = {
     overlay: "rgba(28, 28, 26, .34)",
   },
   dark: {
-    bg: "#16181d",
+    /* 同浅色：页底从 #16181d 再压一档到 #121419，与 surface #1c1f25 拉开
+       层次（原差距 6 个十六进制位，卡片几乎融进背景）。 */
+    bg: "#121419",
     surface: "#1c1f25",
     raised: "#21252c",
-    hover: "#262b33",
+    /* 走查反馈（2026-09-10）：深色下卡片与背景对比弱、悬浮不可见。hover 比
+       raised 再深一档（#2a3038），按钮/导航的悬浮反馈才可见；line-strong 提
+       到 #454d59 让卡片边缘与边框控件从背景里浮出来。语义不变，只拉层次。 */
+    hover: "#2a3038",
     line: "#2c313a",
-    lineStrong: "#3a404b",
+    lineStrong: "#454d59",
     ink: "#e4e6e9",
     ink2: "#b0b6c0",
     ink3: "#8b929d",

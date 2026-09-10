@@ -489,7 +489,7 @@ export type EndpointInput = {
   tags?: string[];
   defaultEnvironmentId?: string | null;
 };
-export type EndpointFilters = { keyword?: string; method?: string; environmentId?: string };
+export type EndpointFilters = { keyword?: string; method?: string; environmentId?: string; coverage?: "covered" | "uncovered" | "all" };
 
 export type Execution = {
   id: string;
@@ -870,6 +870,12 @@ export type ExecutionStep = {
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
+  /**
+   * 该失败行当前的人工归因（P8-3，报告成员行随行带出；失败成员有 httpExecutionId 时
+   * 归因挂在 executions 行、否则挂在本步骤行——与服务端 JOIN 同一口径）。其余使用方
+   * （流程步骤树等）不返回归因列，恒 undefined。
+   */
+  attribution?: FailureAttributionLite;
 };
 export type FlowStepResult = Execution | ExecutionStep;
 /**
@@ -1169,29 +1175,20 @@ export type ExecutionEvent =
   | { kind: "pipeline"; projectId: string; pipelineRunId: string; executionIndexId?: string; status: string; stage?: string }
   | { kind: "pipelineLog"; projectId: string; pipelineRunId: string; logBytes: number };
 
+/**
+ * `/projects` 的行（2026-09-10 服务端拆轻后随行收缩）：身份 + 资产计数——执行面
+ * 字段（passRate/executionCount/…）不再随列表下发，那类读数全部来自 `/stats/*`
+ * （P8-4 起全局层统计的单一来源）。计数口径与服务端 queryProjectList 同注释：
+ * specCaseCount 数非废弃文本用例、repoCaseCount 只数 active 仓库用例。
+ */
 export type ProjectMetric = Project & {
   endpointCount: number;
   environmentCount: number;
-  executedEndpointCount: number;
-  executionCount: number;
-  passedCount: number;
   caseCount: number;
-  /** Endpoints with at least one case — 覆盖 means "has a case", not "was run". */
-  coveredEndpointCount: number;
-  /** 调度数（P3-6）：含停用的——停用不是「不存在」。 */
-  scheduleCount: number;
-  /** CI 任务数（P4.5-11）：同款口径，含停用的。 */
-  ciTaskCount: number;
-  /** null means "never run" — distinct from 0%, which means "every run failed". */
-  passRate: number | null;
-  completionRate: number | null;
-  coverageRate: number | null;
-  /** 自动化覆盖率（P7-6，边界 11）：有 ≥1 条非 endpoint 绑定的已评审文本用例 /
-      全部已评审文本用例。null = 还没有已评审用例（与 0% 是两个事实）。 */
-  specCaseTotal: number;
-  specAutomatedCount: number;
-  automationRate: number | null;
-  lastExecutionAt: string | null;
+  flowCount: number;
+  suiteCount: number;
+  repoCaseCount: number;
+  specCaseCount: number;
 };
 
 export type Dashboard = {
@@ -1212,7 +1209,10 @@ export type Dashboard = {
   specCaseTotal: number;
   specAutomatedCount: number;
   automationRate: number | null;
-  projects: ProjectMetric[];
+  /** `/dashboard` 的项目行仍是重聚合形状（executions 聚合在其职责内），与拆轻后的
+      `/projects` 行不是同一类型——前端当前无调用方（统计走 /stats/*），类型保留
+      仅为了接口契约不失忆。 */
+  projects: ProjectMetric[] & Record<string, unknown>[];
 };
 
 export type Preferences = { theme: "light" | "dark" | "system"; language: "zh-CN" | "en"; restoreLastPage: boolean };
@@ -1432,6 +1432,8 @@ export type SuiteReportSummary = {
   passRate: number | null;
   durationMs: number | null;
   queueMs: number | null;
+  /** 该报告失败行的归因聚合（P8-3）：无失败行时 failed=0。 */
+  attribution: ReportAttributionSummary;
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -1476,15 +1478,21 @@ export type TrendBucket = {
   p99: number | null;
 };
 
-export type TrendReport = { range: "24h" | "7d" | "30d"; includeRepo: boolean; buckets: TrendBucket[] };
+export type TrendReport = { range: "24h" | "7d" | "30d"; scope: SampleScope; buckets: TrendBucket[] };
 
 export type ReportRange = "24h" | "7d" | "30d";
 
-/** 汇总：总量 + 失败分布（按接口 Top20 / 按错误类型）。 */
+/**
+ * 趋势与汇总的样本口径（2026-09-10 用户验收反馈起三态化，`metrics.sampleKinds`
+ * 同款）：`platform` 平台自己跑的 flow/suite；`repo` 仓库侧（上报 + Runner，
+ * 两者一体不拆——P4.5 边界 2）；`all` 混合。
+ */
+export type SampleScope = "platform" | "repo" | "all";
+
+/** 汇总：总量 + 失败分布（按接口 Top20 / 按错误类型；`repo` 口径下 failures 为空）。 */
 export type ReportSummary = {
   range: ReportRange;
-  /** 样本里是否含仓库上报与仓库执行（P4 边界 1 + P4.5 边界 2），默认 false。 */
-  includeRepo: boolean;
+  scope: SampleScope;
   total: number;
   successCount: number;
   failedCount: number;
@@ -1496,6 +1504,136 @@ export type ReportSummary = {
     byType: { assertion: number; script: number; timeout: number; request: number };
   };
 };
+
+/* ── P8：全局统计（/stats/*）。项目层「数据统计」页带 projectIds 复用同一组接口 ── */
+
+/**
+ * 全局读数（P8-4 overview）：执行面四读数 + 触发源分布 + 资产面（含边界 20 的
+ * 四读数：endpointTotal / coverageRate / automationRate / specCaseTotal）+ 7 天
+ * delta。delta 的计数是绝对差、比率是 pp（「从 80% 到 82%」是 +2pp）；任一段没有
+ * 样本 → null（「不可算」与「没变化」是两个事实）。
+ */
+export type StatsOverview = {
+  days: number;
+  scope: SampleScope;
+  executions: { total: number; successCount: number; failedCount: number; canceledCount: number; passRate: number | null };
+  attribution: { failedTargets: number; attributed: number; unattributed: number; coverageRate: number | null };
+  triggerSources: { source: TriggerSource; count: number }[];
+  assets: {
+    endpointTotal: number;
+    coveredEndpointTotal: number;
+    coverageRate: number | null;
+    caseTotal: number;
+    flowTotal: number;
+    suiteTotal: number;
+    specCaseTotal: number;
+    specReviewedTotal: number;
+    specAutomatedTotal: number;
+    automationRate: number | null;
+    repoCaseTotal: number;
+  };
+  delta: { executions: number; failed: number; passRate: number | null; attributionCoverageRate: number | null };
+};
+
+/** 执行趋势桶（服务端补空桶，total=0 即「没执行」；分位只在 ≤30d 窗口返回）。 */
+export type StatsTrendBucket = {
+  bucket: string;
+  total: number;
+  successCount: number;
+  failedCount: number;
+  passRate: number | null;
+  p50: number | null;
+  p90: number | null;
+  p99: number | null;
+  queueP50: number | null;
+  queueP90: number | null;
+};
+
+/** 资产新增趋势桶（repo_cases 含 removed——「新增行为」不是存量）。 */
+export type StatsAssetTrendBucket = {
+  bucket: string;
+  endpoints: number;
+  cases: number;
+  flows: number;
+  suites: number;
+  specCases: number;
+  repoCases: number;
+};
+
+export type StatsTrendReport =
+  | { metric: "execution_trend"; days: number; scope: SampleScope; triggerSource: TriggerSource | null; buckets: StatsTrendBucket[] }
+  | { metric: "asset_trend"; days: number; buckets: StatsAssetTrendBucket[] };
+
+/** 失败 TopN 维度（边界 21 的六维——P8-7 扩参后全量）。 */
+export type StatsTopNDim = "endpoint" | "case" | "ci_task" | "suite" | "flow" | "repo_case";
+
+/** 归因来源筛选（P8-7，边界 8）：human | mcp；null = 未筛。 */
+export type AttributionSourceFilter = "human" | "mcp";
+
+/** case 维带 caseId（执行记录筛选用）；其余三维带 refId（接口/任务/套件的深链目标）。 */
+export type StatsFailureTop = { projectId: string; projectName: string; name: string; caseId?: string; refId?: string; failed: number };
+
+export type StatsFailures = {
+  days: number;
+  attribution: {
+    failedTargets: number;
+    attributed: number;
+    unattributed: number;
+    coverageRate: number | null;
+    distribution: { code: string; name: string; count: number }[];
+  };
+  /** 归因来源筛选（P8-7）：human | mcp | null（未筛）。 */
+  attributionSource: AttributionSourceFilter | null;
+  topN: StatsTopNDim;
+  top: StatsFailureTop[];
+};
+
+/** Flaky 榜（三腿：api = 平台用例执行序列；repo = SDK 上报序列；runner = 仓库任务序列，
+ *  2026-09-10 验收五轮⑤——平台 Runner 跑的 CI 任务用例也进榜）。 */
+export type StatsFlakyCase = {
+  source: "api" | "repo" | "runner";
+  projectId: string;
+  projectName: string;
+  caseId: string | null;
+  caseKey: string | null;
+  name: string;
+  runs: number;
+  passed: number;
+  failed: number;
+  flips: number;
+  lastRunAt: string | null;
+};
+
+export type StatsFlaky = {
+  days: number;
+  flaky: StatsFlakyCase[];
+  thresholds: { MIN_RUNS: number; MIN_FLIPS: number; MIN_PASSED: number; MIN_FAILED: number };
+  mttr: { recoveredFailures: number; unrecoveredFailures: number; medianMs: number | null; p90Ms: number | null };
+  firstPass: { cases: number; firstPassed: number; rate: number | null };
+};
+
+/** 项目对比（边界 19 的 Top 10 反向榜 / 关键字检索；归因覆盖率作为列保留）。 */
+export type StatsProjectMetric = "coverage" | "automation" | "passRate" | "failed";
+
+export type StatsProjectRow = {
+  id: string;
+  name: string;
+  endpointCount: number;
+  coveredEndpointCount: number;
+  coverageRate: number | null;
+  specReviewedTotal: number;
+  specAutomatedCount: number;
+  automationRate: number | null;
+  executionCount: number;
+  passedCount: number;
+  failedCount: number;
+  passRate: number | null;
+  attributionFailed: number;
+  attributionAttributed: number;
+  attributionRate: number | null;
+};
+
+export type StatsProjects = { days: number; metric: StatsProjectMetric; order: "asc" | "desc"; scope: SampleScope; projects: StatsProjectRow[] };
 
 /**
  * 平台的执行预算与保护性上限（P2-4.2）。
@@ -1822,6 +1960,9 @@ export type PipelineRun = {
   id: string;
   projectId: string;
   ciTaskId: string;
+  /** 详情路由带出的任务名（P8-6）：面包屑显示「任务名 #序号」，与执行记录行的
+      身份同一个词；列表路由不带。 */
+  taskName?: string;
   executionIndexId?: string;
   runNumber: number;
   status: "queued" | "claimed" | "running" | "cancelling" | "success" | "failed" | "canceled" | "aborted" | "timed_out";
@@ -1866,6 +2007,8 @@ export type PipelineRunCase = {
   finishedAtMs?: number;
   host?: string;
   thread?: string;
+  /** 该失败行当前的人工归因（P8-3；failed/error 行才可能有值，undefined = 未归因）。 */
+  attribution?: FailureAttributionLite;
 };
 
 /** 一份已上传产物（列表读法带下载直链）。 */
@@ -2073,7 +2216,9 @@ export type AllureReportView = {
   skippedFiles: number;
 };
 export type ExecutionSourceFilter = "endpoint_debug" | "test_case" | "flow_step" | "all";
-export type ExecutionFilters = { status?: string; endpointId?: string; source?: ExecutionSourceFilter; caseId?: string; page?: number; pageSize?: number };
+/** `from`/`to`（ISO 时间戳，下钻前置——统计页趋势桶点击进来的时间窗）与 `caseId`
+ *  （TopN 用例维的失败记录筛选）由服务端 400 兜底非法值，前端只透传。 */
+export type ExecutionFilters = { status?: string; endpointId?: string; source?: ExecutionSourceFilter; caseId?: string; from?: string; to?: string; page?: number; pageSize?: number };
 /** Paged reads keep `total` so the UI can show real page controls. */
 export type Paged<T> = { items: T[]; page: number; pageSize: number; total: number };
 
@@ -2141,6 +2286,30 @@ export function noRunnerLabel(error: unknown): string | undefined {
   const body = (error as { response?: { data?: { code?: number; data?: { label?: string } } } })?.response?.data;
   if (body?.code !== 2004) return undefined;
   return body.data?.label ?? "";
+}
+
+/**
+ * 「统计窗口过大」的判定（P8-4 边界 23，错误码 2005 = statement_timeout 5s 触顶）。
+ *
+ * 与 noRunnerLabel 同一层：单一实现，靠码分路——字符串嗅探会随文案改版失效。调用方
+ * （P8-6 统计页 / 看板）按它渲染「缩小时间范围」的空态，不白屏。
+ */
+export function isStatsTimeoutError(error: unknown): boolean {
+  const body = (error as { response?: { data?: { code?: number } } })?.response?.data;
+  return body?.code === 2005;
+}
+
+/**
+ * `/stats/*` 的查询串拼装：undefined/null 不发（服务端有缺省）；数组（projectIds）
+ * 折成逗号串。days/limit 等数值由调用方保证形状，这里不做二次校验。
+ */
+function statsParams(query: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined || value === null) continue;
+    out[key] = Array.isArray(value) ? value.join(",") : value;
+  }
+  return out;
 }
 
 function paged<T>(response: { data: { data: T[]; meta?: { page?: number; pageSize?: number; total?: number } } }): Paged<T> {
@@ -2384,6 +2553,8 @@ export type SpecCaseLink = {
   targetKey?: string;
   targetName?: string;
   targetStatus?: string;
+  /** 仅 case：宿主接口 id（读时关联；拼 `endpoints/:id?case=` 深链用）。 */
+  targetEndpointId?: string;
   lastResult?: SpecLinkLastResult;
   createdAt: string;
 };
@@ -2516,6 +2687,57 @@ export type TestPlanItemInput = {
   result?: TestPlanItemResult | null;
   note?: string;
   defectUrl?: string;
+};
+
+/* ── P8: 失败归因（计划十二章 12.1；REST 在 P8-2，入口 UI 在 P8-3）──────────── */
+
+/** 归因目标三类（边界 4：叶子失败——接口执行行 / 仓库 run 的 case 行 / 非 HTTP 步骤行）。 */
+export type AttributionTargetType = "execution" | "pipeline_run_case" | "execution_step";
+
+/** 归因分类字典行（平台级一份，边界 5）。停用项不进打标选项，但历史行照常显示。 */
+export type FailureCategory = {
+  code: string;
+  name: string;
+  position: number;
+  active: boolean;
+};
+
+/** 一条失败的归因（边界 6：一条失败只有一个；重打标覆盖）。 */
+export type FailureAttribution = {
+  id: string;
+  projectId: string;
+  targetType: AttributionTargetType;
+  targetId: string;
+  category: string;
+  note: string;
+  /** 绑定的 bug 链接（P8-3 验收反馈；空串 = 未绑定）。 */
+  bugUrl: string;
+  source: "human" | "mcp";
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
+ * 行内嵌的归因读数（P8-3）：报告成员行 / CI 用例行 / 报告列表聚合随行带出的展示形状。
+ * `categoryName` 服务端冗余好——读侧显示不再依赖字典请求（分享页免登录更不能发）。
+ * undefined = 未归因（没有行 = 未归因，边界 7）。
+ */
+export type FailureAttributionLite = {
+  category: string;
+  categoryName: string;
+  note: string;
+  /** 绑定的 bug 链接；空串 = 未绑定。 */
+  bugUrl: string;
+  source: "human" | "mcp";
+  updatedAt: string;
+};
+
+/** 报告列表行的归因聚合（P8-3）：失败行里有多少已归因、都归成了什么（按条数降序）。 */
+export type ReportAttributionSummary = {
+  failed: number;
+  attributed: number;
+  categories: { code: string; name: string; count: number }[];
 };
 
 /* ── P5: MCP（Token 签发 / 吊销 + 工具清单展示） ───────────────────────────── */
@@ -2826,6 +3048,7 @@ export const api = {
         keyword: filters?.keyword?.trim() || undefined,
         method: filters?.method && filters.method !== "all" ? filters.method : undefined,
         environmentId: filters?.environmentId && filters.environmentId !== "all" ? filters.environmentId : undefined,
+        coverage: filters?.coverage && filters.coverage !== "all" ? filters.coverage : undefined,
         page: filters?.page, pageSize: filters?.pageSize,
       },
     }).then(paged<Endpoint>),
@@ -2845,7 +3068,8 @@ export const api = {
   execute: (projectId: string, endpointId: string, environmentId?: string | null) => client.post(`/projects/${projectId}/endpoints/${endpointId}/execute`, environmentId === undefined ? {} : { environmentId }).then(data<Execution>),
   batchDebug: (projectId: string, endpointIds: string[], environmentStrategy: "endpoint_default" | "override", environmentId?: string | null) =>
     client.post(`/projects/${projectId}/endpoints/batch-debug`, { endpointIds, environmentStrategy, ...(environmentStrategy === "override" ? { environmentId: environmentId ?? null } : {}) }).then(data<BatchDebugSummary>),
-  batchExecutions: (projectId: string, page = 1, pageSize = 20) => client.get(`/projects/${projectId}/batch-executions`, { params: { page, pageSize } }).then(paged<BatchDebugSummary>),
+  batchExecutions: (projectId: string, page = 1, pageSize = 20, filters?: { from?: string; to?: string }) =>
+    client.get(`/projects/${projectId}/batch-executions`, { params: { page, pageSize, from: filters?.from, to: filters?.to } }).then(paged<BatchDebugSummary>),
   batchExecution: (projectId: string, batchId: string) => client.get(`/projects/${projectId}/batch-executions/${batchId}`).then(data<BatchDebugResult>),
   /** Single run, used to fetch the full result once the stream says it settled. */
   execution: (projectId: string, executionId: string) => client.get(`/projects/${projectId}/executions/${executionId}`).then(data<Execution>),
@@ -2854,7 +3078,7 @@ export const api = {
   cancelBatch: (projectId: string, batchId: string) => client.post(`/projects/${projectId}/batch-executions/${batchId}/cancel`).then(data<BatchDebugSummary & { canceled: number }>),
   executions: (projectId: string, filters?: ExecutionFilters) => client.get(`/projects/${projectId}/executions`, { params: executionParams(filters) }).then(paged<Execution>),
   /** Project-wide parent executions, filtered by kind — flows are a category here (5.0.9). */
-  executionIndex: (projectId: string, filters?: { kind?: ExecutionIndex["kind"] | "all"; status?: string; triggerSource?: TriggerSource | "all"; keyword?: string; caseFilter?: boolean; page?: number; pageSize?: number }) =>
+  executionIndex: (projectId: string, filters?: { kind?: ExecutionIndex["kind"] | "all"; status?: string; triggerSource?: TriggerSource | "all"; keyword?: string; caseFilter?: boolean; from?: string; to?: string; page?: number; pageSize?: number }) =>
     client.get(`/projects/${projectId}/execution-index`, {
       params: {
         kind: filters?.kind === "all" ? undefined : filters?.kind,
@@ -2864,6 +3088,7 @@ export const api = {
         /* 「勾选来的那些」（§8.3）：服务端按 `pipeline_runs.case_filter IS NOT NULL` 判，
            不加第五个 trigger_source 值（边界 10）。只对 runner 行有意义。 */
         caseFilter: filters?.caseFilter ? "1" : undefined,
+        from: filters?.from, to: filters?.to,
         page: filters?.page, pageSize: filters?.pageSize,
       },
     }).then(paged<ExecutionIndex>),
@@ -3161,18 +3386,41 @@ export const api = {
     client.get(`/projects/${projectId}/notification-deliveries`, { params: { ruleId: filters?.ruleId, channelId: filters?.channelId, executionIndexId: filters?.executionIndexId, status: filters?.status && filters.status !== "all" ? filters.status : undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<NotificationDeliveryRow>),
 
   /** 报告列表（边界 14 分页 + 触发源/状态筛选）。 */
-  suiteReports: (projectId: string, filters?: { keyword?: string; triggerSource?: string; status?: string; source?: string; page?: number; pageSize?: number }) =>
-    client.get(`/projects/${projectId}/suite-reports`, { params: { keyword: filters?.keyword?.trim() || undefined, triggerSource: filters?.triggerSource && filters.triggerSource !== "all" ? filters.triggerSource : undefined, status: filters?.status && filters.status !== "all" ? filters.status : undefined, source: filters?.source && filters.source !== "all" ? filters.source : undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<SuiteReportSummary>),
+  suiteReports: (projectId: string, filters?: { keyword?: string; triggerSource?: string; status?: string; source?: string; attribution?: string; page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/suite-reports`, { params: { keyword: filters?.keyword?.trim() || undefined, triggerSource: filters?.triggerSource && filters.triggerSource !== "all" ? filters.triggerSource : undefined, status: filters?.status && filters.status !== "all" ? filters.status : undefined, source: filters?.source && filters.source !== "all" ? filters.source : undefined, attribution: filters?.attribution || undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<SuiteReportSummary>),
   /** 一份报告：标识 / 触发 / 结论 / 成员明细（不分页）。 */
   suiteReport: (projectId: string, executionId: string) =>
     client.get(`/projects/${projectId}/suite-reports/${executionId}`).then(data<SuiteReport>),
   /** 趋势（边界 11）：空桶由服务端补齐，分位数 percentile_cont 在 SQL 里算。
-      `includeRepo` 同时管 `ingest` 与 `runner`（P4.5 边界 2：对用户是同一件事）。 */
-  trendReport: (projectId: string, range: ReportRange, includeRepo?: boolean) =>
-    client.get(`/projects/${projectId}/reports/trend`, { params: { range, includeRepo: includeRepo ? "1" : undefined } }).then(data<TrendReport>),
-  /** 汇总：总量 + 失败分布（按接口 Top20 / 按错误类型）。 */
-  reportSummary: (projectId: string, range: ReportRange, includeRepo?: boolean) =>
-    client.get(`/projects/${projectId}/reports/summary`, { params: { range, includeRepo: includeRepo ? "1" : undefined } }).then(data<ReportSummary>),
+      `scope` 三态口径（`SampleScope`；`repo` 档 ingest 与 runner 一体不拆，
+      P4.5 边界 2）。 */
+  trendReport: (projectId: string, range: ReportRange, scope: SampleScope = "platform") =>
+    client.get(`/projects/${projectId}/reports/trend`, { params: { range, scope } }).then(data<TrendReport>),
+  /** 汇总：总量 + 失败分布（按接口 Top20 / 按错误类型；`repo` 口径下服务端跳过
+      分布两段、回空集合——它们读平台叶子表，与仓库执行数据源错位）。 */
+  reportSummary: (projectId: string, range: ReportRange, scope: SampleScope = "platform") =>
+    client.get(`/projects/${projectId}/reports/summary`, { params: { range, scope } }).then(data<ReportSummary>),
+
+  /* ── P8：全局统计（/stats/*）。项目层「数据统计」页带 projectIds 复用同一组
+      接口——全局层不传 projectIds 即可见集全量；四条都是聚合读，30s 服务端缓存
+      （边界 16），页面进入拉一次 + 手动刷新，不接 SSE。 */
+
+  /** 全局读数：执行面四读数 + 触发源分布 + 资产面四读数 + 7 天 delta。 */
+  statsOverview: (query: { days?: number; scope?: SampleScope; projectIds?: string[] }) =>
+    client.get("/stats/overview", { params: statsParams(query) }).then(data<StatsOverview>),
+  /** 趋势：execution_trend（量/通过率/分位，可按触发源过滤）；asset_trend（六类资产日增）。 */
+  statsTrend: (query: { days?: number; metric?: "execution_trend" | "asset_trend"; scope?: SampleScope; projectIds?: string[]; triggerSource?: TriggerSource }) =>
+    client.get("/stats/trend", { params: statsParams(query) }).then(data<StatsTrendReport>),
+  /** 失败归因分布（含未归因）+ TopN 榜（六维，P8-7 扩参；case 维带 caseId、其余带
+      refId 供下钻）。attributionSource 筛「人打的 / agent 打的」（边界 8）。 */
+  statsFailures: (query: { days?: number; projectIds?: string[]; topN?: StatsTopNDim; attributionSource?: AttributionSourceFilter }) =>
+    client.get("/stats/failures", { params: statsParams(query) }).then(data<StatsFailures>),
+  /** Flaky 榜 + MTTR + 窗口内首跑通过率（同一批查询顺带出，阈值随行带出）。 */
+  statsFlaky: (query: { days?: number; projectIds?: string[] }) =>
+    client.get("/stats/flaky", { params: statsParams(query) }).then(data<StatsFlaky>),
+  /** 项目对比：Top 10 反向榜（默认）或关键字命中的全量（边界 19 两形态）。 */
+  statsProjects: (query: { days?: number; metric?: StatsProjectMetric; order?: "asc" | "desc"; limit?: number; keyword?: string; scope?: SampleScope; projectIds?: string[] }) =>
+    client.get("/stats/projects", { params: statsParams(query) }).then(data<StatsProjects>),
 
   /* ── P4: 仓库模式 ─────────────────────────────────────────────────────────── */
 
@@ -3382,6 +3630,39 @@ export const api = {
     client.delete(`/projects/${projectId}/mcp/tokens/${tokenId}`).then(data<McpToken>),
   /** 工具清单（展示用非协议面）：与 /mcp 的 tools/list 出自同一个 MCP_TOOLS 注册表。 */
   mcpTools: (projectId: string) => client.get(`/projects/${projectId}/mcp/tools`).then(data<McpToolSummary[]>),
+
+  /* ── P8-2：失败归因（REST 四条 + 字典管理）────────────────────────────────── */
+
+  /** 打标可用的分类（只回 active；任何能归因的人都要读，登录即可）。 */
+  failureCategories: (projectId: string) =>
+    client.get(`/projects/${projectId}/failure-categories`).then(data<FailureCategory[]>),
+  /** 单条打标/重打标（upsert 语义；目标必须是本项目的失败行）。 */
+  setFailureAttribution: (projectId: string, input: { targetType: AttributionTargetType; targetId: string; category: string; note?: string; bugUrl?: string }) =>
+    client.post(`/projects/${projectId}/failure-attribution`, input).then(data<FailureAttribution>),
+  /** 批量：一批失败同一个分类与备注（一次 CI 挂一片同因失败，边界 4）。 */
+  batchFailureAttribution: (projectId: string, input: { targets: { targetType: AttributionTargetType; targetId: string }[]; category: string; note?: string; bugUrl?: string }) =>
+    client.post(`/projects/${projectId}/failure-attribution/batch`, input).then(data<{ updated: number; requested: number }>),
+  /** 清除归因（回到未归因）。 */
+  clearFailureAttribution: (projectId: string, targetType: AttributionTargetType, targetId: string) =>
+    client.delete(`/projects/${projectId}/failure-attribution`, { params: { targetType, targetId } }).then(data<{ id: string; removed: boolean }>),
+
+  /* ── P8-2：归因类型管理（系统设置 tab，系统管理员）──────────────────────────── */
+
+  /** 字典全量（含停用行——管理面要能看到并重新启用）。 */
+  systemFailureCategories: () => client.get("/system/failure-categories").then(data<FailureCategory[]>),
+  /** 新增：code 不可改（统计与 MCP 的稳定标识），position 缺省排队尾。 */
+  createSystemFailureCategory: (input: { code: string; name: string; position?: number; active?: boolean }) =>
+    client.post("/system/failure-categories", input).then(data<FailureCategory>),
+  /** 改名 / 调序 / 启停（partial：只发出现的键；code 恒不可改）。 */
+  updateSystemFailureCategory: (code: string, input: { name?: string; position?: number; active?: boolean }) =>
+    client.patch(`/system/failure-categories/${encodeURIComponent(code)}`, input).then(data<FailureCategory>),
+  /**
+   * 删除。被归因行引用时回 409（`data.attributions` 是计数）；`force` 只在用户看过
+   * 计数之后才发——服务端连带删掉那些归因行（回未归因，覆盖率下降是诚实代价）。
+   */
+  deleteSystemFailureCategory: (code: string, force = false) =>
+    client.delete(`/system/failure-categories/${encodeURIComponent(code)}`, { params: force ? { force: "true" } : undefined })
+      .then(data<{ id: string; removed: boolean; removedAttributions: number }>),
 };
 
 /** 分享目标两类：套件报告与仓库执行报告。 */

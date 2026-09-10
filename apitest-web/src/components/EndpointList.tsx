@@ -32,6 +32,9 @@ export function EndpointList() {
   const [keyword, setKeyword] = useState(searchParams.get("keyword") ?? "");
   const [method, setMethod] = useState(searchParams.get("method") ?? "all");
   const [environmentFilter, setEnvironmentFilter] = useState(searchParams.get("environmentId") ?? "all");
+  /* 覆盖率筛选（看板接口覆盖率读数的下钻落点）：covered = 有平台用例、uncovered =
+     没有——口径与 /stats/overview 的 coverageRate 同一表达式（服务端 EXISTS）。 */
+  const [coverage, setCoverage] = useState<"all" | "covered" | "uncovered">((searchParams.get("coverage") as "all" | "covered" | "uncovered") ?? "all");
   const debouncedKeyword = useDebounced(keyword);
 
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
@@ -76,7 +79,7 @@ export function EndpointList() {
     /* 筛选变化回到第一页：旧页码对新结果集来说多半是越界的。 */
     setPage(1);
     setSelected(new Set());
-  }, [debouncedKeyword, method, environmentFilter]);
+  }, [debouncedKeyword, method, environmentFilter, coverage]);
 
   async function load() {
     if (!projectId || loadedProjectId !== projectId || projectLoading) return;
@@ -85,7 +88,7 @@ export function EndpointList() {
       /* 列表页走服务端分页（项目 store 仍拿全量给各处选择器，两者互不影响）。最近一次
          执行的状态/耗时由列表接口随行带出（2026-09-03 性能修复：原先这里还要并行拉
          200 条 /executions——约 254KB——只为了画「最近运行」条，那一列已按需求删除）。 */
-      const list = await api.endpointsPaged(projectId, { keyword: debouncedKeyword, method, environmentId: environmentFilter, page, pageSize });
+      const list = await api.endpointsPaged(projectId, { keyword: debouncedKeyword, method, environmentId: environmentFilter, coverage, page, pageSize });
       /* 删掉本页最后一行（单删或批删）后自动退一页，而不是停在一张空表上。 */
       if (!list.items.length && list.total > 0 && page > 1) { setPage(page - 1); return; }
       setEndpoints(list.items);
@@ -95,9 +98,9 @@ export function EndpointList() {
   }
 
   useEffect(() => {
-    setSearchParams({ ...(debouncedKeyword ? { keyword: debouncedKeyword } : {}), ...(method !== "all" ? { method } : {}), ...(environmentFilter !== "all" ? { environmentId: environmentFilter } : {}) }, { replace: true });
+    setSearchParams({ ...(debouncedKeyword ? { keyword: debouncedKeyword } : {}), ...(method !== "all" ? { method } : {}), ...(environmentFilter !== "all" ? { environmentId: environmentFilter } : {}), ...(coverage !== "all" ? { coverage } : {}) }, { replace: true });
     void load();
-  }, [projectId, loadedProjectId, projectLoading, debouncedKeyword, method, environmentFilter, page, pageSize]);
+  }, [projectId, loadedProjectId, projectLoading, debouncedKeyword, method, environmentFilter, coverage, page, pageSize]);
 
   async function execute(endpoint: Endpoint) {
     if (!projectId) return;
@@ -264,7 +267,7 @@ export function EndpointList() {
     await load();
   }
 
-  const filtering = Boolean(debouncedKeyword) || method !== "all" || environmentFilter !== "all";
+  const filtering = Boolean(debouncedKeyword) || method !== "all" || environmentFilter !== "all" || coverage !== "all";
 
   return <main className="content">
     <div className="page-head">
@@ -298,6 +301,16 @@ export function EndpointList() {
           ...environments.map((environment) => ({ value: environment.id, label: environment.name })),
         ]}
         style={{ width: 148 }}
+      />
+      <Select
+        value={coverage}
+        onChange={setCoverage}
+        options={[
+          { value: "all", label: t("endpoints.coverageAll") },
+          { value: "covered", label: t("endpoints.coverageCovered") },
+          { value: "uncovered", label: t("endpoints.coverageUncovered") },
+        ]}
+        style={{ width: 124 }}
       />
       <span className="filter-spacer" />
       {/* The batch result outlives its drawer, so closing it is not losing it. */}

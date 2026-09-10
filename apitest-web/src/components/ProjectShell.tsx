@@ -19,6 +19,10 @@ export type ProjectPage = typeof PAGES[number];
  * `pipeline-runs/:runId` is the repo task execution detail (an independent route, not
  * a `repo/*` child) — without the alias it falls through to the endpoints fallback and
  * the sidebar lights up 接口管理 while the user is inside 仓库模式.
+ *
+ * 2026-09-09（P8-3 验收反馈③）：从报告列表进入的仓库执行详情（`?from=suite-reports`）
+ * 归「报告列表」而不是仓库——见 active 计算处的 fromSection 分叉；2026-09-10
+ * （P8-6 验收反馈）扩到执行记录（`?from=reports`）：从哪进的就归哪。
  */
 const SECTION_ALIASES: Partial<Record<string, ProjectPage>> = { "pipeline-runs": "repo" };
 
@@ -71,16 +75,25 @@ export function ProjectShell() {
   const accordionOn = useIsWideViewport() && !sidebarCollapsed;
 
   const segments = location.pathname.split("/").filter(Boolean);
-  const routeSegment = segments[2] ?? "endpoints";
+  /* 兜底段同步默认页（P8 边界 22）：未知段回落「数据统计」而不是接口管理——与
+     main.tsx 的 index 重定向同一个落点，两处不一致会出现「侧栏亮错项」。 */
+  const routeSegment = segments[2] ?? "trends";
+  /* 仓库执行详情的归属按入口区分（P8-3 验收反馈③；P8-6 反馈扩到执行记录）：URL 带
+     `?from=<section>`（报告列表 / 执行记录的行点击写入）时归该 section，面包屑
+     上级与侧栏高亮都是它；仓库模式内的入口（CI 任务/用例树/调度）不带参数，归
+     「仓库」。query 是唯一事实源——刷新、新标签、分享链接都保持同一归属。 */
+  const fromSection = routeSegment === "pipeline-runs" ? new URLSearchParams(location.search).get("from") : undefined;
+  const fromReports = fromSection !== null && (PAGES as readonly string[]).includes(fromSection ?? "");
   const active: ProjectPage = (PAGES as readonly string[]).includes(routeSegment)
     ? routeSegment as ProjectPage
-    : SECTION_ALIASES[routeSegment] ?? "endpoints";
+    : fromReports ? fromSection as ProjectPage
+    : SECTION_ALIASES[routeSegment] ?? "trends";
   /* A detail page is open when the path carries an id past the section. */
   const endpointOpen = active === "endpoints" && Boolean(segments[3]);
   const flowOpen = active === "flows" && Boolean(segments[3]);
   const suiteOpen = active === "suites" && Boolean(segments[3]);
   const dataSourceOpen = active === "data-sources" && Boolean(segments[3]);
-  const suiteReportOpen = active === "suite-reports" && Boolean(segments[3]);
+  const suiteReportOpen = routeSegment === "suite-reports" && Boolean(segments[3]);
   /* 测试计划详情同款：`test-plans/:planId` 打开时面包屑要走 detail 分叉。 */
   const testPlanOpen = active === "test-plans" && Boolean(segments[3]);
   /* 仓库执行详情是 repo 分组的子页（路由不在 repo/ 下，靠上面的别名归组）。它必须算
@@ -215,7 +228,9 @@ export function ProjectShell() {
       <header className="topbar">
         {/* Every crumb but the last is a link back to that level. */}
         <nav className="crumb" aria-label={t("nav.breadcrumb")}>
-          <button className="crumb-link truncate" onClick={() => void go(`/projects/${projectId}/endpoints`)}>
+          {/* 面包屑的项目名是「返回项目」——落点是默认页（P8 边界 22 + 验收门槛 14：
+              进入项目（含从这里进）默认落在数据统计页）。 */}
+          <button className="crumb-link truncate" onClick={() => void go(`/projects/${projectId}/trends`)}>
             {project?.name ?? "—"}
           </button>
           <span className="crumb-sep">/</span>

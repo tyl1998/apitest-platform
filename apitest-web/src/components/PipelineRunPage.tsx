@@ -9,6 +9,8 @@ import { useProjectStore } from "../stores/projectStore";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
 import { Empty, Readout, Status, Tip, type RunStatus } from "../ui";
+import { AttributionDrawer, AttributionTag, type AttributionRequest } from "./AttributionDrawer";
+import { formatMsTick, niceMsStep } from "./charts";
 import { RepoPageHead } from "./RepoShell";
 import { type DetailCrumbContext } from "./ProjectShell";
 import { ShareReportButton } from "./ShareReportButton";
@@ -157,13 +159,33 @@ function isLogAttachment(attachment: AllureReportAttachment): boolean {
     || /\.(log|txt)$/i.test(attachment.name);
 }
 
+/* ── 归因（P8-3）：allure 视图行 ↔ DB 用例行的匹配 ──────────────────────────── */
+
+/**
+ * 视图行与 DB 行的匹配键。两边读的是**同一批 allure 结果文件**（视图 = 报告包 zip 的
+ * 解析，DB 行 = Runner complete 时上报的 cases[]），`name` 与 `start`/`stop` 都是文件
+ * 原字的透传——拼成复合键稳定可靠；同名参数化用例靠时间戳区分。
+ *
+ * 不能用视图的 `uid` 匹配 `external_id`：视图解析读的是 `parsed.uid`，而 allure 结果
+ * 文件的标识字段叫 `uuid`，`uid` 实际是 name 兜底——两个键根本不是一个东西。缺时间戳
+ * 的行两边都缺，键退化为纯 name，仍能对上。
+ */
+function viewCaseKey(name: string, start?: number, stop?: number): string {
+  return `${name}|${start ?? ""}|${stop ?? ""}`;
+}
+
+function dbCaseKey(row: PipelineRunCase): string {
+  return `${row.caseName}|${row.startedAtMs ?? ""}|${row.finishedAtMs ?? ""}`;
+}
+
 export function PipelineRunPage() {
   const { t } = useTranslation();
   const { projectId, runId } = useParams();
   const { projectId: loadedProjectId, loading: projectLoading } = useProjectStore();
   const stream = useExecutionStream(projectId);
   const [searchParams, setSearchParams] = useSearchParams();
-  /* 面包屑长出「#序号」（ProjectShell 的 detailTitle 通道）。 */
+  /* 面包屑长出「任务名 #序号」（ProjectShell 的 detailTitle 通道）——与执行记录
+     runner 行的身份（execution_index.target_name）同一个词（P8-6 验收反馈）。 */
   const { setDetailTitle } = useOutletContext<DetailCrumbContext>();
   /* viewer：取消（一次写）与分享创建不渲染（P6-4）；日志/报告/产物照读。 */
   const canWrite = useCanWrite();
@@ -206,7 +228,7 @@ export function PipelineRunPage() {
   }, [projectId, runId, loadedProjectId, projectLoading, reload]);
 
   useEffect(() => {
-    setDetailTitle(run ? `#${run.runNumber}` : undefined);
+    setDetailTitle(run ? (run.taskName ? `${run.taskName} #${run.runNumber}` : `#${run.runNumber}`) : undefined);
     return () => setDetailTitle(undefined);
   }, [run?.runNumber, run, setDetailTitle]);
 
@@ -326,8 +348,10 @@ export function PipelineRunPage() {
   const stageIndex = run.stage === "done" ? STAGES.length : STAGES.indexOf(run.stage);
 
   return <main className="content">
+    {/* 页头与面包屑同一个身份（P8-6 验收反馈四轮②）：任务名 #序号——「仓库执行」
+        只在任务已删除、名字拿不到时兜底（LEFT JOIN 落空），历史链接不断。 */}
     <RepoPageHead
-      title={`${t("pipelineRun.title")} #${run.runNumber}`}
+      title={`${run.taskName ?? t("pipelineRun.title")} #${run.runNumber}`}
       hint={t("pipelineRun.hint")}
       actions={<>
         {/* 分享是报告的固有能力（2026-09-02）：免登录只读链接，任何状态的 run 都可分享。 */}
@@ -411,6 +435,10 @@ export function PipelineRunPage() {
         report={report}
         reportLoaded={reportLoaded}
         loadAttachment={projectId && runId ? loadAttachment : undefined}
+        projectId={projectId}
+        canWrite={canWrite}
+        /* 归因落库后重拉 cases：置 undefined 触发本页的按需加载 effect，随行归因跟上。 */
+        onAttributed={() => setCases(undefined)}
       />
     )}
     {tab === "artifacts" && <PipelineArtifactsTab artifacts={artifacts} />}
@@ -454,12 +482,17 @@ function PipelineLogTab({ logBox, text, run, projectId, runId }: {
  * `loadAttachment` 是附件的取数器（详情页走带 Bearer 头的 axios，分享页走公开路由），
  * 参数是报告包内的实体文件名（allure 的 `source`）。
  */
-export function PipelineReportBody({ run, cases, report, reportLoaded, loadAttachment }: {
+export function PipelineReportBody({ run, cases, report, reportLoaded, loadAttachment, projectId, canWrite, onAttributed }: {
   run: PipelineRun;
   cases: PipelineRunCase[] | undefined;
   report: AllureReportView | null;
   reportLoaded: boolean;
   loadAttachment?: (source: string) => Promise<Blob>;
+  /** 站内详情页传入（打标入口需要）；分享页缺省——归因 chip 只读。 */
+  projectId?: string;
+  canWrite?: boolean;
+  /** 归因落库后的刷新回调（详情页重拉 cases，随行归因跟上）。 */
+  onAttributed?: () => void;
 }) {
   const { t } = useTranslation();
 
@@ -478,6 +511,13 @@ export function PipelineReportBody({ run, cases, report, reportLoaded, loadAttac
     [cases],
   );
   const showTimeline = Boolean(cases?.length) && timed.length === (cases?.length ?? 0);
+
+  /* 视图行 → DB 用例行（归因目标住在 DB 行上，见 viewCaseKey 的注释）。 */
+  const caseByViewKey = useMemo(() => {
+    const map = new Map<string, PipelineRunCase>();
+    for (const row of cases ?? []) map.set(dbCaseKey(row), row);
+    return map;
+  }, [cases]);
 
   if (!cases || !reportLoaded) return <p className="muted">{t("common.loading")}</p>;
 
@@ -507,9 +547,21 @@ export function PipelineReportBody({ run, cases, report, reportLoaded, loadAttac
 
     {/* allure 用例明细（有报告包时的主视图）；junit / 没有包时降级为 cases 列表。 */}
     {report && report.cases.length > 0
-      ? <AllureCasesTable report={report} loadAttachment={loadAttachment} />
+      ? <AllureCasesTable
+          report={report}
+          loadAttachment={loadAttachment}
+          projectId={projectId}
+          canWrite={canWrite}
+          caseByViewKey={caseByViewKey}
+          onAttributed={onAttributed}
+        />
       : cases.length
-        ? <CasesFallbackList cases={cases} />
+        ? <CasesFallbackList
+            cases={cases}
+            projectId={projectId}
+            canWrite={canWrite}
+            onAttributed={onAttributed}
+          />
         : <Empty title={t("pipelineRun.casesEmptyTitle")} hint={t("pipelineRun.casesEmpty")} />}
   </>;
 }
@@ -536,30 +588,10 @@ export function PipelineReportBody({ run, cases, report, reportLoaded, loadAttac
  * 画最小宽度——跳过的用例常常 duration=0，画成 0 宽会从时间轴上消失。
  */
 
-/** 刻度的「整齐间隔」候选（毫秒）：升序，取第一个 ≥ 目标间隔的值。 */
-const NICE_STEPS_MS = [100, 200, 500, 1000, 2000, 5000, 10_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000];
 /** 目标刻度数（含首尾）：6 个标签在 620px 起的绘图区里不会互相挤。 */
 const TIMELINE_TICKS = 6;
 /** 空档标注阈值：短于跨度这个比例的间隙不标——并行执行里毫秒级缝隙满图都是。 */
 const IDLE_MIN_RATIO = 0.04;
-
-/**
- * 挑一个整齐的刻度间隔。候选表之外（跨度超过 ~50 分钟的长 run）按 10 分钟向上取整，
- * **不能退回 `span` 本身**：那样 `first` 是 span 的倍数、最多落进一个刻度，图会退化成
- * 只有首尾两个标签、一条网格线都没有——而越长的 run 越需要网格来读「哪一段最慢」。
- */
-function niceStep(span: number): number {
-  const target = span / (TIMELINE_TICKS - 1);
-  const known = NICE_STEPS_MS.find((step) => step >= target);
-  return known ?? Math.ceil(target / 600_000) * 600_000;
-}
-
-/** 只在 ms 精度上有意义时带小数——整秒刻度上的 `.0` 是噪声。 */
-function formatTick(ms: number, step: number): string {
-  const date = new Date(ms);
-  const clock = formatClock(ms);
-  return step < 1000 ? `${clock}.${String(date.getMilliseconds()).padStart(3, "0").slice(0, 2)}` : clock;
-}
 
 function TimelineGantt({ cases }: { cases: PipelineRunCase[] }) {
   const { t } = useTranslation();
@@ -594,19 +626,21 @@ function TimelineGantt({ cases }: { cases: PipelineRunCase[] }) {
       .sort((a, b) => (a.rows[0]?.startedAtMs ?? 0) - (b.rows[0]?.startedAtMs ?? 0));
   }, [cases]);
 
-  /** 刻度：整齐边界上的时刻，配同位置的背景网格线。 */
+  /** 刻度：整齐边界上的时刻，配同位置的背景网格线。间隔挑法收编进图表底座
+      （`charts/core.ts` 的 `niceMsStep`——候选表 100ms…10min、之外按 10 分钟
+      向上取整、不退回 span 本身，语义与 2026-09-02 验收版一致）。 */
   const ticks = useMemo(() => {
-    const step = niceStep(bounds.span);
+    const step = niceMsStep(bounds.span, TIMELINE_TICKS);
     const first = Math.ceil(bounds.start / step) * step;
     const list: { at: number; label: string; pct: number }[] = [];
     for (let at = first; at <= bounds.end; at += step) {
-      list.push({ at, label: formatTick(at, step), pct: ((at - bounds.start) / bounds.span) * 100 });
+      list.push({ at, label: formatMsTick(at, step), pct: ((at - bounds.start) / bounds.span) * 100 });
     }
     /* 跨度短于一个刻度间隔时（几百毫秒跑完的 run）循环最多落进一个刻度：退回首尾两点，
        图仍然有可读的边界。首尾同一毫秒时（单条 0 耗时用例）只画一条——两条会撞 key。 */
     if (list.length < 2) {
-      const edges = [{ at: bounds.start, label: formatTick(bounds.start, step), pct: 0 }];
-      if (bounds.end > bounds.start) edges.push({ at: bounds.end, label: formatTick(bounds.end, step), pct: 100 });
+      const edges = [{ at: bounds.start, label: formatMsTick(bounds.start, step), pct: 0 }];
+      if (bounds.end > bounds.start) edges.push({ at: bounds.end, label: formatMsTick(bounds.end, step), pct: 100 });
       return edges;
     }
     return list;
@@ -681,8 +715,10 @@ function TimelineGantt({ cases }: { cases: PipelineRunCase[] }) {
         </div>)}
       </div>
     </div>
-    {/* 常驻高度的悬停读数：条件渲染整块会在指针进出时把下面的表格上下顶一次。 */}
-    <div className="timeline-hover mono">
+    {/* 常驻高度的悬停读数：条件渲染整块会在指针进出时把下面的表格上下顶一次。
+        P8-5 起与 charts 底座的读数条共用 `.chart-readout`（原 `.timeline-hover`
+        的职责），版式收敛成一份。 */}
+    <div className="chart-readout timeline-hover mono">
       {hovered && <>
         <span className={`case-dot case-${hovered.status}`} />
         <span className="truncate">{hovered.caseName}</span>
@@ -710,7 +746,15 @@ function TimelineGantt({ cases }: { cases: PipelineRunCase[] }) {
  * - **点行开抽屉**（第三批 ②）：用例明细不再在表格里下拉展开——展开行会把后面的行
  *   推走、收起时滚动位置也回不来；抽屉里整份明细自滚动，列表保持原位。
  */
-function AllureCasesTable({ report, loadAttachment }: { report: AllureReportView; loadAttachment?: (source: string) => Promise<Blob> }) {
+function AllureCasesTable({ report, loadAttachment, projectId, canWrite, caseByViewKey, onAttributed }: {
+  report: AllureReportView;
+  loadAttachment?: (source: string) => Promise<Blob>;
+  projectId?: string;
+  canWrite?: boolean;
+  /** 视图行 → DB 用例行（归因目标住在 DB 行上，匹配键见 viewCaseKey）。 */
+  caseByViewKey: Map<string, PipelineRunCase>;
+  onAttributed?: () => void;
+}) {
   const { t } = useTranslation();
   /** 抽屉正展示的用例（2026-09-02 第三批 ②：点击行 = 打开抽屉，不再展开内嵌行）。 */
   const [detail, setDetail] = useState<AllureReportCase>();
@@ -718,6 +762,44 @@ function AllureCasesTable({ report, loadAttachment }: { report: AllureReportView
   const [filter, setFilter] = useState<CaseFilter>("all");
   /** 手动折叠的覆盖：分组名 → 是否展开。缺席 = 用默认（默认全收起）。 */
   const [openSuites, setOpenSuites] = useState<Record<string, boolean>>({});
+  /* 归因（P8-3）：抽屉目标批次 + 批量勾选（DB 用例行 id）。 */
+  const [attribution, setAttribution] = useState<AttributionRequest>();
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+
+  /* 可归因的失败行：视图行匹配上 DB 行且 DB 状态是 failed/error（error 已算失败，
+     与 run 计数同口径）。匹配不上（旧报告包与上报清单错位）时行上不出入口——归因
+     目标必须真实存在于 pipeline_run_cases。 */
+  const attributable = useMemo(() => {
+    const out: { view: AllureReportCase; caseRow: PipelineRunCase }[] = [];
+    for (const view of report.cases) {
+      const caseRow = caseByViewKey.get(viewCaseKey(view.name, view.start, view.stop));
+      if (caseRow && (caseRow.status === "failed" || caseRow.status === "error")) out.push({ view, caseRow });
+    }
+    return out;
+  }, [report, caseByViewKey]);
+  const batchAvailable = Boolean(projectId && canWrite && attributable.length > 0);
+  /* 归因列只在该报告有失败时出现（P8-3 验收反馈：通过的报告不携带归因信息）。 */
+  const showAttribution = attributable.length > 0;
+
+  function toggleChecked(caseRowId: string, next: boolean) {
+    setChecked((current) => {
+      const copy = new Set(current);
+      if (next) copy.add(caseRowId); else copy.delete(caseRowId);
+      return copy;
+    });
+  }
+
+  function openBatchAttribution() {
+    const targets = attributable
+      .filter(({ caseRow }) => checked.has(caseRow.id))
+      .map(({ view, caseRow }) => ({
+        targetType: "pipeline_run_case" as const,
+        targetId: caseRow.id,
+        label: caseTitle(view),
+        attribution: caseRow.attribution,
+      }));
+    if (targets.length) setAttribution({ targets });
+  }
 
   const needle = keyword.trim().toLowerCase();
 
@@ -759,6 +841,23 @@ function AllureCasesTable({ report, loadAttachment }: { report: AllureReportView
   const isOpen = (group: { suite: string }) => openSuites[group.suite] ?? filtering;
   const allOpen = suites.length > 0 && suites.every(isOpen);
 
+  /* 当前筛选视图内的可归因行（表头「全选失败」的 scope：筛过之后全选圈的是看得见的
+      这批，不是整份报告——按文件/状态筛完再批量打标是常见顺序）。 */
+  const shownAttributable = useMemo(() => {
+    const out: { view: AllureReportCase; caseRow: PipelineRunCase }[] = [];
+    for (const group of suites) {
+      for (const view of group.rows) {
+        const caseRow = caseByViewKey.get(viewCaseKey(view.name, view.start, view.stop));
+        if (caseRow && (caseRow.status === "failed" || caseRow.status === "error")) out.push({ view, caseRow });
+      }
+    }
+    return out;
+  }, [suites, caseByViewKey]);
+
+  function toggleAllShown(next: boolean) {
+    setChecked(next ? new Set(shownAttributable.map(({ caseRow }) => caseRow.id)) : new Set());
+  }
+
   return <>
     <div className="filter-bar">
       <input
@@ -780,6 +879,13 @@ function AllureCasesTable({ report, loadAttachment }: { report: AllureReportView
         className="btn btn-small"
         onClick={() => setOpenSuites(Object.fromEntries(suites.map((group) => [group.suite, !allOpen])))}
       >{allOpen ? t("pipelineRun.collapseAll") : t("pipelineRun.expandAll")}</button>
+      {/* 批量归因（边界 4：一次 CI 挂一片同因失败太常见）：勾选失败用例后一次打标。 */}
+      {batchAvailable && <button
+        type="button"
+        className="btn btn-small"
+        disabled={!checked.size}
+        onClick={openBatchAttribution}
+      >{t("attribution.batch", { count: checked.size })}</button>}
       <span className="filter-spacer" />
       <span className="muted mono">{t("pipelineRun.filterMatched", { shown, total: report.cases.length })}</span>
     </div>
@@ -788,15 +894,28 @@ function AllureCasesTable({ report, loadAttachment }: { report: AllureReportView
       ? <Empty title={t("pipelineRun.filterEmptyTitle")} hint={t("pipelineRun.filterEmptyHint")} />
       : <div className="table-scroll"><table className="grid grid-fixed report-grid-cases">
         <colgroup>
+          {batchAvailable && <col className="col-select" />}
           <col />
           <col className="col-status" />
+          {showAttribution && <col className="col-attribution" />}
           <col className="col-num" />
           <col className="col-num" />
           <col className="col-attach" />
         </colgroup>
         <thead><tr>
+          {batchAvailable && <th className="col-select">
+            {/* 全选失败：批量归因的主路径（一次 CI 挂一片时逐条勾选不现实）；scope 是
+                当前筛选视图内的失败行。 */}
+            <input
+              type="checkbox"
+              aria-label={t("attribution.selectAllFailed")}
+              checked={shownAttributable.length > 0 && shownAttributable.every(({ caseRow }) => checked.has(caseRow.id))}
+              onChange={(event) => toggleAllShown(event.target.checked)}
+            />
+          </th>}
           <th>{t("pipelineRun.caseName")}</th>
           <th className="col-status">{t("pipelineRun.caseStatus")}</th>
+          {showAttribution && <th>{t("attribution.column")}</th>}
           <th className="col-num">{t("pipelineRun.duration")}</th>
           <th className="col-num">{t("pipelineRun.stepsCount")}</th>
           <th className="col-attach" />
@@ -809,7 +928,7 @@ function AllureCasesTable({ report, loadAttachment }: { report: AllureReportView
                 className="suite-row"
                 data-clickable=""
                 onClick={() => setOpenSuites((current) => ({ ...current, [group.suite]: !open }))}
-              ><td colSpan={5}>
+              ><td colSpan={5 + (batchAvailable ? 1 : 0) + (showAttribution ? 1 : 0)}>
                 <span className="suite-row-head">
                   <span className="suite-row-caret">{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</span>
                   <span className="suite-name" title={group.suite}>{group.suite}</span>
@@ -821,7 +940,19 @@ function AllureCasesTable({ report, loadAttachment }: { report: AllureReportView
               </td></tr>
               {open && group.rows.map((row) => {
                 const subName = caseSubName(row);
+                /* 该行的 DB 用例行：归因状态与目标都住在那里（匹配不上 = 无入口，见
+                    attributable 的注释）。 */
+                const caseRow = caseByViewKey.get(viewCaseKey(row.name, row.start, row.stop));
+                const attributableRow = caseRow && (caseRow.status === "failed" || caseRow.status === "error");
                 return <tr key={row.uid} data-clickable="" onClick={() => setDetail(row)}>
+                  {batchAvailable && <td className="col-select" onClick={(event) => event.stopPropagation()}>
+                    {attributableRow && <input
+                      type="checkbox"
+                      aria-label={t("attribution.selectTarget", { name: caseTitle(row) })}
+                      checked={checked.has(caseRow.id)}
+                      onChange={(event) => toggleChecked(caseRow.id, event.target.checked)}
+                    />}
+                  </td>}
                   <td>
                     <span className="case-title">
                       <span className={`case-dot case-${dotStatus(row.status)}`} />
@@ -832,6 +963,24 @@ function AllureCasesTable({ report, loadAttachment }: { report: AllureReportView
                   <td className="col-status">
                     <Status status={reportRunStatus(row.status)} label={reportStatusLabel(t, row.status)} />
                   </td>
+                  {showAttribution && <td>
+                    {attributableRow
+                      ? <AttributionTag
+                          attribution={caseRow.attribution}
+                          actionable={Boolean(projectId && canWrite)}
+                          onClick={() => setAttribution({
+                            targets: [{
+                              targetType: "pipeline_run_case",
+                              targetId: caseRow.id,
+                              label: caseTitle(row),
+                              attribution: caseRow.attribution,
+                            }],
+                            evidenceMessage: caseRow.message ?? row.message ?? undefined,
+                          })}
+                        />
+                      /* 通过/跳过/未匹配上的行：空单元格——归因列只对失败行有内容。 */
+                      : null}
+                  </td>}
                   <td className="col-num mono">{formatDuration(row.durationMs)}</td>
                   <td className="col-num mono">{countSteps(row.steps)}</td>
                   <td className="col-attach">{row.attachments.length > 0 && <Tip text={row.attachments.map((each) => each.name).join(", ")}><span className="muted"><Paperclip size={13} /></span></Tip>}</td>
@@ -852,6 +1001,17 @@ function AllureCasesTable({ report, loadAttachment }: { report: AllureReportView
     >
       {detail && <ReportCaseDetail caseRow={detail} loadAttachment={loadAttachment} />}
     </Drawer>
+
+    {/* 归因抽屉（P8-3）：单条（失败行 chip）与批量（勾选）同一组件；落库后重拉 cases。 */}
+    {attribution && projectId && (
+      <AttributionDrawer
+        projectId={projectId}
+        targets={attribution.targets}
+        evidenceMessage={attribution.evidenceMessage}
+        onClose={() => setAttribution(undefined)}
+        onDone={() => { setChecked(new Set()); onAttributed?.(); }}
+      />
+    )}
   </>;
 }
 
@@ -1072,11 +1232,19 @@ function AttachmentView({ attachment, loadAttachment, defaultOpen }: {
 
 /** 降级列表也带搜索与状态筛选（验收反馈 ⑥）+ Status 原语（⑪）——两处列表同一口径。
  *  点行开抽屉读失败信息（第三批 ②，与 allure 用例表同一交互语汇）。 */
-function CasesFallbackList({ cases }: { cases: PipelineRunCase[] }) {
+function CasesFallbackList({ cases, projectId, canWrite, onAttributed }: {
+  cases: PipelineRunCase[];
+  projectId?: string;
+  canWrite?: boolean;
+  onAttributed?: () => void;
+}) {
   const { t } = useTranslation();
   const [detail, setDetail] = useState<PipelineRunCase>();
   const [keyword, setKeyword] = useState("");
   const [filter, setFilter] = useState<CaseFilter>("all");
+  /* 归因（P8-3）：junit 降级列表的行就是 DB 行，归因目标即行自身。 */
+  const [attribution, setAttribution] = useState<AttributionRequest>();
+  const [checked, setChecked] = useState<Set<string>>(new Set());
 
   const needle = keyword.trim().toLowerCase();
   const rows = useMemo(() => cases.filter((row) => {
@@ -1084,6 +1252,35 @@ function CasesFallbackList({ cases }: { cases: PipelineRunCase[] }) {
     if (!needle) return true;
     return `${row.caseName}\n${row.suiteName}`.toLowerCase().includes(needle);
   }), [cases, needle, filter]);
+
+  const failedRows = rows.filter((row) => row.status === "failed" || row.status === "error");
+  const batchAvailable = Boolean(projectId && canWrite && failedRows.length > 0);
+  /* 归因列只在有失败时出现（含被筛选隐藏的失败——列不随筛选闪现/消失）。 */
+  const showAttribution = cases.some((row) => row.status === "failed" || row.status === "error");
+
+  function toggleChecked(caseRowId: string, next: boolean) {
+    setChecked((current) => {
+      const copy = new Set(current);
+      if (next) copy.add(caseRowId); else copy.delete(caseRowId);
+      return copy;
+    });
+  }
+
+  function openBatchAttribution() {
+    const targets = failedRows
+      .filter((row) => checked.has(row.id))
+      .map((row) => ({
+        targetType: "pipeline_run_case" as const,
+        targetId: row.id,
+        label: row.caseName,
+        attribution: row.attribution,
+      }));
+    if (targets.length) setAttribution({ targets });
+  }
+
+  function toggleAllFailed(next: boolean) {
+    setChecked(next ? new Set(failedRows.map((row) => row.id)) : new Set());
+  }
 
   return <>
     <div className="filter-bar">
@@ -1102,6 +1299,12 @@ function CasesFallbackList({ cases }: { cases: PipelineRunCase[] }) {
           label: each === "all" ? t("filter.runStatusAll") : t(`pipelineRun.reportStatus.${each}`),
         }))}
       />
+      {batchAvailable && <button
+        type="button"
+        className="btn btn-small"
+        disabled={!checked.size}
+        onClick={openBatchAttribution}
+      >{t("attribution.batch", { count: checked.size })}</button>}
       <span className="filter-spacer" />
       <span className="muted mono">{t("pipelineRun.filterMatched", { shown: rows.length, total: cases.length })}</span>
     </div>
@@ -1110,19 +1313,54 @@ function CasesFallbackList({ cases }: { cases: PipelineRunCase[] }) {
       ? <Empty title={t("pipelineRun.filterEmptyTitle")} hint={t("pipelineRun.filterEmptyHint")} />
       : <div className="table-scroll"><table className="grid">
         <thead><tr>
+          {batchAvailable && <th className="col-select">
+            <input
+              type="checkbox"
+              aria-label={t("attribution.selectAllFailed")}
+              checked={failedRows.length > 0 && failedRows.every((row) => checked.has(row.id))}
+              onChange={(event) => toggleAllFailed(event.target.checked)}
+            />
+          </th>}
           <th>{t("pipelineRun.caseName")}</th>
           <th>{t("pipelineRun.suite")}</th>
           <th className="col-status">{t("pipelineRun.caseStatus")}</th>
+          {showAttribution && <th>{t("attribution.column")}</th>}
           <th className="col-num">{t("pipelineRun.duration")}</th>
           <th />
         </tr></thead>
         <tbody>
           {rows.map((row) => <tr key={row.id} data-clickable="" onClick={() => setDetail(row)}>
+            {batchAvailable && <td className="col-select" onClick={(event) => event.stopPropagation()}>
+              {(row.status === "failed" || row.status === "error") && <input
+                type="checkbox"
+                aria-label={t("attribution.selectTarget", { name: row.caseName })}
+                checked={checked.has(row.id)}
+                onChange={(event) => toggleChecked(row.id, event.target.checked)}
+              />}
+            </td>}
             <td><span className="truncate cell-name"><span className={`case-dot case-${row.status}`} />{row.caseName}</span></td>
             <td><span className="truncate">{row.suiteName || "—"}</span></td>
             <td className="col-status">
               <Status status={caseRunStatus(row.status)} label={t(`pipelineRun.caseStatusValue.${row.status}`)} />
             </td>
+            {showAttribution && <td>
+              {row.status === "failed" || row.status === "error"
+                ? <AttributionTag
+                    attribution={row.attribution}
+                    actionable={Boolean(projectId && canWrite)}
+                    onClick={() => setAttribution({
+                      targets: [{
+                        targetType: "pipeline_run_case",
+                        targetId: row.id,
+                        label: row.caseName,
+                        attribution: row.attribution,
+                      }],
+                      evidenceMessage: row.message,
+                    })}
+                  />
+                /* 通过/跳过的行：空单元格——归因列只对失败行有内容。 */
+                : null}
+            </td>}
             <td className="col-num mono">{formatDuration(row.durationMs)}</td>
             <td>{row.message && <span className="muted">{t("pipelineRun.hasMessage")}</span>}</td>
           </tr>)}
@@ -1139,6 +1377,16 @@ function CasesFallbackList({ cases }: { cases: PipelineRunCase[] }) {
       {detail?.message && <pre className="pipeline-log mono">{detail.message}</pre>}
       {!detail?.message && <p className="muted">—</p>}
     </Drawer>
+
+    {attribution && projectId && (
+      <AttributionDrawer
+        projectId={projectId}
+        targets={attribution.targets}
+        evidenceMessage={attribution.evidenceMessage}
+        onClose={() => setAttribution(undefined)}
+        onDone={() => { setChecked(new Set()); onAttributed?.(); }}
+      />
+    )}
   </>;
 }
 

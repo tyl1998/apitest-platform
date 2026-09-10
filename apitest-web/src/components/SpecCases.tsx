@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from "react";
 import { Drawer, Modal, Pagination, Select, TreeSelect, message } from "antd";
 import { useTranslation } from "react-i18next";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Dropdown, type MenuProps } from "antd";
 import { ChevronDown, ChevronRight, Download, FileDown, Folder, FolderPlus, ListTree, Network, Pencil, Plus, Trash2, X } from "lucide-react";
 import { api, type Paged, type SpecCase, type SpecCaseInput, type SpecCaseLink, type SpecCasePriority, type SpecCaseStatus, type SpecCaseStep, type SpecExportFormat, type SpecModule, type TestPlan } from "../api";
@@ -1166,6 +1166,7 @@ export function SpecCaseDrawer({ projectId, caseId, modules, canWrite, readOnly,
   onSaved?: () => Promise<void> | void;
 }) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [item, setItem] = useState<SpecCase | "new" | "loading">();
   const [moduleId, setModuleId] = useState<string>();
   const [title, setTitle] = useState("");
@@ -1356,10 +1357,12 @@ export function SpecCaseDrawer({ projectId, caseId, modules, canWrite, readOnly,
     </div>
 
     {/* ── 绑定区（P7-6）：一条文本用例 → N 条自动化资产（N:N，边界 8）。只读行 =
-        目标名 + 类型 + 最近结果（读时关联，Status 原语上语义色；深链跳对应详情页）；
-        目标删了显示「目标已删除」、repo_case 对账标 removed 显示「目标已失效」
-        （验收 7：悬空不消失、不报错）。endpoint 绑定是「该测什么」的设计意图，
-        不算自动化进度（边界 10/11）——行上给 chip 标注「不算自动化」。 */}
+        目标名 + 类型 + 最近结果（读时关联，Status 原语上语义色）+ 最近执行时间；
+        目标名可点深链跳对应详情页（2026-09-10 反馈落地，linkTargetPath 四类
+        各有落点）；目标删了显示「目标已删除」、repo_case 对账标 removed 显示
+        「目标已失效」（验收 7：悬空不消失、不报错，也不给链接）。endpoint
+        绑定是「该测什么」的设计意图，不算自动化进度（边界 10/11）——行上给
+        chip 标注「不算自动化」。 */}
     {item !== "new" && <div style={{ marginTop: "var(--s7)" }}>
       <div className="kv-head">
         <h3 className="subhead">{t("specCases.links.title")}{links.length > 0 && <span className="tab-count mono">{links.length}</span>}</h3>
@@ -1375,16 +1378,31 @@ export function SpecCaseDrawer({ projectId, caseId, modules, canWrite, readOnly,
             {editable && <th className="col-actions" />}
           </tr></thead>
           <tbody>
-            {links.map((link) => <tr key={link.id}>
+            {links.map((link) => {
+              /* 跳转落点（2026-09-10 用户反馈）：目标名可点，四类各跳各的详情页
+                 （linkTargetPath）；不可跳的行名字仍是纯文本——「目标已删除/已失效」
+                 的行不给一条点了 404 的链接。targetName 缺席（目标已删）时本就
+                 走「目标已删除」分支，这里再判一次是让那一行的 targetPath 为空。 */
+              const targetPath = link.targetName ? linkTargetPath(projectId, link) : undefined;
+              return <tr key={link.id}>
               <td>
                 <div className="link-target">
                   <span className="chip mono">{t(`specCases.links.type_${link.targetType}`)}</span>
                   {link.targetName
                     ? <Tip text={link.targetType === "repo_case" && link.targetKey ? link.targetKey : undefined}>
-                        <span className="truncate">
-                          {link.targetName}
-                          {link.targetType === "repo_case" && link.targetStatus === "removed" && <em className="link-stale"> · {t("specCases.links.stale")}</em>}
-                        </span>
+                        {targetPath
+                          ? <button
+                              className="cell-link truncate"
+                              title={t("specCases.links.open")}
+                              onClick={() => navigate(targetPath)}
+                            >
+                              {link.targetName}
+                              {link.targetType === "repo_case" && link.targetStatus === "removed" && <em className="link-stale"> · {t("specCases.links.stale")}</em>}
+                            </button>
+                          : <span className="truncate">
+                              {link.targetName}
+                              {link.targetType === "repo_case" && link.targetStatus === "removed" && <em className="link-stale"> · {t("specCases.links.stale")}</em>}
+                            </span>}
                       </Tip>
                     : <em className="link-stale">{t("specCases.links.deleted")}</em>}
                   {link.targetType === "endpoint" && <span className="link-note">{t("specCases.links.endpointNote")}</span>}
@@ -1399,7 +1417,8 @@ export function SpecCaseDrawer({ projectId, caseId, modules, canWrite, readOnly,
               {editable && <td className="col-actions"><div className="row-actions">
                 <IconButton icon={<Trash2 size={14} />} label={t("specCases.links.remove")} tone="danger" onClick={() => void removeLink(link)} />
               </div></td>}
-            </tr>)}
+            </tr>;
+            })}
           </tbody>
         </table></div>}
     </div>}
@@ -1426,6 +1445,41 @@ export function SpecCaseDrawer({ projectId, caseId, modules, canWrite, readOnly,
     （passed→pass、failed→fail、unknown→skip 兜底、not_run 原样）。 */
 function linkResultView(status: string): RunStatus {
   return toRunStatus(status);
+}
+
+/**
+ * 绑定目标 → 详情页深链（2026-09-10 用户反馈：绑定行支持点击跳转）。四类目标
+ * 各有已存在的落点，全部复用现成深链，不造新路由：
+ *   - endpoint → 接口工作台（打开即编辑，无独立只读视图）；
+ *   - case     → 宿主接口工作台 + `?case=`（工作台已有该深链：按 id 直接加载用例快照）；
+ *   - flow     → 流程画布（同「打开即画布」规则）；
+ *   - repo_case → 仓库用例树 + `?keyword=case_key`（树没有单用例路由，keyword 精确
+ *                 搜 case_key 是树页现成的深链形态）；有报告出处时优先跳 run 详情页
+ *                 ——与树上「最近任务」同一取舍：报告的完整视图在那里。
+ *
+ * 返回 undefined = 不可跳（目标已删 / case 的宿主接口已删 / repo_case 对账失效），
+ * 行上名字渲染为纯文本，不给一条点了 404 的链接。
+ */
+function linkTargetPath(projectId: string, link: SpecCaseLink): string | undefined {
+  switch (link.targetType) {
+    case "endpoint":
+      return `/projects/${projectId}/endpoints/${link.targetId}`;
+    case "case":
+      /* 宿主接口 id 读时关联（targetEndpointId）；用例在而接口没了 = 不可达。 */
+      return link.targetEndpointId
+        ? `/projects/${projectId}/endpoints/${link.targetEndpointId}?case=${link.targetId}`
+        : undefined;
+    case "flow":
+      return `/projects/${projectId}/flows/${link.targetId}`;
+    case "repo_case":
+      /* removed = 对账判失效：行还在库里但树默认只显示 active，跳过去也搜不到。 */
+      if (link.targetStatus === "removed") return undefined;
+      return link.lastResult?.runId
+        ? `/projects/${projectId}/pipeline-runs/${link.lastResult.runId}`
+        : `/projects/${projectId}/repo/tree?keyword=${encodeURIComponent(link.targetKey ?? link.targetName ?? "")}`;
+    default:
+      return undefined;
+  }
 }
 
 /**

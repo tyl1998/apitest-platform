@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Tooltip } from "antd";
+import { Popover, Tooltip } from "antd";
 
 /**
  * `not_run` 是勾选执行（P4.5-9）才会出现的第四态：这一条被勾选了、这一轮却没有报到
@@ -67,21 +67,81 @@ export function RunStrip({ history }: { history: RunStatus[] }) {
   );
 }
 
-export function Readout({ label, value, unit, tone }: {
+/** `tip` 让读数的单位/口径可悬停说明——「通过率统计的是什么通过了」这类问题
+ *  由标签自己回答（趋势页 2026-09-10 验收反馈：执行级口径在标签上看不出来）。
+ *  `onClick` 让低读数成为下钻入口（P8-6 边界 20：点接口覆盖率 → 项目表 Top 10 的
+ *  coverage 列）；`extra` 是数值下方的附加内容（看板 30 天 sparkline）。
+ *
+ *  `drill`（看板读数下钻，2026-09-10）：悬浮弹出的分边面板——「已覆盖 x / 未覆盖 x」
+ *  两侧各是一个链接，点哪边去哪边（接口覆盖率：已覆盖 → 接口列表筛已覆盖，未覆盖 →
+ *  筛未覆盖）。与 `onClick` 互斥：整卡单一下钻用 onClick（更平的路径），分边下钻才用
+ *  drill。面板本体是 antd Popover（浮层带焦点管理，归 antd 的边界纪律），内容样式归
+ *  `.readout-drill`（design-system.css）。触屏没有 hover——这类读数在窄屏同样能从
+ *  榜/列表进入，面板是补充不是唯一路径。
+ */
+export type DrillSide = { label: string; onClick: () => void };
+
+function DrillPanel({ sides, note }: { sides: DrillSide[]; note?: ReactNode }) {
+  return <div className="readout-drill">
+    {sides.map((side) => (
+      <button key={side.label} type="button" className="drill-side" onClick={side.onClick}>
+        <span className="drill-label">{side.label}</span>
+      </button>
+    ))}
+    {note && <p className="drill-note">{note}</p>}
+  </div>;
+}
+
+export function Readout({ label, value, unit, tone, tip, onClick, drill, extra }: {
   label: string;
   value: ReactNode;
   unit?: string;
   tone?: "pass" | "fail";
+  tip?: ReactNode;
+  onClick?: () => void;
+  /** 分边下钻面板（悬浮弹出）；有 drill 时 onClick 不再整卡接线。 */
+  drill?: { sides: DrillSide[]; note?: ReactNode };
+  extra?: ReactNode;
 }) {
-  return (
-    <div className="readout">
-      <span className="label">{label}</span>
-      <strong className="mono" data-tone={tone}>
-        {value}
-        {unit && <span className="unit">{unit}</span>}
-      </strong>
-    </div>
-  );
+  const body = <>
+    <span className="label">{tip ? <Tip text={tip}>{label}</Tip> : label}</span>
+    <strong className="mono" data-tone={tone}>
+      {value}
+      {unit && <span className="unit">{unit}</span>}
+    </strong>
+    {extra}
+  </>;
+  if (drill) {
+    return <Popover content={<DrillPanel sides={drill.sides} note={drill.note} />} trigger="hover" mouseEnterDelay={0.1} placement="bottom" arrow={false} styles={{ body: { padding: 0 } }}>
+      <div className="readout readout-drillable" tabIndex={0}>{body}</div>
+    </Popover>;
+  }
+  if (onClick) {
+    return <button type="button" className="readout readout-click" onClick={onClick}>{body}</button>;
+  }
+  return <div className="readout">{body}</div>;
+}
+
+/**
+ * 7 天 delta 徽标（P8-6 边界 18）：计数是绝对差、比率是 pp（「从 80% 到 82%」是
+ * +2pp 不是 +2.5%）。「升=好」不是公理（失败量升是坏事），由调用方按指标声明
+ * `goodWhenUp`；执行量是中性的量变，不给色调。0 与 null 都不渲染——「不可算」与
+ * 「没变化」是两个事实，画一个 0 会读成后者。挂在 Readout 的 `extra` 槽里。
+ */
+export function Delta({ value, kind = "count", goodWhenUp, tip }: {
+  value: number | null | undefined;
+  kind?: "count" | "pp";
+  goodWhenUp?: boolean;
+  tip?: ReactNode;
+}) {
+  if (value === null || value === undefined || value === 0) return null;
+  const up = value > 0;
+  const tone = goodWhenUp === undefined ? undefined : (up === goodWhenUp ? "pass" : "fail");
+  return <Tip text={tip}>
+    <span className="delta" data-tone={tone}>
+      {up ? "+" : ""}{Math.abs(value * 10) % 10 === 0 ? value : value.toFixed(1)}{kind === "pp" ? "pp" : ""}
+    </span>
+  </Tip>;
 }
 
 export function Empty({ title, hint, action }: { title: string; hint: string; action?: ReactNode }) {

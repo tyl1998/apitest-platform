@@ -47,7 +47,9 @@
 }
 
 [data-theme="light"] {
-  --bg: #f7f7f6;
+  /* 与 theme.ts PALETTE 同步（2026-09-10 走查：卡片与背景一致缺呼吸感）：
+     页底 #f7f7f6 → #efeeea，surface 卡片从此浮出。 */
+  --bg: #efeeea;
   --surface: #ffffff;
   --raised: #fbfbfa;
   --hover: #f0f0ee;
@@ -71,12 +73,15 @@
 }
 
 [data-theme="dark"] {
-  --bg: #16181d;
+  /* 与 theme.ts PALETTE 同步改（2026-09-10 走查）：页底 #16181d → #121419
+     拉开与 surface 的层次；hover #2a3038 / line-strong #454d59——悬浮可见、
+     卡片边缘浮出。 */
+  --bg: #121419;
   --surface: #1c1f25;
   --raised: #21252c;
-  --hover: #262b33;
+  --hover: #2a3038;
   --line: #2c313a;
-  --line-strong: #3a404b;
+  --line-strong: #454d59;
   --ink: #e4e6e9;
   --ink-2: #b0b6c0;
   --ink-3: #8b929d;
@@ -484,6 +489,66 @@ body {
 
 .topbar-actions { display: flex; flex: 0 0 auto; gap: var(--s2); align-items: center; }
 
+/* ── 顶层导航壳（2026-09-10）─────────────────────────────────────
+   全局层（数据看板/项目管理/系统管理）只有三个页面：侧栏在那里只烧宽度、
+   给不了分组价值，导航移进 topbar。data-topnav 与 ≤940px 断点的顶栏模式
+   同构（grid 单列、nav 平铺、active 用下划线标记），不引入第二套布局。
+   项目壳不带该属性，侧栏形态原样保留。 */
+.console[data-topnav] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* 三区顶栏（第二轮走查反馈「导航不要贴 logo，居中」）：lockup 左缘、导航
+   居中、退出右缘。中段 nav 用 flex:1 吃满剩余宽度并居中排布——窗口拉伸时
+   导航始终在视觉中心，与两端保持对称距离，而不是贴着 logo 一串。退出在
+   .topbar-actions（既有规则），左区只剩 lockup 一个元素。 */
+.topbar-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+/* 顶栏是横向条，导航项沿用 .nav-item 的底色/hover，active 的左缘记号
+   换成贴底 2px 下划线（与 ≤940px 顶栏模式的标记同一条规则）。 */
+.topbar-nav .nav-item { white-space: nowrap; border-radius: 4px; }
+
+.topbar-nav .nav-item.is-active {
+  box-shadow: inset 0 -2px 0 var(--accent);
+  border-radius: 4px 4px 0 0;
+}
+
+.topbar-nav .nav-item.is-active::before { display: none; }
+
+/* 页面卡片（2026-09-10 第四轮走查）：全局层的内容装进一张 surface 卡片，
+   与 topbar、--bg 页底构成三层，内容区与导航栏从视觉上分家。卡片即全宽
+   （页面内容铺满屏幕，「旁边很空」的窄列居中方案已被走查否决）；内部子块
+   由各页面自己的内边距控制。项目壳不带 data-topnav，不受影响。
+   第五轮走查补静置阴影：页底加深后仍要一眼读出「这张卡浮在页上」，
+   用 --overlay 黑阶细影（elevation，不是 glow）。 */
+.console[data-topnav] .page-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: var(--s5);
+  max-width: var(--measure);
+  margin-inline: auto;
+  box-shadow: 0 1px 4px var(--overlay);
+}
+
+/* 卡内先放 .page-head 的页面：卡片自带 padding，头部的下边距不再需要
+   额外的顶部呼吸（原 .content 26px 顶距由卡片 padding 接管）。 */
+.console[data-topnav] .content { padding: var(--s5) var(--s6) var(--s8); }
+
+/* KPI 区在页面卡内凹进一格（第五轮走查「沉闷」）：surface-on-surface 只靠
+   边框读不出层次，换 --bg 底——与加深后的页底同色，视觉上是「卡片上开出的
+   仪表槽」。分隔线（.readout 的 border-left）在 bg 底上照常成立。仅全局层；
+   项目壳的 readouts 仍在 --bg 页底上、自带对比，不受影响。 */
+.console[data-topnav] .readouts { background: var(--bg); }
+
 .filter-bar {
   display: flex;
   align-items: center;
@@ -572,7 +637,13 @@ body {
   transition: background var(--t), border-color var(--t);
 }
 
-.btn:hover:not(:disabled) { background: var(--raised); border-color: var(--ink-3); }
+/* 悬浮反馈（走查反馈：深色下 --raised 与 --surface 差一档不够看）用 --hover
+   （比 --raised 再深一档），按压再补 1px 下沉——位移是最便宜的「按下去了」。 */
+.btn:hover:not(:disabled) { background: var(--hover); border-color: var(--ink-3); }
+
+/* 按压：位移一档 + 回到 --raised，松手弹回。transition 只声明了背景/边框，
+   位移不参与动画（瞬时下沉比 120ms 缓动更跟手）。 */
+.btn:active:not(:disabled) { transform: translateY(1px); }
 
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 
@@ -588,6 +659,8 @@ body {
   border-color: var(--accent);
   filter: brightness(1.08);
 }
+
+.btn-primary:active:not(:disabled) { transform: translateY(1px); filter: brightness(.96); }
 
 .btn-icon { padding: 0 var(--s2); }
 
@@ -639,6 +712,78 @@ body {
 .readout strong[data-tone="pass"] { color: var(--pass); }
 .readout strong[data-tone="fail"] { color: var(--fail); }
 
+/* 可点击的读数（P8-6 边界 20：低读数即下钻入口——点接口覆盖率 → 项目表 Top 10
+   的同名列）。button 原生样式全部复位，悬浮只抬边框，不加背景块——读数区是
+   「读」的地方，可点的只是其中两个。 */
+button.readout-click {
+  font: inherit;
+  text-align: inherit;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 0;
+  padding: 13px var(--s4);
+  margin: 0;
+  appearance: none;
+  cursor: pointer;
+}
+/* 悬浮边框要压过 .readout + .readout 的左边框分隔线（特异性），否则四边里有一边
+   悬浮不响应。 */
+.readouts button.readout-click:hover { border-color: var(--line-strong); }
+
+/* 可下钻读数（看板/统计页读数下钻，2026-09-10）：悬浮弹出分边面板（antd Popover）。
+   视觉与 readout-click 同一语言——只抬边框不加背景块；键盘可达（tabIndex），面板
+   内的两侧才是真正的按钮。 */
+.readout-drillable { cursor: pointer; }
+.readouts .readout-drillable:hover,
+.readouts .readout-drillable:focus-visible { border-color: var(--line-strong); outline: none; }
+
+/* 分边下钻面板（Popover 内容）：两侧各一格链接（「已覆盖 146 / 未覆盖 68」），
+   底色 --raised（浮在 surface 上要能分层），边框行内分隔。note 是口径注脚
+   （如「分母为 30 天窗口内失败目标」）。 */
+.readout-drill {
+  min-width: 148px;
+  display: flex;
+  flex-direction: column;
+}
+.drill-side {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: var(--ink);
+}
+.drill-side:last-of-type { border-bottom: none; }
+.drill-side:hover { background: var(--hover); }
+.drill-side .drill-label { color: var(--accent); }
+.drill-note {
+  margin: 0;
+  padding: 6px 12px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-3);
+  border-top: 1px solid var(--line);
+}
+
+/* 7 天 delta 徽标（P8-6 边界 18）：跟在 Readout 数值下方的 extra 槽里，11px、
+   tabular-nums；色调走语义色（升=好/坏由指标声明），中性的量变（执行量）是
+   muted。0 不渲染（Delta 组件里挡掉了）。 */
+.delta {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  width: fit-content;
+}
+.delta[data-tone="pass"] { color: var(--pass); }
+.delta[data-tone="fail"] { color: var(--fail); }
+
 /* 手写 SVG 图表（P3-9 趋势页，边界 12：不引入图表库）。图例与轴标签是 HTML——
    SVG 文本在 viewBox 拉伸下会发虚，线与柱才留在 SVG 里。 */
 .chart { position: relative; min-width: 0; }
@@ -682,6 +827,27 @@ body {
 
 .chart-key-line { width: 14px; height: 2px; border-radius: 1px; }
 
+/* 图表读数条（P8-5 charts 底座）：hover 吸附桶的常驻读数，也兜底显示末桶值。
+   常驻高度与 timeline-hover 的理由相同——条件渲染整块会让下面的内容在指针进出时
+   被顶一次。`chart-readout-item` 里的键名与数值并排，色块沿用 .chart-key。 */
+.chart-readout {
+  display: flex;
+  gap: var(--s3);
+  align-items: center;
+  min-height: 20px;
+  margin-top: var(--s2);
+  font-size: 11px;
+  min-width: 0;
+}
+.chart-readout .truncate { max-width: 48ch; }
+.chart-readout-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
 /* ── Grid (data table) ─────────────────────────────────────────── */
 
 .grid {
@@ -714,7 +880,9 @@ body {
 }
 
 .grid tbody tr:last-child td { border-bottom: 0; }
-.grid tbody tr:hover { background: var(--raised); }
+/* 行 hover 用 --hover（第五轮走查：--raised 与 surface 深色下同色不可见），
+   全站表格统一升一档——行是数据表里最主要的悬浮目标。 */
+.grid tbody tr:hover { background: var(--hover); }
 
 /* 固定列宽：树形表格（接口行 colSpan + 展开的子行）在 auto 布局下，展开一组子行会让
    列宽随全部行的内容重新分配，整张表跳一次。fixed 布局 + colgroup 的显式宽度让列宽
@@ -940,6 +1108,16 @@ body {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
+  /* 第五轮走查「选择时没有浮出效果」：项目卡是页面上的可进入对象，
+     hover 给 1px 上浮 + 边框加深 + 细影，--t 120ms 内完成。elevation
+     阴影用 --overlay 黑阶，不是 glow。 */
+  transition: border-color var(--t), box-shadow var(--t), transform var(--t);
+}
+
+.project-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 4px 12px var(--overlay);
+  transform: translateY(-1px);
 }
 
 .project-card-head { flex: 1; min-width: 0; }
@@ -947,9 +1125,14 @@ body {
 .project-card h2 { margin: 0; font-size: 16px; font-weight: 600; }
 .project-card p { margin: var(--s2) 0 var(--s4); color: var(--ink-3); font-size: 13px; }
 
+/* 项目卡统计块（2026-09-10 用户确认：环境/接口/用例/流程/套件/仓库/文本用例七格
+   资产计数；通过率等执行面读数不上卡，归数据看板）。七格在 280px 卡宽放不下
+   一行，auto-fit + minmax 让它按卡宽折行——列间分隔线只画同行相邻格
+   （`> div + div` 在折行后会把行首格也画上左边线，视觉可接受且是纯 CSS 的
+   唯一解；不用 JS 测断点）。 */
 .project-facts {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
   margin: 0 0 var(--s4);
   padding: var(--s3) 0;
   border-block: 1px solid var(--line);
@@ -963,7 +1146,7 @@ body {
 .btn.danger { color: var(--fail); border-color: var(--fail); }
 
 /* 详情抽屉的事实清单：标签列固定、值列吃剩余——抽屉窄、长路径是常态，值截断配 title
-   悬停。与 .project-facts（三列居中的卡片统计块）是两种语境，不共用。
+   悬停。与 .project-facts（折行网格的卡片统计块）是两种语境，不共用。
    两列网格长在每个 dt/dd 包裹 div 上而不是 dl 上：dl 的直接子元素是 div，把列定义放
    dl 会让相邻两行并排挤进 96px 的列里（首版就是这条 bug）。
    行距 12px + dt/dd 同基线对齐（2026-09-03 反馈：行间距偏紧、KV 与下方卡片紧挨）。 */
@@ -994,6 +1177,15 @@ body {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
+}
+
+/* 页面卡片内（全局层）：settings-list 已由外层 page-card 圈边，自身退成
+   「框内行列表」——去掉边框圆角，行分隔由 .setting-row 自己的 border-top
+   承担，避免卡中卡（2026-09-10 第四轮走查）。 */
+.console[data-topnav] .settings-list {
+  background: none;
+  border: 0;
+  border-radius: 0;
 }
 
 .setting-row {
@@ -1316,11 +1508,14 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 }
 
 @media (max-width: 560px) {
-  .batch-item { grid-template-columns: 16px minmax(0, 1fr) auto; }
+  .batch-item { grid-template-columns: 16px minmax(0, 1fr); }
   .batch-item > :last-child { grid-column: 2 / -1; }
   .content { padding: var(--s5) 14px 36px; }
   .topbar { padding: 0 14px; }
 
+  /* 顶层导航壳窄屏：topbar 收紧内距即可——导航已由 .topbar-nav 自己居中，
+     lockup 与退出在两端，无需再压间距。 */
+  .console[data-topnav] .topbar { gap: var(--s2); }
   .readouts { display: grid; grid-template-columns: repeat(2, 1fr); }
   .readout { min-width: 0; padding: 11px 13px; }
   .readout + .readout { border-left: 0; }
@@ -1345,6 +1540,12 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
   .assertions li { flex-direction: column; align-items: flex-start; gap: 3px; }
 
   .login-card { padding: var(--s5); border: 0; background: none; }
+}
+
+/* 顶层导航壳的最窄档（420px 与既有断点序列衔接）：中文三枚导航项已放不下
+   lockup 文字，mark 单独承担品牌识别。 */
+@media (max-width: 420px) {
+  .console[data-topnav] .lockup-name { display: none; }
 }
 
 /* ── Endpoint editor ───────────────────────────────────────────── */
@@ -1618,8 +1819,13 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
    Status 行，行距收紧——五行的默认行高在气泡里会散成一堵墙。 */
 .tip-stack { display: inline-flex; flex-direction: column; gap: 2px; }
 /* Readout 值位里的四态计数行（计划详情「N 条未执行」，2026-09-09 第三轮）：
-   四枚 Status（色点+数字）横排，间隔一档——比一行裸数字可扫。 */
-.readout-marks { display: inline-flex; align-items: center; gap: 10px; }
+   四枚 Status（色点+数字）横排，间隔一档——比一行裸数字可扫。允许整枚换行
+   （2026-09-09 窄屏反馈）：四枚 12px chip 约 260px，而值位宽度随断点收窄
+   （>560px 五枚平分一列、≤560px 两列网格的半格），不换行时内容直接压过
+   readout 的边线挤进邻格——min-width 只管盒子宽度，挡不住内容溢出。
+   chip 自身 nowrap（.status），掉行的单位是整枚「词 N」，词不拆；行距比
+   列距收一档，两行时不至于散成两排孤点。 */
+.readout-marks { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
 
 /* 940px 以下（侧栏断点同档）：分栏退化为上下堆叠，树收成一块可滚动的横条
    （高度回到收缩态——竖屏手机上一块永远半屏高的空面板没有意义）。 */
@@ -2201,6 +2407,10 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .chip-warn { color: var(--skip); border-color: var(--skip); }
 /* 失败计数的 chip（run 概要行）：语义色的本义用法，不是装饰。 */
 .chip-fail { color: var(--fail); border-color: var(--fail); }
+/* 可点的 chip（P8-3 归因入口）：chip 本身是按钮——边框与指针在 hover 上给出可点性，
+   不引入第二强调色。 */
+button.chip-action { cursor: pointer; background: var(--surface); font: inherit; }
+button.chip-action:hover { border-color: var(--accent); color: var(--ink); }
 
 .workbench { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--s4); align-items: start; }
 .workbench.is-solo { grid-template-columns: minmax(0, 1fr) auto; }
@@ -2802,15 +3012,80 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 }
 
 /* 报告列表（P3-9）：报告名/触发/时刻都是机器数据，等宽；触发列是「定时『名字』」
-   一句话，固定宽让它不挤压报告名。 */
+   一句话，固定宽让它不挤压报告名。列宽 2026-09-09 重排（P8-3 验收反馈②）：删
+   名称/通过/失败三列后固定列合计 ~800px，报告名在 1050px 内容宽下仍有 ~250px。 */
 .report-grid { table-layout: fixed; }
-.report-col-trigger { width: 190px; }
-.report-col-clock { width: 168px; }
+.report-grid .col-num { width: 78px; }
+.report-grid .col-status { width: 96px; }
+.report-col-trigger { width: 168px; }
+.report-col-count { width: 60px; }
+.report-col-clock { width: 158px; }
+/* 归因列（P8-3）：a/f 读数 + 分类 chip 允许换行——分类可以有多个，列宽不吃报告名。 */
+.report-col-attribution { width: 168px; }
 .report-variables {
   display: block;
   margin-top: 2px;
   font-size: 11px;
 }
+/* 列表行上的归因入口（P8-3 验收反馈①）：整格是按钮，chip 保持读数形态；hover 时
+   chip 描边给出可点性，不引入第二强调色。单行不换行（验收反馈②）——多分类叠成
+   两三行在窄列里读不动，超出的分类由「+N」概括、完整分布进 title。 */
+button.attribution-entry,
+.attribution-cell {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  max-width: 100%;
+  overflow: hidden;
+}
+button.attribution-entry {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+button.attribution-entry .chip,
+.attribution-cell .chip {
+  /* flex 子项被块化，clip + ellipsis 生效；上限给「50/50」比值与其余分类的 +N 留位。 */
+  min-width: 0;
+  max-width: 104px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+button.attribution-entry:hover .chip { border-color: var(--accent); }
+
+/* 归因格的 hover 面板（P8-3 验收反馈三轮①）：+N 折叠掉的完整分类分布在这里逐行
+   展开——名称与计数两端对齐，读起来是一张小表而不是一串句子。 */
+.attribution-hover {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  max-width: 260px;
+}
+.attribution-hover-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s4);
+}
+
+/* 行内归因 chip 的 bug 外链（P8-3 验收反馈三轮②）：chip 是按钮，链接是它的兄弟
+   节点（交互元素不能嵌套）；小图标只做跳转，点击不触发打标抽屉。 */
+.attribution-tag { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.attribution-bug-link {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--ink-3);
+  transition: color var(--t);
+}
+.attribution-bug-link:hover { color: var(--accent); }
 
 /* 运行抽屉顶部的报告标识行（P3-9，边界 13）：报告名、触发者、变量覆盖一行排开，
    与下方成员证据之间留一条分隔——它是「这次是谁、带什么跑的」，不是成员之一。 */
@@ -3743,17 +4018,14 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .timeline-bar.case-failed { background: var(--fail); }
 .timeline-bar.case-skipped { background: var(--skip); }
 .timeline-bar.case-error { background: var(--fail); }
-/* 悬停读数占一行常驻高度：条件渲染会让整块图在指针进出时上下跳一次。 */
+/* 悬停读数占一行常驻高度：条件渲染会让整块图在指针进出时上下跳一次。
+   P8-5 起并类 `.chart-readout`（charts 底座与 timeline 共用一份版式）；这里只
+   保留 timeline 特有的约束（case 名截断宽度），规则本体重叠时以 chart-readout 为准。 */
 .timeline-hover {
-  display: flex;
-  gap: var(--s3);
-  align-items: center;
-  min-height: 20px;
   margin-top: var(--s2);
   font-size: 11px;
-  min-width: 0;
 }
-.timeline-hover .truncate { max-width: 48ch; }
+/* truncate 的 48ch 已由 .chart-readout .truncate 覆盖（同一元素两个类）。 */
 .timeline-note { margin: var(--s2) 0 0; font-size: 11px; color: var(--ink-3); }
 
 /* 用例行首的状态圆点：语义色的小面积使用（Status 原语的点状对应物）。 */
@@ -3915,10 +4187,73 @@ button.step-row:hover { background: var(--hover); }
 .report-grid-cases .col-status { width: 104px; }
 .report-grid-cases .col-num { width: 84px; }
 .report-grid-cases .col-attach { width: 42px; text-align: center; }
+/* 归因列（P8-3）：装得下「未归因」chip 或分类名即可——行内只放一个 chip。 */
+.report-grid-cases .col-attribution { width: 118px; }
 /* 用例名单元格：状态点 + 标题一行，函数名/nodeid 作副标题（验收反馈 ④）。 */
 .case-title { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
 .case-title > .truncate { flex: 1 1 auto; min-width: 0; }
 .case-subname { display: block; margin-top: 2px; margin-left: 16px; font-size: 11px; color: var(--ink-3); }
+
+/* ── 归因抽屉（P8-3）───────────────────────────────────────────────────────── */
+
+/* 分类单选：手写 radio 列（≤7 项，Select 反而多一次点开）；选中态用边框描出，
+   不用强调色填充——选中是状态不是装饰。 */
+.attribution-options { display: flex; flex-direction: column; gap: var(--s2); }
+.attribution-option {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 6px var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 13px;
+}
+.attribution-option:hover { border-color: var(--line-strong); }
+.attribution-option[data-checked] { border-color: var(--accent); background: var(--selected); }
+.attribution-option input { width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer; }
+
+/* 批量目标清单（P8-3）：抽屉里确认「这批圈了谁、各自的当前归因是什么」——bug 会
+   落到哪几条在提交前就可见（验收反馈四轮②）。条目多时自滚动，不截断。 */
+.attribution-target-list {
+  margin: var(--s2) 0 0;
+  padding-left: var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  max-height: 224px;
+  overflow-y: auto;
+}
+.attribution-target-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  min-width: 0;
+}
+.attribution-target-row > .truncate { flex: 1 1 auto; min-width: 0; }
+.attribution-target-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.attribution-target-state .chip { font-size: 11px; }
+
+/* 证据摘要：错误/断言原文的节选，pre-wrap 换行、限高自滚（完整堆栈在用例明细抽屉里）。 */
+.attribution-evidence {
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 180px;
+  overflow-y: auto;
+}
 
 /* 任务列表的「最近执行」列（验收反馈 ⑦）：状态 + #序号一行，执行次数作副标题。 */
 .col-lastrun { width: 132px; }
