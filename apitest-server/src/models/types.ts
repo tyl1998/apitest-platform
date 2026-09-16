@@ -2811,28 +2811,56 @@ export function mapReportShare(row: Record<string, unknown>): ReportShare {
 }
 
 /**
- * MCP Token 的 scope 三值（计划 9.0 边界 1，迁移 050）。
+ * MCP Token 的 scope 三值（计划 9.0 边界 1，迁移 050；P12 移到绑定上）。
  *
- * `read` 看、`write` 改、`execute` 跑。Token 上是 scope 数组而不是三个 boolean——
+ * `read` 看、`write` 改、`execute` 跑。绑定上是 scope 数组而不是三个 boolean——
  * 第四种 scope（将来的）加进来不改类型形状。
  */
 export type McpScope = "read" | "write" | "execute";
 
 /**
- * 一张 MCP Token（迁移 050）。明文**只在签发时回一次**（与 `IngestToken` / `RunnerToken`
- * 同一条纪律），此后接口只回 `tokenPrefix`。
+ * 一条「token × 项目 × scope」绑定（P12，迁移 063）。**scope 在绑定上不在 token 上**
+ * （18.0 边界 2）：一把 token 绑 N 个项目时「A 可写、B 只读」必须可表达。
  *
- * `scope` 决定 `tools/list` 回哪些工具、`tools/call` 放不放行（边界 1）——一条
- * `/mcp` 端点，不是三个。写与执行权限**不**存在 Token 上：每次写/执行调用都按
- * `createdBy` 重跑 `canAccess`（边界 2），Token 只是一把钥匙、不是一份权限快照。
+ * 绑定是**过滤器，不是授权**（边界 3）：绑定时刻实时角色匹配，调用时刻每次重跑
+ * `canAccess(owner, 目标项目)`。`read` 恒在（归一在绑定入口）。
+ */
+export type McpBinding = {
+  projectId: string;
+  scope: McpScope[];
+  /** 绑定时刻（列表展示用；鉴权不读它）。 */
+  boundAt?: string;
+};
+
+/** TEXT[] 经 pg 读回即 string[]；异常值读成空数组（校验在写入侧，库里不该有第三种值）。 */
+export function mcpScopes(value: unknown): McpScope[] {
+  return Array.isArray(value) ? (value as unknown[]).map(String) as McpScope[] : [];
+}
+
+export function mapMcpBinding(row: Record<string, unknown>): McpBinding {
+  return {
+    projectId: String(row.project_id),
+    scope: mcpScopes(row.scope),
+    boundAt: row.bound_at ? new Date(String(row.bound_at)).toISOString() : undefined,
+  };
+}
+
+/**
+ * 一张 MCP Token（迁移 050；P12 改为用户级 + 绑定数组）。明文**只在签发时回一次**
+ * （与 `IngestToken` / `RunnerToken` 同一条纪律），此后接口只回 `tokenPrefix`。
+ *
+ * token 本体**没有 `projectId` 也没有 `scope`**——两者都在绑定上（边界 2）。`bindings`
+ * 决定 `tools/list` 的能力面（并集）与 `tools/call` 放不放行（逐调用按目标项目判）。
+ * 写与执行权限**不**存在任何地方：每次调用都按 `createdBy` 重跑 `canAccess`
+ * （边界 2/3），Token 只是一把钥匙、不是一份权限快照。
  */
 export type McpToken = {
   id: string;
-  projectId: string;
   name: string;
   /** 明文前 8 位（`apimcp_` 之后那段），供列表辨认，不足以反推 Token。 */
   tokenPrefix: string;
-  scope: McpScope[];
+  bindings: McpBinding[];
+  /** 签发人；为空 = 已被删（整把 token 失效，鉴权侧 401）。 */
   createdBy?: string;
   lastUsedAt?: string;
   revokedAt?: string;
@@ -2841,17 +2869,50 @@ export type McpToken = {
 
 export function mapMcpToken(row: Record<string, unknown>): McpToken {
   return {
-    id: String(row.id), projectId: String(row.project_id), name: String(row.name),
+    id: String(row.id), name: String(row.name),
     /* token_hash 刻意不出现在这个映射里，理由同 `mapIngestToken`：它没有任何客户端
        用途，映射里留一行就迟早会被某个 `SELECT *` 带到响应里去。 */
     tokenPrefix: String(row.token_prefix),
-    /* TEXT[] 经 pg 读回即 string[]。异常值读成空数组（而不是炸掉映射）——校验在
-       签发侧，库里不该有第三种值。 */
-    scope: Array.isArray(row.scope) ? (row.scope as unknown[]).map(String) as McpScope[] : [],
+    /* 绑定由调用方 SQL 以 `json_agg`（或二次查询）带回：`row.bindings` 是 jsonb 数组。
+       单行读（签发响应）没有绑定，读成空数组。 */
+    bindings: Array.isArray(row.bindings)
+      ? (row.bindings as Record<string, unknown>[]).map(mapMcpBinding)
+      : [],
     createdBy: row.created_by ? String(row.created_by) : undefined,
     lastUsedAt: row.last_used_at ? new Date(String(row.last_used_at)).toISOString() : undefined,
     revokedAt: row.revoked_at ? new Date(String(row.revoked_at)).toISOString() : undefined,
     createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+/**
+ * 项目侧看到的绑定行（`GET /projects/:id/mcp/bindings`，P12 边界 4）：回答「谁的钥匙
+ * 开了我这扇门」。owner 三列是读时 JOIN 快照——项目管理员要能指着具体的人说「这把
+ * 钥匙收回来」，只给 token 前缀说不出这句话。**token_hash / 明文永不出现在这里。**
+ */
+export type McpProjectBinding = {
+  tokenId: string;
+  tokenName: string;
+  tokenPrefix: string;
+  ownerId: string | null;
+  ownerEmail: string | null;
+  ownerName: string | null;
+  scope: McpScope[];
+  lastUsedAt?: string;
+  boundAt: string;
+};
+
+export function mapMcpProjectBinding(row: Record<string, unknown>): McpProjectBinding {
+  return {
+    tokenId: String(row.token_id),
+    tokenName: String(row.token_name),
+    tokenPrefix: String(row.token_prefix),
+    ownerId: row.owner_id ? String(row.owner_id) : null,
+    ownerEmail: row.owner_email ? String(row.owner_email) : null,
+    ownerName: row.owner_name ? String(row.owner_name) : null,
+    scope: mcpScopes(row.scope),
+    lastUsedAt: row.last_used_at ? new Date(String(row.last_used_at)).toISOString() : undefined,
+    boundAt: new Date(String(row.bound_at)).toISOString(),
   };
 }
 

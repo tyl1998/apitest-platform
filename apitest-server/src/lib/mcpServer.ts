@@ -5,9 +5,11 @@ import {
   type CallToolResult,
   type InputRequiredResult,
 } from "@modelcontextprotocol/server";
-import type { McpScope } from "../models/types.js";
-import type { McpIdentity } from "./mcpAuth.js";
-import type { MrtrContext } from "./mcpToolResult.js";
+import type { McpBinding, McpScope } from "../models/types.js";
+import {
+  bindingScopeUnion, resolveBinding, type McpIdentity, type McpPrincipal,
+} from "./mcpAuth.js";
+import { toolError, type MrtrContext } from "./mcpToolResult.js";
 import { READ_CORE_TOOLS } from "./mcpToolsReadCore.js";
 import { READ_TASKS_TOOLS } from "./mcpToolsReadTasks.js";
 import { READ_SPEC_TOOLS } from "./mcpToolsSpec.js";
@@ -16,16 +18,27 @@ import { WRITE_CORE_TOOLS } from "./mcpToolsWriteCore.js";
 import { WRITE_CRUD_TOOLS } from "./mcpToolsWriteCrud.js";
 import { WRITE_EXTRA_TOOLS } from "./mcpToolsWriteExtra.js";
 import { EXECUTE_TOOLS } from "./mcpToolsExecute.js";
+import { ME_TOOLS } from "./mcpToolsMe.js";
 
 /**
- * MCP 工具注册表与 server 工厂（P5-3，计划 9.4 / 9.2）。
+ * MCP 工具注册表与 server 工厂（P5-3，计划 9.4 / 9.2；P12-1 改为用户级身份与
+ * 目标项目参数）。
  *
- * **`tools/list` 按 scope 裁剪发生在注册时，不是「列出来再拒」**（边界 1）：工厂只把
- * Token scope 覆盖到的工具注册进实例，只读 Token 的 `tools/list` 里根本没有
+ * **`tools/list` 按绑定 scope 并集裁剪发生在注册时，不是「列出来再拒」**（边界 1）：
+ * 工厂只把绑定集覆盖到的工具注册进实例，只读 Token 的 `tools/list` 里根本没有
  * `create_endpoint`——模型看不见的工具不会去调，也就不会把一轮对话浪费在一次注定
- * 403 的尝试上。注册裁剪同时是第 3 道闸门（`-32601`）的第二道防线：即使某条路绕过
- * 了路由层的预检（批量体里靠后的元素），未注册的工具名也会被 SDK 按 method not
- * found 拒掉。
+ * 403 的尝试上。注册裁剪同时是第 4 道闸门（`-32601`）的第二道防线。
+ *
+ * **目标项目是每次调用的参数**（P12 边界 5，2026-09-16 实施修订）：57 个工具的
+ * schema 与 handler 不逐个改，而是由注册包装统一做两件事——① 把必填 `projectId`
+ * 注入 schema（模型看到的就是它）；② 从 `args.projectId` 解出主体绑定集里的目标
+ * 绑定，把该绑定的 `projectId` 与 `scope` 注入 `identity` 后再调 handler。于是
+ * handler 体内的 `identity.projectId` 逐字不变，语义从「token 的项目」变成
+ * 「本次调用的目标项目」；绑定校验只有一处，不可能被某个工具漏掉。
+ *
+ * 两个例外（无项目数据的工具）：`get_script_contract`（静态契约）与
+ * `list_my_projects`（自查绑定集）不注入也不解析。`list_my_projects` **零绑定时也
+ * 注册**——否则 agent 连「我没有可触达的项目」都问不出来。
  *
  * **工具入参是裸 JSON Schema**（边界 7）：SDK 的 `fromJsonSchema` 自带 vendored ajv
  * 校验器，声明写 JSON Schema、校验零新依赖，业务级校验仍走 P5-2 提取的
@@ -37,9 +50,9 @@ import { EXECUTE_TOOLS } from "./mcpToolsExecute.js";
 export type McpToolResult = CallToolResult | InputRequiredResult;
 
 /**
- * 一条工具定义。`scope` 是它落入哪一档 Token 可见集（read / write / execute，边界 1
- * 的三值）；`handler` 收到的第二个参数是**本次调用者的身份**——写与执行工具靠它重跑
- * `canAccess`（边界 2），读工具靠它限定 SQL 的 project 范围。第三个参数只对 delete_*
+ * 一条工具定义。`scope` 是它落入哪一档（read / write / execute，边界 1 的三值）；
+ * `handler` 收到的第二个参数是**本次调用的上下文**——写与执行工具靠它重跑
+ * `canAccess`（边界 2/3），读工具靠它限定 SQL 的项目范围。第三个参数只对 delete_*
  * 有意义：MRTR 重试回合里客户端带回的 `inputResponses`（9.4.1 的确认判据）。
  */
 export type McpToolDefinition = {
@@ -61,14 +74,25 @@ export type McpToolDefinition = {
  * 2026-09-10 上限 55 → **57**（P8-7，计划 12.2）：归因两工具
  * `list_unattributed_failures`（read）/ `set_failure_attribution`（write）进来——
  * agent 归因闭环（边界 8：平台不写一行 LLM 代码，外部 agent 读证据自行判断写回）。
+ * P12-1 上限 57 → **59**（计划 18.0 边界 5）：`list_my_projects`（read，绑定集自查）
+ * 与 `copy_endpoint`（write，跨项目复制）进来——`projectId` 参数由注册包装统一注入，
+ * 不在此逐条声明。
  */
 export const MCP_TOOLS: readonly McpToolDefinition[] = [
   ...READ_CORE_TOOLS, ...READ_TASKS_TOOLS, ...READ_SPEC_TOOLS,
   ...ATTRIBUTION_TOOLS,
   ...WRITE_CORE_TOOLS, ...WRITE_CRUD_TOOLS, ...WRITE_EXTRA_TOOLS, ...EXECUTE_TOOLS,
+  ...ME_TOOLS,
 ];
 
-/** 按名字找工具（路由层第 3 道闸门用它判可见集）。 */
+/**
+ * 不携带项目参数的工具（边界 5 修订）：静态契约与绑定集自查。它们不受闸门②③（目标
+ * 项目 / 开关），`tools/call` 里也不该要求 `projectId`——那会让「我没有绑定任何项目」
+ * 变成一句问不出来的话。
+ */
+const PROJECT_FREE_TOOLS = new Set(["get_script_contract", "list_my_projects"]);
+
+/** 按名字找工具（路由层第 4 道闸门用它判可见集）。 */
 export function findMcpTool(name: string): McpToolDefinition | undefined {
   return MCP_TOOLS.find((tool) => tool.name === name);
 }
@@ -78,32 +102,91 @@ export function toolsVisibleTo(scope: McpScope[]): McpToolDefinition[] {
   return MCP_TOOLS.filter((tool) => scope.includes(tool.scope));
 }
 
+/** 一条工具是否需要在注册包装里解析目标项目。 */
+export function toolNeedsProject(tool: McpToolDefinition): boolean {
+  return !PROJECT_FREE_TOOLS.has(tool.name);
+}
+
 /**
- * `McpIdentity` → SDK 的 `AuthInfo`。计划 9.2 的挂载方式规定鉴权在 Fastify 侧做完、
- * 身份挂在 raw request 上传给工具（SDK 读作 `ctx.authInfo`）——本函数就是那个
- * 「挂」：`scopes` 直接放 Token 的三值 scope（语义正好），项目与签发人放 `extra`
- * （SDK 不解释它，工厂侧再取回）。
+ * 注册时把必填 `projectId` 注入工具 schema（边界 5 修订的①）。工具自己声明过
+ * `projectId` 的话不覆盖（目前没有，`copy_endpoint` 额外声明的是 `fromProjectId`）。
+ * 位置放最前：`required` 与 `properties` 都是数组/对象的合并，顺序影响模型可读性。
  */
-export function mcpAuthInfo(identity: McpIdentity, bearer: string): AuthInfo {
+function injectProjectArg(tool: McpToolDefinition): Record<string, unknown> {
+  const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
+  const properties = {
+    projectId: {
+      type: "string",
+      description: "target project id; must be one of the projects this token is bound to (see list_my_projects)",
+    },
+    ...(schema.properties ?? {}),
+  };
+  const required = ["projectId", ...(schema.required ?? []).filter((key) => key !== "projectId")];
+  return { ...schema, properties, required };
+}
+
+/**
+ * 一次调用的目标项目解析（边界 5 修订的②）。返回值二选一：解析出的调用上下文，或
+ * 一条可直接回给模型的可读错误。
+ *
+ * **未绑定与「项目 id 形状不对」都回同一种错误**——路由层第 2 道闸门已经把它们都拒成
+ * `-32601` 了，这里只是第二道防线（SDK 内部路径 / 批量体里靠后的元素）；错误文本不
+ * 提「那个项目存在 MCP 通道」，与闸门 1 的纪律一致。
+ */
+function resolveCall(
+  tool: McpToolDefinition,
+  args: Record<string, unknown>,
+  principal: McpPrincipal,
+): { identity: McpIdentity } | { error: string } {
+  const base: McpIdentity = {
+    tokenId: principal.tokenId,
+    createdBy: principal.createdBy,
+    bindings: principal.bindings,
+    projectId: "",
+    scope: bindingScopeUnion(principal.bindings),
+  };
+  if (!toolNeedsProject(tool)) return { identity: base };
+
+  const projectId = typeof args.projectId === "string" ? args.projectId.trim() : "";
+  if (!projectId) return { error: "projectId is required (1001): call list_my_projects to see the projects this token is bound to" };
+  const binding = resolveBinding(principal.bindings, projectId);
+  if (!binding) {
+    return { error: "projectId is not bound to this token (2001): call list_my_projects to see the projects this token is bound to" };
+  }
+  return { identity: { ...base, projectId, scope: binding.scope } };
+}
+
+/**
+ * `McpPrincipal` → SDK 的 `AuthInfo`。计划 9.2 的挂载方式规定鉴权在 Fastify 侧做完、
+ * 身份挂在 raw request 上传给工具（SDK 读作 `ctx.authInfo`）——本函数就是那个
+ * 「挂」：`scopes` 放绑定 scope 并集（正好是 `tools/list` 裁剪要用的能力面），
+ * 绑定集与签发人放 `extra`（SDK 不解释它，工厂侧再取回）。
+ */
+export function mcpAuthInfo(principal: McpPrincipal, bearer: string): AuthInfo {
   return {
     token: bearer,
-    clientId: identity.tokenId,
-    scopes: identity.scope,
-    extra: { projectId: identity.projectId, createdBy: identity.createdBy ?? null },
+    clientId: principal.tokenId,
+    scopes: bindingScopeUnion(principal.bindings),
+    extra: { createdBy: principal.createdBy, bindings: principal.bindings },
   };
 }
 
-/** `AuthInfo` → `McpIdentity`（工厂侧的取回）。形状对不上返回 undefined——见 buildMcpServer。 */
-export function mcpIdentityFromAuthInfo(authInfo: AuthInfo | undefined): McpIdentity | undefined {
+/** `AuthInfo` → `McpPrincipal`（工厂侧的取回）。形状对不上返回 undefined——见 buildMcpServer。 */
+export function mcpPrincipalFromAuthInfo(authInfo: AuthInfo | undefined): McpPrincipal | undefined {
   const extra = authInfo?.extra as Record<string, unknown> | undefined;
-  const projectId = typeof extra?.projectId === "string" ? extra.projectId : undefined;
-  if (!authInfo || !projectId) return undefined;
-  return {
-    tokenId: authInfo.clientId,
-    projectId,
-    scope: authInfo.scopes.filter((scope): scope is McpScope => scope === "read" || scope === "write" || scope === "execute"),
-    createdBy: typeof extra?.createdBy === "string" ? extra.createdBy : undefined,
-  };
+  const createdBy = typeof extra?.createdBy === "string" ? extra.createdBy : undefined;
+  if (!authInfo || !createdBy) return undefined;
+  const rawBindings: unknown[] = Array.isArray(extra?.bindings) ? extra?.bindings as unknown[] : [];
+  const bindings = rawBindings.flatMap((raw): McpBinding[] => {
+    const row = raw as Record<string, unknown>;
+    const projectId = typeof row.projectId === "string" ? row.projectId : undefined;
+    if (!projectId) return [];
+    const scope = Array.isArray(row.scope)
+      ? (row.scope as unknown[]).map(String).filter((each): each is McpScope => each === "read" || each === "write" || each === "execute")
+      : [];
+    return [{ projectId, scope }];
+  });
+  return { tokenId: authInfo.clientId, createdBy, bindings };
 }
 
 /** initialize 握手里自报的家门。版本与 package.json 同步改——只有展示用途。 */
@@ -114,18 +197,28 @@ const SERVER_INFO = { name: "apitest", version: "0.1.0" };
  * 身份缺席时注册零个工具而不是全部工具：这条路径正常到不了（路由层闸门 1 先拒了
  * 无凭据请求），能到就说明 transport 侧出了岔子——失败要朝安全那边倒。
  */
-export function buildMcpServer(identity: McpIdentity | undefined): McpServer {
+export function buildMcpServer(principal: McpPrincipal | undefined): McpServer {
   const server = new McpServer(SERVER_INFO);
-  if (!identity) return server;
-  for (const tool of toolsVisibleTo(identity.scope)) {
+  if (!principal) return server;
+  const registered = new Map<string, McpToolDefinition>();
+  for (const tool of toolsVisibleTo(bindingScopeUnion(principal.bindings))) registered.set(tool.name, tool);
+  /* `list_my_projects` 恒注册（零绑定也要能问出「我没有项目」）；它在 PROJECT_FREE_TOOLS
+     里，不注入 projectId、不需要目标项目。 */
+  for (const tool of MCP_TOOLS) if (tool.name === "list_my_projects") registered.set(tool.name, tool);
+
+  for (const tool of registered.values()) {
+    const schema = toolNeedsProject(tool) ? injectProjectArg(tool) : tool.inputSchema;
     server.registerTool(
       tool.name,
-      { description: tool.description, inputSchema: fromJsonSchema(tool.inputSchema) },
+      { description: tool.description, inputSchema: fromJsonSchema(schema) },
       /* 第二个参数是 SDK 的 ServerContext：MRTR 的 inputResponses 从 `ctx.mcpReq` 挑出
          传给工具（delete_* 的确认判据，9.4.1）。其余 context 面本期工具用不到。 */
-      (args, ctx) => tool.handler((args ?? {}) as Record<string, unknown>, identity, ctx?.mcpReq),
+      async (args, ctx) => {
+        const call = resolveCall(tool, (args ?? {}) as Record<string, unknown>, principal);
+        if ("error" in call) return toolError(call.error);
+        return tool.handler((args ?? {}) as Record<string, unknown>, call.identity, ctx?.mcpReq);
+      },
     );
   }
   return server;
 }
-

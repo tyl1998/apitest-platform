@@ -3,12 +3,14 @@ import type { PoolClient } from "pg";
 import { pool } from "../db.js";
 import { toFlowNode, validateFlowGraph } from "./flow.js";
 import { checkFlowReferences } from "./flowRefs.js";
+import { resolveBinding } from "./mcpAuth.js";
 import { rejectCredentialNamedVariables, rejectLiteralSecrets, rejectLiteralSecretsInSnapshot } from "./mcpSecretGuard.js";
 import { auditMcpAction, requiredUuidArg, stringArg, toolError, toolResult } from "./mcpToolResult.js";
 import type { McpToolDefinition } from "./mcpServer.js";
 import { persistCaseLifecycleScripts, persistFlowScripts } from "./scripts.js";
 import { DEFAULT_RUNNER_LABEL } from "./queue.js";
 import { resourcesBelong } from "./trigger.js";
+import { isUuid } from "./uuid.js";
 import { validateCase, validateEndpoint, type CaseInput, type EndpointInput } from "./validate.js";
 import {
   mapEndpoint, mapEnvironment, mapFlow, mapTestCase, type HookConfig,
@@ -61,6 +63,44 @@ async function validEnvironment(projectId: string, environmentId: string | null 
   if (!environmentId) return true;
   const result = await pool.query("SELECT 1 FROM environments WHERE id = $1 AND project_id = $2", [environmentId, projectId]);
   return Boolean(result.rowCount);
+}
+
+/**
+ * endpoint 的幂等落库（`create_endpoint` 与 `copy_endpoint` 共用）：键
+ * `(project, method, url)`（边界 15）。重试、上下文截断、用户重述都会让同一意图被调
+ * 两次，判重后按 `conflictStrategy` 分派，与 REST import 的语义逐字相同。
+ */
+async function upsertEndpoint(
+  projectId: string,
+  input: EndpointInput,
+  strategy: "update" | "skip",
+): Promise<{ row: Record<string, unknown>; outcome: "created" | "updated" | "skipped"; conflict: boolean }> {
+  const existing = await pool.query(
+    "SELECT * FROM endpoints WHERE project_id = $1 AND method = $2 AND url = $3 LIMIT 1",
+    [projectId, input.method!.toUpperCase(), input.url!.trim()],
+  );
+  if (existing.rowCount) {
+    if (strategy === "skip") return { row: existing.rows[0], outcome: "skipped", conflict: true };
+    const updated = await pool.query(
+      `UPDATE endpoints SET name = $1, description = $2, headers = $3::jsonb, query_params = $4::jsonb, path_params = $5::jsonb,
+         body_type = $6, body = $7::jsonb, body_text = $8, auth = $9::jsonb, tags = $10, default_environment_id = COALESCE($11, default_environment_id), updated_at = now()
+       WHERE id = $12 RETURNING *`,
+      [
+        input.name!.trim(), input.description?.trim() ?? "",
+        JSON.stringify(input.headers ?? {}), JSON.stringify(input.queryParams ?? {}), JSON.stringify(input.pathParams ?? {}),
+        input.bodyType ?? (input.body === undefined ? "none" : "json"),
+        input.body === undefined ? null : JSON.stringify(input.body), input.bodyText ?? null,
+        JSON.stringify(input.auth ?? { type: "none" }), input.tags ?? [], input.defaultEnvironmentId ?? null,
+        String(existing.rows[0].id),
+      ],
+    );
+    return { row: updated.rows[0], outcome: "updated", conflict: true };
+  }
+  const inserted = await pool.query(
+    `INSERT INTO endpoints (id, project_id, ${ENDPOINT_WRITE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13::jsonb, $14, $15) RETURNING *`,
+    [randomUUID(), projectId, ...endpointWriteValues(input)],
+  );
+  return { row: inserted.rows[0], outcome: "created", conflict: false };
 }
 
 /** REST 面 `cases.ts` 的 `toSnapshot` 同款：补齐客户端可省略的字段，存下的快照恒完整。 */
@@ -181,42 +221,74 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
         return toolError("default environment must belong to the project (1001)");
       }
 
-      /* 幂等键 `(project, method, url)`（边界 15）：模型会重试——网络抖动、上下文截断、
-         用户重述一遍需求，都会让同一个意图被调两次。判重后按 conflictStrategy 分派，
-         与 REST import 的语义逐字相同。 */
-      const existing = await pool.query(
-        "SELECT * FROM endpoints WHERE project_id = $1 AND method = $2 AND url = $3 LIMIT 1",
-        [identity.projectId, input.method!.toUpperCase(), input.url!.trim()],
-      );
       const strategy = stringArg(args, "conflictStrategy") === "skip" ? "skip" : "update";
-      if (existing.rowCount) {
-        const before = mapEndpoint(existing.rows[0]);
-        if (strategy === "skip") {
-          return toolResult({ endpoint: before, outcome: "skipped", conflict: true });
-        }
-        const updated = await pool.query(
-          `UPDATE endpoints SET name = $1, description = $2, headers = $3::jsonb, query_params = $4::jsonb, path_params = $5::jsonb,
-             body_type = $6, body = $7::jsonb, body_text = $8, auth = $9::jsonb, tags = $10, default_environment_id = COALESCE($11, default_environment_id), updated_at = now()
-           WHERE id = $12 RETURNING *`,
-          [
-            input.name!.trim(), input.description?.trim() ?? "",
-            JSON.stringify(input.headers ?? {}), JSON.stringify(input.queryParams ?? {}), JSON.stringify(input.pathParams ?? {}),
-            input.bodyType ?? (input.body === undefined ? "none" : "json"),
-            input.body === undefined ? null : JSON.stringify(input.body), input.bodyText ?? null,
-            JSON.stringify(input.auth ?? { type: "none" }), input.tags ?? [], input.defaultEnvironmentId ?? null,
-            before.id,
-          ],
-        );
-        auditWrite("create_endpoint", identity, before.id, { outcome: "updated", method: input.method, url: input.url });
-        return toolResult({ endpoint: mapEndpoint(updated.rows[0]), outcome: "updated", conflict: true });
-      }
+      const { row, outcome, conflict } = await upsertEndpoint(identity.projectId, input, strategy);
+      auditWrite("create_endpoint", identity, String(row.id), { outcome, method: input.method, url: input.url });
+      return toolResult({ endpoint: mapEndpoint(row), outcome, ...(conflict ? { conflict: true } : {}) });
+    },
+  },
+  {
+    name: "copy_endpoint",
+    description: "Copy one endpoint definition from a project this token can read into the project given by projectId (destination). Cross-project copy is the only cross-project capability: the copy is a NEW endpoint in the destination (idempotency key is (destination project, method, url), resolved per conflictStrategy exactly like create_endpoint), and `fromProjectId` must be a different project this token is also bound to. The source's default environment is deliberately NOT copied — environments are project-scoped. Literal credential-looking values in the source are rejected (spreading a literal secret into another project is what the platform must not do); use {{name}} references. This is a copy, not a reference: later edits to either side do not affect the other, and flow nodes still cannot point at another project's endpoints.",
+    scope: "write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        fromProjectId: { type: "string", description: "source project id; must be bound to this token and differ from projectId" },
+        endpointId: { type: "string", description: "endpoint id in the source project (from list_endpoints there)" },
+        conflictStrategy: { type: "string", description: "update (default) | skip — what to do when (method, url) already exists in the destination" },
+      },
+      required: ["fromProjectId", "endpointId"],
+    },
+    handler: async (args, identity) => {
+      const id = requiredUuidArg(args, "endpointId", "endpoint");
+      if ("error" in id) return toolError(id.error);
+      const fromProjectId = stringArg(args, "fromProjectId");
+      if (!fromProjectId) return toolError("fromProjectId is required (1001)");
+      if (!isUuid(fromProjectId)) return toolError("fromProjectId must be a UUID — project not found (2001)");
+      if (fromProjectId === identity.projectId) return toolError("fromProjectId must differ from the destination projectId (1001)");
+      /* 源项目也必须是绑定集里的一员（边界 3：绑定是过滤器）——目标项目已由闸门②③④
+         判过，源项目没有闸门可依，在这里显式判一次。 */
+      const sourceBinding = resolveBinding(identity.bindings, fromProjectId);
+      if (!sourceBinding) return toolError("fromProjectId is not bound to this token (2001)");
+      if (!sourceBinding.scope.includes("read")) return toolError("this token's binding on the source project does not allow read (1003)");
 
-      const result = await pool.query(
-        `INSERT INTO endpoints (id, project_id, ${ENDPOINT_WRITE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13::jsonb, $14, $15) RETURNING *`,
-        [randomUUID(), identity.projectId, ...endpointWriteValues(input)],
-      );
-      auditWrite("create_endpoint", identity, String(result.rows[0].id), { outcome: "created", method: input.method, url: input.url });
-      return toolResult({ endpoint: mapEndpoint(result.rows[0]), outcome: "created" });
+      const source = await pool.query("SELECT * FROM endpoints WHERE id = $1 AND project_id = $2", [id.value, fromProjectId]);
+      if (!source.rowCount) return toolError("endpoint not found (2001)");
+      const row = source.rows[0];
+      /* 源行 → 写形状。`default_environment_id` 刻意不搬（环境 id 是项目级的，边界 11
+         不做跨项目引用）；其余逐字段照搬。 */
+      const input: EndpointInput = {
+        name: String(row.name),
+        description: String(row.description ?? ""),
+        method: String(row.method),
+        url: String(row.url),
+        headers: (row.headers ?? {}) as Record<string, string>,
+        queryParams: (row.query_params ?? {}) as Record<string, string>,
+        pathParams: (row.path_params ?? {}) as Record<string, string>,
+        bodyType: row.body_type ? String(row.body_type) as EndpointInput["bodyType"] : undefined,
+        body: row.body ?? undefined,
+        bodyText: row.body_text === null || row.body_text === undefined ? undefined : String(row.body_text),
+        auth: (row.auth ?? { type: "none" }) as EndpointInput["auth"],
+        tags: Array.isArray(row.tags) ? (row.tags as unknown[]).map(String) : [],
+      };
+      const invalid = validateEndpoint(input);
+      if (invalid) return toolError(`the source endpoint is not a valid endpoint definition: ${invalid} (1001)`);
+      /* 跨项目传播凭据字面量是平台最不该做的事（边界 4 的字面量拒绝在这里多一层意义）。 */
+      const leaked = rejectLiteralSecrets(input);
+      if (leaked) return toolError(`the source endpoint carries a literal credential value, so it cannot be copied across projects: ${leaked}`);
+
+      const strategy = stringArg(args, "conflictStrategy") === "skip" ? "skip" : "update";
+      const { row: saved, outcome, conflict } = await upsertEndpoint(identity.projectId, input, strategy);
+      auditWrite("copy_endpoint", identity, String(saved.id), {
+        outcome, fromProjectId, fromEndpointId: id.value, method: input.method, url: input.url,
+      });
+      return toolResult({
+        endpoint: mapEndpoint(saved),
+        outcome,
+        ...(conflict ? { conflict: true } : {}),
+        copiedFrom: { projectId: fromProjectId, endpointId: id.value },
+      });
     },
   },
   {

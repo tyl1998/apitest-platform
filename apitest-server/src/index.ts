@@ -32,6 +32,7 @@ import { pipelineRunRoutes } from "./routes/pipelineRuns.js";
 import { reportShareRoutes } from "./routes/reportShares.js";
 import { mcpTokenRoutes } from "./routes/mcpTokens.js";
 import { mcpRoutes } from "./routes/mcp.js";
+import { meRoutes } from "./routes/me.js";
 import { systemUserRoutes } from "./routes/systemUsers.js";
 import { invitationRoutes } from "./routes/invitations.js";
 import { memberRoutes } from "./routes/members.js";
@@ -87,13 +88,18 @@ export async function buildApp(): Promise<FastifyInstance> {
   /* 报告分享（2026-09-02）：项目内 CRUD + `/public/report-shares/:token` 免登录只读
      （与 Webhook 公开路由同款：不走 JWT，token 即凭据）。 */
   await app.register(reportShareRoutes);
-  /* P5-1：MCP Token 的签发 / 列表 / 吊销（项目级）。`/mcp` 端点本身与工具面在
-     P5-3/P5-4 落地——这里先回答「钥匙怎么发、怎么收」。 */
+  /* P5-1 起家、P12-1 改能力面：MCP 的项目侧只读绑定视图（谁把钥匙开到我这扇门上）
+     + 项目管理员踢绑定 + 工具清单展示。签发 / 列表 / 吊销已上移到用户级（P12 边界 2，
+     见下面的 meRoutes）。 */
   await app.register(mcpTokenRoutes);
-  /* P5-3：`/mcp` 端点（无状态，`apimcp_` Token + 四道闸门，不走 JWT）。SDK 挂载与
-     兼容腿见 routes/mcp.ts 文件头；工具面 P5-3 只立机制、清单为空，P5-4/P5-5 逐批
-     登记进 lib/mcpServer.ts 的注册表。 */
+  /* P5-3：`/mcp` 端点（无状态，`apimcp_` Token + **五道闸门**，不走 JWT；P12 目标项目
+     成为 tools/call 的必填参数）。SDK 挂载与兼容腿见 routes/mcp.ts 文件头；工具面登记
+     进 lib/mcpServer.ts 的注册表（57 → 59，P12 加 list_my_projects / copy_endpoint）。 */
   await app.register(mcpRoutes);
+  /* P12-1：个人中心（全局层，无项目前缀）——基本信息别名 + 可绑定项目 + 用户级
+     MCP Token 五条（列表 / 签发 / 吊销 / 绑定 / 解绑）。改密仍走既有
+     `POST /auth/change-password`，零改动。 */
+  await app.register(meRoutes);
   /* P6-2：用户管理（建号 / 禁用 / 重置密码，管理员建号通道）+ 审计日志读接口。
      全部 requireSystemAdmin；邀请码通道与强制改密页在 P6-3。 */
   await app.register(systemUserRoutes);
