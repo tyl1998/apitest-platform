@@ -42,6 +42,10 @@ import { testPlanRoutes } from "./routes/testPlans.js";
 import { attributionRoutes } from "./routes/attributions.js";
 import { failureCategoryRoutes } from "./routes/failureCategories.js";
 import { statsRoutes } from "./routes/stats.js";
+import { notificationRoutes } from "./routes/notifications.js";
+import { assistantRoutes } from "./routes/assistant.js";
+import { assistantProviderRoutes } from "./routes/assistantProviders.js";
+import { assistantUserRoutes } from "./routes/assistantUser.js";
 
 declare module "@fastify/jwt" {
   /* pwdEpoch 可选（P6-5）：P6-5 之前签发的存量 token 没有 claim，按 0 对齐库里的缺省值。 */
@@ -120,6 +124,20 @@ export async function buildApp(): Promise<FastifyInstance> {
      5s statement_timeout 全部收在 stats.ts 内（边界 16/23），注册顺序无讲究——
      它不依赖其他路由的任何状态。前端页面（数据统计三段式 + 看板扩展）在 P8-6。 */
   await app.register(statsRoutes);
+  /* P9-1：站内通知（用户级，无项目前缀——收件人是人）。五个生产源在
+     lib/inbox.ts（member_change / plan_assign 两新源 + 三个终态订阅点加发）。 */
+  await app.register(notificationRoutes);
+  /* P9-2 起家、P9-4b 通用化：站内助手——通用协议引擎（lib/assistant/engine.ts，按
+     provider 行的协议配置调上游）+ 项目级五条会话路由（SSE hijack + 15s 保活 +
+     归一事件）。 */
+  await app.register(assistantRoutes);
+  /* P9-3 起家、P9-4b 通用化：provider 管理面（系统管理员，全局层）——通用协议
+     （4 接口 + SSE 映射 + 用户参数模式）的 CRUD / JSON 导入导出 / 测试连接（带
+     临时参数，归一事件 SSE 回显）/ 默认切换。 */
+  await app.register(assistantProviderRoutes);
+  /* P9-4b：助手的用户级路由——上游目录 / 我的 agent（用户自配参数，secret 加密）/
+     默认切换 / 测试。抽屉「设置」卡的全部后端。 */
+  await app.register(assistantUserRoutes);
   return app;
 }
 

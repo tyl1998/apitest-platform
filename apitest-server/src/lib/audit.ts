@@ -84,6 +84,17 @@ export const AUDIT_ACTIONS = {
   failureAttributionSet: "failure_attribution.set",
   /** 清除归因。target 同上；detail 带 target 类型。 */
   failureAttributionClear: "failure_attribution.clear",
+  /* ── P9-3：助手 provider 管理（系统级，仅系统管理员）。target = assistant_provider。
+     detail 只带 name/type 与变更摘要（enabled / 默认切换 / Key set|cleared）——Key 明文
+     绝不进（本文件头的纪律在「谁换了上游钥匙」这个问题上最要命）。 ── */
+  /** 建 provider（含 JSON 导入，detail.imported 区分）。 */
+  assistantProviderCreate: "assistant_provider.create",
+  /** 改 provider（名称/参数/能力面/Key/启停）。 */
+  assistantProviderUpdate: "assistant_provider.update",
+  /** 删 provider（映射会话级联，detail 带 conversationCount）。 */
+  assistantProviderDelete: "assistant_provider.delete",
+  /** 切换默认 provider（detail 带 from/to 名字）。 */
+  assistantProviderSetDefault: "assistant_provider.set_default",
   /* ── P8-2：归因分类字典管理（系统设置「归因类型」tab）。target =
       failure_category（targetId 是 code 而非 uuid——字典的主键就是 code）。
       detail 带 name 与前后状态，seed 的七类同受管理（见路由注释）。 ── */

@@ -262,6 +262,8 @@ export async function suiteRoutes(app: FastifyInstance) {
         suiteId: request.params.suiteId,
         execution: request.body?.execution,
         variables: request.body?.variables,
+        /* 手动触发带上人（P9-1 收件口径）：站内通知据此定点发。 */
+        trigger: { source: "manual", userId: context.user.id },
       });
       /* 202: an accepted run, not a verdict. The client follows it on the stream. */
       const queued = await pool.query("SELECT * FROM suite_executions WHERE id = $1", [suiteExecutionId]);

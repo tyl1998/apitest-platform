@@ -269,6 +269,9 @@ export async function scheduleRoutes(app: FastifyInstance) {
         suiteId: String(row.target_id),
         environmentId: row.environment_id ? String(row.environment_id) : undefined,
         variables: (row.variables ?? {}) as Record<string, string>,
+        /* 「立即运行」是手动路径（P9-1 收件口径）：与上面的 CI 分支同款带上人，
+           站内通知定点发。真正的调度器触发（lib/schedule.ts）不带——非人触发。 */
+        trigger: { source: "manual", userId: context.user.id },
       });
       const queued = await pool.query("SELECT * FROM suite_executions WHERE id = $1", [suiteExecutionId]);
       return reply.code(202).send(success({ targetType: "suite", suiteExecution: mapSuiteExecution(queued.rows[0]) }));

@@ -427,6 +427,9 @@ export async function flowRoutes(app: FastifyInstance) {
         nodes: request.body?.nodes,
         edges: request.body?.edges,
         variables: request.body?.variables,
+        /* 手动触发带上人（P9-1 收件口径）：execution_index.triggered_by 的落点，
+           站内通知据此定点发。 */
+        trigger: { source: "manual", userId: context.user.id },
       });
       /* 202: an accepted run, not a verdict. The client follows it on the
          stream, exactly as it does for a debug send. */

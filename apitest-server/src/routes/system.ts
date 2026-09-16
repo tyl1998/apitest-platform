@@ -7,7 +7,11 @@ import { requireSystemAdmin } from "../lib/rbac.js";
 import { success } from "../lib/response.js";
 import { WORKER_OFFLINE_AFTER_SECONDS, mapWorker, SUITE_MAX_CONCURRENCY, SUITE_MAX_MEMBERS } from "../models/types.js";
 
-type Preferences = { theme?: "light" | "dark" | "system"; language?: "zh-CN" | "en"; restoreLastPage?: boolean };
+/* avatarSeed / avatarNightmare（P9-6 人物生成器）：种子覆盖（无值 = 身份种子
+   users.id，前端确定性画头像）与 nightmare 物种开关（默认移出，无界面入口）。
+   PUT 是直通 jsonb 合并、不逐键校验——与 theme/language 同款信任边界，前端
+   读写侧自防护。 */
+type Preferences = { theme?: "light" | "dark" | "system"; language?: "zh-CN" | "en"; restoreLastPage?: boolean; avatarSeed?: string; avatarNightmare?: boolean };
 
 /**
  * How long a worker may go unheard from before it reads as offline.

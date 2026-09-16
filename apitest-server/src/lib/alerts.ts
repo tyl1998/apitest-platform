@@ -1,6 +1,7 @@
 import { pool } from "../db.js";
 import { decryptSecret } from "./crypto.js";
 import type { ExecutionEvent } from "./events.js";
+import { deliverInboxToUser } from "./inbox.js";
 import { passRateOf } from "./metrics.js";
 import { dispatchAlert, renderBody, renderTemplate, type AlertChannel, type AlertMessage } from "./notify.js";
 import { mapAlertRule, normalizeSuiteNotify } from "../models/types.js";
@@ -54,13 +55,15 @@ type EventContext = {
   reportName?: string;
   triggerSource?: string;
   triggerRefName?: string;
+  /** 触发人（P9-1 收件口径）：站内通知的定点收件人；非人触发为空。 */
+  triggeredBy?: string | null;
 };
 
 async function loadEventContext(executionIndexId: string | undefined): Promise<EventContext> {
   if (!executionIndexId) return {};
   const result = await pool.query(
     /* 报告名挂在 suite_executions 上；流程执行 join 不中，读作没有。 */
-    `SELECT ei.target_name, ei.trigger_source, ei.trigger_ref_name, se.report_name
+    `SELECT ei.target_name, ei.trigger_source, ei.trigger_ref_name, ei.triggered_by, se.report_name
        FROM execution_index ei
        LEFT JOIN suite_executions se ON se.execution_index_id = ei.id
       WHERE ei.id = $1`,
@@ -73,6 +76,7 @@ async function loadEventContext(executionIndexId: string | undefined): Promise<E
     reportName: row.report_name ? String(row.report_name) : undefined,
     triggerSource: row.trigger_source ? String(row.trigger_source) : undefined,
     triggerRefName: row.trigger_ref_name ? String(row.trigger_ref_name) : undefined,
+    triggeredBy: row.triggered_by ? String(row.triggered_by) : null,
   };
 }
 
@@ -244,6 +248,19 @@ export async function evaluateAlertEvent(event: ParentEvent): Promise<void> {
       /* 冷却认领在投递之前：没抢到说明另一实例正在发同一件事，这里退出即可。 */
       if (!await claimCooldown(rule)) continue;
       const channels = await loadChannels(event.projectId, rule.channelIds);
+      /* 站内通知（P9-1 收件口径变更，2026-09-11）：定点发给触发这次执行的人（手动 /
+         MCP execute 落在 execution_index.triggered_by）；非人触发（定时 / Webhook）
+         不发站内——受众不明确的广播只是噪声，需要关注的人已由上面的外发渠道覆盖。
+         与外发渠道解耦：外发是「配置了才知道」，这一发只给亲手触发的人。 */
+      const triggerContext = await contextOf();
+      deliverInboxToUser({
+        projectId: event.projectId,
+        userId: triggerContext.triggeredBy,
+        kind: "alert",
+        title: message.title,
+        body: message.lines.join("\n"),
+        link: `/projects/${event.projectId}/alerts`,
+      });
       /* 渠道全部被删/停用：条件确实命中了（冷却已记），没有可投递的对象也是一种
          要在证据里看得见的状态——投递记录为空本身就是答案（边界 10）。 */
       if (!channels.length) continue;
@@ -266,9 +283,12 @@ export async function evaluateAlertEvent(event: ParentEvent): Promise<void> {
 /**
  * 默认模版（套件级覆盖前的兜底）。正文按行给出：`AlertMessage.lines` 是行的列表，
  * 渠道各自决定怎么排版；自定义模版的 body 由 `renderBody` 按换行拆成同样的形状。
+ *
+ * 标题前缀是**通知源的主语**（「套件通知」）而不是平台名——套件自己已经说了名字，
+ * 再压一层「接口自动化」在站内读起来像在分类这个任务（2026-09-11 用户反馈）。
  */
 const DEFAULT_SUITE_TEMPLATE = {
-  title: "【接口自动化】套件「{{suiteName}}」{{status}}",
+  title: "【套件通知】{{suiteName}} {{status}}",
   body: [
     "结果: {{status}} · 通过 {{successCount}}/{{total}} · 失败 {{failedCount}} · 跳过 {{skippedCount}}",
     "通过率: {{passRate}} · 耗时: {{duration}}",
@@ -289,12 +309,17 @@ function humanDuration(ms: number | undefined): string {
  * 通知里的报告直链（2026-09-03：模版支持 `{{reportUrl}}`）。
  *
  * 通知由调度器进程投递（订阅终态事件），那里没有 HTTP 请求上下文，根地址只能来自
- * `PUBLIC_BASE_URL`（与产物直链 / JobSpec 的 APITRACK_URL 同一条纪律）。未配置时回
- * **相对路径**：站内路由是确定的，缺的只是域名那一半——写一句「配 PUBLIC_BASE_URL
- * 就有完整链接」比悄悄吞掉占位符可排查。
+ * 环境变量。链接打开的是**前端 SPA 路由**，不是 API 路由——双域名部署（办公网页面
+ * 在 A、API 在 B）下 `PUBLIC_BASE_URL` 指 B，链接会落到只跑 API 的 B 上变 404。
+ * `WEB_BASE_URL` 专指浏览器打开平台页面的根地址（人消费）；`PUBLIC_BASE_URL` 继续
+ * 服务机器消费者（产物直链 / JobSpec 的 APITRACK_URL / /mcp Host 白名单），语义
+ * 不变。未配 `WEB_BASE_URL` 时回退 `PUBLIC_BASE_URL`——单源部署两者同源，无需多
+ * 配一个。两者皆无时回**相对路径**：站内路由是确定的，缺的只是域名那一半——比
+ * 悄悄吞掉占位符可排查。
  */
 function reportUrl(path: string): string {
-  const base = process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, "");
+  const base = process.env.WEB_BASE_URL?.trim().replace(/\/+$/, "")
+    || process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, "");
   return base ? `${base}${path}` : path;
 }
 
@@ -311,7 +336,7 @@ export async function notifySuiteResult(event: Extract<ExecutionEvent, { kind: "
      通知没有收件语境，跳过。 */
   const found = await pool.query(
     `SELECT ts.notify_config, se.suite_id, se.suite_name, se.report_name,
-            ei.trigger_source, ei.trigger_ref_name,
+            ei.trigger_source, ei.trigger_ref_name, ei.triggered_by,
             EXTRACT(EPOCH FROM (se.finished_at - se.started_at)) * 1000 AS duration_ms
        FROM suite_executions se
        JOIN execution_index ei ON ei.id = se.execution_index_id
@@ -357,6 +382,18 @@ export async function notifySuiteResult(event: Extract<ExecutionEvent, { kind: "
     lines: renderBody(notify.template?.body || DEFAULT_SUITE_TEMPLATE.body, values),
   };
 
+  /* 站内通知（P9-1 收件口径变更，2026-09-11）：定点发给触发人（手动 / MCP execute）；
+     定时 / Webhook 触发不发站内（triggered_by 为空）——受众不明确，且配置了站外
+     渠道的人已覆盖。 */
+  deliverInboxToUser({
+    projectId: event.projectId,
+    userId: row.triggered_by ? String(row.triggered_by) : null,
+    kind: "suite_result",
+    title: message.title,
+    body: message.lines.join("\n"),
+    link: reportUrl(`/projects/${event.projectId}/suite-reports/${event.suiteExecutionId}`),
+  });
+
   await dispatchAlert({
     projectId: event.projectId,
     executionIndexId: event.executionIndexId,
@@ -371,9 +408,12 @@ export async function notifySuiteResult(event: Extract<ExecutionEvent, { kind: "
  * 默认模版。占位符换成 CI 语境（没有「报告名」——CI 的报告是 run 详情页本身；多出
  * `runNumber` / `gitRef` / `commitSha`，那三个是「跑的是哪一版代码」的答案；
  * `reportUrl` 直指 run 详情页——2026-09-03 起与套件模版同款支持报告链接）。
+ *
+ * 标题前缀「仓库任务」（2026-09-11 用户反馈）：仓库里跑的是用户自己的代码（pytest
+ * 等），不是平台的接口用例——前缀说**跑的是什么**，不说平台名。
  */
 const DEFAULT_CI_TASK_TEMPLATE = {
-  title: "【接口自动化】任务「{{taskName}}」#{{runNumber}} {{status}}",
+  title: "【仓库任务】{{taskName}} #{{runNumber}} {{status}}",
   body: [
     "结果: {{status}} · 通过 {{passedCount}}/{{total}} · 失败 {{failedCount}} · 跳过 {{skippedCount}}",
     "代码: {{gitRef}} @ {{commitSha}}",
@@ -410,7 +450,7 @@ export async function notifyPipelineResult(event: Extract<ExecutionEvent, { kind
   const found = await pool.query(
     `SELECT t.notify_config, t.name AS task_name,
             pr.run_number, pr.git_ref, pr.commit_sha, pr.case_total, pr.passed_count,
-            pr.failed_count, pr.skipped_count, pr.trigger_source, pr.trigger_ref_name,
+            pr.failed_count, pr.skipped_count, pr.trigger_source, pr.trigger_ref_name, pr.triggered_by,
             EXTRACT(EPOCH FROM (pr.finished_at - COALESCE(pr.started_at, pr.claimed_at))) * 1000 AS duration_ms
        FROM pipeline_runs pr JOIN ci_tasks t ON t.id = pr.ci_task_id
       WHERE pr.id = $1 AND pr.project_id = $2`,
@@ -449,6 +489,17 @@ export async function notifyPipelineResult(event: Extract<ExecutionEvent, { kind
     title: renderTemplate(notify.template?.title || DEFAULT_CI_TASK_TEMPLATE.title, values),
     lines: renderBody(notify.template?.body || DEFAULT_CI_TASK_TEMPLATE.body, values),
   };
+
+  /* 站内通知（P9-1 收件口径变更，2026-09-11）：定点发给触发人（pipeline_runs.
+     triggered_by——手动 / MCP execute 都有值）；定时 / Webhook / CI 触发为空不发。 */
+  deliverInboxToUser({
+    projectId: event.projectId,
+    userId: row.triggered_by ? String(row.triggered_by) : null,
+    kind: "ci_result",
+    title: message.title,
+    body: message.lines.join("\n"),
+    link: reportUrl(`/projects/${event.projectId}/pipeline-runs/${event.pipelineRunId}`),
+  });
 
   await dispatchAlert({
     projectId: event.projectId,

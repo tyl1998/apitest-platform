@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
 import { writeAuditLogAsync } from "../lib/audit.js";
+import { deliverInbox } from "../lib/inbox.js";
 import { requireProjectAccess, requireProjectAdmin } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
@@ -134,6 +135,15 @@ export async function memberRoutes(app: FastifyInstance) {
         WHERE r.project_id = $1 AND r.user_id = $2`,
       [context.project.id, userId],
     );
+    /* P9-1 站内通知（member_change 新源）：成员变更是全体成员该知道的事——
+       新加入的人自己也收到（收件人含本人，「你被加进了这个项目」正是他要的信息）。 */
+    deliverInbox({
+      projectId: context.project.id,
+      kind: "member_change",
+      title: before ? `成员角色变更：${email} → ${role}` : `新成员加入：${email}`,
+      body: before ? `由 ${context.user.email} 变更` : `由 ${context.user.email} 添加`,
+      link: `/projects/${context.project.id}/members`,
+    });
     /* 新加入回 201；upsert 落在已有成员上是一次更新，200（envelope 契约：201 只给 create）。 */
     const response = success(mapProjectMember(member.rows[0]));
     return before ? response : reply.code(201).send(response);
@@ -173,6 +183,14 @@ export async function memberRoutes(app: FastifyInstance) {
       detail: { email, from: before, to: role },
       ip: request.ip,
     });
+    /* P9-1 站内通知：改角色与加人同一动作（member.upsert），文案区分前后角色。 */
+    deliverInbox({
+      projectId: context.project.id,
+      kind: "member_change",
+      title: `成员角色变更：${email} → ${role}`,
+      body: `由 ${context.user.email} 变更`,
+      link: `/projects/${context.project.id}/members`,
+    });
     return success({ userId: request.params.userId, role });
   });
 
@@ -203,6 +221,16 @@ export async function memberRoutes(app: FastifyInstance) {
       userId: context.user.id,
       detail: { email, role },
       ip: request.ip,
+    });
+    /* P9-1 站内通知：移除不给被移除的人发（excludeUserId——他下次请求就 403，
+       一条打不开的深链只会制造困惑），其余成员照常收到。 */
+    deliverInbox({
+      projectId: context.project.id,
+      kind: "member_change",
+      title: `成员被移除：${email}`,
+      body: `由 ${context.user.email} 移除`,
+      link: `/projects/${context.project.id}/members`,
+      excludeUserId: request.params.userId,
     });
     return success({ userId: request.params.userId, removed: true });
   });

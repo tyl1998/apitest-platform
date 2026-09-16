@@ -54,8 +54,8 @@ const TOP_LIMIT = 20;
 /** TopN 维度（边界 21 的六维——P8-4 先落四维，流程/仓库用例两维随 P8-7 扩参进来）。 */
 const TOPN_DIMS = ["endpoint", "case", "ci_task", "suite", "flow", "repo_case"] as const;
 type TopNDim = (typeof TOPN_DIMS)[number];
-/** 项目对比的指标列（边界 19）。 */
-const PROJECT_METRICS = ["coverage", "automation", "passRate", "failed"] as const;
+/** 项目对比的指标列（边界 19；2026-09-11 用户增补归因覆盖率维）。 */
+const PROJECT_METRICS = ["coverage", "automation", "passRate", "failed", "attribution"] as const;
 type ProjectMetric = (typeof PROJECT_METRICS)[number];
 /** 趋势的触发源过滤（12.4 顶部筛选第三项）：execution_index 的 CHECK 同一套。 */
 const TRIGGER_SOURCES = ["manual", "scheduled", "webhook", "ci"] as const;
@@ -1148,13 +1148,14 @@ export async function statsRoutes(app: FastifyInstance) {
   });
 
   /**
-   * 项目对比（边界 19 的 Top 10 反向榜 / 关键字检索）：四个指标列（接口覆盖率 /
-   * 自动化覆盖率 / 通过率 / 失败量）可切换，order 默认 asc（升序 = 最差在前——
+   * 项目对比（边界 19 的 Top 10 反向榜 / 关键字检索）：指标列（接口覆盖率 / 自动化
+   * 覆盖率 / 通过率 / 失败量 / 归因覆盖率）可切换，order 默认 asc（升序 = 最差在前——
    * 看板是找问题的页；失败量这种「越大越差」的列由前端显式传 desc）。传 keyword 时
-   * 返回命中全量（命中多少展示多少，不做分页翻页器），归因覆盖率作为列保留（12.4）。
+   * 返回命中全量（命中多少展示多少，不做分页翻页器）。
    *
-   * 通过率/失败量是窗口读数（样本口径与 overview 一致）；两个覆盖率是存量读数——
-   * 与看板卡片同口径（queryProjectMetrics 的公式），不混窗口。
+   * 通过率/失败量是窗口读数（样本口径与 overview 一致）；三个覆盖率是存量读数——
+   * 与看板卡片同口径（queryProjectMetrics 的公式），不混窗口。覆盖率排序键
+   * COALESCE(x, 0)：分母为 0 的 null 在覆盖意义上是 0%（最差），asc 榜排最前。
    */
   app.get<{ Querystring: StatsQuery }>("/api/v1/stats/projects", async (request, reply) => {
     const user = await currentUser(request, reply);
@@ -1188,7 +1189,24 @@ export async function statsRoutes(app: FastifyInstance) {
       const orderColumn = metric === "coverage" ? "coverage_rate"
         : metric === "automation" ? "automation_rate"
         : metric === "passRate" ? "pass_rate"
+        : metric === "attribution" ? "attribution_rate"
         : "failed_count";
+      /* 排序键（2026-09-11 验收：覆盖率三维 asc 时「分母为 0 的 null」排错位）：
+       * 覆盖率列的 null 是「没有分母」，不是「没有数据」——没有已评审用例/没有失败
+       * 目标的项目在覆盖意义上就是 0%（最差），asc 榜里必须排最前，默认 NULLS LAST
+       * 却把它甩到榜尾。修法是 COALESCE(x, 0)——但 ORDER BY 的**表达式内**不解析
+       * SELECT 别名（裸 `ORDER BY coverage_rate` 行，包进 COALESCE 就按表列找，
+       * 42703），所以这里重复 SELECT 里同款 CASE 表达式而不是引用别名。代码内固定
+       * 片段，无请求值进文本。列读数不动：null 仍显示「—」（0% 与「分母为 0」是
+       * 两个事实）；passRate/failed 维不 COALESCE，保持裸列引用原语义。 */
+      const rateExpression: Record<"coverage" | "automation" | "attribution", string> = {
+        coverage: "CASE WHEN COALESCE(ep.n, 0) > 0 THEN ROUND(COALESCE(tc.n, 0)::numeric * 100 / ep.n, 1) END",
+        automation: "CASE WHEN COALESCE(sp.total, 0) > 0 THEN ROUND(COALESCE(sp.automated, 0)::numeric * 100 / sp.total, 1) END",
+        attribution: "CASE WHEN COALESCE(att.failed, 0) > 0 THEN ROUND(COALESCE(att.attributed, 0)::numeric * 100 / att.failed, 1) END",
+      };
+      const orderKey = metric === "failed" || metric === "passRate"
+        ? orderColumn
+        : `COALESCE(${rateExpression[metric]}, 0)`;
       /* LIMIT 走参数（请求值不进 SQL 文本）；keyword 模式返回命中全量，无 LIMIT。 */
       let limitFragment = "";
       if (!keyword) limitFragment = ` LIMIT $${pushParam(params, limit)}`;
@@ -1233,9 +1251,9 @@ export async function statsRoutes(app: FastifyInstance) {
                LEFT JOIN failure_attributions fa ON fa.target_type = t.target_type AND fa.target_id = t.target_id
               GROUP BY t.project_id
            ) att ON att.project_id = p.id
-           ${where}
-           ORDER BY ${orderColumn} ${order} NULLS LAST, p.name ASC
-           ${limitFragment}`,
+          ${where}
+          ORDER BY ${orderKey} ${order}, p.name ASC
+          ${limitFragment}`,
         params,
       );
 

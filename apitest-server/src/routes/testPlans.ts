@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { deliverInbox } from "../lib/inbox.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
@@ -419,20 +420,29 @@ export async function testPlanRoutes(app: FastifyInstance) {
     }
 
     /* executed_at 的写清与 result 绑死：给了非空 result = now()；显式 null =
-       清结果 → 清执行时间；没带 result 的请求不动它。 */
+       清结果 → 清执行时间；没带 result 的请求不动它。
+       旧 assignee 由 BEFORE CTE 先取（RETURNING 里读到的已是改后行，UPDATE 内的
+       关联子查询也拿不到旧值——Postgres 的行在 UPDATE 窗口内已就地更新）。 */
     const result = await pool.query(
-      `UPDATE test_plan_items i SET
-          assignee = CASE WHEN $3 THEN $4::uuid ELSE assignee END,
-          result = CASE WHEN $5 THEN $6 ELSE result END,
-          note = COALESCE($7, note),
-          defect_url = CASE WHEN $8 THEN NULLIF($9, '') ELSE defect_url END,
-          executed_at = CASE
-            WHEN $6 IS NOT NULL THEN now()
-            WHEN $5 AND $6 IS NULL THEN NULL
-            ELSE executed_at END
-        FROM test_plans p
-        WHERE i.plan_id = p.id AND i.id = $1 AND p.id = $2 AND p.project_id = $10
-        RETURNING i.*`,
+      `WITH before AS (
+         SELECT i.assignee AS previous_assignee, p.name AS plan_name
+           FROM test_plan_items i JOIN test_plans p ON p.id = i.plan_id
+          WHERE i.id = $1 AND p.id = $2 AND p.project_id = $10
+       ), updated AS (
+         UPDATE test_plan_items i SET
+            assignee = CASE WHEN $3 THEN $4::uuid ELSE assignee END,
+            result = CASE WHEN $5 THEN $6 ELSE result END,
+            note = COALESCE($7, note),
+            defect_url = CASE WHEN $8 THEN NULLIF($9, '') ELSE defect_url END,
+            executed_at = CASE
+              WHEN $6 IS NOT NULL THEN now()
+              WHEN $5 AND $6 IS NULL THEN NULL
+              ELSE executed_at END
+          FROM test_plans p, before
+          WHERE i.plan_id = p.id AND i.id = $1 AND p.id = $2 AND p.project_id = $10
+         RETURNING i.*
+       )
+       SELECT u.*, b.previous_assignee, b.plan_name FROM updated u, before b`,
       [
         request.params.itemId, request.params.planId,
         input.assignee !== undefined, input.assignee ?? null,
@@ -443,6 +453,24 @@ export async function testPlanRoutes(app: FastifyInstance) {
       ],
     );
     if (!result.rowCount) return fail(reply, 404, 2001, "plan item not found");
+    /* P9-1 站内通知（plan_assign 新源）：只在 assignee 真的变了（请求带 assignee 键
+       且改后值 ≠ 改前值）才发；指派给谁发谁（新 assignee 本人），取消指派（null）
+       不发——「没有你的事了」不构成一条需要点击的通知。收件人是单个人，不走
+       deliverInbox 的成员扇出，直接插一行（fire-and-forget 同款取舍）。 */
+    const nextAssignee = result.rows[0].assignee ? String(result.rows[0].assignee) : null;
+    const previousAssignee = result.rows[0].previous_assignee ? String(result.rows[0].previous_assignee) : null;
+    if (input.assignee !== undefined && nextAssignee && nextAssignee !== previousAssignee) {
+      void pool.query(
+        `INSERT INTO notifications (id, user_id, project_id, kind, title, body, link)
+         VALUES ($1, $2, $3, 'plan_assign', $4, $5, $6)`,
+        [
+          randomUUID(), nextAssignee, context.project.id,
+          `计划指派：${String(result.rows[0].plan_name)}`,
+          `「${String(result.rows[0].title_snapshot)}」被指派给你`,
+          `/projects/${context.project.id}/test-plans/${request.params.planId}`,
+        ],
+      ).catch(() => {});
+    }
     return success(mapTestPlanItem(result.rows[0]));
   });
 

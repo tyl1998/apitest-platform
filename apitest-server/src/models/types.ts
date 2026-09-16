@@ -759,11 +759,17 @@ export type TriggerSource = "manual" | "scheduled" | "webhook" | "ci";
  *
  * manual 只有 source；调度 / Webhook 带 refId + 名字快照（边界 13：触发器被删后，
  * 报告仍要说得出「谁让它跑的」）。手动路径不传 trigger，入队侧缺省 manual。
+ *
+ * `userId`（P9-1 收件口径变更）：manual / ci 的**人**落点——站内通知的收件人
+ * （alert / suite_result / ci_result 谁触发发给谁）。调度 / Webhook 不带（非人
+ * 触发不发站内，见 057b）。
  */
 export type TriggerContext = {
   source: TriggerSource;
   refId?: string;
   refName?: string;
+  /** 触发人（手动 / MCP execute / CI 手动触发）；非人触发缺省。 */
+  userId?: string;
 };
 
 export type ExecutionIndex = {
@@ -3045,5 +3051,165 @@ export function mapFailureAttribution(row: Record<string, unknown>): FailureAttr
     createdBy: row.created_by === null || row.created_by === undefined ? undefined : String(row.created_by),
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+  };
+}
+
+/* ── P9-1：站内通知 ────────────────────────────────────────────────────────── */
+
+/**
+ * 一条站内通知（P9-1，计划 13.1/13.2）。kind 五值对应五个生产源（13.0 边界 9）：
+ * member_change / plan_assign 是 P9 回补 P6/P7 的两个新源，alert / suite_result /
+ * ci_result 挂在既有三个终态订阅点上。`projectName` 是读时 LEFT JOIN 快照（项目删除
+ * 后通知仍可读——那件事确实发生过，与审计的 projectName 同一条纪律）。
+ */
+export type UserNotification = {
+  id: string;
+  projectId: string | null;
+  projectName: string | null;
+  kind: "member_change" | "plan_assign" | "alert" | "suite_result" | "ci_result";
+  title: string;
+  body: string;
+  /** 站内相对路径（空串 = 无深链）；绝对地址由前端按当前 origin 拼。 */
+  link: string;
+  readAt: string | null;
+  createdAt: string;
+};
+
+export function mapUserNotification(row: Record<string, unknown>): UserNotification {
+  return {
+    id: String(row.id),
+    projectId: row.project_id === null || row.project_id === undefined ? null : String(row.project_id),
+    projectName: row.project_name === null || row.project_name === undefined || row.project_name === "" ? null : String(row.project_name),
+    kind: String(row.kind) as UserNotification["kind"],
+    title: String(row.title),
+    body: String(row.body ?? ""),
+    link: String(row.link ?? ""),
+    readAt: row.read_at === null || row.read_at === undefined ? null : new Date(String(row.read_at)).toISOString(),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+/* ── P9-2：站内助手会话 ────────────────────────────────────────────────────── */
+
+/**
+ * 一行「平台 ↔ 上游会话」映射（P9-2，计划 13.1/13.2）。对话正文不落库（边界 2）：
+ * transcript 在 agent 平台侧，这里只存「哪个人在哪个 provider 开了哪个会话」
+ * （2026-09-16 用户级化：会话是「人」的，不挂项目——迁移 062 删了 project_id）。
+ * `upstreamConversationId` 是上游的会话 id（agent-vendor 为 Long 文本）。
+ */
+export type AssistantConversation = {
+  id: string;
+  providerId: string;
+  userId: string;
+  upstreamConversationId: string;
+  topic: string;
+  /**
+   * 会话所属 provider 的能力面（P9-4 起随行带出、P9-4b 起按协议形状派生）：抽屉按它
+   * 决定停止按钮是否出现（门槛 13——协议没定义 stop 端点的 provider 停止按钮不出现）
+   * 与历史是否加载。查询用 `p.protocol AS provider_protocol` 随行带出；创建路由在
+   * 调用点显式补上。
+   */
+  providerCapabilities: { stop: boolean; history: boolean; attachments: boolean };
+  createdAt: string;
+  lastActiveAt: string;
+};
+
+/** 能力面从协议形状派生：定义了对应端点 = 有该能力（P9-4b，取代 type 预设收窄）。 */
+function capabilitiesFromProtocol(value: unknown): { stop: boolean; history: boolean; attachments: boolean } {
+  const protocol = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  return {
+    stop: Boolean(protocol.stop),
+    history: Boolean(protocol.history),
+    attachments: protocol.attachments === true,
+  };
+}
+
+export function mapAssistantConversation(row: Record<string, unknown>): AssistantConversation {
+  /* 协议缺席（未 JOIN、未补）时能力面一律 false——隐藏按钮、跳过历史，宁可少显示
+     不可错显示（providers.ts 同款纪律）。 */
+  return {
+    id: String(row.id),
+    providerId: String(row.provider_id),
+    userId: String(row.user_id),
+    upstreamConversationId: String(row.upstream_conversation_id),
+    topic: String(row.topic ?? ""),
+    providerCapabilities: capabilitiesFromProtocol(row.provider_protocol),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    lastActiveAt: new Date(String(row.last_active_at)).toISOString(),
+  };
+}
+
+/* ── P9-4b：用户级 agent + 通用协议 provider ────────────────────────────────── */
+
+/**
+ * 一个用户在一个上游上的 agent 配置（迁移 059）。`params` 只含明文参数；
+ * `secretKeys` 是敏感项的键名清单（值加密落库、接口只回「已配置」——environments
+ * 的 secretKeys 同款纪律）。
+ */
+export type AssistantUserAgent = {
+  providerId: string;
+  providerName: string;
+  providerEnabled: boolean;
+  params: Record<string, string>;
+  secretKeys: string[];
+  isDefault: boolean;
+  updatedAt: string;
+};
+
+export function mapAssistantUserAgent(row: Record<string, unknown>): AssistantUserAgent {
+  const params = (row.params && typeof row.params === "object" ? row.params : {}) as Record<string, unknown>;
+  const secrets = (row.secrets && typeof row.secrets === "object" ? row.secrets : {}) as Record<string, unknown>;
+  return {
+    providerId: String(row.provider_id),
+    providerName: String(row.provider_name ?? ""),
+    providerEnabled: row.provider_enabled !== false,
+    params: Object.fromEntries(Object.entries(params).map(([key, value]) => [key, String(value ?? "")])),
+    secretKeys: Object.keys(secrets),
+    isDefault: row.is_default === true,
+    updatedAt: new Date(String(row.updated_at)).toISOString(),
+  };
+}
+
+/* ── P9-3/P9-4b：助手 provider（系统级，通用协议） ──────────────────────────── */
+
+/**
+ * provider 管理面的行形态（P9-3 起家、P9-4b 通用化）。`protocol` 是 4 接口 + SSE
+ * 映射 + 认证模板的通用协议配置（形状见 lib/assistant/types.ts）；`userParams` 是
+ * 用户配置自己的 agent 时要填的参数模式（抽屉「设置」卡按它渲染表单）。没有共享
+ * Key——凭据全在用户行（AssistantUserAgent）。`conversationCount` 是删除确认的
+ * 影响面读数（映射行随 provider 级联删，13.1）。
+ */
+export type AssistantProvider = {
+  id: string;
+  name: string;
+  protocol: Record<string, unknown>;
+  userParams: unknown[];
+  /** 从协议形状派生：定义了 stop/history 端点 = 有该能力（前端按钮显隐，门槛 13）。 */
+  capabilities: { stop: boolean; history: boolean; attachments: boolean };
+  enabled: boolean;
+  isDefault: boolean;
+  conversationCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function mapAssistantProvider(row: Record<string, unknown>): AssistantProvider {
+  const protocol = (row.protocol && typeof row.protocol === "object" ? row.protocol : {}) as Record<string, unknown>;
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    protocol,
+    userParams: Array.isArray(row.user_params) ? row.user_params : [],
+    capabilities: {
+      stop: Boolean(protocol.stop),
+      history: Boolean(protocol.history),
+      attachments: protocol.attachments === true,
+    },
+    enabled: row.enabled === true,
+    isDefault: row.is_default === true,
+    /* LATERAL 随行计数（列表查询带出）；无该列的调用点传 0。 */
+    conversationCount: Number(row.conversation_count ?? 0),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }

@@ -89,14 +89,15 @@ export async function projectRoutes(app: FastifyInstance) {
       defaultEnvironmentId: row?.default_environment_id ? String(row.default_environment_id) : undefined,
       storePlaintext: Boolean(row?.store_plaintext),
       /* 无行 = false（P5 计划 9.1）：那张表只在项目设置被 PUT 过一次时才有行，开关的
-         默认值在迁移 050 的列默认上，不在行上。 */
+         默认值在迁移的列默认上，不在行上。（assistant_enabled 已随 P9-4 修订摘除，
+         迁移 058——助手不设项目闸门。） */
       mcpEnabled: Boolean(row?.mcp_enabled),
     });
   });
 
   /* 项目设置写改挂 requireProjectAdmin（P6 边界 4）：默认环境 / store_plaintext /
-     mcp_enabled 是项目级配置，project_admin 专属；资源 CRUD 仍走 developer 可写的
-     requireProjectAccess。 */
+     mcp_enabled 是项目级配置，project_admin 专属；资源 CRUD 仍走
+     developer 可写的 requireProjectAccess。 */
   app.put<{ Params: { id: string }; Body: { defaultEnvironmentId?: string | null; storePlaintext?: boolean; mcpEnabled?: boolean } }>("/api/v1/projects/:id/settings", async (request, reply) => {
     const context = await requireProjectAdmin(request, reply); if (!context) return;
     const environmentId = request.body.defaultEnvironmentId ?? null;
@@ -110,14 +111,18 @@ export async function projectRoutes(app: FastifyInstance) {
     if (request.body.mcpEnabled !== undefined && typeof request.body.mcpEnabled !== "boolean") {
       return fail(reply, 400, 1001, "mcpEnabled must be a boolean");
     }
-    /* `mcp_enabled` 与 `store_plaintext` 同款 COALESCE（计划 9.1 点名的坑）：只改默认
-       环境的一次 PUT 不该把开关顺手清回 false——显式传 false 才是「关掉」。 */
+    /* 两个开关同款 COALESCE（计划 9.1 点名的坑）：只改默认环境的一次 PUT 不该把开关
+        顺手清回 false——显式传 false 才是「关掉」。UPDATE 侧必须引用**原始参数**
+        （$3/$4），不能引用 EXCLUDED：VALUES 侧为了让全新行拿到 NOT NULL 默认值
+        已经 COALESCE(null → false)，EXCLUDED 里的缺省开关永远是 false 而非 null，
+        再 COALESCE 就把未传的开关清掉了（局部 PUT 互相清开关的缺陷，记
+        issue_fix/问题记录-settings局部PUT互清开关.md）。 */
     const result = await pool.query(
       `INSERT INTO project_settings (project_id, default_environment_id, store_plaintext, mcp_enabled) VALUES ($1, $2, COALESCE($3, false), COALESCE($4, false))
        ON CONFLICT (project_id) DO UPDATE SET
           default_environment_id = EXCLUDED.default_environment_id,
-          store_plaintext = COALESCE(EXCLUDED.store_plaintext, project_settings.store_plaintext),
-          mcp_enabled = COALESCE(EXCLUDED.mcp_enabled, project_settings.mcp_enabled)
+          store_plaintext = COALESCE($3, project_settings.store_plaintext),
+          mcp_enabled = COALESCE($4, project_settings.mcp_enabled)
        RETURNING default_environment_id, store_plaintext, mcp_enabled`,
       [context.project.id, environmentId, request.body.storePlaintext ?? null, request.body.mcpEnabled ?? null],
     );

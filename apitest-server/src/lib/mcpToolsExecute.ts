@@ -163,6 +163,8 @@ export const EXECUTE_TOOLS: readonly McpToolDefinition[] = [
           /* 调度 / Webhook 的触发语义（种子 + 覆盖，后者胜）而不是画布的整袋替换：
              工具是触发路径的一员，与另两条触发路径共用同一套合并规则。 */
           variableOverrides: variables,
+          /* 触发人 = Token 签发人（P9-1 收件口径）：站内通知据此定点发。 */
+          trigger: { source: "manual", userId: identity.createdBy },
         });
         auditMcpAction("mcp_tool.execute", "run_flow", identity, flowExecutionId, { flowId: id.value });
         return toolResult({ flowExecutionId, status: "queued" });
@@ -207,6 +209,8 @@ export const EXECUTE_TOOLS: readonly McpToolDefinition[] = [
           suiteId: id.value,
           environmentId,
           variables,
+          /* 触发人 = Token 签发人（P9-1 收件口径）：站内通知据此定点发。 */
+          trigger: { source: "manual", userId: identity.createdBy },
         });
         auditMcpAction("mcp_tool.execute", "trigger_suite_run", identity, suiteExecutionId, { suiteId: id.value });
         return toolResult({ suiteExecutionId, status: "queued" });
