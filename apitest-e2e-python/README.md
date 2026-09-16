@@ -8,11 +8,15 @@
 apitest-e2e-python/
 ├── conftest.py          # session 级 fixture：登录拿 JWT、封装 api 客户端
 ├── data/
-│   ├── config.py        # 环境配置（base_url / 账密），环境变量可覆盖
+│   ├── config.py        # 环境配置（base_url / 账密 / 助手联调项目名），环境变量可覆盖
 │   └── constant.py      # 响应码等断言常量
 ├── req/
 │   └── http_req.py      # HTTP 请求封装
+├── setup/
+│   └── seed_assistant.py # P9-2 助手联调种子（agent-vendor provider 行 + 项目开关；P9-3 落地后退休）
+├── drill/               # P9-8 上游异常演练（stub 假上游 + 逐项清单，非 pytest）
 ├── test_case/
+│   ├── assistant/       # /api/v1/projects/:id/assistant/*（P9-2 五条会话路由）
 │   ├── auth/            # /api/v1/auth/*
 │   ├── projects/        # /api/v1/projects*
 │   ├── runner/          # /api/v1/system/runner-*（Runner 相关只读查询）
@@ -20,6 +24,28 @@ apitest-e2e-python/
 └── utils/
     └── other_utils.py   # 唯一项目名等工具
 ```
+
+## 站内助手（P9-2）
+
+`test_case/assistant` 打的是**真实 agent-vendor stg 平台**（经 apitest-server 代理转发，
+Key 不出服务端）。前置种子一次：
+
+```bash
+source env.local.sh && python3 setup/seed_assistant.py
+```
+
+（`env.local.sh` 里的 `agent-vendor_API_KEY` 即 agent-vendor 管理后台签发的 ak- Key，不入库。）
+
+平台侧 LLM Key 额度不足时（2026-09-11 联调现状），消息走 error 终态——用例断言
+协议不变量（终态唯一、字段非空），done / error 都接受；额度修复后同一组用例自然
+覆盖正常流式。未种子时整模块 skip 并给出种子命令提示。
+
+## 上游异常演练（P9-8）
+
+上游坏法（断流 / 限流 / ERROR 事件）的操练不走 pytest：`drill/stub_upstream.py` 是
+一个零依赖的假 agent 平台（按迁移 059 的 agent-vendor 方言实现同一份协议，把 provider 的
+`baseUrl` 指过去即可、不动协议配置），12 个故障模式按需切换；
+`drill/README.md` 是逐项清单（期望后端 / 期望界面 + 验收门槛对应项）。见那份文档。
 
 ## 运行
 
