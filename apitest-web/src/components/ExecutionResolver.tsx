@@ -39,7 +39,7 @@ export function ExecutionResolver() {
            防的是把任意 query 拼进站内跳转。 */
         const from = searchParams.get("from") ?? "";
         const fromQuery = from && ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "mcp", "repo", "spec-cases", "test-plans", "reports", "suite-reports", "trends", "alerts", "members"].includes(from) ? `&from=${encodeURIComponent(from)}` : "";
-        if (row.kind === "runner") setResolved(`/projects/${projectId}/pipeline-runs/${row.detailId}${fromQuery ? `?${fromQuery.slice(1)}` : ""}`);
+        if (row.kind === "runner") setResolved(`/projects/${projectId}/pipeline-runs/${row.detailId}?tab=report${fromQuery}`);
         else if (row.kind === "ingest") setResolved(`/projects/${projectId}/repo/runs`);
         else setResolved(`/projects/${projectId}/reports?type=parent&parent=${row.id}${fromQuery}`);
       })

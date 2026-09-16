@@ -9,6 +9,7 @@ import { api, noRunnerLabel, type DataSource, type Flow, type FlowEdge, type Flo
 import { addStep as addStepToTree, afterConditionTarget, clampInsideLoop, collectEdges, findStep as findStepIn, findFreePosition, flattenSteps, foldPositions, loopAt, loopSize, moveStepIntoLoop, moveStepOutOfLoop, moveStepOutAt, nodeFootprint, reorderStepEdges, removeStep as removeStepDeep, reparentStep, restackLoopBody, restackTopLevel, splitEdges, unlinkedSteps, updateStep as updateStepDeep, LOOP_MIN_SIZE } from "../lib/flowCanvas";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
+import { usePageContext } from "../hooks/usePageContext";
 import { variableOptions } from "../lib/flowVariables";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
@@ -244,6 +245,19 @@ function FlowCanvas() {
   const [variablePairs, setVariablePairs] = useState<Pair[]>([]);
   const [environmentId, setEnvironmentId] = useState<string>("none");
   const [name, setName] = useState("");
+
+  /* 助手页面上下文（P9-4c）：URL 已带 flowId，这里补画布上正打开的节点——「当前
+     节点的脚本帮我加重试」指向它（打开的步骤可能在循环框内，按树查找）。 */
+  const openStep = openNode ? findStepIn(steps, openNode)?.node : undefined;
+  usePageContext(flowId ? {
+    page: "flow-workspace",
+    entities: {
+      flowId,
+      ...(name ? { flowName: name } : {}),
+      ...(openStep ? { nodeId: openStep.id, nodeName: openStep.name, nodeType: openStep.type } : {}),
+    },
+    ...(openNode ? { focus: "node-editor" } : {}),
+  } : undefined);
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   /**
    * 本项目其他流程，供子流程/循环节点引用。

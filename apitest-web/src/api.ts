@@ -1,6 +1,7 @@
 import axios from "axios";
 import { message } from "antd";
 import i18next from "i18next";
+import type { SentPageContext as AssistantPageContext } from "./stores/pageContextStore";
 
 export type Project = { id: string; name: string; description: string; myRole?: MyRole };
 /**
@@ -1215,7 +1216,9 @@ export type Dashboard = {
   projects: ProjectMetric[] & Record<string, unknown>[];
 };
 
-export type Preferences = { theme: "light" | "dark" | "system"; language: "zh-CN" | "en"; restoreLastPage: boolean };
+/* avatarSeed / avatarNightmare（P9-6 人物生成器）：种子覆盖与 nightmare 物种
+   开关都是可选键——未写 = 身份种子 users.id / 物种默认移出。 */
+export type Preferences = { theme: "light" | "dark" | "system"; language: "zh-CN" | "en"; restoreLastPage: boolean; avatarSeed?: string; avatarNightmare?: boolean };
 
 /* ---------------------------------------------------------------------------
  * P3：定时调度 / Webhook 触发 / 告警 / 报告（计划第六节）。
@@ -1612,8 +1615,8 @@ export type StatsFlaky = {
   firstPass: { cases: number; firstPassed: number; rate: number | null };
 };
 
-/** 项目对比（边界 19 的 Top 10 反向榜 / 关键字检索；归因覆盖率作为列保留）。 */
-export type StatsProjectMetric = "coverage" | "automation" | "passRate" | "failed";
+/** 项目对比（边界 19 的 Top 10 反向榜 / 关键字检索；归因覆盖率既作列也可作排序指标）。 */
+export type StatsProjectMetric = "coverage" | "automation" | "passRate" | "failed" | "attribution";
 
 export type StatsProjectRow = {
   id: string;
@@ -3663,6 +3666,87 @@ export const api = {
   deleteSystemFailureCategory: (code: string, force = false) =>
     client.delete(`/system/failure-categories/${encodeURIComponent(code)}`, { params: force ? { force: "true" } : undefined })
       .then(data<{ id: string; removed: boolean; removedAttributions: number }>),
+
+  /* ── P9-1：站内通知（用户级，无项目前缀）──────────────────────────────────── */
+
+  /** 我的通知（分页）；unread=1 只看未读。 */
+  notifications: (filters?: { unread?: boolean; page?: number; pageSize?: number }) =>
+    client.get("/notifications", { params: { unread: filters?.unread ? "1" : undefined, page: filters?.page, pageSize: filters?.pageSize } })
+      .then(paged<UserNotification>),
+  /** 未读数（60s 轮询端点 + 页面获焦即拉）。 */
+  notificationsUnreadCount: () =>
+    client.get("/notifications/unread-count").then(data<{ count: number }>),
+  /** 标已读。 */
+  markNotificationRead: (id: string) =>
+    client.post(`/notifications/${id}/read`).then(data<{ id: string; readAt: string }>),
+  /** 全部已读。 */
+  markAllNotificationsRead: () =>
+    client.post("/notifications/read-all").then(data<{ updated: number }>),
+
+  /* ── P9-3/P9-4b：助手 provider 管理面（系统管理员，全局层）────────────────── */
+
+  /** provider 列表（通用协议 + 用户参数模式；conversationCount 是删除确认的影响面读数）。 */
+  assistantProviders: () =>
+    client.get("/system/assistant/providers").then(data<AssistantProvider[]>),
+  /** 创建：协议浅校验在服务端，深对错归测试连接。 */
+  createAssistantProvider: (input: AssistantProviderInput) =>
+    client.post("/system/assistant/providers", input).then(data<AssistantProvider>),
+  updateAssistantProvider: (id: string, input: AssistantProviderPatch) =>
+    client.patch(`/system/assistant/providers/${id}`, input).then(data<AssistantProvider>),
+  /** 删除（会话映射与用户 agent 行级联；影响面读数随行返回）。 */
+  deleteAssistantProvider: (id: string) =>
+    client.delete(`/system/assistant/providers/${id}`).then(data<{ id: string; removedConversations: number; removedUserAgents: number }>),
+  /** 设为默认（推荐位：用户第一次配置 agent 时的预选）。 */
+  setDefaultAssistantProvider: (id: string) =>
+    client.post(`/system/assistant/providers/${id}/set-default`).then(data<AssistantProvider>),
+  /** JSON 导入：{name,protocol,userParams}——模板不含任何凭据。 */
+  importAssistantProvider: (input: AssistantProviderImport) =>
+    client.post("/system/assistant/providers/import", input).then(data<AssistantProvider>),
+  /** JSON 导出（下载件）。 */
+  exportAssistantProvider: (id: string) =>
+    client.get(`/system/assistant/providers/${id}/export`, { responseType: "blob" }).then((response) => response.data as Blob),
+
+  /* ── P9-4b：助手的用户级路由（抽屉「设置」卡消费）─────────────────────────── */
+
+  /** 上游目录（用户视角）：启用的 provider + 各自的参数模式。 */
+  assistantUserProviders: () =>
+    client.get("/assistant/providers").then(data<AssistantUserProvider[]>),
+  /** 我的 agent 列表（secret 只回键名）。 */
+  myAssistantAgents: () =>
+    client.get("/assistant/my-agents").then(data<AssistantUserAgent[]>),
+  /** 保存我的 agent：params 整份替换，secrets 三态（null 清除 / 字符串设置 / 缺省不动）。 */
+  putMyAssistantAgent: (providerId: string, input: { params?: Record<string, string>; secrets?: Record<string, string | null> }) =>
+    client.put(`/assistant/my-agents/${providerId}`, input).then(data<AssistantUserAgent>),
+  /** 设为我的默认 agent（收发与新建会话都跟它）。 */
+  setMyDefaultAssistantAgent: (providerId: string) =>
+    client.post(`/assistant/my-agents/${providerId}/set-default`).then(data<AssistantUserAgent>),
+  /** 用已保存的参数走一遍真链路（建会话 + ping）；回 JSON 摘要。 */
+  testMyAssistantAgent: (providerId: string) =>
+    client.post(`/assistant/my-agents/${providerId}/test`).then(data<{ ok: boolean; detail: string }>),
+
+  /* ── P9-4：助手会话（项目级，抽屉消费）────────────────────────────────────── */
+
+  /** 我的会话列表（读映射表，不调上游；providerCapabilities 决定停止按钮与历史加载）。
+      2026-09-16 用户级化：会话是「人」的，不挂项目。 */
+  assistantConversations: () =>
+    client.get("/assistant/conversations").then(data<AssistantConversation[]>),
+  /** 创建会话（按我的默认 agent 转发上游建会话，登录即用）。 */
+  createAssistantConversation: () =>
+    client.post("/assistant/conversations").then(data<AssistantConversation>),
+  /** 删除会话（删本地映射行，协议配了 delete 端点时顺带清上游）。 */
+  deleteAssistantConversation: (conversationId: string) =>
+    client.delete(`/assistant/conversations/${conversationId}`).then(data<{ id: string; upstreamDeleted: boolean }>),
+  /** 停止生成（协议没定义 stop 端点时 400——按钮本就不该出现，这是兜底）。 */
+  stopAssistantConversation: (conversationId: string) =>
+    client.post(`/assistant/conversations/${conversationId}/stop`).then(data<{ stopped: boolean }>),
+  /** 历史代理（transcript 在上游；index/limit 是上游的分页游标）。 */
+  assistantHistory: (conversationId: string, options?: { index?: string; limit?: number }) =>
+    client.get(`/assistant/conversations/${conversationId}/messages`, { params: { index: options?.index, limit: options?.limit } })
+      .then(data<AssistantChatMessage[]>),
+  /** 记录 MRTR 确认结果（2026-09-15）：确认动作走既有 REST，上游 transcript 不知道；
+      结果落平台侧 elicit_log，历史回放时并回。失败静默——记录丢一条只是回放少一行。 */
+  recordElicitOutcome: (conversationId: string, body: { tool: string; outcome: "confirmed" | "declined"; input?: Record<string, unknown> }) =>
+    client.post(`/assistant/conversations/${conversationId}/elicit`, body).then(data<{ recorded: boolean }>),
 };
 
 /** 分享目标两类：套件报告与仓库执行报告。 */
@@ -3695,3 +3779,319 @@ export type RunnerReportPayload = {
   cases: PipelineRunCase[];
   report: AllureReportView | null;
 };
+
+/* ── P9-1：站内通知 ────────────────────────────────────────────────────────── */
+
+/**
+ * 一条站内通知（P9-1，计划 13.1/13.2）。kind 五值 = 五个生产源（成员变更 / 计划指派 /
+ * 告警 / 套件结果 / CI 结果）。`link` 是站内相对路径（空串 = 无深链），点击跳转由
+ * 前端按当前 origin 拼——换部署域名不产生死链。
+ */
+export type UserNotification = {
+  id: string;
+  projectId: string | null;
+  /** 项目删除后仍可读（那件事发生过）；null = 系统级或项目已删。 */
+  projectName: string | null;
+  kind: "member_change" | "plan_assign" | "alert" | "suite_result" | "ci_result";
+  title: string;
+  body: string;
+  link: string;
+  readAt: string | null;
+  createdAt: string;
+};
+
+/* ── P9-3/P9-4b：助手 provider（通用协议）+ 用户级 agent ───────────────────── */
+
+/** 能力面（P9-4b 起按协议形状派生：定义了对应端点 = 有该能力）。 */
+export type AssistantCapabilities = { stop: boolean; history: boolean; attachments: boolean };
+
+/** 用户参数模式（管理员在 provider 上定义；抽屉「设置」卡按它渲染表单）。 */
+export type AssistantUserParam = {
+  key: string;
+  label: string;
+  secret: boolean;
+  required: boolean;
+  placeholder?: string;
+};
+
+/**
+ * 通用协议配置（P9-4b，2026-09-14 修订）：4 个接口（建会话 / 发消息 SSE / 停止 /
+ * 历史）+ SSE 事件映射 + 认证模板。换平台 = 管理员填一份这个，零开发。形状与服务端
+ * `lib/assistant/types.ts` 同源；深校验归测试连接（真上游回答）。
+ */
+export type AssistantProtocol = {
+  baseUrl: string;
+  auth?: { header: string; value: string };
+  successCode?: { field: string; value: string };
+  createConversation: { method: string; path: string; body?: Record<string, unknown>; conversationId: string };
+  chat: { method: string; path: string; body?: Record<string, unknown> };
+  stop?: { method: string; path: string; body?: Record<string, unknown> };
+  /** 删上游会话本体（可选；用户删除会话时顺带清上游，没有则只删本地映射行）。 */
+  delete?: { method: string; path: string; body?: Record<string, unknown> };
+  history?: { method: string; path: string; query?: Record<string, string>; messages: string; fields: Record<string, string> };
+  attachments?: boolean;
+  sse: {
+    eventField: string;
+    token?: { on: string; text: string };
+    /** `input`（2026-09-15）：工具调用入参的点路径——elicit 事件靠它带出删除目标。 */
+    tool?: { on: string; name: string; status: string; nameFallback?: string; input?: string };
+    /** MRTR 确认表单的识别（2026-09-15）：与 token 同 kind，靠判别字段区分。 */
+    elicit?: { on: string; type: string; typeValue: string; text: string; tool: string; schema: string };
+    done?: { on: string; text: string; success?: string };
+    error?: { on: string; message: string };
+    ignore?: string[];
+  };
+};
+
+/**
+ * provider 管理行（系统管理面）。没有共享 Key——凭据是用户级的（AssistantUserAgent）；
+ * `capabilities` 从协议形状派生（停止按钮显隐 / 历史加载，门槛 13）。
+ */
+export type AssistantProvider = {
+  id: string;
+  name: string;
+  protocol: AssistantProtocol;
+  userParams: AssistantUserParam[];
+  capabilities: AssistantCapabilities;
+  enabled: boolean;
+  isDefault: boolean;
+  conversationCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AssistantProviderInput = {
+  name: string;
+  protocol: AssistantProtocol;
+  userParams?: AssistantUserParam[];
+  enabled?: boolean;
+};
+
+export type AssistantProviderPatch = {
+  name?: string;
+  protocol?: AssistantProtocol;
+  userParams?: AssistantUserParam[];
+  enabled?: boolean;
+};
+
+/** 导入载荷：与服务端同形——凭据本来就是用户级的，模板里无从带密。 */
+export type AssistantProviderImport = {
+  name: string;
+  protocol: AssistantProtocol;
+  userParams?: AssistantUserParam[];
+};
+
+/**
+ * 用户视角的上游目录（P9-4b）：启用的 provider + 各自的参数模式——「设置」卡按它
+ * 渲染表单（选择这个上游要填什么）。
+ */
+export type AssistantUserProvider = {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  userParams: AssistantUserParam[];
+};
+
+/**
+ * 我的 agent（一个上游一份配置）。`params` 只含明文参数；`secretKeys` 是敏感项的
+ * 键名清单（值加密落库、接口只回「已配置」——environments 的 secretKeys 同款纪律）。
+ */
+export type AssistantUserAgent = {
+  providerId: string;
+  providerName: string;
+  providerEnabled: boolean;
+  params: Record<string, string>;
+  secretKeys: string[];
+  isDefault: boolean;
+  updatedAt: string;
+};
+
+/* ── P9-4：助手会话（项目级）───────────────────────────────────────────────── */
+
+/**
+ * 一行「平台 ↔ 上游会话」映射（P9-2 落结构、P9-4 起被抽屉消费）。对话正文不落库：
+ * transcript 在 agent 平台侧。`providerCapabilities` 随行带出——停止按钮的显隐
+ * （门槛 13）与历史加载都按它，抽屉不问系统管理面（那是仅系统管理员的）。
+ */
+export type AssistantConversation = {
+  id: string;
+  providerId: string;
+  userId: string;
+  upstreamConversationId: string;
+  topic: string;
+  providerCapabilities: AssistantCapabilities;
+  createdAt: string;
+  lastActiveAt: string;
+};
+
+/**
+ * 历史消息的归一形态（adapter 翻译过：id/role/text/time，P9-4 的消息流只消费这四个）。
+ * `system` 行（2026-09-15）是平台自己的记录（MRTR 确认结果并回，text 为空、结构化
+ * 载荷在 elicit 里——前端按 i18n 渲染，不落服务端硬编码文案）。
+ */
+export type AssistantChatMessage = {
+  id: string;
+  role: "user" | "assistant" | "system";
+  text: string;
+  time?: string;
+  elicit?: { tool: string; outcome: "confirmed" | "declined"; input?: Record<string, unknown> };
+};
+
+/**
+ * 归一事件（与 lib/assistant/types.ts 同形）：代理路由与前端唯一认知的事件形状。
+ * `done` / `error` 是终态——测试连接的回显以二者之一收尾。
+ * `elicit`（2026-09-15）是上游转述的 MRTR 确认表单：agent 的删除类工具被 /mcp
+ * 闸门拦下后，上游把确认请求转成聊天事件；确认动作走本人 JWT 的既有 REST。
+ * `error.code`（P9-8）是**平台自己**判定的失败类别——限流 / 上游静默 / 流无终态 /
+ * 流中途断开四种，界面按码换本地化文案；上游自己报的错不带码，`message` 原样透出
+ * （那是上游说的话，平台不该替它改写）。
+ */
+export type AssistantErrorCode = "rate_limited" | "upstream_silent" | "stream_incomplete" | "upstream_stream_failed";
+
+export type AssistantEvent =
+  | { type: "token"; text: string }
+  | { type: "tool"; name: string; status: string }
+  | { type: "elicit"; text: string; tool: string; input?: Record<string, unknown>; schema?: unknown }
+  | { type: "done"; fullText: string }
+  | { type: "error"; message: string; code?: AssistantErrorCode };
+
+/**
+ * 测试连接的 SSE 消费（P9-3 起家、P9-4b 带临时参数）：单发单收，不重连——测试是诊断
+ * 动作，失败重试由人决定。`params` 是一组**临时参数**（如 agentId / apiKey 的测试值，
+ * 明文只在这一次请求里旅行，不落库——凭据是用户级的，系统行上没有可测的 Key）。
+ * 与 subscribeExecutions 同一种手写解析（SSE 帧按空行切，长 JSON 可能被 chunk 拦腰
+ * 截断，不能逐行喂 JSON.parse）；hijack 前的错误以 error 终态事件送出（服务端保证
+ * 两段式），调用方只需认 done / error。
+ */
+export function streamAssistantProviderTest(providerId: string, params: Record<string, string>, onEvent: (event: AssistantEvent) => void): { done: Promise<boolean>; stop: () => void } {
+  const controller = new AbortController();
+  const done = (async () => {
+    let response: Response;
+    try {
+      response = await fetch(`${BASE_URL}/system/assistant/providers/${providerId}/test`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${localStorage.getItem("apitest.token") ?? ""}` },
+        body: JSON.stringify({ params }),
+        signal: controller.signal,
+      });
+    } catch {
+      return false;
+    }
+    if (!response.ok || !response.body) {
+      onEvent(await refusalEvent(response));
+      return false;
+    }
+    return consumeAssistantSse(response, onEvent);
+  })();
+  return { done, stop: () => controller.abort() };
+}
+
+/**
+ * 发消息的 SSE 消费（P9-4）：与测试连接同一条链路同一种两段式——hijack 前的失败
+ * （503/2005 未配置、502/2006 上游不可达、400 校验）是干净 JSON，翻译成 error 终态
+ * 事件送出；hijack 后只有终态帧。调用方只认 done / error，与测试回显同一契约。
+ * `context`（P9-4c）是页面上下文：服务端归一后封围栏前缀拼进转发的 message——
+ * 历史回放时会被剥掉，气泡里永远只有用户打的字。
+ */
+export function streamAssistantMessage(conversationId: string, messageText: string, onEvent: (event: AssistantEvent) => void, context?: AssistantPageContext): { done: Promise<boolean>; stop: () => void } {
+  const controller = new AbortController();
+  const done = (async () => {
+    let response: Response;
+    try {
+      response = await fetch(`${BASE_URL}/assistant/conversations/${conversationId}/message`, {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${localStorage.getItem("apitest.token") ?? ""}` },
+        body: JSON.stringify({ message: messageText, ...(context ? { context } : {}) }),
+        signal: controller.signal,
+      });
+    } catch {
+      return false;
+    }
+    if (!response.ok || !response.body) {
+      onEvent(await refusalEvent(response));
+      return false;
+    }
+    return consumeAssistantSse(response, onEvent);
+  })();
+  return { done, stop: () => controller.abort() };
+}
+
+/**
+ * hijack 前的干净 JSON 错误 → error 终态事件（服务端两段式保证）。429 打上游限流的
+ * 码：界面要说的是「稍后重试」而不是把上游的英文错误原样贴出来（P9-8）。
+ */
+async function refusalEvent(response: Response): Promise<AssistantEvent> {
+  let message = `HTTP ${response.status}`;
+  try { message = String((await response.json() as { message?: unknown })?.message ?? message); } catch { /* keep status line */ }
+  return response.status === 429 ? { type: "error", message, code: "rate_limited" } : { type: "error", message };
+}
+
+/**
+ * 助手 SSE 体的公共消费腿（测试连接与发消息共用）：帧按空行切，`data:` 行才是载荷
+ * （`event:` 行与 `: ping` 注释行丢弃——事件形状在 data JSON 的 type 里）；done 终态
+ * 返回 true，error 终态或流中断返回 false。
+ */
+async function consumeAssistantSse(response: Response, onEvent: (event: AssistantEvent) => void): Promise<boolean> {
+  const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  let ok = false;
+  for (;;) {
+    const { done: finished, value } = await reader.read();
+    if (finished) break;
+    buffer += value;
+    let split = buffer.indexOf("\n\n");
+    for (; split !== -1; split = buffer.indexOf("\n\n")) {
+      const frame = buffer.slice(0, split);
+      buffer = buffer.slice(split + 2);
+      const data = frame.split("\n").find((line) => line.startsWith("data:"));
+      if (!data) continue;
+      try {
+        const event = JSON.parse(data.slice(5).trim()) as AssistantEvent;
+        onEvent(event);
+        if (event.type === "done") { ok = true; return ok; }
+        if (event.type === "error") return false;
+      } catch { /* ignore malformed frame */ }
+    }
+  }
+  return ok;
+}
+
+/**
+ * 助手可用性探测（P9-3 项目侧引导）：读助手路由组自己的闸门语义——
+ * 200 = 就绪；503 + 2005 = 已开启但无启用的默认 provider（边界 15 的「未配置」信号）；
+ * 404 = 未开启。其他错误（网络）返回 undefined，页面显示「—」而不是猜一个状态。
+ */
+/**
+ * 助手可用性探测（2026-09-16 用户级化：不再需要项目参数）：读助手路由组自己的
+ * 状态——200 = 就绪；503 + 2005 = 无启用的默认 provider/未配置 agent（「未配置」
+ * 信号）。其他错误（网络）返回 undefined，页面显示「—」而不是猜一个状态。
+ */
+export async function probeAssistantAvailability(): Promise<"ready" | "unconfigured" | "disabled" | undefined> {
+  try {
+    await client.get("/assistant/conversations");
+    return "ready";
+  } catch (error) {
+    return classifyAssistantError(error);
+  }
+}
+
+/**
+ * 把助手路由组的失败归到闸门语义（P9-4 抽屉复用）：unconfigured = 503+2005（找系统
+ * 管理员配 provider）；disabled = 404（项目开关被别处关掉）；其余（网络/上游）undefined
+ * ——按普通错误处理，不猜一个状态。
+ */
+export function classifyAssistantError(error: unknown): "unconfigured" | "disabled" | undefined {
+  const response = (error as { response?: { status?: number; data?: { code?: number } } })?.response;
+  if (response?.status === 503 && response.data?.code === 2005) return "unconfigured";
+  if (response?.status === 404) return "disabled";
+  return undefined;
+}
+
+/**
+ * 429 = 上游限流（服务端错误码 2007，P9-8）。**不并入 classifyAssistantError**：那个
+ * 函数回答的是「助手能不能用」（决定输入框显不显示），限流回答的是「这一次为什么
+ * 失败」——混进同一个枚举会让限流把输入框藏起来。
+ */
+export function isRateLimited(error: unknown): boolean {
+  return (error as { response?: { status?: number } })?.response?.status === 429;
+}

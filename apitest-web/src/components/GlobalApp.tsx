@@ -3,7 +3,7 @@ import { Form, Input, Modal, Pagination, Select, Switch, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Folder, LayoutDashboard, LogOut, Settings, type LucideIcon } from "lucide-react";
-import { api, isStatsTimeoutError, type Preferences, type ProjectMetric, type StatsFailures, type StatsOverview, type StatsProjectRow, type StatsTrendBucket, type WorkerFleet, type WorkerMode } from "../api";
+import { api, isStatsTimeoutError, type Preferences, type ProjectMetric, type StatsFailures, type StatsOverview, type StatsProjectMetric, type StatsProjectRow, type StatsTrendBucket, type WorkerFleet, type WorkerMode } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useRecordLastPage } from "../hooks/useRecordLastPage";
 import { useAuthStore } from "../stores/authStore";
@@ -12,13 +12,24 @@ import { Delta, Empty, Readout, Status } from "../ui";
 import { Donut, LineChart, Sparkline, StackedBars } from "./charts";
 import { IconButton } from "./IconButton";
 import { RunnerPoolPanel } from "./RunnerPoolPanel";
+import { AssistantProvidersPanel } from "./AssistantProvidersPanel";
 import { UsersPanel } from "./UsersPanel";
 import { AuditLogsPanel } from "./AuditLogsPanel";
 import { FailureCategoriesPanel } from "./FailureCategoriesPanel";
+import { NotificationsPage } from "./NotificationsPage";
 
-type GlobalPage = "dashboard" | "projects" | "system";
+type GlobalPage = "dashboard" | "projects" | "system" | "notifications";
 
-const PAGE_SIZES = [20, 50, 100];
+const PAGE_SIZES = [10, 20, 50, 100];
+
+/* 榜单指标（2026-09-11 用户增补）：默认失败量；三个覆盖率维同列同榜，切换只换排序。
+ * passRate 不进榜——通过率与失败量是同一份数据的正反面，榜会完全同构。 */
+const BOARD_METRICS: { value: StatsProjectMetric; order: "asc" | "desc" }[] = [
+  { value: "failed", order: "desc" },
+  { value: "coverage", order: "asc" },
+  { value: "automation", order: "asc" },
+  { value: "attribution", order: "asc" },
+];
 
 /**
  * 归因分布环形的分类色：与项目层统计页（Trends.tsx）同一套纪律——归因分类是
@@ -60,8 +71,11 @@ export function GlobalApp({ page, themePreference, onThemeChange }: { page: Glob
             </button>
           ))}
         </nav>
-        {/* 与项目壳同款退出控件：topbar 右缘，不随导航滚动。 */}
+        {/* 与项目壳同款退出控件：topbar 右缘，不随导航滚动。通知入口（2026-09-16）
+            移入站内助手——铃铛位现在是助手入口的槽位（AssistantDock portal 进来：
+            头像按钮 + 未读徽标），抽屉内有最近通知。 */}
         <div className="topbar-actions">
+          <span id="assistant-topbar-slot" className="assistant-topbar-slot" />
           <IconButton
             icon={<LogOut size={15} />}
             label={t("action.logout")}
@@ -72,11 +86,12 @@ export function GlobalApp({ page, themePreference, onThemeChange }: { page: Glob
       <main className="content">
         {/* 页面卡片（第四轮走查：内容与顶栏要明确分层）：surface 底 + 边框把
             「这是页面内容」圈出来，与 topbar（同 surface 但有 border-bottom 分界）
-            和 --bg 页底构成三层。卡片内即全宽——不再有居中窄列。 */}
+            和 --bg 页底构成三层。卡片即全宽——不再有居中窄列。 */}
         <div className="page-card">
           {page === "dashboard" && <DashboardPage />}
           {page === "projects" && <ProjectsPage />}
           {page === "system" && <SystemPage themePreference={themePreference} onThemeChange={onThemeChange} language={i18n.language === "en" ? "en" : "zh-CN"} />}
+          {page === "notifications" && <NotificationsPage />}
         </div>
       </main>
     </div>
@@ -99,10 +114,10 @@ export function GlobalApp({ page, themePreference, onThemeChange }: { page: Glob
  *    项目页一致：父执行记录大类 + 桶时间窗，不预置 status/kind——「展示全部」）。
  * 3b. **失败归因分布**（2026-09-10 用户增补）：环形 + 覆盖率纪律行，与项目层统计页
  *    同一份 /stats/failures；看板口径写死 30d + 全部来源，来源筛选归统计页深挖。
- * 4. **项目 Top 10 反向榜**（只「全部项目」时）：固定按失败量降序「最差在前」
- *    （⑥：coverage/automation/passRate/failed 四个指标切换 tab 撤掉——四列本来就全在
- *    表里，切 tab 只是换排序，读不出作用；归因覆盖率列保留。同轮撤掉榜的关键字检索
- *    与页头搜索框——找项目归项目管理页，榜的职责是「最差在前」不是「找得到」）。
+ * 4. **项目 Top 10 反向榜**（只「全部项目」时）：默认按失败量降序「最差在前」，
+ *    2026-09-11 用户增补指标切换（接口覆盖率/自动化覆盖率/归因覆盖率，升序最低
+ *    在前）。归因覆盖率列保留。榜的关键字检索仍撤着——找项目归项目管理页，榜的
+ *    职责是「最差在前」不是「找得到」。
  */
 function DashboardPage() {
   const { t } = useTranslation();
@@ -126,6 +141,11 @@ function DashboardPage() {
   const [endpointSpark, setEndpointSpark] = useState<number[]>();
   const [projects, setProjects] = useState<StatsProjectRow[]>();
   const [projectsState, setProjectsState] = useState<"loading" | "timeout" | "error">();
+  /* 榜单排序指标（2026-09-11 用户增补）：进地址栏与 page/project 同款约定，切指标
+     刷新出来的榜可分享。默认失败量（原形态）。 */
+  const boardMetricParam = searchParams.get("boardMetric") ?? "failed";
+  const boardMetric = BOARD_METRICS.some((each) => each.value === boardMetricParam) ? (boardMetricParam as StatsProjectMetric) : "failed";
+  const boardOrder = BOARD_METRICS.find((each) => each.value === boardMetric)?.order ?? "desc";
   /* 失败归因分布（2026-09-10 用户增补）：与项目层统计页同一份 /stats/failures——
      看板窗口恒 30d、不筛来源（human/mcp 的来源筛是统计页深挖位）。 */
   const [failures, setFailures] = useState<StatsFailures>();
@@ -177,18 +197,18 @@ function DashboardPage() {
   }, [scopeReady, project, revision]);
 
   /* Top 10 反向榜：只在「全部项目」时存在（②：筛了项目还看跨项目榜是自相矛盾）。
-     固定 failed 降序（⑥：指标切换 tab 撤掉，最差在前 = 失败量最多的先修）。同轮把
-     榜的关键字检索一并撤了（用户复验：「搜索框没用了」——找项目去项目管理页搜，
-     榜的职责是「最差在前」不是「找得到」，一个只服务于榜的搜索框读不出作用）。 */
+     默认 failed 降序；覆盖率类指标升序（最低在前 = 最差在前）。同轮把榜的关键字
+     检索一并撤了（用户复验：「搜索框没用了」——找项目去项目管理页搜，榜的职责
+     是「最差在前」不是「找得到」，一个只服务于榜的搜索框读不出作用）。 */
   useEffect(() => {
     if (filtered || !scopeReady) return;
     let alive = true;
     setProjects(undefined); setProjectsState("loading");
-    void api.statsProjects({ days: 30, metric: "failed", order: "desc", limit: 10, scope: "all" })
+    void api.statsProjects({ days: 30, metric: boardMetric, order: boardOrder, limit: 10, scope: "all" })
       .then((result) => { if (alive) { setProjects(result.projects); setProjectsState(undefined); } })
       .catch((error) => { if (alive) setProjectsState(isStatsTimeoutError(error) ? "timeout" : "error"); });
     return () => { alive = false; };
-  }, [filtered, scopeReady, revision]);
+  }, [filtered, scopeReady, boardMetric, boardOrder, revision]);
 
   /* 归因分布：无论筛没筛项目都存在（「这个项目/全平台的失败都归到哪些类」两种问法
      都成立）。只取分布段——TopN 榜是统计页的深挖位，看板已有自己的项目榜。 */
@@ -513,10 +533,28 @@ function DashboardPage() {
       </div>
     </section>
 
-    {/* ── Top 10 反向榜（只「全部项目」；⑥：指标切换 tab 撤掉，固定失败量降序） ── */}
+    {/* ── Top 10 反向榜（只「全部项目」；2026-09-11 用户增补指标切换：默认失败量，
+        覆盖率三维同榜换排序）── */}
     {!filtered && <section className="panel">
       <div className="panel-head">
         <strong>{t("dashboard.projectTable")}</strong>
+        {/* segmented 而非第二排下划线 tab：与趋势页口径选择同一形态判例（同页两排
+            下划线 tab 在 4.5 否决过）。四列全在表里，切指标只换排序。 */}
+        <div className="segmented" role="tablist" aria-label={t("dashboard.boardMetric")}>
+          {BOARD_METRICS.map((each) => (
+            <button
+              key={each.value}
+              role="tab"
+              aria-selected={boardMetric === each.value}
+              className={`segmented-item${boardMetric === each.value ? " is-active" : ""}`}
+              onClick={() => setSearchParams((current) => {
+                if (each.value === "failed") current.delete("boardMetric");
+                else current.set("boardMetric", each.value);
+                return current;
+              }, { replace: true })}
+            >{t(`dashboard.boardMetric.${each.value}`)}</button>
+          ))}
+        </div>
       </div>
       <div className="panel-body">
         {projectsState === "timeout" && <Empty title={t("trends.timeoutTitle")} hint={t("trends.timeoutHint")} />}
@@ -525,7 +563,16 @@ function DashboardPage() {
         {projects && <>
           <p className="form-note">{t("dashboard.boardModeHint")}</p>
           {projects.length
-            ? <table className="grid">
+            ? <table className="grid grid-board">
+                {/* fixed 布局的列宽契约（见 design-system.css .grid-board 注释）：
+                    名字列吃 26%，动作列定宽，七个数字列不指定宽度由浏览器均分
+                    余量——八个「接口覆盖率」级的五字表头在 1680px measure 内都有
+                    落位，再窄由表头换行兜底。 */}
+                <colgroup>
+                  <col style={{ width: "26%" }} />
+                  <col span={7} />
+                  <col style={{ width: 96 }} />
+                </colgroup>
                 <thead><tr>
                   <th>{t("dashboard.projects")}</th>
                   <th className="col-num">{t("dashboard.endpoints")}</th>
@@ -538,7 +585,8 @@ function DashboardPage() {
                   <th />
                 </tr></thead>
                 <tbody>{projects.map((projectRow) => <tr key={projectRow.id} data-clickable="" onClick={() => navigate(`/projects/${projectRow.id}/trends`)}>
-                  <td><strong>{projectRow.name}</strong></td>
+                  {/* fixed 布局下长名会穿进相邻格：truncate 把溢出收在列内。 */}
+                  <td className="truncate"><strong>{projectRow.name}</strong></td>
                   <td className="col-num mono">{projectRow.coveredEndpointCount}/{projectRow.endpointCount}</td>
                   {/* null 与 0% 是两个事实（没有接口 / 全没覆盖），照趋势页同款区分。 */}
                   <td className="col-num mono">{projectRow.coverageRate === null ? "—" : `${projectRow.coverageRate.toFixed(1)}%`}</td>
@@ -567,7 +615,7 @@ function ProjectsPage() {
      兜住 NaN（`?page=abc`）：不兜的话 NaN 会原样发给后端，落进 LIMIT/OFFSET 让整条
      查询炸掉。pageSize 同时按后端同款上限收紧。 */
   const page = Math.max(1, Number(searchParams.get("page") ?? 1) || 1);
-  const pageSize = Math.min(100, Math.max(1, Number(searchParams.get("pageSize") ?? 20) || 20));
+  const pageSize = Math.min(100, Math.max(1, Number(searchParams.get("pageSize") ?? 10) || 10));
   const [projects, setProjects] = useState<ProjectMetric[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -651,14 +699,14 @@ function ProjectsPage() {
       </dl>
       <div className="project-actions"><button className="btn btn-primary" onClick={() => navigate(`/projects/${project.id}/endpoints`)}>{t("action.enter")}</button><button className="btn" onClick={() => openEdit(project)}>{t("action.edit")}</button><button className="btn danger" onClick={() => remove(project)}>{t("action.delete")}</button></div>
     </article>)}</div> : !loading && <Empty title={keyword ? t("projects.emptySearchTitle") : t("projects.emptyTitle")} hint={keyword ? t("projects.emptySearchHint") : t("projects.emptyHint")} action={!keyword ? <button className="btn btn-primary" onClick={openCreate}>{t("action.createProject")}</button> : undefined} />}
-    {total > pageSize && <div className="pager">
+    {projects.length > 0 && <div className="pager">
       <Pagination
         current={page}
         pageSize={pageSize}
         total={total}
         pageSizeOptions={PAGE_SIZES}
         showSizeChanger
-        onChange={(nextPage, nextSize) => patchParams({ page: nextPage === 1 ? undefined : String(nextPage), pageSize: nextSize === 20 ? undefined : String(nextSize) })}
+        onChange={(nextPage, nextSize) => patchParams({ page: nextPage === 1 ? undefined : String(nextPage), pageSize: nextSize === 10 ? undefined : String(nextSize) })}
       />
     </div>}
     <Modal title={editing ? t("projects.editTitle") : t("action.createProject")} open={Boolean(projectDialog)} onCancel={() => setProjectDialog(undefined)} onOk={() => void save()} okText={t("action.save")} cancelText={t("action.cancel")}>
@@ -667,7 +715,7 @@ function ProjectsPage() {
   </>;
 }
 
-type SystemTab = "preferences" | "users" | "workers" | "runners" | "failureCategories" | "auditLogs";
+type SystemTab = "preferences" | "users" | "workers" | "runners" | "assistantProviders" | "failureCategories" | "auditLogs";
 
 function SystemPage({ themePreference, onThemeChange, language }: { themePreference: ModePreference; onThemeChange: (mode: ModePreference) => void; language: "zh-CN" | "en" }) {
   const { t, i18n } = useTranslation();
@@ -708,9 +756,13 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
    * 归因类型（P8-2）排在 Runner 之后、审计之前：它是「统计口径」的面板——字典数据
    * 而非机器，但读者画像与基础设施 tab 相同（系统管理员），归因统计上线前它先于
    * 审计出现正好构成「数据从哪来 → 谁改了它」的阅读顺序。
+   *
+   * 助手 provider（P9-3）排在 Runner 与归因类型之间：同是「平台依赖的外部系统」
+   * （agent 平台之于 agent-vendor，如 Runner 之于执行机），读者与处置动作（运维配置）
+   * 与 workers/runners 一类。
    */
   const tabs: [SystemTab, string][] = isAdmin
-    ? [["preferences", t("system.tabPreferences")], ["users", t("users.title")], ["workers", t("workers.title")], ["runners", t("runners.title")], ["failureCategories", t("failureCategories.title")], ["auditLogs", t("audit.title")]]
+    ? [["preferences", t("system.tabPreferences")], ["users", t("users.title")], ["workers", t("workers.title")], ["runners", t("runners.title")], ["assistantProviders", t("assistantProviders.title")], ["failureCategories", t("failureCategories.title")], ["auditLogs", t("audit.title")]]
     : [["preferences", t("system.tabPreferences")]];
 
   return <>
@@ -732,6 +784,7 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
     {tab === "users" && isAdmin && <UsersPanel />}
     {tab === "workers" && isAdmin && <WorkerFleetPanel />}
     {tab === "runners" && isAdmin && <RunnerPoolPanel />}
+    {tab === "assistantProviders" && isAdmin && <AssistantProvidersPanel />}
     {tab === "failureCategories" && isAdmin && <FailureCategoriesPanel />}
     {tab === "auditLogs" && isAdmin && <AuditLogsPanel />}
   </>;

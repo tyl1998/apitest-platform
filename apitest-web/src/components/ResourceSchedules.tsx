@@ -253,7 +253,7 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
    * 加那一列的全部理由）。skipped / failed 两者都没有，不可点。
    */
   function runTarget(run: ScheduleRun): (() => void) | undefined {
-    if (run.pipelineRunId) return () => navigate(`/projects/${projectId}/pipeline-runs/${run.pipelineRunId}`);
+    if (run.pipelineRunId) return () => navigate(`/projects/${projectId}/pipeline-runs/${run.pipelineRunId}?tab=report`);
     if (run.executionIndexId) return () => void openRunExecution(run.executionIndexId!);
     return undefined;
   }

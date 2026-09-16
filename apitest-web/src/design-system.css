@@ -889,6 +889,16 @@ button.readout-click {
    与「展开了哪些行」无关。配 <colgroup> 用；不指定宽度的 col 吃剩余空间。 */
 .grid.grid-fixed { table-layout: fixed; }
 
+/* 数据看板·项目质量榜（2026-09-11 用户反馈「宽度分配不合理、没填满主容器」）：
+   八列读数表在 auto 布局下，78px 的数字列 + nowrap 表头把全部余量灌进项目名列
+   （宽屏下名字列近千像素、数字列挤在左侧，右缘读起来像没铺满）。fixed + colgroup
+   定死分配：名字列定比、动作列定宽、七个数字列均分余量——列宽与内容、与窗口宽
+   都无关。.col-num 的 78px 在 fixed 布局下仍会从首行 th 生效，这里必须归零才能
+   参与均分；表头允许换行，窄屏下「接口覆盖率」五字头折两行而不是溢出裁切。 */
+.grid-board { table-layout: fixed; }
+.grid-board .col-num { width: auto; }
+.grid-board th { white-space: normal; }
+
 .grid tbody tr[data-clickable] { cursor: pointer; transition: background var(--t); }
 
 .grid tbody tr.is-selected {
@@ -4262,3 +4272,620 @@ button.step-row:hover { background: var(--hover); }
   /* 窄屏优先保住名字与状态：Git 地址与分区已经在名字列的副标题里能读到大部分。 */
   .col-lastrun { width: 112px; }
 }
+
+/* ── 站内通知（P9-1；2026-09-16 通知入口移入站内助手）───────────────────────── */
+
+/* 助手顶栏入口的未读徽标：accent 实底 + accent-ink 文字（强调色只上交互元素——
+   入口是交互）。没有未读时不渲染（loaded && unread > 0 由组件保证），不做恒占位
+   的空心圈；.assistant-entry 是 relative（徽标 absolute 有定位上下文）。 */
+.assistant-entry-badge {
+  position: absolute;
+  top: -4px;
+  right: -5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 10px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: none;
+}
+
+/* 行列表：原铃铛下拉的行样式，2026-09-16 起由助手抽屉的「最近通知」视图与通知
+   页共用（通用行样式，不绑容器）；自滚动。 */
+.bell-list { margin: 0; padding: 0; list-style: none; max-height: 340px; overflow-y: auto; }
+.bell-list li + li { border-top: 1px solid var(--line); }
+.bell-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 8px var(--s4);
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.bell-item:hover { background: var(--raised); }
+/* 未读行标题重一档（500）；已读行整行降到次级色——已读态是降级不是标记。 */
+.bell-item.is-unread .bell-item-title { font-weight: 500; }
+.bell-item:not(.is-unread) .bell-item-title { color: var(--ink-2); }
+.bell-item-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* 标题允许折行、不省略（2026-09-11 用户反馈）：长计划名 / 任务名截断后读不出
+   「是什么」；行高收一档抵消折行带来的高度增长。 */
+.bell-item-title { display: block; white-space: normal; word-break: break-all; line-height: 1.4; }
+.bell-item-time { font-size: 11px; }
+/* 未读点：与 Status 的圆点同一语义家族（小圆点 = 需要注意），但中性色——
+   通知不是执行结果，不占用 pass/fail 的语义色。 */
+.bell-item-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: transparent; }
+.bell-item.is-unread .bell-item-dot { background: var(--accent); }
+
+/* 列表页（/notifications）：标题格的排版——未读点 + 标题/正文/项目名三行堆叠。 */
+.notification-cell { display: flex; align-items: flex-start; gap: var(--s2); min-width: 0; }
+.notification-cell-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+/* 标题不省略、允许折行（同铃铛下拉，2026-09-11 用户反馈）。 */
+.notification-cell-title { font-weight: 500; display: block; white-space: normal; word-break: break-all; line-height: 1.4; }
+/* 正文是多行模版文本：pre-wrap 保住渲染端的换行（结果/触发/链接各一行），
+   不截断——通知的意义就是把这些行读完。 */
+.notification-cell-body {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.notification-cell .bell-item-dot { margin-top: 7px; }
+.notification-cell .bell-item-dot[data-unread] { background: var(--accent); }
+.notification-project { font-size: 11px; margin-top: 2px; }
+.notification-unread { color: var(--accent); font-weight: 500; }
+.notification-grid td { height: 52px; }
+
+/* ── 站内助手抽屉（P9-4）───────────────────────────────────────────────────── */
+
+/* 顶栏入口槽位（2026-09-16 第二轮用户反馈：右下角圆钮改放原铃铛位）：两个壳的
+   topbar-actions 各渲染一个（壳互斥渲染，DOM 里同一时刻只存在一个），AssistantDock
+   的头像按钮 portal 进来——组件本体单挂载，切壳不断流。空槽不占宽（按钮落地前
+   topbar 不闪跳）。 */
+.assistant-topbar-slot:empty { display: none; }
+
+/* 顶栏入口按钮：34px 圆面装 30px 半身头像——比 .icon-btn（30px 方）大一圈是
+   有意的：头像是身份图像不是图标，与 antd 头像钮同族；未读徽标挂右上。 */
+.assistant-entry {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color var(--t), background var(--t);
+}
+.assistant-entry:hover { background: var(--raised); border-color: var(--accent); }
+/* 未配置态（边界 15 的入口落点）：dashed 边——点开是引导不是聊天。 */
+.assistant-entry.is-unconfigured { border-style: dashed; }
+.assistant-entry.is-unconfigured:hover { border-color: var(--ink-3); }
+
+/* 抽屉（计划 13.3；宽度 2026-09-15 用户反馈改版：默认 70% 视口 + 左缘拖拽，见
+   AssistantDock 的宽度常量）。行为归 antd Drawer（焦点陷阱/ESC），外观归这里；
+   窄屏吃满整宽——这里的 100vw !important 压过 antd 的内联宽度。 */
+@media (max-width: 520px) {
+  .assistant-drawer .ant-drawer-content-wrapper { width: 100vw !important; }
+}
+/* 左缘拖拽调宽（2026-09-15 用户反馈）：6px 热区 + 居中 2px 视觉线（悬浮才显形），
+   拖拽中走 accent（交互元素才准用 accent）。is-resizing 掐掉 antd 的宽度过渡——
+   拖拽要跟手，不是追手。 */
+.assistant-resizer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 10;
+}
+.assistant-resizer::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+  transition: background var(--t);
+}
+.assistant-resizer:hover::after { background: var(--line-strong); }
+.assistant-resizer.is-active::after { background: var(--accent); }
+.assistant-drawer.is-resizing .ant-drawer-content-wrapper { transition: none !important; }
+/* 96px 头像的头部需要比默认更收敛的留白（antd 默认 16px 24px 偏松）。 */
+.assistant-drawer .ant-drawer-header { padding: var(--s4); }
+
+/* 抽屉头部：96px 头像（P9-6：Avatar 全身像）+ 名称 + 换形象/主题/语言快捷切换。 */
+.assistant-identity { display: flex; align-items: center; gap: var(--s4); min-width: 0; }
+.assistant-identity-main { display: flex; flex-direction: column; min-width: 0; }
+.assistant-identity-main strong { font-size: 14px; }
+/* 头部快捷切换（2026-09-15 用户反馈）：推到头行右缘，紧贴 antd 关闭钮；两枚钮
+   不随身份区收缩（flex:0 0 auto，窄屏挤的是标题文字）。 */
+.assistant-quick-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: var(--s1); flex: 0 0 auto; }
+/* 头像画布（P9-6 人物生成器）：圆形裁切；自带奶油纸底，两种主题下都是贴纸观感。 */
+.avatar-canvas { display: block; border-radius: 50%; }
+
+/* 抽屉头的 96px 头像挂点（P9-6：Avatar 全身框）。画布吃满壳内，纸底盖住
+   background——它只是画布加载前的一瞬兜底；边框负责把贴纸从抽屉头里框出来。 */
+.assistant-avatar {
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+/* 抽屉头通知钮（2026-09-16 通知入口移入助手）：未读点用 accent 小圆点而不是
+   数字——数字在圆钮上已经有了，头部这里「有没有」比「几条」重要。 */
+.assistant-bell { position: relative; display: inline-flex; }
+.assistant-bell-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+/* 抽屉内的「最近通知」视图（2026-09-16，同日布局走查）：头行（面包屑式返回 +
+   全部已读）+ 行列表吃满剩余高度自滚（掀掉下拉 340px 封顶的遗产）+ 尾部细线上
+   右对齐的「查看全部」轻链接——导航动作不做表单按钮，重按钮书挡式上下包列表
+   就是违和的来源。行样式复用 .bell-list/.bell-item 家族。 */
+.assistant-notifications {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* 水平内边距归 .bell-item 行自己带（下拉遗产的节奏）——容器不叠一层，
+     头/尾对齐行的内边距，分隔线通栏。 */
+  padding: var(--s3) 0;
+  overflow: hidden;
+}
+.assistant-notifications-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: 0 var(--s4) var(--s2);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.assistant-notifications-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+  transition: color var(--t);
+}
+.assistant-notifications-back:hover { color: var(--accent); }
+.assistant-notifications .bell-list { flex: 1 1 auto; min-height: 0; max-height: none; }
+/* 加载/空态在可用区域垂直居中——贴着标题行缩在顶上像一截没画完的列表。 */
+.assistant-notifications-state { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; }
+.assistant-notifications-foot {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--s2) var(--s4) 0;
+  border-top: 1px solid var(--line);
+}
+.assistant-notifications-foot .linkish { display: inline-flex; align-items: center; gap: 4px; }
+
+/* 会话切换行：映射表读出来的「我的会话」。 */
+.assistant-switcher { padding: var(--s2) var(--s4); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: var(--s2); }
+
+/* 消息流：bg 页底与抽屉 surface 分层，气泡用 surface/raised 读出归属。 */
+.assistant-messages {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  background: var(--bg);
+}
+
+.chat-entry { display: flex; flex-direction: column; }
+.chat-entry-user { align-items: flex-end; }
+.chat-entry-assistant { align-items: flex-start; }
+
+/* 气泡正文 pre-wrap（8.13 边界 19 的纪律）：不引渲染器，换行与空格如实保留。 */
+.chat-bubble {
+  max-width: 86%;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.chat-bubble-user { background: var(--raised); border: 1px solid var(--line-strong); }
+.chat-bubble-assistant { background: var(--surface); border: 1px solid var(--line); }
+
+/* Markdown 渲染（P9-4c-2）：assistant 气泡内的文本编排。容器的 pre-wrap 在这里
+   收回（markdown 自己管换行，pre-wrap 会把段落间距翻倍）；代码/表格用既有
+   token，不引语法高亮色——机器数据归 mono，颜色归语义。 */
+.assistant-md { white-space: normal; }
+.assistant-md > :first-child { margin-top: 0; }
+.assistant-md > :last-child { margin-bottom: 0; }
+.assistant-md p { margin: 0 0 var(--s2); }
+.assistant-md h1, .assistant-md h2, .assistant-md h3,
+.assistant-md h4, .assistant-md h5, .assistant-md h6 { margin: var(--s3) 0 var(--s2); font-size: 13px; font-weight: 600; line-height: 1.4; }
+.assistant-md h1 { font-size: 15px; }
+.assistant-md h2 { font-size: 14px; }
+.assistant-md ul, .assistant-md ol { margin: 0 0 var(--s2); padding-left: var(--s4); display: flex; flex-direction: column; gap: 2px; }
+.assistant-md li > p { margin: 0; }
+.assistant-md blockquote { margin: 0 0 var(--s2); padding: 2px var(--s3); border-left: 2px solid var(--line-strong); color: var(--ink-2); }
+.assistant-md code { font-family: var(--mono); font-size: 12px; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 0 4px; }
+.assistant-md pre { margin: 0 0 var(--s2); padding: var(--s2) var(--s3); background: var(--raised); border: 1px solid var(--line); border-radius: var(--r); overflow-x: auto; max-height: 320px; }
+.assistant-md pre code { background: none; border: none; padding: 0; }
+.assistant-md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0 0 var(--s2); font-size: 12px; }
+.assistant-md th, .assistant-md td { border: 1px solid var(--line); padding: 3px var(--s2); text-align: left; white-space: nowrap; }
+.assistant-md th { background: var(--raised); }
+.assistant-md a { color: var(--accent); text-decoration: underline; }
+.assistant-md hr { border: none; border-top: 1px solid var(--line); margin: var(--s3) 0; }
+.assistant-md img { max-width: 100%; }
+
+/* 工具行：与 provider 测试回显同一套图标语汇（⟐ + mono）——用户能看见 AI 在调什么
+   工具（信任的关键，门槛 3），名称与状态如实显示不翻译。 */
+.chat-tool { font-size: 12px; color: var(--ink-3); white-space: pre-wrap; word-break: break-word; }
+
+/* 错误气泡：fail 语义（上游报错/断流），不是装饰色。 */
+.chat-error {
+  max-width: 86%;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r);
+  background: var(--fail-bg);
+  color: var(--fail);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 等待首 token：在飞请求的呼吸点（全应用唯一环境动画的同一语义，busy 色）。 */
+.chat-waiting { display: inline-flex; align-items: center; gap: var(--s2); color: var(--ink-3); font-size: 12px; }
+.chat-waiting-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--busy); animation: breathe 1.6s ease-in-out infinite; }
+
+/* 上下文 chip（P9-4c-1）：随消息附带的「当前页面 + 正在看什么」。摘要行常驻可见
+   （信任——用户看得见 agent 会拿到什么），点开看全量 JSON；「本条不带」临时关掉。
+   is-off：摘要划线降级，注入不发生但条仍在场（状态可逆，不悄悄消失）。 */
+.assistant-context { border-top: 1px solid var(--line); padding: var(--s2) var(--s4); display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.assistant-context-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color var(--t);
+}
+.assistant-context-main:hover { color: var(--ink); }
+.assistant-context-main .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assistant-context-toggle {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color var(--t), background var(--t), color var(--t);
+}
+.assistant-context-toggle:hover { border-color: var(--accent); color: var(--ink); }
+.assistant-context-toggle[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); color: var(--surface); }
+.assistant-context.is-off .assistant-context-main { text-decoration: line-through; }
+.assistant-context-json {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  max-height: 180px;
+  overflow: auto;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* 快捷 chips（边界 6）：显式入口不靠猜意图。小号胶囊，与输入区同层。 */
+.assistant-chips { display: flex; flex-wrap: wrap; gap: var(--s2); padding: var(--s2) var(--s4); border-top: 1px solid var(--line); }
+.assistant-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--t), background var(--t), color var(--t);
+}
+.assistant-chip:hover { border-color: var(--accent); background: var(--raised); color: var(--ink); }
+.assistant-chip:disabled { opacity: .55; cursor: default; }
+.assistant-chip:disabled:hover { border-color: var(--line); background: var(--surface); color: var(--ink-2); }
+
+/* 输入行：textarea 吃满剩余宽，动作按钮（发送/停止）立右侧。 */
+.assistant-inputrow { display: flex; align-items: flex-end; gap: var(--s2); padding: var(--s3) var(--s4) var(--s4); border-top: 1px solid var(--line); }
+.assistant-input { flex: 1 1 auto; min-width: 0; resize: none; }
+.assistant-inputrow .btn { flex: 0 0 auto; }
+
+/* 指令候选浮层（P9-5 增补「输入即识别」）：形态照 .var-field-pop 的浮层语汇（面 +
+   细线 + 阴影 + 选中底色），位置贴在输入框上方——抽屉底部是稳定容器，不用
+   VariableField 那套视口坐标与上下翻转。候选集上限 8 条（不滚动：浮层是提示，
+   不是需要翻页的菜单）。 */
+.assistant-input-area { position: relative; }
+.assistant-cmd-pop {
+  position: absolute;
+  inset: auto 0 100% 0;
+  z-index: 30;
+  margin-bottom: 6px;
+  padding: var(--s2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: 0 6px 20px var(--overlay);
+}
+.assistant-cmd-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  width: 100%;
+  padding: 6px var(--s2);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.assistant-cmd-item.is-active { background: var(--selected); }
+.assistant-cmd-item:hover { background: var(--raised); }
+.assistant-cmd-insert { flex: 0 0 auto; font-size: 12px; color: var(--accent); }
+.assistant-cmd-label { flex: 0 0 auto; font-size: 11px; color: var(--ink-3); }
+.assistant-cmd-item .muted { font-size: 11px; min-width: 0; }
+/* 键位提示：Enter 是发送、Tab 才是补全——两者不同，写出来免得靠猜。 */
+.assistant-cmd-foot {
+  margin: var(--s1) 0 0;
+  padding: 4px var(--s2) 0;
+  border-top: 1px solid var(--line);
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+/* 消息流内的空态/提示块：居中邀请下一步，报告「空」不是重点。 */
+.assistant-empty {
+  margin: auto;
+  max-width: 300px;
+  padding: var(--s6) var(--s5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s3);
+  text-align: center;
+}
+.assistant-empty p { margin: 0; }
+.assistant-note { margin: 0; padding: var(--s3) var(--s4); }
+.assistant-guidance { padding: var(--s5) var(--s4); display: flex; flex-direction: column; align-items: flex-start; gap: var(--s3); }
+.assistant-guidance p { margin: 0; }
+
+/* 「设置」卡（P9-4b：我的 agent——用户级凭据）：滚动体 + 底部动作行。 */
+.assistant-settings {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s4);
+  display: flex;
+  flex-direction: column;
+  /* 宽抽屉（2026-09-15 反馈）下设置卡收窄居中：表单字段铺满 70% 视口宽会被拉得
+     没边——聊天要宽（表格/代码），配置表单不要。 */
+  width: 100%;
+  max-width: 640px;
+  align-self: center;
+  gap: var(--s3);
+  background: var(--surface);
+}
+.assistant-settings-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+
+/* ── P9-5：本地指令系统气泡 + proposal 预览卡 + 设置卡分区/改密卡 ────────────── */
+
+/* 系统气泡：本地指令回执 / 账号拦截提示——界面自己在说话，不是对话方。dashed 边 +
+   降一档的字号与墨色，与用户/助手气泡都拉开；pre-wrap 让 /帮助 的多行列表如实
+   排版（换行是内容的一部分）。 */
+.chat-entry-system { align-items: stretch; }
+.chat-system {
+  max-width: 92%;
+  padding: var(--s2) var(--s3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r);
+  background: var(--raised);
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* proposal 预览卡（边界 3）：草稿 + 差异摘要 + 确认应用/放弃。accent 只出在左侧
+   2px 边（与选中行同款落点——卡片是交互元素）与主按钮上；正文是机器数据，归
+   mono。chat-proposal-group 用 display:contents 让卡与文本气泡平铺在消息条目里。 */
+.chat-proposal-group { display: contents; }
+.chat-proposal {
+  max-width: min(640px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s3);
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+.chat-proposal-head { display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap; min-width: 0; }
+.chat-proposal-kind { font-size: 12px; font-weight: 600; color: var(--ink); }
+.chat-proposal-case { font-size: 11px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-proposal-code {
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  max-height: 220px;
+  overflow: auto;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.chat-proposal-summary { margin: 0; font-size: 12px; color: var(--ink-3); }
+.chat-proposal-actions { display: flex; gap: var(--s2); }
+/* 终态：一行回执，卡片收扁（对话里的历史痕迹，不再是待办）；不再可交互，accent
+   边退回普通线色。 */
+.chat-proposal-settled {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  border-left: 2px solid var(--line-strong);
+}
+
+/* 改密表单卡（P9-5）：复用 .assistant-settings 的滚动/收窄容器，表单自身纵向
+   堆叠；提交钮不铺满（表单卡不是对话框，宽度跟内容）。 */
+.assistant-password-form { display: flex; flex-direction: column; gap: var(--s3); }
+.assistant-password-form .form-note { margin: 0; }
+
+/* ── 2026-09-15 增补：MRTR 确认表单卡（elicit 事件）────────────────────────── */
+
+/* 确认卡复用 proposal 卡的骨架与 accent 左边条（同族交互卡）；danger 语义只落在
+   确认按钮上（.btn.danger 走 --fail 字色，与环境页删除确认同款）；被拦下的独占
+   依赖清单用 mono 列表（机器数据）。 */
+.chat-elicit-blocked { display: flex; flex-direction: column; gap: var(--s1); }
+.chat-elicit-endpoints {
+  margin: 0;
+  padding: var(--s2) var(--s3);
+  max-height: 160px;
+  overflow: auto;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.chat-elicit-endpoints li + li { margin-top: 2px; }
+
+/* ── provider 页内引导式编辑器（P9-4b 后续：管理员配置通用协议） ────────────── */
+
+/* 编辑器/测试视图的容器：一块完整的页面级区域，不是弹窗。 */
+.provider-editor {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  padding: var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.provider-editor h3 { margin: 0; font-size: 15px; }
+
+/* 步骤条：顺序 = 调用链顺序（前置 → 核心 → 后置 → 用户参数）；点击可跳。 */
+.provider-steps { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.provider-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--t), color var(--t), background var(--t);
+}
+.provider-step:hover { background: var(--raised); color: var(--ink); }
+.provider-step.is-active { border-color: var(--accent); color: var(--ink); }
+.provider-step-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.provider-step.is-active .provider-step-index { border-color: var(--accent); color: var(--accent); }
+.provider-step-optional { font-size: 11px; color: var(--ink-3); }
+
+/* 步骤正文内的两列栅格与动作行。 */
+.provider-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3); }
+.provider-step-actions {
+  display: flex;
+  gap: var(--s2);
+  margin-top: var(--s2);
+  border-top: 1px solid var(--line);
+  padding-top: var(--s3);
+}
+
+/* 模板变量说明块：内置变量 vs {{user.键名}}——第一次进编辑器就读懂。 */
+.provider-vars {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  padding: var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+.provider-vars p { margin: 0; font-size: 12px; color: var(--ink-3); line-height: 1.6; }
+
+/* 字段级说明行：标签下面一句话讲清「值从哪来、填错了会怎样」。 */
+.field-hint { margin: 3px 0 0; font-size: 12px; color: var(--ink-3); line-height: 1.55; }
+
+/* 用户参数模式的一行：两列字段 + 两个开关 + 删除。 */
+.provider-param-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto auto auto;
+  gap: var(--s2);
+  align-items: start;
+  padding-bottom: var(--s2);
+  border-bottom: 1px solid var(--line);
+}
+

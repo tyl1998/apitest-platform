@@ -128,7 +128,8 @@ export function ProjectShell() {
        服务所有测试形态，不独属接口模式。 */
     { group: "environments", label: t("nav.testResources"), items: [["environments", t("nav.environments")], ["data-sources", t("nav.dataSources")], ["mocks", "Mock"]], defaultOpen: true },
     { group: "reports", label: t("nav.common"), items: [["reports", t("nav.reports")], ["suite-reports", t("nav.suiteReports")], ["trends", t("nav.trends")]], defaultOpen: true },
-    /* 项目配置：默认收起。MCP / 告警 / 成员是配置完就不再来的页面。 */
+    /* 项目配置：默认收起。MCP / 告警 / 成员是配置完就不再来的页面。助手无项目页
+       （P9-4 修订：默认开启、无项目闸门），对话入口在右下角常驻抽屉。 */
     { group: "members", label: t("nav.projectConfig"), items: [["mcp", "MCP"], ["alerts", t("nav.alerts")], ["members", t("nav.members")]], defaultOpen: false },
   ];
   const GROUP_OF: Partial<Record<ProjectPage, ProjectPage>> = Object.fromEntries(
@@ -241,6 +242,9 @@ export function ProjectShell() {
             </> : <strong>{pageTitle}</strong>}
         </nav>
         <div className="topbar-actions">
+          {/* 助手入口槽位（2026-09-16）：原铃铛位——AssistantDock 的头像按钮
+              portal 进来（通知未读徽标也在这），抽屉内有最近通知。 */}
+          <span id="assistant-topbar-slot" className="assistant-topbar-slot" />
           <Select
             value={projectId}
             onChange={(id) => void go(`/projects/${id}/${active}`)}
@@ -252,5 +256,5 @@ export function ProjectShell() {
       </header>
         <Outlet context={{ setDetailTitle } satisfies DetailCrumbContext} />
     </div>
-  </div>;
+</div>;
 }

@@ -5,6 +5,7 @@ import { useNavigate, useOutletContext, useParams, useSearchParams } from "react
 import { api, type FailureCategory, type ReportAttributionSummary, type SuiteReport, type SuiteReportSummary, type TriggerSource } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useCanWrite } from "../hooks/useMyRole";
+import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Readout, Tip, toRunStatus } from "../ui";
 import { AttributionDrawer, AttributionTag, type AttributionRequest, type AttributionTarget } from "./AttributionDrawer";
@@ -181,7 +182,7 @@ export function SuiteReports() {
   function open(report: SuiteReportSummary) {
     if (!projectId) return;
     navigate(report.kind === "runner"
-      ? `/projects/${projectId}/pipeline-runs/${report.id}?from=suite-reports`
+      ? `/projects/${projectId}/pipeline-runs/${report.id}?tab=report&from=suite-reports`
       : `/projects/${projectId}/suite-reports/${report.id}`);
   }
 
@@ -388,6 +389,17 @@ export function SuiteReportPage() {
       .catch(() => { if (alive) setFailed(true); });
     return () => { alive = false; };
   }, [projectId, executionId, refreshKey]);
+
+  /* 助手页面上下文（P9-4c）：URL 已带 executionId，这里补报告/套件名——「第三个
+     失败的用例帮我分析」由 agent 拉报告自数序号；分享页（无抽屉）不注册。 */
+  usePageContext(executionId ? {
+    page: "suite-report",
+    entities: {
+      executionId,
+      ...(report?.reportName ? { reportName: report.reportName } : {}),
+      ...(report ? { suiteName: report.suiteName } : {}),
+    },
+  } : undefined);
 
   if (failed) return <main className="content"><Empty title={t("suiteReports.loadFailed")} hint={t("suiteReports.emptyHint")} /></main>;
   if (!report) return <main className="content"><p className="muted">{t("common.loading")}</p></main>;

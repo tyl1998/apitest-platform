@@ -7,6 +7,7 @@ import { api, noRunnerLabel, type BatchDebugResult, type Endpoint, type Executio
 import { useDebounced } from "../hooks/useDebounced";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
+import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Method, toRunStatus, type RunStatus } from "../ui";
 import { BatchResultList } from "./BatchResultList";
@@ -52,6 +53,19 @@ export function EndpointList() {
   const [batchResult, setBatchResult] = useState<BatchDebugResult>();
   const [batchResultOpen, setBatchResultOpen] = useState(false);
   const [batchCanceling, setBatchCanceling] = useState(false);
+
+  /* 助手页面上下文（P9-4c）：筛选大多已在 URL，勾选（Set）不在——「把筛选出来的
+     这几个跑一遍」要靠 selection；agent 拿筛选词可复现同一视图。 */
+  usePageContext({
+    page: "endpoint-list",
+    filters: {
+      ...(keyword ? { keyword } : {}),
+      ...(method !== "all" ? { method } : {}),
+      ...(environmentFilter !== "all" ? { environmentId: environmentFilter } : {}),
+      ...(coverage !== "all" ? { coverage } : {}),
+    },
+    ...(selected.size ? { selection: [...selected] } : {}),
+  });
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importForm] = Form.useForm();
@@ -453,9 +467,9 @@ export function EndpointList() {
       cancelText={t("action.cancel")}
       width={640}
     >
-      <Form form={importForm} layout="vertical" initialValues={{ strategy: "skip", format: "openapi" }}>
+      <Form form={importForm} layout="vertical" initialValues={{ strategy: "skip", format: "curl" }}>
         <Form.Item name="format" label={t("import.format")}>
-          <Select options={[{ value: "openapi", label: t("import.openapi") }, { value: "curl", label: t("import.curl") }, { value: "paths", label: t("import.paths") }]} />
+          <Select options={[{ value: "curl", label: t("import.curl") }, { value: "openapi", label: t("import.openapi") }, { value: "paths", label: t("import.paths") }]} />
         </Form.Item>
         <Form.Item
           name="source"

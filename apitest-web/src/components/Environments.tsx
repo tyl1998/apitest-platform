@@ -6,6 +6,7 @@ import { CopyPlus, Eye, EyeOff, Pencil, Trash2 } from "lucide-react";
 import { api, type Environment, type EnvironmentUsage, type RunnerLabelStatus } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useCanManageProject, useCanWrite } from "../hooks/useMyRole";
+import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty } from "../ui";
 import { CopyButton } from "./CopyButton";
@@ -124,6 +125,13 @@ export function Environments() {
   const filtered = Boolean(debouncedKeyword.trim());
 
   const [drawerEnv, setDrawerEnv] = useState<Environment | "new">();
+
+  /* 助手页面上下文（P9-4c）：「把当前环境的 baseUrl 换成 stg」指向抽屉里正在编辑的
+     环境——只带 id 与名字，secret 值绝不进上下文。 */
+  usePageContext({
+    page: "environments",
+    ...(drawerEnv && drawerEnv !== "new" ? { entities: { environmentId: drawerEnv.id, environmentName: drawerEnv.name }, focus: "environment-editor" } : {}),
+  });
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<string>();
   const [duplicating, setDuplicating] = useState<string>();

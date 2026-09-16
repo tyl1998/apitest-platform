@@ -281,7 +281,7 @@ export function CiTaskList() {
           onEdit={() => navigate(`/projects/${projectId}/repo/tasks/${task.id}`)}
           onRun={() => void run(task)}
           onDelete={() => remove(task)}
-          onOpenRun={(runId) => navigate(`/projects/${projectId}/pipeline-runs/${runId}`)}
+          onOpenRun={(runId) => navigate(`/projects/${projectId}/pipeline-runs/${runId}?tab=report`)}
         />)}
       </tbody>
     </table></div> : <Empty

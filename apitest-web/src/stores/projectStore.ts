@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, type Environment, type Endpoint, type MyRole, type ProjectMetric } from "../api";
+import { api, type Environment, type Endpoint, type MyRole, type ProjectMetric, type ProjectSettings } from "../api";
 
 type ProjectState = {
   projects: ProjectMetric[];
@@ -28,6 +28,15 @@ type ProjectState = {
   updateMcpEnabled: (mcpEnabled: boolean) => Promise<void>;
 };
 
+/** settings 响应的整份回写（三个 update 共用）：一处开关滞后 = 给下一次 PUT 喂旧值。 */
+function applySettings(state: ProjectState, settings: ProjectSettings): Partial<ProjectState> {
+  return {
+    defaultEnvironmentId: settings.defaultEnvironmentId ?? null,
+    storePlaintext: settings.storePlaintext,
+    mcpEnabled: settings.mcpEnabled,
+  };
+}
+
 /**
  * Execution records deliberately live outside this store: they are paginated
  * per page and must not be capped by a shared prefetch.
@@ -48,7 +57,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const [environments, endpoints, settings] = await Promise.all([api.environments(id), api.endpoints(id), api.projectSettings(id)]);
       if (get().projectId !== id) return;
       const project = get().projects.find((item) => item.id === id) ?? null;
-      set({ projectId: id, environments, defaultEnvironmentId: settings.defaultEnvironmentId ?? null, storePlaintext: settings.storePlaintext, mcpEnabled: settings.mcpEnabled, endpoints, project, myRole: project?.myRole ?? null });
+      set({ projectId: id, environments, endpoints, project, myRole: project?.myRole ?? null, ...applySettings(get(), settings) });
     } finally { if (get().projectId === id) set({ loading: false }); }
   },
 
@@ -56,25 +65,25 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   reloadEnvironments: async () => {
     const id = get().projectId; if (!id) return;
     const [environments, settings] = await Promise.all([api.environments(id), api.projectSettings(id)]);
-    if (get().projectId === id) set({ environments, defaultEnvironmentId: settings.defaultEnvironmentId ?? null, storePlaintext: settings.storePlaintext, mcpEnabled: settings.mcpEnabled });
+    if (get().projectId === id) set({ environments, ...applySettings(get(), settings) });
   },
   /* 三个 update 都从响应整份回写：settings 是一行数据，让任何一处开关滞后都等于
      给下一次 PUT 喂旧值（defaultEnvironmentId 缺省会被服务端清空）。 */
   updateDefaultEnvironment: async (environmentId) => {
     const id = get().projectId; if (!id) return;
     const settings = await api.updateProjectSettings(id, { defaultEnvironmentId: environmentId, storePlaintext: get().storePlaintext });
-    set({ defaultEnvironmentId: settings.defaultEnvironmentId ?? null, storePlaintext: settings.storePlaintext, mcpEnabled: settings.mcpEnabled });
+    set(applySettings(get(), settings));
   },
   updateStorePlaintext: async (storePlaintext) => {
     const id = get().projectId; if (!id) return;
     const settings = await api.updateProjectSettings(id, { defaultEnvironmentId: get().defaultEnvironmentId, storePlaintext });
-    set({ defaultEnvironmentId: settings.defaultEnvironmentId ?? null, storePlaintext: settings.storePlaintext, mcpEnabled: settings.mcpEnabled });
+    set(applySettings(get(), settings));
   },
   updateMcpEnabled: async (mcpEnabled) => {
     const id = get().projectId; if (!id) return;
-    /* 只带要改的字段：storePlaintext 缺省由服务端 COALESCE 保留，defaultEnvironmentId
+    /* 只带要改的字段：其余开关缺省由服务端 COALESCE 保留，defaultEnvironmentId
        则必须随行当前值（缺省 = 清空默认环境）。 */
     const settings = await api.updateProjectSettings(id, { defaultEnvironmentId: get().defaultEnvironmentId, mcpEnabled });
-    set({ defaultEnvironmentId: settings.defaultEnvironmentId ?? null, storePlaintext: settings.storePlaintext, mcpEnabled: settings.mcpEnabled });
+    set(applySettings(get(), settings));
   },
 }));

@@ -8,6 +8,7 @@ import { api, type AllureReportAttachment, type AllureReportCase, type AllureRep
 import { useProjectStore } from "../stores/projectStore";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
+import { usePageContext } from "../hooks/usePageContext";
 import { Empty, Readout, Status, Tip, type RunStatus } from "../ui";
 import { AttributionDrawer, AttributionTag, type AttributionRequest } from "./AttributionDrawer";
 import { formatMsTick, niceMsStep } from "./charts";
@@ -203,6 +204,18 @@ export function PipelineRunPage() {
   const [artifacts, setArtifacts] = useState<(Artifact & { downloadUrl: string })[]>();
   const [cancelBusy, setCancelBusy] = useState(false);
   const logBox = useRef<HTMLPreElement>(null);
+
+  /* 助手页面上下文（P9-4c）：URL 已带 runId，这里补任务语境与当前 tab——「npm install
+     超时帮我看看」时 agent 知道用户正停在日志页还是报告页。 */
+  usePageContext(runId ? {
+    page: "pipeline-run",
+    entities: {
+      runId,
+      ...(run ? { taskId: run.ciTaskId, runNumber: String(run.runNumber) } : {}),
+      ...(run?.taskName ? { taskName: run.taskName } : {}),
+    },
+    focus: tab,
+  } : undefined);
 
   /* 附件取数器：useCallback 固定身份（2026-09-02 验收反馈第三批 ①）。它原先每次渲染
      都是新函数，AttachmentView 的 effect 依赖它 → 任何一次父级重渲染（SSE 日志事件、

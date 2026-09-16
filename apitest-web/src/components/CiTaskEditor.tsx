@@ -12,6 +12,7 @@ import { apiMessage } from "./DataSourceList";
 import { RepoPageHead, RepoTabs } from "./RepoShell";
 import { useThemeMode } from "../theme";
 import { useCanWrite } from "../hooks/useMyRole";
+import { usePageContext } from "../hooks/usePageContext";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 
@@ -118,6 +119,16 @@ export function CiTaskEditor() {
 
   const [task, setTask] = useState<CiTask>();
   const [credentials, setCredentials] = useState<GitCredential[]>([]);
+
+  /* 助手页面上下文（P9-4c）：URL 已带 taskId，这里补任务名（title 正在编辑的值优先
+     ——用户嘴里说的名字多半是输入框里那个）。 */
+  usePageContext(!isNew && taskId ? {
+    page: "ci-task-editor",
+    entities: {
+      taskId,
+      ...(name ? { taskName: name } : {}),
+    },
+  } : undefined);
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [pool, setPool] = useState<RunnerPool>();
   const [loading, setLoading] = useState(true);

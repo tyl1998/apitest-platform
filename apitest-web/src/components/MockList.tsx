@@ -25,6 +25,18 @@ function parseFixedQuery(text: string): Record<string, string> {
 function serializeFixedQuery(value: Record<string, string> | undefined): string {
   return Object.entries(value ?? {}).map(([key, item]) => `${key}=${item}`).join(", ");
 }
+/* mock 服务挂在 API 进程上（`/mock/:publicId/*`），公开地址的源必须跟 API 走而不是页面走：
+   双域名部署下页面在 A、API 在 B，拿页面 origin 换端口只会得出本地开发才成立的地址。
+   优先从 VITE_API_BASE_URL 剥掉 `/api/v1` 得到后端源；未配置时回退「同域名换 3000 端口」
+   的开发猜法。 */
+function mockPublicOrigin(): string {
+  const apiBase = import.meta.env.VITE_API_BASE_URL;
+  if (apiBase) {
+    const stripped = apiBase.replace(/\/api\/v1\/?$/, "").replace(/\/+$/, "");
+    if (stripped) return stripped;
+  }
+  return `${window.location.origin.replace(/:\d+$/, ":3000")}`;
+}
 
 const PAGE_SIZES = [20, 50, 100];
 
@@ -39,7 +51,7 @@ export function MockList() {
   async function load() { if (!projectId) return; setLoading(true); try { const result = await api.mocksPaged(projectId, { page, pageSize }); /* 删掉本页最后一行后自动退一页，而不是停在一张空表上。 */ if (!result.items.length && result.total > 0 && page > 1) { setPage(page - 1); return; } setItems(result.items); setTotal(result.total); } catch { message.error("无法加载 Mock 规则"); } finally { setLoading(false); } }
   useEffect(() => { void load(); }, [projectId, page, pageSize]);
   async function remove(item: Mock) { if (!projectId) return; Modal.confirm({ title: `删除 ${item.name}？`, content: "删除后公开地址将立即失效。", okText: "删除", cancelText: "取消", okButtonProps: { danger: true }, onOk: async () => { await api.deleteMock(projectId, item.id); await load(); } }); }
-  function copy(item: Mock) { const path = String(item.requestMatch.path ?? "").replace(/^\//, ""); void navigator.clipboard.writeText(`${window.location.origin.replace(/:\d+$/, ":3000")}/mock/${item.publicId}/${path}`); message.success("公开地址已复制"); }
+  function copy(item: Mock) { const path = String(item.requestMatch.path ?? "").replace(/^\//, ""); void navigator.clipboard.writeText(`${mockPublicOrigin()}/mock/${item.publicId}/${path}`); message.success("公开地址已复制"); }
   return <main className="content"><div className="page-head"><div><h1>Mock</h1><p>为外部联调方提供独立、匿名可访问的接口桩。</p></div>{canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => setEditing("new")}><Plus size={14} />新建 Mock</button>}</div>
     {loading ? <p className="muted">加载中…</p> : items.length ? <div className="table-scroll"><table className="grid"><thead><tr><th>规则</th><th>模式</th><th>匹配</th><th>公开地址</th><th className="col-actions" /></tr></thead><tbody>{items.map((item) => { const path = String(item.requestMatch.path ?? ""); return <tr key={item.id} data-clickable onClick={() => setEditing(item)}><td><strong>{item.name}</strong><span className="resource-type mono">{item.enabled ? "enabled" : "disabled"}</span></td><td className="mono">{item.mode}</td><td className="mono">{String(item.requestMatch.method ?? "ANY")} {path || "/*"}</td><td className="mono truncate" title={`/mock/${item.publicId}/${path.replace(/^\//, "")}`}>/mock/{item.publicId}/{path.replace(/^\//, "")}</td><td className="col-actions"><div className="row-actions" onClick={(event) => event.stopPropagation()}><IconButton icon={<Copy size={14} />} label="复制公开地址" onClick={() => copy(item)} />{canWrite && <IconButton icon={<Pencil size={14} />} label="编辑" onClick={() => setEditing(item)} />}{canWrite && <IconButton icon={<Trash2 size={14} />} label="删除" tone="danger" onClick={() => void remove(item)} />}</div></td></tr>; })}</tbody></table></div> : <Empty title="还没有 Mock 规则" hint="创建一个固定响应，让外部团队先完成联调。" action={canWrite ? <button className="btn btn-primary" onClick={() => setEditing("new")}>新建 Mock</button> : undefined} />}
     {items.length > 0 && <div className="pager"><Pagination current={page} pageSize={pageSize} total={total} pageSizeOptions={PAGE_SIZES} showSizeChanger showQuickJumper={total > pageSize * 5} onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }} /></div>}

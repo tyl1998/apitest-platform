@@ -5,6 +5,7 @@ import { useParams, useSearchParams } from "react-router-dom";
 import { Pencil, Plus, Send, Trash2 } from "lucide-react";
 import { api, type AlertComparator, type AlertMetric, type AlertRule, type NotificationChannel, type NotificationChannelType } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
+import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty } from "../ui";
 import { IconButton } from "./IconButton";
@@ -77,6 +78,12 @@ export function Alerts() {
   const [ruleEditing, setRuleEditing] = useState<AlertRule | "new">();
   const [ruleForm, setRuleForm] = useState<RuleForm>(emptyRuleForm());
   const [ruleSaving, setRuleSaving] = useState(false);
+
+  /* 助手页面上下文（P9-4c）：「把这条告警阈值调到 90%」指向正在编辑的规则。 */
+  usePageContext({
+    page: "alerts",
+    ...(ruleEditing && ruleEditing !== "new" ? { entities: { alertId: ruleEditing.id, alertName: ruleEditing.name }, focus: "alert-editor" } : {}),
+  });
 
   /* 派发记录。 */
   const [deliveries, setDeliveries] = useState<Awaited<ReturnType<typeof api.notificationDeliveries>>["items"]>([]);

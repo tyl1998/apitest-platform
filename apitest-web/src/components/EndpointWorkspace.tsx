@@ -6,6 +6,7 @@ import { ChevronLeft, ChevronRight, Copy, CopyPlus, Crosshair, Maximize2, Play, 
 import { api, noRunnerLabel, type Assertion, type BodyType, type CaseUsage, type Endpoint, type EndpointAuth, type EndpointInput, type Execution, type ExecutionSourceFilter, type FlowExtract, type Paged, type PreRequestHook, type RequestSnapshot, type ResponseScript, type TestCase } from "../api";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
+import { usePageContext } from "../hooks/usePageContext";
 import { variableOptions } from "../lib/flowVariables";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
@@ -267,6 +268,21 @@ export function EndpointWorkspace() {
 
   /* Runs are queued and executed by a worker (P1-3); the outcome arrives here. */
   const stream = useExecutionStream(projectId);
+
+  /* 助手页面上下文（P9-4c）：URL 已带 endpointId，这里补不在 URL 里的组件态——
+     正在编辑的用例（「改一下当前接口的断言」指向它）、侧栏焦点、最近一次执行。 */
+  usePageContext(endpointId && !isNew ? {
+    page: "endpoint-workspace",
+    entities: {
+      endpointId,
+      ...(draft.name ? { endpointName: draft.name } : {}),
+      method: draft.method,
+      ...(draft.url ? { url: draft.url } : {}),
+      ...(activeCase ? { caseId: activeCase.id, caseName: activeCase.name } : {}),
+      ...(runs.items[0] ? { executionId: runs.items[0].id } : {}),
+    },
+    focus: activeCase ? "case-editor" : sideTab,
+  } : undefined);
 
   /* Keeps 排队中 → 执行中 visible on the response panel while the run is awaited. */
   useEffect(() => {

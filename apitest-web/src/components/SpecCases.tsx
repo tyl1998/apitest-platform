@@ -6,6 +6,7 @@ import { Dropdown, type MenuProps } from "antd";
 import { ChevronDown, ChevronRight, Download, FileDown, Folder, FolderPlus, ListTree, Network, Pencil, Plus, Trash2, X } from "lucide-react";
 import { api, type Paged, type SpecCase, type SpecCaseInput, type SpecCaseLink, type SpecCasePriority, type SpecCaseStatus, type SpecCaseStep, type SpecExportFormat, type SpecModule, type TestPlan } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
+import { usePageContext } from "../hooks/usePageContext";
 import { useDebounced } from "../hooks/useDebounced";
 import { saveBlob } from "../lib/download";
 import { Empty, Status, Tip, toRunStatus, type RunStatus } from "../ui";
@@ -324,6 +325,21 @@ export function SpecCases() {
      就是「先选一批、再换地方继续选」；清空时机只有批量条上的 × 与批量动作落地。
      切项目必须清——跨项目勾选没有意义。 */
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  /* 助手页面上下文（P9-4c）：筛选大多已在 URL；抽屉正在编辑的用例与勾选集不在——
+     「这条用例的步骤改一下」指向 editing，批量动作指向 selection。 */
+  usePageContext({
+    page: "spec-cases",
+    filters: {
+      ...(keyword ? { keyword } : {}),
+      ...(modulePath ? { modulePath } : {}),
+      ...(priority !== "all" ? { priority } : {}),
+      ...(status !== "all" ? { status } : {}),
+      ...(automation !== "all" ? { automation } : {}),
+    },
+    ...(editing && editing !== "new" ? { entities: { caseId: editing }, focus: "case-editor" } : {}),
+    ...(selected.size ? { selection: [...selected] } : {}),
+  });
 
   /* 左侧树的展开集（纯折叠，无懒载——模块森林一次全量，用例永远走右表的服务端分页）。 */
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -1475,7 +1491,7 @@ function linkTargetPath(projectId: string, link: SpecCaseLink): string | undefin
       /* removed = 对账判失效：行还在库里但树默认只显示 active，跳过去也搜不到。 */
       if (link.targetStatus === "removed") return undefined;
       return link.lastResult?.runId
-        ? `/projects/${projectId}/pipeline-runs/${link.lastResult.runId}`
+        ? `/projects/${projectId}/pipeline-runs/${link.lastResult.runId}?tab=report`
         : `/projects/${projectId}/repo/tree?keyword=${encodeURIComponent(link.targetKey ?? link.targetName ?? "")}`;
     default:
       return undefined;

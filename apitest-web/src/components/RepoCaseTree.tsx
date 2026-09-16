@@ -5,6 +5,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ChevronDown, ChevronRight, Play, X } from "lucide-react";
 import { api, noRunnerLabel, type CiTask, type CiTaskRecommendation, type RepoCaseDetail, type RepoCaseTree, type RepoTestCase } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
+import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Method, Readout, Tip, toRunStatus } from "../ui";
 import { RepoPageHead, RepoTabs } from "./RepoShell";
@@ -193,11 +194,12 @@ function CaseDetailDrawer({ caseId, endpointId, endpointName, onClose }: {
           <div>
             <dt>{t("repoCases.reportTask")}</dt>
             {/* 可点的出处（2026-09-03 用户要求）：任务名 #序号直达 run 详情页——
-                报告的完整视图（timeline / allure 明细）在那里，这里只是出处摘要。 */}
+                报告的完整视图（timeline / allure 明细）在那里，这里只是出处摘要。
+                ?tab=report（2026-09-11 用户要求）：看的是历史结论，不落在日志页。 */}
             <dd><button
               className="cell-link mono truncate"
               title={t("repoCases.openRunHint")}
-              onClick={() => navigate(`/projects/${projectId}/pipeline-runs/${report.runId}`)}
+              onClick={() => navigate(`/projects/${projectId}/pipeline-runs/${report.runId}?tab=report`)}
             >{report.taskName} #{report.runNumber}</button></dd>
           </div>
           <div>
@@ -291,9 +293,10 @@ export function RepoCaseTreePage() {
   /* 抽屉目标：用例 id + 点开时的接口语境（「该接口所在的步骤」高亮靠它）。 */
   const [detail, setDetail] = useState<{ caseId: string; endpointId?: string; endpointName?: string }>();
 
-  /* 报告出处直达（2026-09-03）：树上「最近任务」与抽屉里的任务名共用这一个跳转。 */
+  /* 报告出处直达（2026-09-03）：树上「最近任务」与抽屉里的任务名共用这一个跳转。
+     ?tab=report：看的是历史结论，不落在日志页（2026-09-11 用户要求）。 */
   const openRun = useCallback((runId: string) => {
-    if (projectId) navigate(`/projects/${projectId}/pipeline-runs/${runId}`);
+    if (projectId) navigate(`/projects/${projectId}/pipeline-runs/${runId}?tab=report`);
   }, [projectId, navigate]);
 
   /* ── 勾选执行（§8.3，P4.5-9） ─────────────────────────────────────
@@ -309,6 +312,24 @@ export function RepoCaseTreePage() {
   /* 幂等键在**打开弹窗时**生成一次，重试之间不变（P4.5-8）：每次点「触发」现生成一个键
      等于没防重——那正是接入前的行为（双击两条 run）。 */
   const [idempotencyKey, setIdempotencyKey] = useState("");
+
+  /* 助手页面上下文（P9-4c）：筛选已在 URL；抽屉目标（点开的用例 + 接口语境）与
+     勾选集（case_key）不在——「这条怎么没匹配上」「把勾选的跑一遍」靠它们。 */
+  usePageContext({
+    page: "repo-case-tree",
+    filters: {
+      ...(keyword ? { keyword } : {}),
+      ...(status !== "active" ? { status } : {}),
+    },
+    ...(detail ? {
+      entities: {
+        caseId: detail.caseId,
+        ...(detail.endpointId ? { endpointId: detail.endpointId } : {}),
+        ...(detail.endpointName ? { endpointName: detail.endpointName } : {}),
+      },
+    } : {}),
+    ...(selected.size ? { selection: [...selected] } : {}),
+  });
 
   function patchParams(next: Record<string, string | undefined>) {
     setSearchParams((current) => {

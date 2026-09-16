@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type BatchDebugResult, type BatchDebugSummary, type Execution, type ExecutionIndex, type ExecutionSourceFilter, type FlowExecutionDetail, type Paged, type SuiteExecutionDetail } from "../api";
 import { useExecutionStream } from "../hooks/useExecutionStream";
+import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, toRunStatus } from "../ui";
 import { BatchResultList } from "./BatchResultList";
@@ -102,6 +103,28 @@ export function ExecutionRecords() {
   /** 一条父执行的抽屉：流程与套件各有自己的那一款，但入口只有一个 index id。 */
   const [parent, setParent] = useState<{ indexId: string; flow?: FlowExecutionDetail; suite?: SuiteExecutionDetail }>();
 
+  /* 助手页面上下文（P9-4c）：筛选大多已在 URL，打开中的抽屉不在——「刚才失败的
+     那条帮我看看」指向正在看的那次执行。 */
+  usePageContext({
+    page: "execution-records",
+    filters: {
+      ...(recordType !== "single" ? { type: recordType } : {}),
+      ...(kind !== "all" ? { kind } : {}),
+      ...(caseFilterOnly ? { caseFilter: "1" } : {}),
+      ...(status !== "all" ? { status } : {}),
+      ...(source !== "all" ? { source } : {}),
+      ...(endpointId ? { endpointId } : {}),
+      ...(caseId ? { caseId } : {}),
+      ...(keyword ? { keyword } : {}),
+      ...(from ? { from } : {}),
+      ...(to ? { to } : {}),
+    },
+    entities: {
+      ...(result ? { executionId: result.id } : {}),
+      ...(parent ? { indexId: parent.indexId } : {}),
+    },
+  });
+
   /** 当前页有哪些 id：一条打不到当前页的事件才说明有新记录产生。 */
   const idsRef = useRef(new Set<string>());
   const reloadTimer = useRef<number>();
@@ -193,7 +216,7 @@ export function ExecutionRecords() {
        「执行记录」而不是仓库——入口归属的既有机制（报告列表同款，P8-3 反馈③），
        从执行记录进的必须能回执行记录（P8-6 验收反馈）。 */
     if (row.kind === "runner") {
-      if (projectId) navigate(`/projects/${projectId}/pipeline-runs/${row.detailId}?from=reports`);
+      if (projectId) navigate(`/projects/${projectId}/pipeline-runs/${row.detailId}?tab=report&from=reports`);
       return;
     }
     void loadParent(row)
@@ -255,7 +278,7 @@ export function ExecutionRecords() {
            保住「从执行记录进、回执行记录」的归属。 */
         if (row.kind === "runner") {
           setSearchParams((current) => { current.delete("parent"); return current; }, { replace: true });
-          if (projectId) navigate(`/projects/${projectId}/pipeline-runs/${row.detailId}?from=reports`);
+          if (projectId) navigate(`/projects/${projectId}/pipeline-runs/${row.detailId}?tab=report&from=reports`);
           return;
         }
         return loadParent(row);

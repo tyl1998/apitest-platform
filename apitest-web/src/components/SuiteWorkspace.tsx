@@ -20,6 +20,7 @@ import {
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useDebounced } from "../hooks/useDebounced";
 import { useCanWrite } from "../hooks/useMyRole";
+import { usePageContext } from "../hooks/usePageContext";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useLimitsStore } from "../stores/limitsStore";
 import { useProjectStore } from "../stores/projectStore";
@@ -147,6 +148,17 @@ export function SuiteWorkspace() {
   const [runs, setRuns] = useState<Paged<SuiteExecution>>({ items: [], page: 1, pageSize: SIDEBAR_PAGE_SIZES[1], total: 0 });
   const [historyStatus, setHistoryStatus] = useState("all");
   const [historyPage, setHistoryPage] = useState(1);
+
+  /* 助手页面上下文（P9-4c）：URL 已带 suiteId，这里补套件名与最近一次报告——
+     「这个套件最近怎么老失败」让 agent 直接拿 executionId 下钻。 */
+  usePageContext(suiteId ? {
+    page: "suite-workspace",
+    entities: {
+      suiteId,
+      ...(draft?.name ? { suiteName: draft.name } : suite?.name ? { suiteName: suite.name } : {}),
+      ...(runs.items[0] ? { executionId: runs.items[0].id } : {}),
+    },
+  } : undefined);
   const [historyPageSize, setHistoryPageSize] = useState(SIDEBAR_PAGE_SIZES[1]);
 
   useEffect(() => {

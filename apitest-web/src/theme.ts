@@ -133,6 +133,21 @@ function applyMode(mode: Mode) {
   root.style.colorScheme = mode;
 }
 
+/* 抽屉等非 Root 组件请求切主题的事件名（P9-5 的 /主题 指令与设置卡要用）。 */
+const THEME_REQUEST_EVENT = "apitest:request-theme";
+
+/**
+ * Asks the app's single mode owner (Root's `useMode`) to switch the theme.
+ *
+ * The drawer cannot call `useMode()` itself — two callers would mean two
+ * independent states and the shell would disagree with antd's portals — so it
+ * dispatches an event instead. `useMode()` stays the only place that owns and
+ * applies the preference.
+ */
+export function requestThemePreference(value: ModePreference) {
+  window.dispatchEvent(new CustomEvent<ModePreference>(THEME_REQUEST_EVENT, { detail: value }));
+}
+
 /* Paint the initial mode before React mounts, to avoid a flash. */
 applyMode(readMode());
 
@@ -163,6 +178,18 @@ export function useMode() {
     setPreferenceState(value);
     setMode(value === "system" ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light") : value);
   };
+
+  /* 主题请求事件（requestThemePreference）：仍是这里统一持有与应用，
+     事件只是又一个输入源。setPreference 只包稳定的 setState，闭包不过期。 */
+  useEffect(() => {
+    const handle = (event: Event) => {
+      const detail = (event as CustomEvent<ModePreference>).detail;
+      if (detail === "light" || detail === "dark" || detail === "system") setPreference(detail);
+    };
+    window.addEventListener(THEME_REQUEST_EVENT, handle);
+    return () => window.removeEventListener(THEME_REQUEST_EVENT, handle);
+  }, []);
+
   return { mode, preference, setPreference, toggle: () => setPreference(mode === "light" ? "dark" : "light") };
 }
 

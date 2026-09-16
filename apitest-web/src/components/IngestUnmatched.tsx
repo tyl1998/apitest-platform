@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
 import { api, type Endpoint, type IngestPathRule, type UnmatchedPath } from "../api";
+import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Method } from "../ui";
 import { IconButton } from "./IconButton";
@@ -59,6 +60,14 @@ export function IngestUnmatched() {
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [linking, setLinking] = useState<UnmatchedPath>();
   const [linkTarget, setLinkTarget] = useState<string>();
+
+  /* 助手页面上下文（P9-4c）：「这条为什么没匹配」指向正在登记的那条路径；
+     silenced 筛选（静默规则查回入口）随行。 */
+  usePageContext({
+    page: "repo-unmatched",
+    ...(linking ? { entities: { method: linking.method, path: linking.path } } : {}),
+    ...(silenced ? { filters: { silenced: "1" } } : {}),
+  });
   /** 一键登记：路径预填当前模板但**可编辑**——通用归一只认「长得像 id」的段，`/users/abc`
       这类要人工改成 `/users/{username}`，否则下一轮其它取值仍然匹配不上。 */
   const [registering, setRegistering] = useState<UnmatchedPath>();

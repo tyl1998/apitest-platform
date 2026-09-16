@@ -41,9 +41,12 @@ import { ShareReportPage } from "./components/ShareReportPage";
 import { Members } from "./components/Members";
 import { SpecCases } from "./components/SpecCases";
 import { TestPlans, TestPlanPage } from "./components/TestPlans";
+import { NotificationsPage } from "./components/NotificationsPage";
+import { AssistantDock } from "./components/AssistantDock";
 import { antdTheme, useMode } from "./theme";
 import { useAuthStore } from "./stores/authStore";
 import { useLimitsStore } from "./stores/limitsStore";
+import { useNotificationPolling } from "./hooks/useNotifications";
 
 function Protected() {
   const token = useAuthStore((state) => state.token);
@@ -66,12 +69,25 @@ function PasswordGate() {
     : <Outlet />;
 }
 
+/**
+ * 受保护层共用壳（2026-09-16 对话用户级化）：页面内容 + 站内助手。助手全局
+ * 常驻——全局页与项目页同一份会话（路由 /api/v1/assistant/*，迁移 062）；挂在
+ * PasswordGate 内层（强制改密期间不出现）、Routes 树内（AssistantDock 的
+ * useParams 拿得到 /projects/:projectId 段）。入口按钮 portal 进两个壳顶栏的
+ * #assistant-topbar-slot（原铃铛位）——壳互斥渲染，组件本体只挂这一份。
+ */
+function DockedShell() {
+  return <>
+    <Outlet />
+    <AssistantDock />
+  </>;
+}
+
 function Root() {
   const { mode, preference, setPreference } = useMode();
   const token = useAuthStore((state) => state.token);
   const hydrate = useAuthStore((state) => state.hydrate);
   const loadLimits = useLimitsStore((state) => state.load);
-
   /**
    * Restores the signed-in user on a reload.
    *
@@ -89,7 +105,12 @@ function Root() {
    */
   useEffect(() => { if (token) void loadLimits(); }, [token, loadLimits]);
 
-  return <ConfigProvider theme={antdTheme(mode)}><AntApp><Routes>
+  return <ConfigProvider theme={antdTheme(mode)}><AntApp>
+    {/* 站内通知轮询（P9-1）：60s + 获焦即拉 + 新到达弹窗。挂在 AntApp 内的一个
+        空渲染组件里（useApp 的 notification 需要 <App> 上下文，Root 自身不在其内）；
+        挂在壳之外——壳是互斥渲染的，「换壳不掉轮询基线」在这里最便宜。 */}
+    <NotificationPoller />
+    <Routes>
     <Route path="/login" element={token ? <Navigate to="/dashboard" replace /> : <Login />} />
 
     {/* 邀请码注册（P6-3）：在 Protected 之外——码即凭据，与报告分享页同层。带
@@ -102,9 +123,14 @@ function Root() {
       <Route path="/change-password" element={<ChangePassword />} />
 
       <Route element={<PasswordGate />}>
+        {/* 受保护层共用壳（2026-09-16）：全局页与项目层都在壳内——站内助手圆钮
+            全局常驻（对话用户级化，见 DockedShell 注释）。 */}
+        <Route element={<DockedShell />}>
         <Route path="/dashboard" element={<GlobalApp page="dashboard" themePreference={preference} onThemeChange={setPreference} />} />
         <Route path="/projects" element={<GlobalApp page="projects" themePreference={preference} onThemeChange={setPreference} />} />
         <Route path="/system" element={<GlobalApp page="system" themePreference={preference} onThemeChange={setPreference} />} />
+        {/* P9-1：通知列表页（全局层第四页，跨项目用户级）。 */}
+        <Route path="/notifications" element={<GlobalApp page="notifications" themePreference={preference} onThemeChange={setPreference} />} />
 
       {/* One shell for the whole project layer, so child navigation never rebuilds it. */}
       <Route path="/projects/:projectId" element={<ProjectShell />}>
@@ -130,6 +156,9 @@ function Root() {
         {/* P5：MCP 管理页（开关 / 端点 / Token / 工具清单）。只读展示 + 管理动作，
             不做对话式创建 UI（交互文档 3.10 的边界）。 */}
         <Route path="mcp" element={<McpPage />} />
+        {/* P9-4 修订（2026-09-14）：站内助手默认开启、无项目配置页（assistant_enabled
+            闸门随迁移 058 作废）；对话入口在顶栏（AssistantDock，2026-09-16
+            用户级化后挂 DockedShell——全局常驻，按钮在两壳 topbar 的原铃铛位）。 */}
         <Route path="reports" element={<ExecutionRecords />} />
         {/* P8-7：统一执行入口（交互 6.2d）——按 indexId 解析到真实详情路由；统计侧
             深链从此只认这一个执行地址。在 ExecutionRecords 之前注册（路由匹配按
@@ -169,6 +198,7 @@ function Root() {
       </Route>
 
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        </Route>
       </Route>
     </Route>
 
@@ -179,6 +209,12 @@ function Root() {
 
     <Route path="*" element={<Navigate to={token ? "/dashboard" : "/login"} replace />} />
   </Routes></AntApp></ConfigProvider>;
+}
+
+/** 轮询挂载点（见 Root 内注释）：空渲染，只出副作用。 */
+function NotificationPoller() {
+  useNotificationPolling();
+  return null;
 }
 
 createRoot(document.getElementById("root")!).render(<BrowserRouter><Root /></BrowserRouter>);
