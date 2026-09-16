@@ -27,6 +27,8 @@
 | 环境规划与批量调试 | `问题记录-环境规划与批量调试.md` | 环境职责划分、接口批量调试、批量删除等 |
 | 系统管理页标题重复 | `问题记录-系统管理页标题重复.md` | 顶部栏与正文页头标题重复 |
 | worker 事务泄漏 | `问题记录-worker事务泄漏与流程保存卡死.md` | `reapStale` 漏 COMMIT 引发流程保存永久卡死、worker 掉线、回收失效 |
+| settings 局部 PUT 互清开关 | `问题记录-settings局部PUT互清开关.md` | `PUT settings` 的 upsert 两层 COALESCE 打架，未传的开关被清回 false（P5 起预存在，P9-2 联调实测抓到） |
+| 助手头部快捷钮不可点 | `问题记录-助手头部快捷钮不可点.md` | prefs 取数效应还挂在已删除的设置卡「个性化」分区的 `view` 条件上，直接进对话视图时主题/语言快捷钮永远置灰（P9-4c 同日二轮反馈，当轮即修） |
 | tsconfig rootDir | `问题记录-tsconfig-rootDir.md` | apitest-server `rootDir` 编译报错 |
 | HTTPS 企业证书不受信 | `问题记录-HTTPS企业证书不受信.md` | 平台请求内网 https 域名报 `SELF_SIGNED_CERT_IN_CHAIN`：Node 20 fetch 不读系统钥匙串，`start.sh` 注入 `NODE_EXTRA_CA_CERTS` 指向导出的企业 CA |
 | P3 验收第一轮 | `问题记录-P3验收第一轮.md` | P3 验收缺陷六项全部修复并通过复验（调度页变量编辑器状态类型错误致创建白屏、运行套件乐观对象缺触发列致白屏+执行中冻结、编辑调度 TDZ 500、报告成员证据抽屉、看板调度数未接真值、套件页假脏未复现已关闭） |
@@ -76,6 +78,11 @@
 | P8-5 图表底座三缺陷 | `问题记录-P8-5图表底座三缺陷.md` | ① hover 错位（用户实测）：SVG 漏 `preserveAspectRatio="none"`，容器宽于 viewBox 时内容居中留白不拉伸、而 hover 反查按容器宽算比值，指针在 A 吸附到 B——四组件显式补声明；② 折线不连续（用户实测）：null 桶断线规则不可配置，稀疏窗口只剩碎段、孤立单点画不出——`pathSegments` 加 `bridgeGaps` 选项（单点段补零长 L），耗时分位/sparkline 桥接、通过率保持断线；③ 分位数 278824s（用户实测）：`ingest.ts` 写 execution_index 的 finished_at 兜底接收时刻且重投无条件覆盖，晚到重投把 3.94 天前 run 的 finished−started 拉爆 p99——首投仅无真 started_at 才兜底、重投 COALESCE 保留，库内唯一污染行 finished_at 置 NULL |
 | P8-6 统计页接线两缺陷 | `问题记录-P8-6统计页接线两缺陷.md` | ① TopN「按接口/按套件」500（用户实测「按用例、按接口统计数据失败」，按用例实际 200）：P8-6 补的 refId 用了 `MAX/MIN(uuid)`——Postgres 无此聚合（42883），改 `ARRAY_AGG…[1]` 取组内最近一次失败；② `stats/overview` 带 projectIds 必炸 500（双 WHERE）：P8-4 的 assets/coverage 六个子查询 `scopeWhere` 后又跟 `WHERE status…`，scope 全量时片段为空才侥幸合法（验收用管理员没踩到），P8-6 前端永远带 projectIds 后全部触发——统一改 `scopeAnd` 并入既有 WHERE |
 | P8-7 验收五轮 TopN 仓库用例身份归并 | `问题记录-P8-7验收20260910五轮TopN仓库用例身份归并.md` | 失败 TopN「按仓库用例」维按裸 `guessed_case_key` 分组，同一条用例的两种 key 形态（`pkg.Mod#test` 与 `pkg/Mod.py::test`）拆成两行（dev 库 30+10 应为 40）；且 refId 直跳「最近一次失败 run」详情替用户挑了一次执行（用户反馈「很奇怪」）。修法：LEFT JOIN `repo_test_cases` 用 ingest.ts 同一把匹配尺归并身份（未匹配退去参数化裸 key），下钻改 `/repo/tree?keyword=<规范 case_key>`（用例树 = 资产页，历史在抽屉）；flaky 新增的仓库任务腿序列分区键同款规范尺 |
+| Mock 公开地址双域名部署失效 | `问题记录-Mock公开地址双域名部署失效.md` | 双域名部署（页面域名 A、API 域名 B）下 Mock「复制公开地址」生成 `https://<A>:3000/mock/...`：`copy()` 用页面 origin 换 3000 端口猜 mock 服务源，只在本地开发成立。修法：`mockPublicOrigin()` 从 `VITE_API_BASE_URL` 剥 `/api/v1` 得后端源，未配置回退开发猜法；`.env.example` 补生产取值注释。伴生记录同轮梳理的部署口径（`PUBLIC_BASE_URL=B` 的四类消费者、`{{reportUrl}}` 需 B 伺服 SPA） |
+| 通知 reportUrl 双域名部署失效 | `问题记录-通知reportUrl双域名部署失效.md` | 双域名部署（页面 A、API B、`PUBLIC_BASE_URL=B`）下通知「链接: {{reportUrl}}」指向只跑 API 的 B，点开 404：`reportUrl()` 拼 `PUBLIC_BASE_URL + 前端 SPA 路由`，而该变量其余三类消费者（产物直链 / `APITRACK_URL` / `/mcp` 白名单）打开的都是 API 路由，单域名同源掩盖了「人走页面源、机器走 API 源」的错位。修法：`reportUrl()` 三级回退 `WEB_BASE_URL`（页面根地址）→ `PUBLIC_BASE_URL` → 相对路径，`PUBLIC_BASE_URL` 语义不动；站内收件箱相对路径 link 不受影响 |
+| 助手引擎响应路径双重解包 | `问题记录-助手引擎响应路径双重解包.md` | P9-4b 用户实测：任何配置正确的平台测试连接必报「assistant upstream did not return a conversation id」。根因是 `callJson` 预剥了一层 `data`，而协议的「会话 id 响应路径」本就是根相对设计——agent-vendor 的 `{"code":"0000","data":89}` 被剥成数字 `89` 后再取 `.data` 路径当场取空。修法：引擎返回响应根对象、路径配置说了算（引擎不解信封）；`engineHistory` 的独立读腿同款修正。修复后本地 agent-vendor（agentId=38）全链路实测通：建会话 → 工具行（get_project_overview EXECUTING/FINISHED）→ token 流式 |
+| 助手 MRTR 删除确认被当文字吞掉 | `问题记录-助手MRTR删除确认被当文字吞掉.md` | 2026-09-15 用户实测：让 agent 删环境，agent 说「已发送确认表单」但抽屉里什么都没有、聊天里回「确认」也无效。根因：/mcp 的 MRTR 闸门与 agent-vendor 转述都正常（确认请求以 `MESSAGE + data.type=ELICITATION + elicitationSchema` 到达聊天流），但引擎的 token 映射把它当普通文字增量，schema/工具名整体丢弃。修法：协议映射新增 `sse.elicit`（判别字段分流）+ `sse.tool.input`（确认卡拿删除目标），迁移 060 补 agent-vendor 方言协议；前端渲染 MRTR 确认表单卡，确认动作因上游第三方 resume 通道（/api/v1/chat/resume-elicitation）对 API-Key 会话稳定 5000 而走**本人 JWT 的既有 REST**（usage 两段式，与环境页同款）；provider 编辑面板 `buildInput` 改为保留表单未管理的协议键，防保存剥掉新映射 |
+| 助手凭据通道两缺陷 | `问题记录-助手凭据通道两缺陷.md` | 2026-09-16 P9-8 收尾自查（非用户实测）发现两处都在用户级凭据这条路上：① PUT `my-agents` 的 `params` 循环只验「键来自模式」、没排除 `secret: true` 项 ⇒ 明文 apiKey 可落进明文列并随 `GET /my-agents` 回显，且因 `toRuntimeAgent` 先铺 params 再叠 secrets 而**照常可用**、静默生效（破门槛 12）；修法：`secretKeys` 命中即 400，params 整份替换语义使下次保存即清残留，不回填（未上线）。② `toRuntimeAgent` 解密失败直接冒成 Fastify 500（函数注释写着「抛清楚」但无路由接住），用户拿不到指向性；修法：`loadResolvedDefaultAgent` 统一闸门 + 会话归属/测试连接两处同款 catch，一律 503/2005「去设置卡重填」，原因只进服务端日志 |
 
 ## 约定
 
@@ -94,7 +101,7 @@
   `upsert_environment`——与缺陷一项：MCP 创建接口流程内显示为 id）。用户后续**持续
   测试继续**：新发现的缺陷照常记录到本目录，`DEVELOPMENT_PLAN.md` 9.7 各行遗留的
   「待用户实测」事项随该轮验收关闭。
-- **P7 已于 2026-09-09 通过用户验收**（结论见 `DEVELOPMENT_PLAN_P6-P10.md` 十一章
+- **P7 已于 2026-09-09 通过用户验收**（结论见 `DEVELOPMENT_PLAN_P6-P14.md` 十一章
   11.5 末「P7 验收结论」）。验收期（09-07 ~ 09-09）计划详情四轮反馈里的交互调整与
   五个缺陷全部修复关闭：详情 500（LATERAL 括号错位）、result_null 键名显示、
   summary 不推进、计划日期时区错位、Babel 注释笔误；两项口径修订（通过率
