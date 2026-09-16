@@ -41,7 +41,6 @@ import { ShareReportPage } from "./components/ShareReportPage";
 import { Members } from "./components/Members";
 import { SpecCases } from "./components/SpecCases";
 import { TestPlans, TestPlanPage } from "./components/TestPlans";
-import { NotificationsPage } from "./components/NotificationsPage";
 import { AssistantDock } from "./components/AssistantDock";
 import { antdTheme, useMode } from "./theme";
 import { useAuthStore } from "./stores/authStore";
@@ -129,8 +128,11 @@ function Root() {
         <Route path="/dashboard" element={<GlobalApp page="dashboard" themePreference={preference} onThemeChange={setPreference} />} />
         <Route path="/projects" element={<GlobalApp page="projects" themePreference={preference} onThemeChange={setPreference} />} />
         <Route path="/system" element={<GlobalApp page="system" themePreference={preference} onThemeChange={setPreference} />} />
-        {/* P9-1：通知列表页（全局层第四页，跨项目用户级）。 */}
-        <Route path="/notifications" element={<GlobalApp page="notifications" themePreference={preference} onThemeChange={setPreference} />} />
+        {/* P12-2：个人中心（全局层 `/me`，四个 tab）。通知整页迁为其 `/me/notifications`
+            tab；旧 `/notifications` 路由删除——未发布无包袱，不留兼容跳转。`/me/:tab`
+            覆盖 notifications / mcp / credentials（未知段由 MePage 回落基本信息）。 */}
+        <Route path="/me" element={<GlobalApp page="me" themePreference={preference} onThemeChange={setPreference} />} />
+        <Route path="/me/:tab" element={<GlobalApp page="me" themePreference={preference} onThemeChange={setPreference} />} />
 
       {/* One shell for the whole project layer, so child navigation never rebuilds it. */}
       <Route path="/projects/:projectId" element={<ProjectShell />}>

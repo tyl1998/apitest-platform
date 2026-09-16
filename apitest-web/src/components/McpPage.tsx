@@ -2,25 +2,32 @@ import { useCallback, useEffect, useState } from "react";
 import { Modal, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
-import { Plus, Trash2 } from "lucide-react";
-import { api, type McpScope, type McpToken, type McpToolSummary } from "../api";
-import { useCanManageProject, useCanWrite } from "../hooks/useMyRole";
+import { Unlink } from "lucide-react";
+import { api, type McpProjectBinding, type McpScope, type McpToolSummary } from "../api";
+import { useCanManageProject } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty } from "../ui";
 import { apiMessage } from "./DataSourceList";
 import { CopyButton } from "./CopyButton";
-import { IconButton } from "./IconButton";
 
 /**
- * MCP 管理页（P5-6，计划 9.6）。
+ * MCP 管理页（P5-6 建，P12-2 降级；计划 18.4）。
  *
- * 前端只提供管理入口，不做对话式创建 UI（交互文档 3.10 的边界照旧）：启停开关、
- * 端点地址、Token 签发与吊销、工具清单只读表。消费方是内网里受控的智能体平台——
- * 它拿 Token 经 `/mcp` 调工具，页面上没有任何「替你调一次」的动作。
+ * **能力面已上移用户级**：签发 / 吊销是「本人」的动作（`/me/mcp`，个人中心），scope 挂在
+ * 绑定上而不是 Token 上（P12 边界 2）。本页因此只剩三件事：
+ *
+ * 1. **服务与端点 + 启停开关**（项目总闸，边界 4；`mcp_enabled` 语义不变，仍 404）；
+ * 2. **绑定表**：谁把钥匙开到了我这扇门上（绑定人 / scope / last_used_at）——签发权上移
+ *    之后，项目管理员对「谁能开我这扇门」的最终控制不能丢，所以保留踢绑定；
+ * 3. **工具清单**（只读展示，非协议面）。
+ *
+ * 前端只提供管理入口，不做对话式创建 UI（交互文档 3.10 的边界照旧）：消费方是内网里
+ * 受控的智能体平台——它拿 Token 经 `/mcp` 调工具，页面上没有任何「替你调一次」的动作。
  */
 
-/** MCP 端点挂在根上（与 `/ingest` 同层），不带 `/api/v1` 前缀——与 Runner 的根地址同一拼法。 */
-function mcpEndpointUrl() {
+/** MCP 端点挂在根上（与 `/ingest` 同层），不带 `/api/v1` 前缀——与 Runner 的根地址同一拼法。
+ *  个人中心的 MCP tab 复用这一份（两处展示同一个地址，不引出第二份拼法）。 */
+export function mcpEndpointUrl() {
   const base = import.meta.env.VITE_API_BASE_URL ?? `${window.location.origin.replace(/:\d+$/, ":3000")}/api/v1`;
   return `${String(base).replace(/\/api\/v1\/?$/, "")}/mcp`;
 }
@@ -32,31 +39,21 @@ export function McpPage() {
   const { t } = useTranslation();
   const { projectId } = useParams();
   const { projectId: loadedProjectId, loading: projectLoading, mcpEnabled, updateMcpEnabled } = useProjectStore();
-  /* 开关是项目设置写（P6-1 起 requireProjectAdmin）——developer 不渲染；Token 的
-     签发/吊销是资源写，developer 可见、viewer 全藏（P6-4）。 */
+  /* 开关与踢绑定都是项目级管理动作（requireProjectAdmin）——developer 不渲染；绑定表
+     本身是项目读，全员可见（「谁的钥匙开着」不是秘密，收钥匙才是管理动作）。 */
   const canManage = useCanManageProject();
-  const canWrite = useCanWrite();
 
-  const [tokens, setTokens] = useState<McpToken[]>();
+  const [bindings, setBindings] = useState<McpProjectBinding[]>();
   const [tools, setTools] = useState<McpToolSummary[]>();
   const [failed, setFailed] = useState(false);
   const [savingToggle, setSavingToggle] = useState(false);
   const [scopeFilter, setScopeFilter] = useState<"all" | McpScope>("all");
 
-  /* ── 签发弹窗：两段式——表单段可取消，明文段必须显式「我已保存」才能关 ─────── */
-  const [issueOpen, setIssueOpen] = useState(false);
-  const [issueName, setIssueName] = useState("");
-  const [issueWrite, setIssueWrite] = useState(false);
-  const [issueExecute, setIssueExecute] = useState(false);
-  const [issuing, setIssuing] = useState(false);
-  /** 刚签出的明文。只存在于弹窗这一段里，关闭即清——「只显示一次」是纪律不是建议。 */
-  const [issued, setIssued] = useState<{ token: string; scope: McpScope[] }>();
-
   const load = useCallback(async () => {
     if (!projectId || loadedProjectId !== projectId || projectLoading) return;
     try {
-      const [tokenList, toolList] = await Promise.all([api.mcpTokens(projectId), api.mcpTools(projectId)]);
-      setTokens(tokenList);
+      const [bindingList, toolList] = await Promise.all([api.mcpBindings(projectId), api.mcpTools(projectId)]);
+      setBindings(bindingList);
       setTools(toolList);
       setFailed(false);
     } catch {
@@ -76,45 +73,25 @@ export function McpPage() {
     } finally { setSavingToggle(false); }
   }
 
-  async function issue() {
-    if (!projectId || !issueName.trim()) { message.error(t("mcp.tokenNameRequired")); return; }
-    setIssuing(true);
-    try {
-      const scope: McpScope[] = ["read", ...(issueWrite ? ["write" as const] : []), ...(issueExecute ? ["execute" as const] : [])];
-      const created = await api.createMcpToken(projectId, { name: issueName.trim(), scope });
-      setIssued({ token: created.token, scope: created.scope });
-    } catch (error) {
-      message.error(apiMessage(error) ?? t("mcp.tokenCreateFailed"));
-    } finally { setIssuing(false); }
-  }
-
-  /** 明文段唯一的出口：清状态（明文随之消失）并刷新列表——新 Token 立刻出现在表里。 */
-  function closeIssue() {
-    setIssueOpen(false);
-    setIssued(undefined);
-    setIssueName("");
-    setIssueWrite(false);
-    setIssueExecute(false);
-    void load();
-  }
-
-  function revokeToken(token: McpToken) {
+  /**
+   * 踢绑定（边界 4）：只删绑定行、不吊销 Token——owner 可能还拿这把钥匙开着别的项目
+   * 的门，项目收的是「我这扇门」。即时生效：下一次 tools/call 就按新的绑定集判。
+   */
+  function unbind(binding: McpProjectBinding) {
     if (!projectId) return;
     Modal.confirm({
-      title: t("mcp.tokenRevokeTitle", { name: token.name }),
-      /* 吊销即时生效（鉴权候选集走部分索引，被吊销行不在里面）：正在用它调用的
-         agent 下一次请求就被拒——影响面要在点之前说清。 */
-      content: t("mcp.tokenRevokeHint"),
-      okText: t("mcp.tokenRevoke"), okButtonProps: { danger: true }, cancelText: t("action.cancel"),
+      title: t("mcp.bindingUnbindTitle", { name: binding.ownerName ?? binding.ownerEmail ?? binding.tokenName }),
+      content: t("mcp.bindingUnbindHint"),
+      okText: t("mcp.bindingUnbind"), okButtonProps: { danger: true }, cancelText: t("action.cancel"),
       onOk: async () => {
-        try { await api.revokeMcpToken(projectId, token.id); message.success(t("mcp.tokenRevoked")); await load(); }
-        catch (error) { message.error(apiMessage(error) ?? t("mcp.tokenRevokeFailed")); }
+        try { await api.unbindMcpBinding(projectId, binding.tokenId); message.success(t("mcp.bindingUnbound")); await load(); }
+        catch (error) { message.error(apiMessage(error) ?? t("mcp.bindingUnbindFailed")); }
       },
     });
   }
 
   const endpoint = mcpEndpointUrl();
-  /* 过滤与排序在前端做：43 行的静态清单，服务端没有再开一个查询参数的理由。 */
+  /* 过滤与排序在前端做：几十行的静态清单，服务端没有再开一个查询参数的理由。 */
   const visibleTools = (tools ?? [])
     .filter((tool) => scopeFilter === "all" || tool.scope === scopeFilter)
     .sort((a, b) => SCOPE_ORDER[a.scope] - SCOPE_ORDER[b.scope] || a.name.localeCompare(b.name));
@@ -147,7 +124,7 @@ export function McpPage() {
       title={t("mcp.loadFailed")}
       hint={t("mcp.loadFailedHint")}
       action={<button className="btn" onClick={() => void load()}>{t("action.retry")}</button>}
-    /> : tokens === undefined || tools === undefined ? <p className="muted">{t("common.loading")}</p> : <>
+    /> : bindings === undefined || tools === undefined ? <p className="muted">{t("common.loading")}</p> : <>
       {/* ── 一、服务与端点 ──────────────────────────────────────────────────── */}
       <section className="panel">
         <div className="panel-head"><strong>{t("mcp.service")}</strong></div>
@@ -164,41 +141,42 @@ export function McpPage() {
         </div>
       </section>
 
-      {/* ── 二、Token ───────────────────────────────────────────────────────── */}
+      {/* ── 二、绑定（只读视图 + 踢绑定）────────────────────────────────────────
+          P12-2 起这不再是「Token 管理」：Token 归人、签发在本人侧，项目侧只回答
+          「谁的钥匙开着我的门」。 */}
       <section className="panel">
-        <div className="panel-head">
-          <strong>{t("mcp.tokens")}</strong>
-          {canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => setIssueOpen(true)}>
-            <Plus size={14} />{t("mcp.tokenCreate")}
-          </button>}
-        </div>
+        <div className="panel-head"><strong>{t("mcp.bindings")}</strong></div>
         <div className="panel-body">
-          <p className="form-note">{t("mcp.tokensHint")}</p>
-          {tokens.length ? <table className="grid">
+          <p className="form-note">{t("mcp.bindingsHint")}</p>
+          {bindings.length ? <div className="table-scroll"><table className="grid">
             <thead><tr>
+              <th>{t("mcp.bindingOwner")}</th>
               <th>{t("mcp.tokenName")}</th>
               <th className="mono">{t("mcp.tokenPrefix")}</th>
               <th>{t("mcp.tokenScope")}</th>
               <th>{t("mcp.tokenLastUsed")}</th>
-              <th>{t("mcp.tokenCreatedAt")}</th>
-              <th className="col-actions" />
+              <th className="mono">{t("mcp.bindingBoundAt")}</th>
+              {canManage && <th className="col-actions" />}
             </tr></thead>
             <tbody>
-              {tokens.map((token) => <tr key={token.id}>
-                <td><strong className="truncate">{token.name}</strong></td>
-                <td className="mono muted">{token.tokenPrefix}…</td>
-                {/* scope 是协议词汇（Token 里存的、tools/list 裁剪用的那个值），原样展示。 */}
-                <td><span className="tag-inline">{token.scope.map((scope) => <span key={scope} className="chip">{scope}</span>)}</span></td>
-                <td className="mono muted">{token.lastUsedAt ? new Date(token.lastUsedAt).toLocaleString() : t("mcp.tokenNeverUsed")}</td>
-                <td className="mono muted">{new Date(token.createdAt).toLocaleString()}</td>
-                <td className="col-actions">
-                  {canWrite && <div className="row-actions">
-                    <IconButton icon={<Trash2 size={14} />} label={t("mcp.tokenRevoke")} tone="danger" onClick={() => revokeToken(token)} />
-                  </div>}
+              {bindings.map((binding) => <tr key={binding.tokenId}>
+                <td className="truncate">
+                  <strong>{binding.ownerName ?? t("mcp.bindingOwnerDeleted")}</strong>
+                  {binding.ownerEmail && <div className="mono muted">{binding.ownerEmail}</div>}
                 </td>
+                <td className="truncate">{binding.tokenName}</td>
+                <td className="mono muted">{binding.tokenPrefix}…</td>
+                <td><span className="tag-inline">{binding.scope.map((scope) => <span key={scope} className="chip">{scope}</span>)}</span></td>
+                <td className="mono muted">{binding.lastUsedAt ? new Date(binding.lastUsedAt).toLocaleString() : t("mcp.tokenNeverUsed")}</td>
+                <td className="mono muted">{new Date(binding.boundAt).toLocaleString()}</td>
+                {canManage && <td className="col-actions"><div className="row-actions">
+                  <button className="btn danger btn-with-icon" onClick={() => unbind(binding)}>
+                    <Unlink size={14} />{t("mcp.bindingUnbind")}
+                  </button>
+                </div></td>}
               </tr>)}
             </tbody>
-          </table> : <Empty title={t("mcp.tokensEmpty")} hint={t("mcp.tokensEmptyHint")} />}
+          </table></div> : <Empty title={t("mcp.bindingsEmpty")} hint={t("mcp.bindingsEmptyHint")} />}
         </div>
       </section>
 
@@ -238,66 +216,5 @@ export function McpPage() {
         </div>
       </section>
     </>}
-
-    {/* 签发弹窗：表单段可取消；明文段没有 X、没有遮罩关闭——一次性凭据不能被顺手点掉。 */}
-    <Modal
-      open={issueOpen}
-      title={t("mcp.issueTitle")}
-      okText={issued ? t("mcp.issueDone") : t("mcp.tokenCreate")}
-      cancelText={t("action.cancel")}
-      confirmLoading={issuing}
-      okButtonProps={issued ? undefined : { disabled: !issueName.trim() }}
-      cancelButtonProps={issued ? { style: { display: "none" } } : undefined}
-      closable={!issued}
-      maskClosable={!issued}
-      keyboard={!issued}
-      onOk={() => (issued ? closeIssue() : void issue())}
-      onCancel={() => closeIssue()}
-    >
-      {issued ? <>
-        {/* 签发结果回显 scope：把钥匙交出去前能核对「这把是只读的」。 */}
-        <div style={{ display: "flex", gap: "var(--s2)", alignItems: "center", marginTop: "var(--s4)" }}>
-          <span className="label">{t("mcp.issueScope")}</span>
-          <span className="tag-inline">{issued.scope.map((scope) => <span key={scope} className="chip">{scope}</span>)}</span>
-        </div>
-        <div className="code-block" style={{ marginTop: "var(--s4)" }}>
-          <div className="code-block-head">
-            <span className="label">{t("mcp.issuePlaintext")}</span>
-            <CopyButton value={() => issued.token} />
-          </div>
-          <pre className="code">{issued.token}</pre>
-        </div>
-        <p className="form-note">{t("mcp.issuePlaintextOnce")}</p>
-      </> : <>
-        <label className="field" style={{ marginTop: "var(--s4)" }}>
-          <span>{t("mcp.tokenName")}</span>
-          <input
-            className="input"
-            value={issueName}
-            onChange={(event) => setIssueName(event.target.value)}
-            placeholder={t("mcp.tokenNamePlaceholder")}
-          />
-        </label>
-        <div style={{ display: "grid", gap: "var(--s2)", marginTop: "var(--s4)" }}>
-          <span className="label">{t("mcp.issueScope")}</span>
-          {/* read 恒在（服务端也会补齐）：只读钥匙不存在，「给 write 不给 read」是盲写。 */}
-          <label className="check-field" title={t("mcp.issueScopeReadHint")}>
-            <input type="checkbox" checked disabled />
-            {t("mcp.issueScopeRead")}
-          </label>
-          <label className="check-field">
-            <input type="checkbox" checked={issueWrite} onChange={(event) => setIssueWrite(event.target.checked)} />
-            {t("mcp.issueScopeWrite")}
-          </label>
-          <label className="check-field">
-            <input type="checkbox" checked={issueExecute} onChange={(event) => setIssueExecute(event.target.checked)} />
-            {t("mcp.issueScopeExecute")}
-          </label>
-        </div>
-        {/* 边界 2 必须在勾上 write / execute 的那一刻说清，否则「Token 突然写不动了」
-            会变成一个查不到原因的问题（9.6 的原话）。 */}
-        {(issueWrite || issueExecute) && <p className="form-note">{t("mcp.issueWriteWarning")}</p>}
-      </>}
-    </Modal>
   </main>;
 }

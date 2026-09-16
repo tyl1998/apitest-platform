@@ -4330,7 +4330,8 @@ button.step-row:hover { background: var(--hover); }
 .bell-item-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: transparent; }
 .bell-item.is-unread .bell-item-dot { background: var(--accent); }
 
-/* 列表页（/notifications）：标题格的排版——未读点 + 标题/正文/项目名三行堆叠。 */
+/* 通知列表（P9-1 的 /notifications，P12-2 起挂 /me/notifications）：标题格的排版——
+   未读点 + 标题/正文/项目名三行堆叠。 */
 .notification-cell { display: flex; align-items: flex-start; gap: var(--s2); min-width: 0; }
 .notification-cell-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
 /* 标题不省略、允许折行（同铃铛下拉，2026-09-11 用户反馈）。 */
@@ -4349,6 +4350,51 @@ button.step-row:hover { background: var(--hover); }
 .notification-project { font-size: 11px; margin-top: 2px; }
 .notification-unread { color: var(--accent); font-weight: 500; }
 .notification-grid td { height: 52px; }
+
+/* ── 个人中心（P12-2：/me 四 tab）──────────────────────────────────────────── */
+
+/* 改密表单：三个字段纵向排、宽度收在舒适录入宽度——表单铺满 1680px 的 measure 会让
+   每一行都要横扫视线。 */
+.me-password-form { display: grid; gap: var(--s3); max-width: 380px; margin-top: var(--s4); }
+.me-password-form .field { margin-bottom: 0; }
+.me-password-form .btn { justify-self: start; }
+
+/* 我的 Token：一把 Token 一块（身份行 + 绑定表），而不是「Token 表里塞一张绑定表」的
+   嵌套表格——两层信息各自成表，扫读时不会混行。 */
+.me-token-list { display: grid; gap: var(--s5); }
+.me-token { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; min-width: 0; }
+.me-token-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2) var(--s4);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--line);
+  background: var(--raised);
+}
+.me-token-identity { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: var(--s2); }
+.me-token-identity strong { font-size: 13px; }
+/* 时间与动作排在右侧；动作永远贴着右缘（与表格的 col-actions 同款落点）。 */
+.me-token-head .row-actions { margin-left: auto; }
+/* 绑定表嵌在 Token 块里：去掉 .grid 的外框（外层 .me-token 已有边框），min-width 归零
+   ——窄屏时由这个容器自己横向滚动，而不是把整页撑宽（.table-scroll 的 720px 起步是给
+   全宽列表的，套在小卡里会无谓地常驻滚动条）。 */
+.me-binding-table { overflow-x: auto; }
+.me-binding-table > .grid { min-width: 0; border: 0; }
+/* 未绑定不是错误，但它是「这把钥匙现在开不了任何门」——用注脚而不是空态卡片说明，
+   保持一块 Token 的视觉连续。 */
+.me-token > .form-note { padding: var(--s3) var(--s4); margin: 0; }
+
+/* ── 账号动作的常红标记（P12-2 修订：个人中心 / 登出移进助手抽屉头）───────────── */
+
+/* `.btn.danger` 与 antd 菜单的 danger 项都常红——「离开 / 破坏性」动作的既有语汇。
+   `.icon-btn` 的 tone="danger" 只在 hover 变红（点之前不喊），这里要的是常显标记，
+   所以单开一个类，而不是改 tone 的既有语义（改了两百处删除图标会一起变红）。 */
+.icon-btn.is-danger-mark { color: var(--fail); border-color: var(--fail); }
+.icon-btn.is-danger-mark:hover:not(:disabled) { color: var(--fail); border-color: var(--fail); background: var(--raised); }
+/* 抽屉 chips 里的登出同款标记（与头行那枚同名同动作，两处必须一个颜色）。 */
+.assistant-chip.is-danger { color: var(--fail); border-color: var(--fail); }
+.assistant-chip.is-danger:hover { color: var(--fail); border-color: var(--fail); background: var(--raised); }
 
 /* ── 站内助手抽屉（P9-4）───────────────────────────────────────────────────── */
 
@@ -4385,6 +4431,11 @@ button.step-row:hover { background: var(--hover); }
    窄屏吃满整宽——这里的 100vw !important 压过 antd 的内联宽度。 */
 @media (max-width: 520px) {
   .assistant-drawer .ant-drawer-content-wrapper { width: 100vw !important; }
+  /* 头行按钮收到 26px（P12-2 加了个人中心 / 登出后是六枚）：96px 头像 + 六枚 30px
+     钮在 360px 手机上会把标题挤成 0 宽还被 antd 关闭钮顶出去。标题本身
+     min-width:0，恒先让位——能收的只有这排图标。 */
+  .assistant-quick-toggle { gap: 2px; }
+  .assistant-quick-toggle .icon-btn { width: 26px; height: 26px; }
 }
 /* 左缘拖拽调宽（2026-09-15 用户反馈）：6px 热区 + 居中 2px 视觉线（悬浮才显形），
    拖拽中走 accent（交互元素才准用 accent）。is-resizing 掐掉 antd 的宽度过渡——

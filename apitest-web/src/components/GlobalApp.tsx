@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Form, Input, Modal, Pagination, Select, Switch, message } from "antd";
 import { useTranslation } from "react-i18next";
-import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { Folder, LayoutDashboard, LogOut, Settings, type LucideIcon } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { Folder, LayoutDashboard, Settings, type LucideIcon } from "lucide-react";
 import { api, isStatsTimeoutError, type Preferences, type ProjectMetric, type StatsFailures, type StatsOverview, type StatsProjectMetric, type StatsProjectRow, type StatsTrendBucket, type WorkerFleet, type WorkerMode } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useRecordLastPage } from "../hooks/useRecordLastPage";
@@ -10,15 +10,14 @@ import { useAuthStore } from "../stores/authStore";
 import type { ModePreference } from "../theme";
 import { Delta, Empty, Readout, Status } from "../ui";
 import { Donut, LineChart, Sparkline, StackedBars } from "./charts";
-import { IconButton } from "./IconButton";
 import { RunnerPoolPanel } from "./RunnerPoolPanel";
 import { AssistantProvidersPanel } from "./AssistantProvidersPanel";
 import { UsersPanel } from "./UsersPanel";
 import { AuditLogsPanel } from "./AuditLogsPanel";
 import { FailureCategoriesPanel } from "./FailureCategoriesPanel";
-import { NotificationsPage } from "./NotificationsPage";
+import { MePage } from "./MePage";
 
-type GlobalPage = "dashboard" | "projects" | "system" | "notifications";
+type GlobalPage = "dashboard" | "projects" | "system" | "me";
 
 const PAGE_SIZES = [10, 20, 50, 100];
 
@@ -50,9 +49,7 @@ const ATTRIBUTION_COLORS = [
 export function GlobalApp({ page, themePreference, onThemeChange }: { page: GlobalPage; themePreference: ModePreference; onThemeChange: (mode: ModePreference) => void }) {
   useRecordLastPage();
   const navigate = useNavigate();
-  const location = useLocation();
   const { t, i18n } = useTranslation();
-  const logout = useAuthStore((state) => state.logout);
   const nav: [GlobalPage, string, LucideIcon][] = [["dashboard", t("nav.dashboard"), LayoutDashboard], ["projects", t("nav.projects"), Folder], ["system", t("nav.system"), Settings]];
 
   /* 顶层导航壳（2026-09-10）：全局层只有三个页面，侧栏在这里只会烧掉 210px 宽度
@@ -71,16 +68,11 @@ export function GlobalApp({ page, themePreference, onThemeChange }: { page: Glob
             </button>
           ))}
         </nav>
-        {/* 与项目壳同款退出控件：topbar 右缘，不随导航滚动。通知入口（2026-09-16）
-            移入站内助手——铃铛位现在是助手入口的槽位（AssistantDock portal 进来：
-            头像按钮 + 未读徽标），抽屉内有最近通知。 */}
+        {/* 顶栏右缘不再是账号区（P12-2 修订 2026-09-16：个人中心 / 登出移进站内
+            助手的抽屉头，与通知/换形象/主题/语言同排）。留下的只有助手入口槽位
+            ——AssistantDock 的头像按钮 portal 进来（未读徽标也在这）。 */}
         <div className="topbar-actions">
           <span id="assistant-topbar-slot" className="assistant-topbar-slot" />
-          <IconButton
-            icon={<LogOut size={15} />}
-            label={t("action.logout")}
-            onClick={() => { logout(); navigate(`/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`); }}
-          />
         </div>
       </header>
       <main className="content">
@@ -91,7 +83,9 @@ export function GlobalApp({ page, themePreference, onThemeChange }: { page: Glob
           {page === "dashboard" && <DashboardPage />}
           {page === "projects" && <ProjectsPage />}
           {page === "system" && <SystemPage themePreference={themePreference} onThemeChange={onThemeChange} language={i18n.language === "en" ? "en" : "zh-CN"} />}
-          {page === "notifications" && <NotificationsPage />}
+          {/* 个人中心（P12-2）：全局层 `/me`——通知整页迁入其中的一个 tab（旧
+              `/notifications` 路由删除，未发布无包袱），「我的」这个维度由此落点。 */}
+          {page === "me" && <MePage />}
         </div>
       </main>
     </div>

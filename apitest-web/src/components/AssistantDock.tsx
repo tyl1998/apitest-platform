@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Drawer, Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, ArrowRight, Bell, Dices, KeyRound, Languages, LogOut, MapPin, Moon, Plus, Send, Settings, Square, Sun, SunMoon, Trash2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, Bell, Dices, KeyRound, Languages, LogOut, MapPin, Moon, Plus, Send, Settings, Square, Sun, SunMoon, Trash2, UserRound } from "lucide-react";
 import {
   api,
   classifyAssistantError,
@@ -81,7 +81,8 @@ import { newAvatarSeed } from "../lib/avatar";
  *   进「设置」卡（这就是 503/2005 在用户级的落点）；
  * - **最近通知（2026-09-16）**：顶栏铃铛（P9-1）撤掉，通知的常驻入口 = 顶栏助手
  *   钮的未读徽标 + 抽屉头 Bell 钮 + 通知视图（点行标已读深链 / 全部已读 / 查看
- *   全部进 /notifications 整页）；antd 弹窗（即时感）与 Root 轮询照旧；
+ *   全部进 /me/notifications 整页——通知页 P12-2 起是个人中心的一个 tab）；antd
+ *   弹窗（即时感）与 Root 轮询照旧；
  * - 人物头像（P9-6 已落地）：`Avatar` 按种子确定性画人物——顶栏入口 30px 半身、
  *   抽屉头 96px 全身；种子 = preferences.avatarSeed 覆盖 > users.id（头像不
  *   落库，前端每次画），「换一个形象」写新 avatarSeed；眨眼只在抽屉打开且无
@@ -879,7 +880,11 @@ export function AssistantDock() {
       appendLocalEntries([{ role: "system", text: i18n.t("assistantCmd.openNeedsProject") }]);
       return;
     }
-    const to = command.page.global ? `/${command.page.key}` : `/projects/${projectId}/${command.page.key}`;
+    /* 全局页目标是 `/${path}`（缺省 = key）：P12-2 起通知不在根上，而是个人中心的
+       一个 tab（`/me/notifications`），靠 CommandPage.path 表达。 */
+    const to = command.page.global
+      ? `/${command.page.path ?? command.page.key}`
+      : `/projects/${projectId}/${command.page.key}`;
     if (await confirmLeave()) {
       setOpen(false);
       navigate(to);
@@ -1117,10 +1122,16 @@ export function AssistantDock() {
           <strong>{t(view === "settings" ? "assistantSettings.title" : "assistantDrawer.title")}</strong>
           {!chatReady && view === "chat" && <span className="muted" style={{ fontSize: 12 }}>{t("assistant.stateUnconfigured")}</span>}
         </div>
-        {/* 换形象/通知/主题/语言快捷切换（2026-09-16 通知入口随铃铛移入）：通知钮
-            带未读点、切进通知视图；换形象（P9-6）写新 avatarSeed；主题/语言循环
-            三态/两态，落库共用 applyPreference——不因入口不同长出第二套持久化。 */}
+        {/* 个人中心 / 通知 / 换形象 / 主题 / 语言 / 登出（2026-09-16 通知入口随铃铛
+            移入；P12-2 修订：顶栏右上角的「个人中心 + 退出」整对撤掉，改挂这里——
+            账号级动作与通知/换形象/主题同属「我自己」的操作，收在头像这一排；抽屉
+            全视图常驻，未配置 agent 时也在，登出不会因为没配 agent 就找不到）。 */}
         <span className="assistant-quick-toggle">
+          <IconButton
+            icon={<UserRound size={14} />}
+            label={t("me.title")}
+            onClick={() => { setOpen(false); void (async () => { if (await confirmLeave()) navigate("/me"); })(); }}
+          />
           <span className="assistant-bell">
             <IconButton
               icon={<Bell size={14} />}
@@ -1146,6 +1157,14 @@ export function AssistantDock() {
             label={`${t("assistantDrawer.language")}：${prefs?.language === "en" ? "English" : "中文"}`}
             disabled={!prefs}
             onClick={toggleLanguage}
+          />
+          {/* 登出：常红标记（`.btn.danger` 同款语义色用法——破坏性/离开动作），
+              点开仍是确认卡（纯前端清 token，零新路由）。 */}
+          <IconButton
+            icon={<LogOut size={14} />}
+            label={t("assistantDrawer.logout")}
+            className="is-danger-mark"
+            onClick={confirmLogout}
           />
         </span>
       </div>}
@@ -1270,7 +1289,7 @@ export function AssistantDock() {
             </ul>
             : <div className="assistant-notifications-state"><p className="muted">{t("notifications.empty")}</p></div>}
         <div className="assistant-notifications-foot">
-          <button type="button" className="linkish" onClick={() => { setOpen(false); void (async () => { if (await confirmLeave()) navigate("/notifications"); })(); }}>
+          <button type="button" className="linkish" onClick={() => { setOpen(false); void (async () => { if (await confirmLeave()) navigate("/me/notifications"); })(); }}>
             {t("notifications.viewAll")}
             <ArrowRight size={12} />
           </button>
@@ -1390,7 +1409,8 @@ export function AssistantDock() {
 
         {/* 快捷 chips（边界 6）：显式入口不靠猜意图。对话用户级化（2026-09-16）后
             新会话不看项目角色；设置 = 个性化 + 我的 agent 配置卡（P9-4b 起在抽屉
-            内）；改密码 P9-5 起为抽屉内受控表单卡（不再跳页面）。 */}
+            内）；改密码 P9-5 起为抽屉内受控表单卡（不再跳页面）。登出 = 与抽屉头
+            那枚同名同动作（头行常驻、这枚在对话视图里顺手；标记常红）。 */}
         <div className="assistant-chips">
           <button type="button" className="assistant-chip" disabled={creating} onClick={() => void createConversation()}>
             <Plus size={12} />{t("assistantDrawer.newConversation")}
@@ -1401,7 +1421,7 @@ export function AssistantDock() {
           <button type="button" className="assistant-chip" onClick={() => setView("password")}>
             <KeyRound size={12} />{t("assistantDrawer.changePassword")}
           </button>
-          <button type="button" className="assistant-chip" onClick={confirmLogout}>
+          <button type="button" className="assistant-chip is-danger" onClick={confirmLogout}>
             <LogOut size={12} />{t("assistantDrawer.logout")}
           </button>
         </div>

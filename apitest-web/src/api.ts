@@ -2743,30 +2743,61 @@ export type ReportAttributionSummary = {
   categories: { code: string; name: string; count: number }[];
 };
 
-/* ── P5: MCP（Token 签发 / 吊销 + 工具清单展示） ───────────────────────────── */
+/* ── P5 起家 / P12 改形的 MCP（Token 归人、绑定归项目 + 工具清单展示） ────────── */
 
 
-/** scope 三值（计划 9.0 边界 1）：read 恒在，write / execute 签发时显式勾选。 */
+/** scope 三值（计划 9.0 边界 1）：read 恒在，write / execute 绑定项目时显式勾选。 */
 export type McpScope = "read" | "write" | "execute";
 
 /**
- * MCP Token 行（列表 / 签发 / 吊销响应共用）。`token_hash` 永不出现在 API 面
- * （`mapMcpToken` 刻意不映射它）；明文 `token` 只附加在签发那一次的响应里。
+ * 绑定（P12 边界 2）：`scope` 挂在绑定上而不是 Token 上——一把 Token 绑 N 个项目时
+ * 「A 可写、B 只读」必须可表达。read 恒在（服务端归一，写与执行的工具都要求先能读）。
+ */
+export type McpBinding = { projectId: string; scope: McpScope[]; boundAt?: string };
+
+/**
+ * 用户级的 MCP Token 行（P12：列表 / 签发 / 吊销响应共用）。`token_hash` 永不出现
+ * 在 API 面（`mapMcpToken` 刻意不映射它）；明文 `token` 只附加在签发那一次的响应里。
+ *
+ * Token 本体**没有 `projectId` 也没有 `scope`**——两者都在 `bindings` 上；`createdBy`
+ * 为空 = 签发人已被删，整把 Token 失效（鉴权侧 401）。
  */
 export type McpToken = {
   id: string;
-  projectId: string;
   name: string;
+  /** 明文前 8 位（`apimcp_` 之后那段），供列表辨认，不足以反推 Token。 */
   tokenPrefix: string;
-  scope: McpScope[];
+  bindings: McpBinding[];
   createdBy?: string;
   lastUsedAt?: string;
   revokedAt?: string;
   createdAt: string;
 };
 
+/** 可绑定项目（`/me/bindable-projects`）：本人有角色的项目 + 该角色的 scope 上限。 */
+export type BindableProject = { projectId: string; name: string; role: MyRole; maxScope: McpScope[] };
+
+/**
+ * 项目侧看到的绑定行（`GET /projects/:id/mcp/bindings`）：回答「谁的钥匙开了我这扇门」。
+ * owner 三列是读时 JOIN 快照——项目管理员要能指着具体的人说「这把钥匙收回来」。
+ */
+export type McpProjectBinding = {
+  tokenId: string;
+  tokenName: string;
+  tokenPrefix: string;
+  ownerId: string | null;
+  ownerEmail: string | null;
+  ownerName: string | null;
+  scope: McpScope[];
+  lastUsedAt?: string;
+  boundAt: string;
+};
+
 /** 工具清单行（前端展示用，非 MCP 协议面）：description 是给模型读的原文，不翻译。 */
 export type McpToolSummary = { name: string; description: string; scope: McpScope };
+
+/** 个人中心基本信息（`GET /me/profile`，`/auth/me` 的聚合别名）。 */
+export type MeProfile = { id: string; email: string; name: string; isSystemAdmin: boolean; mustChangePassword: boolean };
 
 export const api = {
   /**
@@ -3621,18 +3652,45 @@ export const api = {
     client.get(`/public/report-shares/${encodeURIComponent(token)}/step-children/${encodeURIComponent(stepId)}`)
       .then(data<{ steps: ExecutionStep[]; executions: Execution[] }>),
 
-  /* ── P5: MCP —— 项目级 Token，scope 三值裁剪 /mcp 的工具可见集 ───────────── */
+  /* ── P5 起家 / P12 改形：MCP —— Token 归人（/me），绑定归项目 ───────────────
+   * 能力面在 P12 从项目侧整个上移到用户级：签发 / 吊销是「本人」的动作（写权限的
+   * 控制点在绑定上），项目侧只留「谁把钥匙开到我这扇门上」+ 项目管理员踢绑定。 */
 
-  /** 列表只含未吊销行：吊销即从管理视图消失（行留库供审计对账，不在这里回显）。 */
-  mcpTokens: (projectId: string) => client.get(`/projects/${projectId}/mcp/tokens`).then(data<McpToken[]>),
-  /** 签发：明文 token **只在这一次响应里**出现，丢了只能吊销重发。 */
-  createMcpToken: (projectId: string, input: { name: string; scope?: McpScope[] }) =>
-    client.post(`/projects/${projectId}/mcp/tokens`, input).then(data<McpToken & { token: string }>),
+  /** 我签发的 Token（含绑定数组）；已吊销的不列。 */
+  meMcpTokens: () => client.get("/me/mcp/tokens").then(data<McpToken[]>),
+  /**
+   * 签发本人 Token：**request 里没有 scope**（scope 在绑定上）。返回的明文 token
+   * 只在这**一次**响应里出现，丢了只能吊销重发。
+   */
+  createMeMcpToken: (input: { name: string }) =>
+    client.post("/me/mcp/tokens", input).then(data<McpToken & { token: string }>),
   /** 吊销（软删留行）但**即时生效**：鉴权候选集走部分索引，被吊销行下一次调用就不在。 */
-  revokeMcpToken: (projectId: string, tokenId: string) =>
-    client.delete(`/projects/${projectId}/mcp/tokens/${tokenId}`).then(data<McpToken>),
+  revokeMeMcpToken: (tokenId: string) =>
+    client.delete(`/me/mcp/tokens/${encodeURIComponent(tokenId)}`).then(data<McpToken>),
+  /** 绑定 / 改绑定（同 (token, project) 重复提交 = 改 scope；服务端要求 ≤ 实时角色上限）。 */
+  bindMeMcpToken: (tokenId: string, input: { projectId: string; scope: McpScope[] }) =>
+    client.post(`/me/mcp/tokens/${encodeURIComponent(tokenId)}/bindings`, input).then(data<McpBinding>),
+  /** 本人解绑（只删绑定行，Token 与其他项目的门照旧）。 */
+  unbindMeMcpToken: (tokenId: string, projectId: string) =>
+    client.delete(`/me/mcp/tokens/${encodeURIComponent(tokenId)}/bindings/${encodeURIComponent(projectId)}`)
+      .then(data<{ tokenId: string; projectId: string }>),
+
+  /** 本项目的全部绑定（谁的 Token / scope / last_used_at）；viewer 也可读。 */
+  mcpBindings: (projectId: string) =>
+    client.get(`/projects/${projectId}/mcp/bindings`).then(data<McpProjectBinding[]>),
+  /** 项目管理员踢绑定（边界 4）：签发权上移后，项目侧对「谁能开我这扇门」的最终控制不丢。 */
+  unbindMcpBinding: (projectId: string, tokenId: string) =>
+    client.delete(`/projects/${projectId}/mcp/bindings/${encodeURIComponent(tokenId)}`)
+      .then(data<{ tokenId: string; projectId: string }>),
   /** 工具清单（展示用非协议面）：与 /mcp 的 tools/list 出自同一个 MCP_TOOLS 注册表。 */
   mcpTools: (projectId: string) => client.get(`/projects/${projectId}/mcp/tools`).then(data<McpToolSummary[]>),
+
+  /* ── P12：个人中心（全局层，无项目前缀）──────────────────────────────────── */
+
+  /** 基本信息（`/auth/me` 的聚合别名；改密仍走既有 change-password）。 */
+  meProfile: () => client.get("/me/profile").then(data<MeProfile>),
+  /** 可绑定项目集 + 每项目 scope 上限（绑定弹窗据此禁用选项）。 */
+  bindableProjects: () => client.get("/me/bindable-projects").then(data<{ projects: BindableProject[]; total: number }>),
 
   /* ── P8-2：失败归因（REST 四条 + 字典管理）────────────────────────────────── */
 

@@ -2,14 +2,12 @@ import { useEffect, useState } from "react";
 import { Select } from "antd";
 import { useTranslation } from "react-i18next";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Bell, Bot, CalendarCheck, ChevronDown, ChevronRight, Database, FolderGit2, Globe, History, Layers, ListChecks, LogOut, MessageSquare, Plug, ScrollText, TrendingUp, Users, Workflow, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Bell, Bot, CalendarCheck, ChevronDown, ChevronRight, Database, FolderGit2, Globe, History, Layers, ListChecks, MessageSquare, Plug, ScrollText, TrendingUp, Users, Workflow, type LucideIcon } from "lucide-react";
 import { useRecordLastPage } from "../hooks/useRecordLastPage";
-import { useAuthStore } from "../stores/authStore";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 import { useIsWideViewport, useSidebarCollapsed } from "../stores/sidebarStore";
 import { IconNavButton, SidebarToggle } from "./SidebarControls";
-import { IconButton } from "./IconButton";
 
 const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "mcp", "repo", "spec-cases", "test-plans", "reports", "suite-reports", "trends", "alerts", "members"] as const;
 export type ProjectPage = typeof PAGES[number];
@@ -64,7 +62,6 @@ export function ProjectShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const { projectId } = useParams();
-  const logout = useAuthStore((state) => state.logout);
   const confirmLeave = useNavGuardStore((state) => state.confirmLeave);
   const { projects, project, refresh, loadProject } = useProjectStore();
   /* 收起态驱动 `.console[data-collapsed]`（grid 轨道 + rail 排版一处声明）。
@@ -217,11 +214,8 @@ export function ProjectShell() {
         })}
       </nav>
       <div className="sidebar-foot">
-        <IconButton
-          icon={<LogOut size={15} />}
-          label={t("action.logout")}
-          onClick={() => { logout(); navigate(`/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`); }}
-        />
+        {/* 账号区不在这里（P12-2 修订 2026-09-16）：个人中心 / 登出在站内助手的
+            抽屉头（与通知/换形象/主题/语言同排），顶栏右缘只留助手入口与项目切换。 */}
         <SidebarToggle />
       </div>
     </aside>
