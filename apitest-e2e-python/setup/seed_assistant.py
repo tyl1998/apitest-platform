@@ -163,7 +163,7 @@ def main() -> None:
     )
     agent.raise_for_status()
     print(f"[seed] 种子管理员 ({EMAIL}) 的用户 agent 已配置（provider={PROVIDER_NAME}）")
-    print("[seed] 完成——pytest 可跑 test_case/assistant/")
+    print("[seed] 完成——助手可用（e2e 不再有会话用例；流式与上游异常走 drill/ 手工演练）")
 
 
 if __name__ == "__main__":
