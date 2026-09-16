@@ -30,6 +30,18 @@ Large edits risk connection timeouts mid-stream. When an edit spans many functio
 
 The project is in active development and has never shipped. Do not write code to migrate, preserve, or remain compatible with historical data, old rows, or legacy formats — there is none to protect. When a clean schema or API shape conflicts with backward compatibility, prefer the clean one. Forward-only migrations still apply (never edit an already-applied migration file; add a new one instead), and a local dev database may be freely reset or recreated.
 
+## Repository Hygiene — no company identifiers, no real credentials
+
+These repos are **public on GitHub** — this one and every sibling (`apitest-server`, `apitest-web`, `apitest-runner`, `apitrack-sdk-python`, `apitest-e2e-python`). Nothing that identifies the company or grants access may leave the machine through a commit. That covers **everything that ships with the repo**: code, defaults, comments, docs, issue records, test data, fixtures, examples, and commit messages.
+
+1. Never commit company-identifying material: the brand/company name in any casing, internal hostnames or domains, internal IPs, real business identifiers (`agentId`, store numbers, `fohNos`, tenant ids), or real credentials (API keys, tokens, passwords, MCP tokens).
+2. Do not write the company name **in this file either** — describe it by shape when you must ("the brand name", "the internal domain"). To find occurrences, grep case-insensitively for the name exactly as it appears in the environment you were handed, and treat that string as a search key, never as text to add.
+3. Anything committed uses placeholders: `***` for the name and host (`stgstplatform.***.net`), `ak-xxx` / `xxxx` for credentials, `example.com` for hosts in examples.
+4. Real values live only in gitignored files (`apitest-server/.env`, `apitest-e2e-python/env.local.sh`, `.dev-certs/`). Code reads them from the environment; comments say **which variable to export**, not what the value is. If a value needs to be runnable, that is what the variable is for.
+5. When a literal is functional rather than descriptive (a certificate path, a keychain filter name, a base-URL default), parameterize it through an environment variable instead of hardcoding the company value, so the repo keeps working without the name.
+6. Before every commit or push, self-check what you staged: `git grep -ilI "<name>"` plus a credential-shape scan (`ak-[0-9a-f]{16,}`, `sk-…`, `Bearer <long>`, `eyJ…`), and do the same over the untracked-but-destined files. Never `git add -A` while a real credential sits in the working tree — confirm it is ignored first (`git check-ignore -v <file>`).
+7. Redacting the working tree does **not** clean history. If the material already reached GitHub, say so plainly and let the user decide (history rewrite, private repo, key rotation); never rewrite published history or force-push on your own.
+
 ## Start / Stop Services
 
 Repo-root convenience scripts manage the four app processes (backend API, execution worker, scheduler, frontend). **Postgres and Redis are external** (OrbStack / manually started docker), the scripts do not touch them.
