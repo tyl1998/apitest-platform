@@ -1384,10 +1384,16 @@ IngestCaseResult               # 上报式: 某次 run 中某个 case 的结果 
 | PUT | /sql-definitions/:id | 更新 SQL 定义 |   # v1.4
 | DELETE | /sql-definitions/:id | 删除 SQL 定义 |   # v1.4
 | POST | /sql-definitions/:id/test | 测试运行 SQL 定义 (填参数预览结果) |   # v1.4
-| POST | /mcp | MCP 协议端点（JSON-RPC：tools/list / tools/call；Bearer apimcp_ Token，项目由 Token 决定） |   # P5, v1.10
-| GET | /projects/:id/mcp/tokens | MCP Token 列表（项目级，不含明文） |   # P5
-| POST | /projects/:id/mcp/tokens | 签发 MCP Token（明文只在此次响应出现） |   # P5
-| DELETE | /projects/:id/mcp/tokens/:tokenId | 吊销 MCP Token |   # P5
+| POST | /mcp | MCP 协议端点（JSON-RPC：tools/list / tools/call；Bearer apimcp_ Token，**目标项目为 tools/call 必填参数 `projectId`**，须在该 Token 的绑定集内） |   # P5, v1.10；P12 用户级化
+| GET | /me/profile | 个人中心基本信息（`/auth/me` 的聚合别名） |   # P12
+| GET | /me/bindable-projects | 本人可绑定项目 + 每项目 scope 上限 |   # P12
+| GET | /me/mcp/tokens | 本人 MCP Token 列表（含绑定数组，不含明文） |   # P12
+| POST | /me/mcp/tokens | 签发本人 MCP Token（明文只在此次响应出现；scope 在绑定上） |   # P12
+| DELETE | /me/mcp/tokens/:tokenId | 吊销本人 MCP Token |   # P12
+| POST | /me/mcp/tokens/:tokenId/bindings | 绑定到项目（projectId + scope ≤ 实时角色） |   # P12
+| DELETE | /me/mcp/tokens/:tokenId/bindings/:projectId | 本人解绑 |   # P12
+| GET | /projects/:id/mcp/bindings | 本项目绑定列表（谁的 token / scope / last_used_at） |   # P12
+| DELETE | /projects/:id/mcp/bindings/:tokenId | 项目管理员踢绑定 |   # P12
 | GET | /projects/:id/mcp/tools | 工具清单（前端管理页展示用） |   # P5
 | GET | /projects/:id/test-suites | 测试套件列表 |
 | POST | /projects/:id/test-suites | 创建测试套件 |
@@ -1516,7 +1522,7 @@ IngestCaseResult               # 上报式: 某次 run 中某个 case 的结果 
 | Sandbox | 沙箱，安全执行用户自定义脚本 |
 | MCP | Model Context Protocol，AI 应用与工具的连接协议；本平台在 P5 中作为 **MCP Server**（工具提供方） |
 | MCP Client | 使用 MCP 工具的一端（外部 agent 平台 / IDE / CI） |
-| MCP Token | `apimcp_` 前缀的项目级凭据，带 read / write scope（P5） |
+| MCP Token | `apimcp_` 前缀的凭据；**P12 起归人**（用户级），scope 在「token × 项目」绑定上（read / write / execute） |
 | TestSuite | 测试套件，一组接口用例与流程的集合，支持批量执行 |
 | Repository | 上报首次自动登记的代码仓库 |
 | 仓库用例 | 来自上报、挂在「系统→接口→用例」树下的用例 (RepoTestCase) |

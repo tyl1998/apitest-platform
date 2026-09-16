@@ -2379,7 +2379,8 @@ POST   /api/v1/notifications/read-all                   全部已读
     （退出左侧）与项目壳顶栏（项目切换器左侧）各一枚；
   - `NotificationsPage.tsx`（全局层路由 `/notifications`，GlobalApp 第四页）：分页
     列表 + 全部/未读 segmented 筛选（手写 `.segmented`，与执行器面板同形态）+
-    行点击即读 + 深链 + 页头「全部已读」；
+    行点击即读 + 深链 + 页头「全部已读」〔P12-2 后挂载点改为 `/me/notifications`，
+    组件本身不变——见 18.5〕；
   - 样式（`design-system.css` 新增 P9-1 段）：badge 走 accent（交互元素），
     未读点中性 accent 小圆点（通知不是执行结果，不占 pass/fail 语义色），
     已读行整行降 `--ink-2`（降级不是标记）；i18n 双语 `notifications.*` 命名空间。
@@ -2592,6 +2593,14 @@ POST   /api/v1/notifications/read-all                   全部已读
     30 字符 + 省略号）；抽屉在首条消息的流结束后拉一次列表换掉时间戳标签。
     e2e 新增「首条消息自动生成会话标题」用例（轮询等 fire-and-forget 落地），
     删除「闸门 404」用例（门槛作废），seed 脚本不再碰 project_settings。
+    〔**2026-09-16 用户决策：会话相关的 e2e 用例全部删除**
+    （`apitest-e2e-python/test_case/assistant/` 整目录移除；`data/config.py` 的
+    `assistant_project_name`、seed 脚本尾行提示同步清理）：① 会话用例每跑一次就在真实
+    上游上建会话、发消息，留下一堆脏数据；② 「发消息读 SSE 到底」要读真实上游收尾，
+    而服务端每 15s 发 SSE 注释保活（`routes/assistant.ts` 的 `HEARTBEAT_MS`），客户端
+    读超时永不触发——上游卡在「有数据但不给结果」时整条流一直挂着，把 runner 作业拖到
+    时限（`timed_out` + 报告解析跳过），一次上游抖动吃掉整包。助手与上游异常改为手工
+    验证：浏览器抽屉观察 + `drill/` 假上游演练（README 已改口径）。〕
   - 用户级凭据与上游通用化当天在 **P9-4b** 落地（用户第二轮反馈：「设置该是用户
     视角、上游要通用模式」），见 13.4.5。
 
@@ -2845,7 +2854,8 @@ POST   /api/v1/notifications/read-all                   全部已读
   视图（最近 10 条，行样式复用 bell-item 家族；点行 = 标已读 + 深链
   confirmLeave、全部已读就地清、「查看全部」进 /notifications 整页——整页与
   antd 弹窗、Root 轮询照旧）。BellMenu 组件删除；新通知到达（未读数上升，非
-  首轮存量）入口按钮小跳一下。
+  首轮存量）入口按钮小跳一下。〔P12-2 后「查看全部」改指 `/me/notifications`
+  ——通知页成为个人中心的 tab，见 18.5；本段描述的是 P9 当期的形态。〕
 - **对话用户级化**（会话是「人」的，不挂项目——2026-09-16 用户定位修订）：
   迁移 062 删 `assistant_conversations.project_id`；路由组搬出项目段
   `/api/v1/assistant/conversations*`（currentUser 守卫，登录即用，viewer 只读
@@ -3371,7 +3381,14 @@ API 主机 → MinIO，不受影响。
 
 ## 十八、P12 — 个人中心 + 用户级 MCP Token（约 2 周）
 
-> 版本: v1.0（2026-09-14 立项，范围与边界已确认；尚未实现）。
+> 版本: v1.2（2026-09-14 立项，范围与边界已确认；**2026-09-16 P12-1 后端整批与
+> P12-2 前端整批均已实现，尚未验收**。P12-1：迁移 063、`mcpAuth` 用户级主体 + 绑定、
+> 闸门五道、工具面 projectId 集中注入、`list_my_projects` / `copy_endpoint`、`/me`
+> 用户级 REST 五条 + 项目侧绑定两条、审计 bind/unbind。P12-2：`MePage` 四 tab +
+> `McpPage` 降级 + 通知迁址 + 账号区进助手抽屉头 + i18n，落点与实施期决定见 18.5；
+> 跨项目 MCP e2e
+> 为独立后续项 P12-1b）。
+> 本节实施前的复核修订见 18.0 边界 1/5/6 的 2026-09-16 注记。
 
 ### 18.0 P12 范围与边界（2026-09-14 确认）
 
@@ -3417,11 +3434,13 @@ API 主机 → MinIO，不受影响。
 
 **边界决策（12 项）**
 
-1. **一个迁移：`060_p12_personal_mcp.sql`**（迁移号顺延：057/057b/058 归 P9、059
-   归 P11，下一个空位 060）。`mcp_tokens` `DROP COLUMN project_id / scope`——项目
-   未发布、无历史数据要保护（「数据兼容」纪律的正用），**既有 dev token 全部作废
-   重签，不搬数**；新表 `mcp_token_projects` 承接绑定（见 18.1）。
-   `mcp_tokens_prefix_idx` 部分索引与吊销即时生效的机制一行不动。
+1. **一个迁移：`063_p12_personal_mcp.sql`**（迁移号顺延：P9 实占 057/057b/058–062，
+    本阶段实施时最新空位 063；原示意号 060 已作废——2026-09-16 实施前复核确认）。
+    `mcp_tokens` `DROP COLUMN project_id / scope`——项目未发布、无历史数据要保护
+    （「数据兼容」纪律的正用），**既有 dev token 全部作废重签，不搬数**；新表
+    `mcp_token_projects` 承接绑定（见 18.1）。`mcp_tokens_prefix_idx` 部分索引与吊销
+    即时生效的机制一行不动；`mcp_tokens_project_idx`（050）随 `project_id` 列删除由
+    PG 自动回收，无需显式 DROP。P14 的迁移号随之从 063 顺延为 064。
 2. **scope 放绑定上，不放 token 上**。一把 token 绑 N 个项目时「A 可写、B 只读」
    必须可表达；token 本体无 scope，写权限的爆炸半径不再随绑定数线性增长。
    `normalizeScopes` 的 read 恒在归一（现 `mcpTokens.ts`）原样搬到绑定侧。
@@ -3432,19 +3451,35 @@ API 主机 → MinIO，不受影响。
 4. **`mcp_enabled` 仍是项目总闸**（404），语义从「每连接」变「每调用按目标项目」。
    项目侧新增**解绑权**：项目管理员可踢掉任何人绑到本项目的 token——签发权上移到
    用户后，项目管理员对「谁的开门钥匙能开我这扇门」的最终控制不丢。
-5. **工具面 57 个签名全部加必填 `projectId` 参数**，SQL 的 `identity.projectId`
-   全部换成该参数（`isUuid` + 绑定集成员校验，与既有校验同款报错形状）。未绑定
-   项目的调用回 `-32601`——与「工具不存在」刻意同形（P5 验收门槛 1 的纪律延续：
-   不泄露「那个项目存在 MCP 通道」）。新增两个工具：`list_my_projects`（read，
-   agent 运行时自查可触达项目与各自 scope——`tools/list` 回不了这个答案）与
-   `copy_endpoint`（write，跨项目复制的便捷通道：from 项目读 + to 项目建，一处
-   事务语义）。工具面上限 57 → **59**。
-6. **闸门重排为五道**（`routes/mcp.ts`）：① token 有效 → 401（不变）；② tools/call
-   从参数取目标项目，**未绑定 → -32601**（不看 mcp_enabled——绑定关系与开关状态
-   都不泄露）；③ `mcp_enabled(目标项目)` → 404（不变，每调用判）；④ 有效 scope =
-   该绑定的 scope，工具不在集 → -32601；⑤ 写/执行按 owner 重跑 `canAccess` →
-   403。`tools/list` 的注册裁剪按全部绑定的 scope **并集**（能力面按并集展示，
-   放不放行逐调用判——单项目裁剪会让绑了 5 个项目的 agent 看到五份重复清单）。
+5. **工具面统一加必填 `projectId` 参数**（`copy_endpoint` 另加 `fromProjectId`），
+   校验为 `isUuid` + 绑定集成员。未绑定项目的调用回 `-32601`——与「工具不存在」
+   刻意同形（P5 验收门槛 1 的纪律延续：不泄露「那个项目存在 MCP 通道」）。
+   **实现落点（2026-09-16 实施修订）：参数注入与绑定解析集中在 `lib/mcpServer.ts`
+   的注册包装里一次完成，不逐个改 57 个工具声明。** 理由：逐个改是 57 份
+   schema + 149 处 `identity.projectId` 的机械改动，任何一处遗漏都等于少一道
+   绑定校验；集中解析保证「每个工具都校验」是结构性的而不是纪律性的。注册包装
+   从 `args.projectId` 解出目标绑定，把该绑定的 `projectId` 与 `scope` 注入
+   `identity` 后调用 handler——**handler 体内的 `identity.projectId` 逐字不变**，
+   语义从「token 的项目」变成「本次调用的目标项目」。**两个例外**（无项目数据的
+   工具不注入也不解析）：`get_script_contract`（静态契约）与新增的
+   `list_my_projects`（自查绑定集）——它们不携带 `projectId`，也不受闸门②③。
+   新增两个工具：`list_my_projects`（read，agent 运行时自查可触达项目与各自
+   scope——`tools/list` 回不了这个答案，且**零绑定时也注册**，否则 agent 连
+   「我没有项目」都问不出来）与 `copy_endpoint`（write，跨项目复制的便捷通道：
+   from 项目读 + to 项目建；目标项目 = `projectId`，源项目 = `fromProjectId`，
+   两者都要在绑定集里）。工具面上限 57 → **59**。
+6. **闸门重排为五道**（`routes/mcp.ts`）：① token 有效 → 401（不变；**owner 被删
+   （`created_by IS NULL`）在此判 401——整把 token 失效，不留无主 read token**）；
+   ② tools/call 从参数取目标项目，**未绑定 → -32601**（不看 mcp_enabled——绑定
+   关系与开关状态都不泄露）；③ `mcp_enabled(目标项目)` → 404（不变，每调用判）；
+   ④ 有效 scope = 该绑定的 scope，工具不在集 → -32601（②④ 的 JSON-RPC 错误带一条
+   **逐字相同**的 `error.data.hint`：项目级工具要传已绑定的 `projectId`，先调
+   `list_my_projects`——2026-09-16 增补，见 18.5 决定 7）；⑤ 按 owner 重跑
+   `canAccess(owner, 目标项目, write = 工具 scope ≠ read)` → 403（**read 也查**，
+   收掉现状盘点的缺口：owner 被移出项目后 read token 立刻读不动）。项目自由工具
+   （`get_script_contract` / `list_my_projects`）只受①约束。`tools/list` 的注册
+   裁剪按全部绑定的 scope **并集**（能力面按并集展示，放不放行逐调用判——单项目
+   裁剪会让绑了 5 个项目的 agent 看到五份重复清单）。
 7. **REST 面整体挪用户级**：`/api/v1/me/mcp/tokens` 五条 + 项目侧绑定两条（见
    18.3）；原 `/projects/:id/mcp/tokens` 三条删除，`/projects/:id/mcp/tools`
    保留。签发/吊销从「项目 write」改为「本人」——写权限的控制点从签发移到绑定
@@ -3469,7 +3504,9 @@ API 主机 → MinIO，不受影响。
     通道」，项目级是对的；只有 MCP token 是「人的代理通道」，跟人走。三种凭据
     前缀（`apitrack_` / `apirunner_` / `apimcp_`）刻意不同，本阶段不合并。
 
-### 18.1 数据库迁移：060_p12_personal_mcp.sql（示意）
+### 18.1 数据库迁移：063_p12_personal_mcp.sql（示意）
+
+> 编号以实施时最新空位为准：2026-09-16 复核 P9 实占至 062，本阶段落 **063**。
 
 ```sql
 -- token 本体：项目归属与 scope 移除（既有行不搬——未发布无包袱，重签即重签）
@@ -3492,9 +3529,9 @@ CREATE INDEX IF NOT EXISTS mcp_token_projects_project_idx ON mcp_token_projects 
 
 | 层 | 改动 | 触点 |
 | --- | --- | --- |
-| 鉴权 | `McpIdentity` 改 `{ tokenId, owner, bindings }`；前缀收窄查询不变，绑定集随候选行一次带回 | `lib/mcpAuth.ts` |
+| 鉴权 | 新增 `McpPrincipal = { tokenId, createdBy?, bindings }`（`created_by` 为空一律 401）；前缀收窄查询不变，绑定集按命中行二次带回 | `lib/mcpAuth.ts` |
 | 闸门 | 四道 → 五道重排（边界 6），目标项目从工具参数取 | `routes/mcp.ts` |
-| 工具面 | 57 个签名 + SQL 的 `identity.projectId` → 参数 `projectId`；新增 2 个 | `lib/mcpTools*.ts`（9 个文件） |
+| 工具面 | **参数注入与绑定解析集中在注册包装**（边界 5 修订）；`identity` 形状不变，handler 零改动；新增 2 个 | `lib/mcpServer.ts` + 新增 `list_my_projects` / `copy_endpoint` 两个工具文件 |
 | REST | 用户级五条 + 项目侧两条；项目级三条删除 | `routes/mcpTokens.ts`（重写） |
 | 审计 | create 改形 + bind / unbind 两动作 + 拒绝审计补项目 | `lib/audit.ts` + 各路由 |
 | mapper | `mapMcpToken` 去 project/scope、加 bindings 数组；新增绑定行映射 | `models/types.ts` |
@@ -3532,17 +3569,23 @@ GET    /api/v1/projects/:id/mcp/tools                       # 保留（工具清
   （占位 tab，文案「随助手凭据功能开放」）。
 - **`McpPage.tsx` 降级**：签发区删除，改只读绑定表（绑定人 / scope / last_used_at）
   + 解绑按钮；`mcp_enabled` 开关留在项目设置（总闸语义不变）；工具清单区保留。
-- **入口与迁址**：右上角用户菜单加「个人中心」；`BellMenu` 的「查看全部」改跳
+- **入口与迁址**：右上角用户菜单加「个人中心」〔**实施期修订**：2026-09-16 用户
+  反馈改为「账号区整体移进站内助手抽屉头」——见 18.5 决定 2；本条原方案作废〕；
+  `BellMenu` 的「查看全部」改跳
   `/me/notifications`；`GlobalApp` 注册 `/me/*` 路由；旧 `/notifications` 路由删除
   （未发布无包袱，不留兼容跳转）。
 - i18n 中英两区补个人中心 / 绑定管理 / 迁址词条。
 
 ### 18.5 实施顺序（P12-1 / P12-2）
 
-- **P12-1（后端整批）**：迁移 060 + `mcpAuth` 身份改造 + 闸门五道重排 + 57 工具
-  `projectId` 参数化 + `list_my_projects` / `copy_endpoint` + REST 全套 + 审计 +
-  e2e 用例改造。**一批做完的理由**：身份形状一改，工具面不跟着改则 `/mcp` 直接
-  不可用，中间态没有交付价值。
+- **P12-1（后端整批）**：迁移 063 + `mcpAuth` 身份改造 + 闸门五道重排 + 工具面
+  `projectId` 参数化（集中注册包装，边界 5 修订）+ `list_my_projects` /
+  `copy_endpoint` + REST 全套 + 审计。**一批做完的理由**：身份形状一改，工具面
+  不跟着改则 `/mcp` 直接不可用，中间态没有交付价值。
+  **e2e 说明（2026-09-16 复核）**：`apitest-e2e-python` 目前**没有任何 MCP 用例**
+  （原「用例全量补 `projectId`」不成立，无对象可改）。跨项目 MCP e2e 是**新增**
+  工作，按 AGENTS.md「测试需显式请求」列为独立后续项（P12-1b），不在本次实现内，
+  待用户点名再做。
   验收：一把 token 绑 A(write) + B(read)——`list_my_projects` 可见两项目与各自
   scope；B 的 `get_endpoint` 通、B 的 `create_endpoint` 拒（-32601 形状）；
   `copy_endpoint` B→A 通；解绑 B 后 B 的读也拒；A 关 `mcp_enabled` 后 A 全 404；
@@ -3550,6 +3593,41 @@ GET    /api/v1/projects/:id/mcp/tools                       # 保留（工具清
   token 401；吊销后 401（无缓存窗口，延续 050 门槛）。
 - **P12-2（前端整批）**：`MePage` 四 tab + `McpPage` 降级 + 铃铛迁址 + 用户菜单
   入口 + i18n。
+  **实现状态（2026-09-16，尚未验收）**：`MePage.tsx`（基本信息 / 通知 / MCP Token /
+  agent 凭据占位四 tab）、`McpPage.tsx` 降级为「服务与端点 + 只读绑定表 + 工具清单」、
+  `UserMenu.tsx` 新增、`NotificationsPage` 整组件迁入 `/me/notifications`、i18n 中英
+  两区补齐（并重写 `mcp.serviceHint` / `mcp.tokensHint` 两处「scope 在 Token 上」的
+  旧口径）。
+  实施期决定的落点（超出/细化了 18.4 的字面描述，记录如下）：
+  1. **tab 由地址栏驱动**：`/me` / `/me/notifications` / `/me/mcp` /
+     `/me/credentials`（未知段 replace 回 `/me`）——通知 tab 要能被助手抽屉的
+     「查看全部」直接指过来，也要能贴给别人（与项目层各页同款纪律）。
+  2. **账号区落在站内助手的抽屉头**（2026-09-16 用户反馈修订，原「右上角用户菜单」
+     方案作废）：抽屉头快捷钮排首位加「个人中心」，末位加**常红**的「登出」——账号级
+     动作与通知 / 换形象 / 主题 / 语言同属「我自己」的操作，收在头像这一排；抽屉头
+     全视图常驻（未配置 agent 时也在），登出不会因为没配 agent 就找不到。**两个壳的
+     顶栏不再有任何账号控件**（全局壳原先那枚孤立登出钮与临时加的用户菜单一并撤掉，
+     项目壳侧栏底部的登出钮同样撤掉——账号区只有抽屉头一处）。对话视图里的「登出」
+     chip 同改常红，与头行那枚同名同动作。
+  3. **迁址不只改一处**：助手抽屉「查看全部」与助手本地指令 `/打开 通知` 同改指
+     `/me/notifications`（`CommandPage` 新增 `path` 字段表达「路由 ≠ key」），
+     `COMMAND_PAGES` 补「个人中心」一项。
+  4. 通知 tab 保留 `NotificationsPage` 自带的页头（组件一字不动是 18.4 的明写口径）。
+  5. **绑定弹窗带出既有绑定集**（2026-09-16 用户反馈）：弹窗里列「这把 Token 现在
+     开着：项目（scope）…」，选中**已绑定**的项目时把该绑定的 scope 带进勾选框、按钮
+     改文案为「改权限」——不带出的话，Token 已有的 write / execute 在弹窗里看不见，
+     提交还会把写权限静默降级成只读。未选项目时写 / 执行恒灰，明确写出原因
+     （上限由你在该项目的实时角色决定）。
+  6. **agent 凭据 tab 文案改成自解释**：原名题「凭据功能尚未开放」读不出是什么——
+     改为点明「站内助手的『我的 agent』凭据（上游地址 + API Key，按用户各配各的）今天
+     在助手抽屉的设置卡里配置，这一格是它未来迁进来的归宿」（功能仍不动，边界 9 不变）。
+  7. **`-32601` 补一条同一措辞的自救提示**（2026-09-16 用户反馈：上游 agent 反复
+     "Method not found"，然后「尝试不带参数」，越试越必然失败）：闸门②④的 JSON-RPC
+     错误加 `error.data.hint`——「项目级工具要在 arguments 里传 token 已绑定的
+     `projectId`，且该绑定的 scope 覆盖这个工具；先调 `list_my_projects` 取」。
+     **两个原因（缺参数 / 未绑定 / scope 不够）连提示也逐字相同**——hint 的有无本身
+     就是侧信道，「不泄露项目有没有 MCP 通道」的纪律不变。tool 名不在注册表时由 SDK
+     自答（形状本就不同，那一步不涉项目，无需对齐）。
   验收：个人中心改密后旧密码失效、新密码可登录；通知 tab 的全量分页 / 未读筛选 /
   全部已读 / 行点击深链与迁址前逐项一致；MCP tab 走完签发 → 绑定 → 项目侧可见 →
   项目侧解绑全链路；项目侧再无签发入口。
@@ -3689,9 +3767,8 @@ GET    /api/v1/projects/:id/mcp/tools                       # 保留（工具清
    非成员可见的管理员线索到什么粒度（email / 仅姓名）；项目切换器是否列出带锁的
    非成员项目（**倾向不列**——切换器是「进入」的入口，目录页才是「发现」的入口）。
 
-**数据库迁移：`063_p14_access_requests.sql`（示意；编号以实施时最新空位为准——
-2026-09-16 已用至 062，P11/P12 章内的 060 示意已被 P9 的 058–062 实占，两章实施时
-各自顺延，P14 排在其后）**
+**数据库迁移：`064_p14_access_requests.sql`（示意；编号以实施时最新空位为准——
+2026-09-16 已用至 062，P12 实施时落 063，P14 顺延为 064）**
 
 ```sql
 CREATE TABLE IF NOT EXISTS access_requests (
