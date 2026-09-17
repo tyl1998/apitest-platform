@@ -434,16 +434,22 @@ export function AssistantDock() {
     followRef.current = true;
     void api.assistantConversations().then((rows) => {
       if (!alive) return;
+      /* 服务端契约是「成功即数组」；真拿到空体/非数组（历史缺陷：守卫少回一个 fail，
+         200 空体）时按加载失败处理——undefined 直接进 setActiveId 的 .some 会抛错，
+         把闸门语义误报成「加载失败」。 */
+      if (!Array.isArray(rows)) throw new Error("assistant conversations payload is not a list");
       setConversations(rows);
       /* 粘性选择要验真：被删过的会话不在新列表里，回落到最近活跃的一条
          （antd Select 的 value 不在 options 里会把裸 UUID 显示出来）。 */
       setActiveId((current) => current && rows.some((row) => row.id === current) ? current : rows[0]?.id);
     }).catch((error) => {
       if (!alive) return;
-      /* 状态可能比探测时新（agent 刚被清掉）：就地归一，让抽屉转设置引导。 */
+      /* 状态可能比探测时新（agent 刚被清掉）：就地归一，让抽屉转设置引导。闸门语义
+         （未配置 503/2005 / 已关 404）是**引导不是错误**——别对「你还没配 agent」弹
+         一句「会话列表加载失败」，用户的下一个动作在引导块里，不在重试里。 */
       const state = classifyAssistantError(error);
-      if (state) setAvailability(state);
       setConversations([]);
+      if (state) { setAvailability(state); return; }
       message.error(t("assistantDrawer.conversationsFailed"));
     });
     return () => { alive = false; };
@@ -629,6 +635,9 @@ export function AssistantDock() {
     setCreating(true);
     try {
       const created = await api.createAssistantConversation();
+      /* 契约是「成功就有一行」。历史缺陷：未配置时守卫回 200 空体，undefined 被塞进
+         列表后渲染读 conversation.id 当场白屏——这里按失败收口，绝不让空行进状态。 */
+      if (!created?.id) throw new Error("assistant conversation payload is missing an id");
       setConversations((current) => [created, ...(current ?? [])]);
       setActiveId(created.id);
       return created.id;
