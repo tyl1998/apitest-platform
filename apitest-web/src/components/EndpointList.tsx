@@ -13,6 +13,7 @@ import { Empty, Method, toRunStatus, type RunStatus } from "../ui";
 import { BatchResultList } from "./BatchResultList";
 import { ExecutionSnapshot } from "./ExecutionSnapshot";
 import { IconButton } from "./IconButton";
+import { OwnerCell } from "./OwnerCell";
 import { RunStatusTag } from "./RunStatusTag";
 import { hasUnsupportedShell, parseCurl, parseOpenApi, parsePaths } from "../lib/importers";
 
@@ -346,7 +347,7 @@ export function EndpointList() {
 
     {loading && <p className="muted">{t("filter.searching")}</p>}
 
-    {endpoints.length ? <table className="grid endpoint-grid">
+    {endpoints.length ? <div className="table-scroll"><table className="grid endpoint-grid">
       <thead><tr>
         {canWrite && <th className="col-select"><input type="checkbox" aria-label={t("endpoints.selectAll")} checked={endpoints.length > 0 && selected.size === endpoints.length} onChange={(event) => toggleAll(event.target.checked)} /></th>}
         <th>{t("endpoints.name")}</th>
@@ -354,6 +355,8 @@ export function EndpointList() {
         <th className="col-num col-cases">{t("endpoints.cases")}</th>
         <th className="col-num">{t("endpoints.duration")}</th>
         <th className="col-status">{t("endpoints.status")}</th>
+        <th className="col-owner">{t("common.createdBy")}</th>
+        <th className="col-owner">{t("common.updatedBy")}</th>
         <th className="col-actions" />
       </tr></thead>
       <tbody>
@@ -382,6 +385,9 @@ export function EndpointList() {
             </td>
             <td className="col-num mono">{endpoint.lastDurationMs !== undefined ? <>{endpoint.lastDurationMs}<span className="unit">ms</span></> : <span className="muted">—</span>}</td>
             <td className="col-status">{status ? <RunStatusTag status={status} /> : <span className="muted">{t("status.notRun")}</span>}</td>
+            {/* 归属两列（P11-7）：系统路径改的显示「系统」（边界 9）。 */}
+            <td className="col-owner mono muted truncate"><OwnerCell kind="created" email={endpoint.createdByEmail} /></td>
+            <td className="col-owner mono muted truncate"><OwnerCell kind="updated" email={endpoint.updatedByEmail} createdAt={endpoint.createdAt} updatedAt={endpoint.updatedAt} /></td>
             <td className="col-actions" onClick={(event) => event.stopPropagation()}>
               {canWrite && <div className="row-actions">
                 <IconButton icon={<Play size={14} />} label={t("action.run")} disabled={Boolean(running) || batchRunning} onClick={() => void execute(endpoint)} />
@@ -393,7 +399,7 @@ export function EndpointList() {
           </tr>;
         })}
       </tbody>
-    </table> : !loading && <Empty
+    </table></div> : !loading && <Empty
       title={filtering ? t("endpoints.emptySearchTitle") : t("endpoints.emptyTitle")}
       hint={filtering ? t("endpoints.emptySearchHint") : t("endpoints.emptyHint")}
       action={filtering || !canWrite ? undefined : <button className="btn btn-primary" onClick={() => navigate(`/projects/${projectId}/endpoints/new`)}>{t("action.createEndpoint")}</button>}

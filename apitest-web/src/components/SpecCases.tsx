@@ -11,6 +11,7 @@ import { useDebounced } from "../hooks/useDebounced";
 import { saveBlob } from "../lib/download";
 import { Empty, Status, Tip, toRunStatus, type RunStatus } from "../ui";
 import { IconButton } from "./IconButton";
+import { OwnerCell } from "./OwnerCell";
 import { SpecImportModal } from "./SpecImportModal";
 import { SpecLinkPicker } from "./SpecLinkPicker";
 import { SpecMindMap } from "./SpecMindMap";
@@ -921,6 +922,9 @@ export function SpecCases() {
             「仅接口」chip（中间态——设计了但没自动化，边界 10）。 */}
         <th className="col-status">{t("specCases.automation")}</th>
         <th>{t("common.updatedAt")}</th>
+        {/* 归属（P11-7）：**只有创建人一列**——`spec_cases` 没有 updated_by（后端边界 2），
+            一列永远显示「—」比不显示更糟，所以这里不摆「更新人」表头。 */}
+        <th className="col-owner">{t("common.createdBy")}</th>
         {/* 模块路径放末列（2026-09-08 反馈）：路径随层级任意长，放前段会把
             标题挤到换行；末列 + max-width 上限，超长省略、悬停看全。 */}
         <th>{t("specCases.modulePath")}</th>
@@ -949,6 +953,7 @@ export function SpecCases() {
                 : <span className="muted">—</span>}
           </td>
           <td className="mono muted">{new Date(item.updatedAt).toLocaleDateString()}</td>
+          <td className="col-owner mono muted truncate"><OwnerCell kind="created" email={item.createdByEmail} /></td>
           {/* 悬停看全路径：Tip（100ms）替代原生 title（2026-09-08 反馈嫌慢）；
               span 钉 block 才能铺满 220px 上限的单元格，空白处悬停也出提示。 */}
           <td className="mono col-path"><Tip text={formatPath(item.modulePath)}><span className="truncate">{formatPath(item.modulePath)}</span></Tip></td>

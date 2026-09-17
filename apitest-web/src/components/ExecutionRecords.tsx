@@ -5,6 +5,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, type BatchDebugResult, type BatchDebugSummary, type Execution, type ExecutionIndex, type ExecutionSourceFilter, type FlowExecutionDetail, type Paged, type SuiteExecutionDetail } from "../api";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { usePageContext } from "../hooks/usePageContext";
+import { triggerPersonLabel } from "../lib/trigger";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, toRunStatus } from "../ui";
 import { BatchResultList } from "./BatchResultList";
@@ -547,13 +548,16 @@ export function ExecutionRecords() {
     {loading && <p className="muted">{t("common.loading")}</p>}
 
     {recordType === "batch" && batches.items.length ? <>
-      <table className="grid">
+      <div className="table-scroll"><table className="grid">
         <thead><tr>
           <th>{t("reports.batchDebugRuns")}</th>
           <th className="col-num">{t("reports.totalCount")}</th>
           <th className="col-num">{t("status.pass")}</th>
           <th className="col-num">{t("status.fail")}</th>
           <th>{t("status.time")}</th>
+          {/* 触发人（P11-8，边界 11）：批量没有自己的触发行人列，后端从成员行派生
+              （一次批量里每一行的触发人必然相同）。 */}
+          <th className="col-owner">{t("common.triggeredBy")}</th>
           <th className="col-status">{t("endpoints.status")}</th>
         </tr></thead>
         <tbody>
@@ -563,13 +567,14 @@ export function ExecutionRecords() {
             <td className="col-num mono">{batch.successCount}</td>
             <td className="col-num mono">{batch.failedCount}</td>
             <td className="mono muted">{new Date(batch.createdAt).toLocaleString()}</td>
+            <td className="col-owner mono muted truncate">{triggerPersonLabel(t, batch.triggeredByEmail)}</td>
             <td className="col-status"><RunStatusTag status={batch.status === "running" ? "running" : batch.failedCount ? "fail" : "pass"} /></td>
           </tr>)}
         </tbody>
-      </table>
+      </table></div>
       <div className="pager"><Pagination current={batches.page} pageSize={batches.pageSize} total={batches.total} pageSizeOptions={PAGE_SIZES} showSizeChanger onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }} /></div>
     </> : recordType === "parent" && parents.items.length ? <>
-      <table className="grid">
+      <div className="table-scroll"><table className="grid">
         <thead><tr>
           <th>{t("reports.parentRuns")}</th>
           <th className="col-num">{t("reports.itemCount")}</th>
@@ -577,6 +582,9 @@ export function ExecutionRecords() {
           <th className="col-num">{t("status.fail")}</th>
           <th className="col-num">{t("status.skip")}</th>
           <th>{t("status.time")}</th>
+          {/* 触发人（P11-8）：父执行有 `trigger_source`，所以能分清「手动但没取到 → —」
+              与「定时 / Webhook / 非人 CI → 系统」（边界 11）。 */}
+          <th className="col-owner">{t("common.triggeredBy")}</th>
           <th className="col-status">{t("endpoints.status")}</th>
         </tr></thead>
         <tbody>
@@ -596,18 +604,23 @@ export function ExecutionRecords() {
             {/* 跳过多数时候是 0（只有 fail-fast 与取消才产生），写成 0 会让人以为它有意义。 */}
             <td className="col-num mono">{run.skippedCount || "—"}</td>
             <td className="mono muted">{new Date(run.createdAt).toLocaleString()}</td>
+            <td className="col-owner mono muted truncate">{triggerPersonLabel(t, run.triggeredByEmail, run.triggerSource)}</td>
             <td className="col-status"><RunStatusTag status={toRunStatus(run.status)} /></td>
           </tr>)}
         </tbody>
-      </table>
+      </table></div>
       <div className="pager"><Pagination current={parents.page} pageSize={parents.pageSize} total={parents.total} pageSizeOptions={PAGE_SIZES} showSizeChanger onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }} /></div>
     </> : recordType === "single" && data.items.length ? <>
-      <table className="grid">
+      <div className="table-scroll"><table className="grid">
         <thead><tr>
           <th>{t("reports.subject")}</th>
           <th className="col-num">{t("status.code")}</th>
           <th className="col-num">{t("status.duration")}</th>
           <th>{t("status.time")}</th>
+          {/* 触发人（P11-8）：单条执行没有 `trigger_source`（`executions` 表只存触发人），
+              所以缺 email 一律按「系统」读——手动跑的行在列表响应里一定带 email（P11-6
+              列表已 join），套件成员 / 流程节点则是继承父执行的触发人。 */}
+          <th className="col-owner">{t("common.triggeredBy")}</th>
           <th className="col-status">{t("endpoints.status")}</th>
         </tr></thead>
         <tbody>
@@ -630,10 +643,11 @@ export function ExecutionRecords() {
             <td className="col-num mono">{run.statusCode ?? "—"}</td>
             <td className="col-num mono">{run.durationMs}</td>
             <td className="mono muted">{new Date(run.createdAt).toLocaleString()}</td>
+            <td className="col-owner mono muted truncate">{triggerPersonLabel(t, run.triggeredByEmail)}</td>
             <td className="col-status"><RunStatusTag status={toRunStatus(run.status)} /></td>
           </tr>)}
         </tbody>
-      </table>
+      </table></div>
       <div className="pager">
         <Pagination
           current={data.page}

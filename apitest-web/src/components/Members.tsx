@@ -5,7 +5,7 @@ import { useParams } from "react-router-dom";
 import { UserPlus } from "lucide-react";
 import { api, type AuditLog, type MemberCandidate, type ProjectMember, type ProjectRole } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
-import { useCanManageProject } from "../hooks/useMyRole";
+import { useCanManageProject, useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Status, Tip } from "../ui";
 import { AuditDetail } from "./AuditLogsPanel";
@@ -15,8 +15,9 @@ import { AuditDetail } from "./AuditLogsPanel";
  * 选角色）+ 最近审计 50 条。
  *
  * 页面对 viewer/developer 也可读（`GET /members` 是项目读权限——「知道找谁要权限」
- * 是这张表的产品理由），但**管理面**（添加 / 改角色 / 移除 / 审计）只对
- * project_admin 渲染（边界 6「只藏入口不做禁用态」；后端守卫才是权限的单一事实）。
+ * 是这张表的产品理由），但**管理面**（添加 / 改角色 / 移除）只对 project_admin 渲染
+ * （边界 6「只藏入口不做禁用态」；后端守卫才是权限的单一事实）。审计摘要自 P11-10 起
+ * 对 developer 也渲染（读权放宽到 developer，边界 7），完整视图在项目配置 → 审计日志页。
  *
  * 最后一个 project_admin 在 UI 层就锁死（不渲染下拉与移除，给 Tip 说明）——那两个
  * 操作必然 409，「一个必然失败的按钮比没有按钮更糟」（与 UsersPanel 的自锁闸同款
@@ -35,6 +36,9 @@ export function Members() {
   const { projectId } = useParams();
   const { projectId: loadedProjectId, loading: projectLoading } = useProjectStore();
   const canManage = useCanManageProject();
+  /* 审计读的最小角色是 developer（P11-10 边界 7），比「管成员」低一档——摘要视图跟着
+     后端判据走，否则 developer 会在成员页被一个前端闸门挡住，而接口是允许他的。 */
+  const canReadAudit = useCanWrite();
 
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
@@ -53,15 +57,15 @@ export function Members() {
     if (!projectId || loadedProjectId !== projectId || projectLoading) return;
     setLoading(true);
     try {
-      /* 审计是 requireProjectAdmin：viewer/developer 连请求都不发（403 不是错误处理，
-          是这条路径不该存在）。 */
+      /* 审计区是摘要视图（完整审计在项目配置 → 审计日志页）：viewer 连请求都不发
+         （403 不是错误处理，是这条路径不该存在）。 */
       const requests: Promise<void>[] = [api.members(projectId).then(setMembers)];
-      if (canManage) requests.push(api.projectAuditLogs(projectId).then(setAuditLogs));
+      if (canReadAudit) requests.push(api.projectAuditLogs(projectId).then((result) => setAuditLogs(result.items)));
       await Promise.all(requests);
     } catch {
       message.error(t("members.loadFailed"));
     } finally { setLoading(false); }
-  }, [projectId, loadedProjectId, projectLoading, canManage, t]);
+  }, [projectId, loadedProjectId, projectLoading, canManage, canReadAudit, t]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -209,10 +213,10 @@ export function Members() {
       </tbody>
     </table></div> : !loading && <Empty title={t("members.emptyTitle")} hint={t("members.emptyHint")} />}
 
-    {/* ── 最近审计（requireProjectAdmin 的读端，P6-2 建好等这里消费）──────────
-        只读最近 50 条、无筛选无分页——成员页要回答的是「刚才谁动了谁」，翻历史去
-        系统管理的审计日志页。 */}
-    {canManage && <>
+    {/* ── 最近审计（项目审计读端的摘要视图，P6-2 建好等这里消费）──────────────
+        只读最近 50 条、无筛选无分页——成员页要回答的是「刚才谁动了谁」；翻历史、
+        按资源下钻用项目配置 → 审计日志页（P11-10 边界 7/8，developer 及以上可见）。 */}
+    {canReadAudit && <>
       <h3 className="subhead" style={{ marginTop: "var(--s6)" }}>{t("members.auditTitle")}</h3>
       {auditLogs.length ? <div className="table-scroll"><table className="grid">
         <thead><tr>

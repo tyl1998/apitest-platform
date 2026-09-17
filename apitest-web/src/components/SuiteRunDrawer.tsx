@@ -3,11 +3,11 @@ import { Drawer, Pagination } from "antd";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { api, type Execution, type ExecutionStep, type FlowExecutionDetail, type SuiteExecutionDetail } from "../api";
+import { triggerLabel } from "../lib/trigger";
 import { toRunStatus } from "../ui";
 import { ExecutionDetail } from "./ExecutionSnapshot";
 import { StepEvidence, flowStepRows } from "./FlowRunDrawer";
 import { RunStatusTag } from "./RunStatusTag";
-import { triggerLabel } from "./SuiteReports";
 
 /**
  * 一次套件运行的成员证据（P2-4.3）。
@@ -125,7 +125,7 @@ export function SuiteRunDrawer({ projectId, run, onClose, onCancel, canceling }:
         区分线索。 */}
     <div className="report-identity">
       {run.reportName && <span className="mono truncate">{run.reportName}</span>}
-      <span className="muted">{triggerLabel(t, run.triggerSource, run.triggerRefName)}</span>
+      <span className="muted">{triggerLabel(t, run.triggerSource, run.triggerRefName, run.triggeredByEmail)}</span>
       {Object.keys(run.variableOverrides).length > 0 && (
         <span className="mono muted truncate">{Object.entries(run.variableOverrides).map(([key, value]) => `${key}=${value}`).join(" ")}</span>
       )}

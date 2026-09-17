@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams, useSearchParams } from "react-router-dom";
-import { Play, Plus, Square, Trash2 } from "lucide-react";
+import { History, Play, Plus, Square, Trash2 } from "lucide-react";
 import {
   api,
   noRunnerLabel,
@@ -18,6 +18,7 @@ import {
   type TestSuite,
 } from "../api";
 import { useExecutionStream } from "../hooks/useExecutionStream";
+import { ChangeHistoryDrawer } from "./AuditLogsPanel";
 import { useDebounced } from "../hooks/useDebounced";
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
@@ -122,6 +123,8 @@ export function SuiteWorkspace() {
 
   const [suite, setSuite] = useState<TestSuite>();
   const [draft, setDraft] = useState<Draft>();
+  /* 「变更历史」抽屉（P11-10 边界 8）：套件的建/改/删与被摘成员都在这里。 */
+  const [changeHistoryOpen, setChangeHistoryOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [picking, setPicking] = useState(false);
   /** 打开页面时清掉的悬空引用条数（旧数据），保存后归零。 */
@@ -513,6 +516,7 @@ export function SuiteWorkspace() {
       <div className="topbar-actions">
         {/* 「解析成员」放在选择条件旁边，不放这里：它回答的是那几个条件命中了谁，
             离开条件就没有语境。手动选择根本不需要它——成员清单就在下面。 */}
+        {canWrite && <button className="btn btn-with-icon" onClick={() => setChangeHistoryOpen(true)}><History size={14} />{t("audit.history")}</button>}
         {canWrite && (busy
           ? <button className="btn btn-with-icon" disabled={canceling} onClick={() => void stop()}><Square size={14} />{t("run.cancel")}</button>
           : <button className="btn btn-with-icon" disabled={includeInvalid} onClick={() => setRunOpen(true)}><Play size={14} />{t("suites.run")}</button>)}
@@ -831,6 +835,17 @@ export function SuiteWorkspace() {
       /* viewer 也能看到别人触发的运行抽屉（SSE 是广播），但取消不给（P6-4）。 */
       onCancel={canWrite ? () => void stop() : undefined}
       canceling={canceling}
+    />
+
+    {/* 变更历史（P11-10 边界 8）：套件自身的 create/update/delete，以及删用例/流程时
+        「从套件摘成员」的连带 suite.update 都在这里。 */}
+    <ChangeHistoryDrawer
+      projectId={projectId!}
+      targetType="test_suite"
+      targetId={suiteId!}
+      name={draft?.name ?? suite?.name}
+      open={changeHistoryOpen}
+      onClose={() => setChangeHistoryOpen(false)}
     />
   </main>;
 }

@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Background, Controls, Handle, NodeResizer, Position, ReactFlow, ReactFlowProvider, SelectionMode, addEdge, useEdgesState, useNodesState, useReactFlow, type Connection, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Braces, Database, GitBranch, Globe2, Hand, LayoutList, MousePointer2, Play, Plus, Redo2, Repeat, Save, Square, Timer, Undo2, Workflow, X } from "lucide-react";
+import { Braces, Database, GitBranch, Globe2, Hand, History, LayoutList, MousePointer2, Play, Plus, Redo2, Repeat, Save, Square, Timer, Undo2, Workflow, X } from "lucide-react";
 import { api, noRunnerLabel, type DataSource, type Flow, type FlowEdge, type FlowExecution, type FlowExecutionDetail, type FlowNode, type FlowStepResult, type FlowSummary, type Paged } from "../api";
 import { addStep as addStepToTree, afterConditionTarget, clampInsideLoop, collectEdges, findStep as findStepIn, findFreePosition, flattenSteps, foldPositions, loopAt, loopSize, moveStepIntoLoop, moveStepOutOfLoop, moveStepOutAt, nodeFootprint, reorderStepEdges, removeStep as removeStepDeep, reparentStep, restackLoopBody, restackTopLevel, splitEdges, unlinkedSteps, updateStep as updateStepDeep, LOOP_MIN_SIZE } from "../lib/flowCanvas";
 import { useExecutionStream } from "../hooks/useExecutionStream";
@@ -14,6 +14,7 @@ import { variableOptions } from "../lib/flowVariables";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Method, toRunStatus, type RunStatus } from "../ui";
+import { ChangeHistoryDrawer } from "./AuditLogsPanel";
 import { DEFAULT_SCRIPT_NODE_TEMPLATE, FlowNodeDrawer } from "./FlowNodeDrawer";
 import { FlowRunDrawer } from "./FlowRunDrawer";
 import { FlowStepList } from "./FlowStepList";
@@ -215,6 +216,8 @@ function FlowCanvas() {
 
   const [flow, setFlow] = useState<Flow>();
   const [loading, setLoading] = useState(true);
+  /* 「变更历史」抽屉（P11-10 边界 8）：流程工作台按 target_type=flow 下钻。 */
+  const [changeHistoryOpen, setChangeHistoryOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<StepData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -1028,6 +1031,7 @@ function FlowCanvas() {
         </button>}
           <IconButton icon={<Undo2 size={15} />} label={t("action.undo")} disabled={!historyDepth.past} onClick={undo} />
           <IconButton icon={<Redo2 size={15} />} label={t("action.redo")} disabled={!historyDepth.future} onClick={redo} />
+          {canWrite && <IconButton icon={<History size={15} />} label={t("audit.history")} onClick={() => setChangeHistoryOpen(true)} />}
           {/* 列表模式的新增接在所选行后面（画布保持无锚点、自由摆放的原语义）。 */}
           {canWrite && <button className="btn btn-with-icon" onClick={() => (viewMode === "list" ? addFromList() : setNodePickerOpen(true))}><Plus size={14} />{t("flows.addNode")}</button>}
         {canWrite && (busy
@@ -1324,6 +1328,15 @@ function FlowCanvas() {
         title={t("flows.variables")}
       />
     </Modal>
+    {/* 变更历史（P11-10 边界 8）：流程的建/改/删与「从用例同步」都在这里。 */}
+    <ChangeHistoryDrawer
+      projectId={projectId!}
+      targetType="flow"
+      targetId={flowId!}
+      name={flow?.name ?? name}
+      open={changeHistoryOpen}
+      onClose={() => setChangeHistoryOpen(false)}
+    />
   </main>;
 }
 

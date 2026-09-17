@@ -6,6 +6,7 @@ import { api, type Assertion, type Environment, type Execution, type RequestSnap
 import { useCanWrite } from "../hooks/useMyRole";
 import { AssertionEditor, defaultAssertions } from "./AssertionEditor";
 import { IconButton } from "./IconButton";
+import { OwnerCell } from "./OwnerCell";
 import { RunStatusTag } from "./RunStatusTag";
 import { SidebarPager, SIDEBAR_PAGE_SIZES } from "./SidebarPager";
 import { toRunStatus } from "../ui";
@@ -118,6 +119,11 @@ export function CaseBox({ cases, activeCaseId, running, onOpen, onRun, onEdit, o
                   </span>
                 : <span className="muted">{t("status.notRun")}</span>}
               <span className="mono muted">{t("cases.assertionCount", { count: testCase.assertions.length })}</span>
+              {/* 归属（P11-7）：这是工作台侧栏的卡片列表，没有表头可挂，所以两个数据点并进
+                  meta 行（与断言数、环境 chip 同一层）而不是两列——边界 9 说的「加两列」在
+                  这个形状上没有可加的列。系统路径改的仍显示「系统」。 */}
+              <span className="mono muted truncate">{t("common.createdBy")} <OwnerCell kind="created" email={testCase.createdByEmail} /></span>
+              <span className="mono muted truncate">{t("common.updatedBy")} <OwnerCell kind="updated" email={testCase.updatedByEmail} createdAt={testCase.createdAt} updatedAt={testCase.updatedAt} /></span>
               {testCase.environmentName && <span className="chip">{testCase.environmentName}</span>}
               {testCase.tags.slice(0, 2).map((value) => <span className="chip" key={value}>{value}</span>)}
             </span>

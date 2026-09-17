@@ -6,6 +6,7 @@ import { api, type FailureCategory, type ReportAttributionSummary, type SuiteRep
 import { useDebounced } from "../hooks/useDebounced";
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
+import { triggerLabel } from "../lib/trigger";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Readout, Tip, toRunStatus } from "../ui";
 import { AttributionDrawer, AttributionTag, type AttributionRequest, type AttributionTarget } from "./AttributionDrawer";
@@ -40,14 +41,6 @@ const REPORT_SOURCES = ["all", "suite", "runner"] as const;
  */
 const UNATTRIBUTED = "__unattributed__";
 const ATTRIBUTED = "__attributed__";
-
-/** 触发列的文案：手动 / 定时「名字」 / Webhook「名字」 / CI（边界 13 的快照名）。
-    source 可空：入队响应等不含触发列的形状也走这里，缺省读作手动。 */
-export function triggerLabel(t: (key: string, vars?: Record<string, unknown>) => string, source?: TriggerSource, refName?: string | null) {
-  const resolved = source ?? "manual";
-  const base = t(`suiteReports.trigger${resolved.charAt(0).toUpperCase()}${resolved.slice(1)}`);
-  return refName ? `${base}「${refName}」` : base;
-}
 
 function formatMs(value: number | null | undefined) {
   if (value === null || value === undefined) return "—";
@@ -316,7 +309,7 @@ export function SuiteReports() {
             {/* 变量覆盖是标识段的一部分：不带覆盖的报告长得一样，结论可以完全不同。 */}
             {overridesLabel(report.variableOverrides) && <span className="mono muted report-variables">{overridesLabel(report.variableOverrides)}</span>}
           </td>
-          <td className="truncate">{triggerLabel(t, report.triggerSource, report.triggerRefName)}</td>
+          <td className="truncate">{triggerLabel(t, report.triggerSource, report.triggerRefName, report.triggeredByEmail)}</td>
           <td className="col-num mono">{report.passRate === null ? "—" : `${report.passRate.toFixed(1)}%`}</td>
           <td className="col-num mono">{report.total}</td>
           <td className="col-num mono">{formatMs(report.durationMs)}</td>
@@ -525,7 +518,7 @@ export function SuiteReportDetail({ projectId, report, t, publicView, shareToken
           <div><dt>{t("suites.name")}</dt><dd>{report.suiteName}</dd></div>
           <div><dt>{t("flows.environment")}</dt><dd>{report.environmentName ?? t("endpoints.noEnvironment")}</dd></div>
           <div><dt>{t("suiteReports.variables")}</dt><dd className="mono">{overrides || <span className="muted">{t("suiteReports.variablesNone")}</span>}</dd></div>
-          <div><dt>{t("suiteReports.trigger")}</dt><dd>{triggerLabel(t, report.triggerSource, report.triggerRefName)}</dd></div>
+          <div><dt>{t("suiteReports.trigger")}</dt><dd>{triggerLabel(t, report.triggerSource, report.triggerRefName, report.triggeredByEmail)}</dd></div>
           <div><dt>{t("environments.runnerLabel")}</dt><dd className="mono">{report.runnerLabel}</dd></div>
           <div><dt>{t("suiteReports.startedAt")}</dt><dd className="mono">{new Date(report.startedAt ?? report.createdAt).toLocaleString()}</dd></div>
           <div><dt>{t("suiteReports.finishedAt")}</dt><dd className="mono">{report.finishedAt ? new Date(report.finishedAt).toLocaleString() : "—"}</dd></div>

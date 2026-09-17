@@ -2,14 +2,15 @@ import { useEffect, useState } from "react";
 import { Select } from "antd";
 import { useTranslation } from "react-i18next";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Bell, Bot, CalendarCheck, ChevronDown, ChevronRight, Database, FolderGit2, Globe, History, Layers, ListChecks, MessageSquare, Plug, ScrollText, TrendingUp, Users, Workflow, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Bell, Bot, CalendarCheck, ChevronDown, ChevronRight, Database, FileClock, FolderGit2, Globe, History, Layers, ListChecks, MessageSquare, Plug, ScrollText, TrendingUp, Users, Workflow, type LucideIcon } from "lucide-react";
+import { useCanWrite } from "../hooks/useMyRole";
 import { useRecordLastPage } from "../hooks/useRecordLastPage";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 import { useIsWideViewport, useSidebarCollapsed } from "../stores/sidebarStore";
 import { IconNavButton, SidebarToggle } from "./SidebarControls";
 
-const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "mcp", "repo", "spec-cases", "test-plans", "reports", "suite-reports", "trends", "alerts", "members"] as const;
+const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "mcp", "repo", "spec-cases", "test-plans", "reports", "suite-reports", "trends", "alerts", "members", "audit"] as const;
 export type ProjectPage = typeof PAGES[number];
 
 /**
@@ -41,6 +42,7 @@ const NAV_ICONS: Record<ProjectPage, LucideIcon> = {
   trends: TrendingUp,
   alerts: Bell,
   members: Users,
+  audit: FileClock,
 };
 
 /** What a detail page hands up so the crumb can show its real name. */
@@ -115,6 +117,10 @@ export function ProjectShell() {
      折叠头。默认态：前四组展开、项目配置收起（MCP/告警/成员是低频管理页）。
      导航到收起组内的页面时自动展开该组（elsewhere 展开不了当前页所在组会是
      「active 项看不见」的缺陷）。 */
+  /* P11-10 边界 7：审计入口对 viewer 不渲染（路由不藏——后端守卫才是权限的单一事实）。
+     这是侧栏唯一一处角色过滤：审计行含 email 与 IP，viewer 是唯一连页面都进不去的
+     项目页，「一个你永远打不开的 tab 只是杂物」（边界 6）。 */
+  const canReadAudit = useCanWrite();
   const nav: { group: ProjectPage; label: string; items: [ProjectPage, string][]; defaultOpen: boolean }[] = [
     /* 测试跟踪（2026-09-09）：文本用例与测试计划是「设计用例 → 跟踪执行」的
        起点，放在最上面——测试工作流从这里开始，往下才是编排与回归。 */
@@ -126,8 +132,9 @@ export function ProjectShell() {
     { group: "environments", label: t("nav.testResources"), items: [["environments", t("nav.environments")], ["data-sources", t("nav.dataSources")], ["mocks", "Mock"]], defaultOpen: true },
     { group: "reports", label: t("nav.common"), items: [["reports", t("nav.reports")], ["suite-reports", t("nav.suiteReports")], ["trends", t("nav.trends")]], defaultOpen: true },
     /* 项目配置：默认收起。MCP / 告警 / 成员是配置完就不再来的页面。助手无项目页
-       （P9-4 修订：默认开启、无项目闸门），对话入口在右下角常驻抽屉。 */
-    { group: "members", label: t("nav.projectConfig"), items: [["mcp", "MCP"], ["alerts", t("nav.alerts")], ["members", t("nav.members")]], defaultOpen: false },
+       （P9-4 修订：默认开启、无项目闸门），对话入口在右下角常驻抽屉。
+       审计（P11-10）挂在同一组：它是「这个项目里谁动过什么」的完整视图。 */
+    { group: "members", label: t("nav.projectConfig"), items: [["mcp", "MCP"], ["alerts", t("nav.alerts")], ["audit", t("nav.audit")], ["members", t("nav.members")]], defaultOpen: false },
   ];
   const GROUP_OF: Partial<Record<ProjectPage, ProjectPage>> = Object.fromEntries(
     nav.flatMap((section) => section.items.map(([key]) => [key, section.group])),
@@ -186,7 +193,7 @@ export function ProjectShell() {
                   {section.label}
                 </button>
               : <span className="nav-section" aria-hidden>{section.label}</span>}
-            {(!accordionOn || open) && section.items.map(([key, label]) => {
+            {(!accordionOn || open) && section.items.filter(([key]) => key !== "audit" || canReadAudit).map(([key, label]) => {
               const Icon = NAV_ICONS[key];
               /* 收起态：标签交给 Tooltip（0.1s，与 Tip 同档）；展开态是普通按钮，
                  文字直接在位。aria-label 恒在——图标不能是它唯一的名字。 */

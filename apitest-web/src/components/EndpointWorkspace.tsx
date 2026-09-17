@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Copy, CopyPlus, Crosshair, Maximize2, Play, Plus, Save, SaveAll, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Copy, CopyPlus, Crosshair, History, Maximize2, Play, Plus, Save, SaveAll, Trash2 } from "lucide-react";
 import { api, noRunnerLabel, type Assertion, type BodyType, type CaseUsage, type Endpoint, type EndpointAuth, type EndpointInput, type Execution, type ExecutionSourceFilter, type FlowExtract, type Paged, type PreRequestHook, type RequestSnapshot, type ResponseScript, type TestCase } from "../api";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
@@ -11,6 +11,7 @@ import { variableOptions } from "../lib/flowVariables";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 import { KeyValueEditor, fromPairs, toPairs, type Pair } from "./KeyValueEditor";
+import { ChangeHistoryDrawer } from "./AuditLogsPanel";
 import { ExecutionSnapshot } from "./ExecutionSnapshot";
 import { HistorySidebar } from "./HistorySidebar";
 import { IconButton } from "./IconButton";
@@ -224,6 +225,9 @@ export function EndpointWorkspace() {
    */
   const [activeCase, setActiveCase] = useState<TestCase>();
   const [debugDraft, setDebugDraft] = useState<Draft>();
+  /* 「变更历史」抽屉（P11-10 边界 8）：跟屏幕上正在编辑的东西走——加载了用例就查用例，
+     否则查接口。与 runs 侧栏的 `historyOpen` 是两个东西，名字分开。 */
+  const [changeHistoryOpen, setChangeHistoryOpen] = useState(false);
   /**
    * Comparison point while a case is loaded, kept separate from `baseline`.
    *
@@ -906,6 +910,7 @@ export function EndpointWorkspace() {
             endpoint-level writes are withheld: saving would overwrite the
             endpoint with case content, and duplicating would copy the wrong
             definition. The case's own save takes their place. */}
+        {!isNew && canWrite && <IconButton icon={<History size={15} />} label={t("audit.history")} onClick={() => setChangeHistoryOpen(true)} />}
         {!isNew && !activeCase && canWrite && <IconButton icon={<CopyPlus size={15} />} label={t("action.duplicate")} disabled={duplicating} onClick={() => void duplicate()} />}
         {!isNew && !activeCase && canWrite && <IconButton icon={<Trash2 size={15} />} label={t("action.delete")} tone="danger" onClick={remove} />}
         {canWrite && (activeCase
@@ -1224,6 +1229,15 @@ export function EndpointWorkspace() {
       />
       <JsonPathPicker open={pickExtractBody !== undefined} body={result?.responseBody} onClose={() => setPickExtractBody(undefined)} onPick={(paths) => { if (pickExtractBody === undefined || !paths.length) return; const made = paths.map((path) => ({ name: path.split(/[.[\]]/).filter(Boolean).at(-1) ?? "value", from: "body" as const, path })); setCaseExtracts((current) => current.map((item, at) => at === pickExtractBody ? { ...made[0], name: item.name || made[0].name } : item).concat(made.slice(1))); setPickExtractBody(undefined); }} />
       <HeaderPicker open={pickExtractHeader !== undefined} headers={result?.responseHeaders} onClose={() => setPickExtractHeader(undefined)} onPick={(names) => { if (pickExtractHeader === undefined || !names.length) return; const made = names.map((name) => ({ name: name.toLowerCase().replace(/[^a-z0-9]+(.)/g, (_, next: string) => next.toUpperCase()), from: "header" as const, path: name })); setCaseExtracts((current) => current.map((item, at) => at === pickExtractHeader ? { ...made[0], name: item.name || made[0].name } : item).concat(made.slice(1))); setPickExtractHeader(undefined); }} />
+      {/* 变更历史（P11-10 边界 8）：屏幕上是用例就查用例、否则查接口，与编辑对象一致。 */}
+      {!isNew && <ChangeHistoryDrawer
+        projectId={projectId!}
+        targetType={activeCase ? "test_case" : "endpoint"}
+        targetId={activeCase ? activeCase.id : endpointId!}
+        name={activeCase ? activeCase.name : draft.name}
+        open={changeHistoryOpen}
+        onClose={() => setChangeHistoryOpen(false)}
+      />}
   </main>;
 }
 

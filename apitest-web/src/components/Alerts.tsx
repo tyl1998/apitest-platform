@@ -2,13 +2,15 @@ import { Fragment, useEffect, useState } from "react";
 import { Drawer, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams, useSearchParams } from "react-router-dom";
-import { Pencil, Plus, Send, Trash2 } from "lucide-react";
+import { History, Pencil, Plus, Send, Trash2 } from "lucide-react";
 import { api, type AlertComparator, type AlertMetric, type AlertRule, type NotificationChannel, type NotificationChannelType } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty } from "../ui";
 import { IconButton } from "./IconButton";
+import { OwnerCell } from "./OwnerCell";
+import { ChangeHistoryDrawer } from "./AuditLogsPanel";
 
 /**
  * 告警通知（P3-9，边界 8~10）。一个页面三段：渠道 → 规则 → 派发记录。
@@ -69,6 +71,9 @@ export function Alerts() {
 
   /* 渠道编辑。secret 三态：留空 = 不动（编辑）/ 不配（新建），勾选清除 = 删。 */
   const [channelEditing, setChannelEditing] = useState<NotificationChannel | "new">();
+  /* 「变更历史」抽屉（P11-10 边界 8）：渠道与规则是两张表两行资源，入口各挂各的编辑
+     抽屉；新建时还没有 target_id。 */
+  const [channelHistoryOpen, setChannelHistoryOpen] = useState(false);
   const [channelForm, setChannelForm] = useState<ChannelForm>(emptyChannelForm());
   const [channelSaving, setChannelSaving] = useState(false);
   const [testing, setTesting] = useState<string>();
@@ -76,6 +81,7 @@ export function Alerts() {
   /* 规则编辑。threshold/window 存字符串：输入框里清空重填是常态，数字态会拦住删完
      最后一位的那次按键。 */
   const [ruleEditing, setRuleEditing] = useState<AlertRule | "new">();
+  const [ruleHistoryOpen, setRuleHistoryOpen] = useState(false);
   const [ruleForm, setRuleForm] = useState<RuleForm>(emptyRuleForm());
   const [ruleSaving, setRuleSaving] = useState(false);
 
@@ -291,13 +297,15 @@ export function Alerts() {
     {loading && <p className="muted">{t("common.loading")}</p>}
 
     {/* ── 渠道 ── */}
-    {tab === "channels" && (channels.length ? <table className="grid">
+    {tab === "channels" && (channels.length ? <div className="table-scroll"><table className="grid">
       <thead><tr>
         <th>{t("alerts.channelName")}</th>
         <th>{t("alerts.channelType")}</th>
         <th className="mono">URL</th>
         <th className="col-status">{t("alerts.channelSecret")}</th>
         <th className="col-status">{t("schedules.enabled")}</th>
+        <th className="col-owner">{t("common.createdBy")}</th>
+        <th className="col-owner">{t("common.updatedBy")}</th>
         <th className="col-actions" />
       </tr></thead>
       <tbody>
@@ -315,6 +323,10 @@ export function Alerts() {
               <span className="status-mark" />{channel.enabled ? t("schedules.enabled") : t("schedules.disabled")}
             </span>
           </td>
+          {/* 归属两列（P11-7）：告警引擎只写 last_fired_at（运行簿记），所以「系统」在这张表
+              上只可能来自对账等真正的系统写（边界 3）。 */}
+          <td className="col-owner mono muted truncate"><OwnerCell kind="created" email={channel.createdByEmail} /></td>
+          <td className="col-owner mono muted truncate"><OwnerCell kind="updated" email={channel.updatedByEmail} createdAt={channel.createdAt} updatedAt={channel.updatedAt} /></td>
           <td className="col-actions" onClick={(event) => event.stopPropagation()}>
             {canWrite && <div className="row-actions">
               <IconButton icon={<Send size={14} />} label={t("alerts.channelTest")} disabled={testing === channel.id} onClick={() => void testChannel(channel)} />
@@ -324,10 +336,10 @@ export function Alerts() {
           </td>
         </tr>)}
       </tbody>
-    </table> : !loading && <Empty title={t("alerts.channelsEmpty")} hint={t("alerts.channelsEmptyHint")} action={canWrite ? <button className="btn btn-primary" onClick={() => openChannel("new")}>{t("alerts.createChannel")}</button> : undefined} />)}
+    </table></div> : !loading && <Empty title={t("alerts.channelsEmpty")} hint={t("alerts.channelsEmptyHint")} action={canWrite ? <button className="btn btn-primary" onClick={() => openChannel("new")}>{t("alerts.createChannel")}</button> : undefined} />)}
 
     {/* ── 规则 ── */}
-    {tab === "rules" && (rules.length ? <table className="grid">
+    {tab === "rules" && (rules.length ? <div className="table-scroll"><table className="grid">
       <thead><tr>
         <th>{t("alerts.ruleName")}</th>
         <th>{t("alerts.ruleMetric")}</th>
@@ -335,6 +347,8 @@ export function Alerts() {
         <th className="mono">{t("alerts.ruleWindow")}</th>
         <th>{t("alerts.ruleChannels")}</th>
         <th className="col-status">{t("schedules.enabled")}</th>
+        <th className="col-owner">{t("common.createdBy")}</th>
+        <th className="col-owner">{t("common.updatedBy")}</th>
         <th className="col-actions" />
       </tr></thead>
       <tbody>
@@ -353,6 +367,9 @@ export function Alerts() {
                 <span className="status-mark" />{rule.enabled ? t("schedules.enabled") : t("schedules.disabled")}
               </span>
             </td>
+            {/* 归属两列（P11-7）：与渠道表同款；本表的「系统」只可能来自对账等真正的系统写。 */}
+            <td className="col-owner mono muted truncate"><OwnerCell kind="created" email={rule.createdByEmail} /></td>
+            <td className="col-owner mono muted truncate"><OwnerCell kind="updated" email={rule.updatedByEmail} createdAt={rule.createdAt} updatedAt={rule.updatedAt} /></td>
             <td className="col-actions" onClick={(event) => event.stopPropagation()}>
               {canWrite && <div className="row-actions">
                 <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => openRule(rule)} />
@@ -362,7 +379,7 @@ export function Alerts() {
           </tr>;
         })}
       </tbody>
-    </table> : !loading && <Empty title={t("alerts.rulesEmpty")} hint={t("alerts.rulesEmptyHint")} action={canWrite ? <button className="btn btn-primary" onClick={() => openRule("new")}>{t("alerts.createRule")}</button> : undefined} />)}
+    </table></div> : !loading && <Empty title={t("alerts.rulesEmpty")} hint={t("alerts.rulesEmptyHint")} action={canWrite ? <button className="btn btn-primary" onClick={() => openRule("new")}>{t("alerts.createRule")}</button> : undefined} />)}
 
     {/* ── 派发记录 ── */}
     {tab === "deliveries" && <>
@@ -421,8 +438,9 @@ export function Alerts() {
     <Drawer
       title={channelEditing === "new" ? t("alerts.createChannel") : t("action.edit")}
       open={Boolean(channelEditing)}
-      onClose={() => setChannelEditing(undefined)}
+      onClose={() => { setChannelHistoryOpen(false); setChannelEditing(undefined); }}
       width={520}
+      extra={canWrite && channelEditing && channelEditing !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setChannelHistoryOpen(true)}><History size={14} />{t("audit.history")}</button> : undefined}
       footer={<div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
         <button className="btn" onClick={() => setChannelEditing(undefined)}>{t("action.cancel")}</button>
         {canWrite && <button className="btn btn-primary" disabled={channelSaving} onClick={() => void saveChannel()}>{channelSaving ? "…" : t("action.save")}</button>}
@@ -476,8 +494,9 @@ export function Alerts() {
     <Drawer
       title={ruleEditing === "new" ? t("alerts.createRule") : t("action.edit")}
       open={Boolean(ruleEditing)}
-      onClose={() => setRuleEditing(undefined)}
+      onClose={() => { setRuleHistoryOpen(false); setRuleEditing(undefined); }}
       width={520}
+      extra={canWrite && ruleEditing && ruleEditing !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setRuleHistoryOpen(true)}><History size={14} />{t("audit.history")}</button> : undefined}
       footer={<div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
         <button className="btn" onClick={() => setRuleEditing(undefined)}>{t("action.cancel")}</button>
         {canWrite && <button className="btn btn-primary" disabled={ruleSaving} onClick={() => void saveRule()}>{ruleSaving ? "…" : t("action.save")}</button>}
@@ -537,5 +556,26 @@ export function Alerts() {
         {t("schedules.enabled")}
       </label>
     </Drawer>
+
+    {/* 渠道的变更历史（P11-10 边界 8）：detail 只有字段名，url 与 secret 的值绝不进；
+        删渠道时对规则的连带摘除也只是 alert_rule.update 一行，同样在这里看得到。 */}
+    {canWrite && channelEditing && channelEditing !== "new" && <ChangeHistoryDrawer
+      projectId={projectId!}
+      targetType="notification_channel"
+      targetId={channelEditing.id}
+      name={channelEditing.name}
+      open={channelHistoryOpen}
+      onClose={() => setChannelHistoryOpen(false)}
+    />}
+
+    {/* 规则的变更历史（P11-10 边界 8）。 */}
+    {canWrite && ruleEditing && ruleEditing !== "new" && <ChangeHistoryDrawer
+      projectId={projectId!}
+      targetType="alert_rule"
+      targetId={ruleEditing.id}
+      name={ruleEditing.name}
+      open={ruleHistoryOpen}
+      onClose={() => setRuleHistoryOpen(false)}
+    />}
   </main>;
 }

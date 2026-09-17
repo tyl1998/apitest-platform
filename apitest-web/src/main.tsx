@@ -39,6 +39,7 @@ import { CiTaskEditor } from "./components/CiTaskEditor";
 import { PipelineRunPage } from "./components/PipelineRunPage";
 import { ShareReportPage } from "./components/ShareReportPage";
 import { Members } from "./components/Members";
+import { ProjectAuditPage } from "./components/AuditLogsPanel";
 import { SpecCases } from "./components/SpecCases";
 import { TestPlans, TestPlanPage } from "./components/TestPlans";
 import { AssistantDock } from "./components/AssistantDock";
@@ -176,6 +177,9 @@ function Root() {
         {/* P6-4：成员与权限。页面本身 viewer 可读（「知道找谁要权限」），管理面在
             页内按 useMyRole 隐藏；路由不藏——后端守卫才是权限的单一事实。 */}
         <Route path="members" element={<Members />} />
+        {/* P11-10：项目审计（developer 及以上；viewer 的入口在 ProjectShell 隐藏，
+            路由不藏——后端守卫是权限的单一事实）。 */}
+        <Route path="audit" element={<ProjectAuditPage />} />
         {/* P7-2：用例库（文本用例）。列表视图 + 详情抽屉先行；树视图/导入/绑定/
             测试计划在 P7-3…P7-7 逐批落进本页或同分组。 */}
         <Route path="spec-cases" element={<SpecCases />} />

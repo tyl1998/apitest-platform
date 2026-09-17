@@ -15,6 +15,20 @@ export type MyRole = ProjectRole | "system_admin";
  * 旗，读时从 me() 恢复（服务端改密后即时清，无缓存窗口）。
  */
 export type User = { id: string; email: string; name: string; isSystemAdmin: boolean; mustChangePassword?: boolean };
+/**
+ * 列级归属（P11 边界 7/9）：谁建的 / 谁最后改的，以 **email 快照** 随行返回
+ * （后端 `Ownership`；不是表上的列，是读时 `LEFT JOIN users` 的产物）。
+ *
+ * 两个字段都可选可空，`undefined` / `null` 的语义是「这个响应没有这个值」：
+ * - 列表接口带 join，所以列表上显示的是真话；create / update 的返回值没有 join，
+ *   读成 undefined —— 列会在列表刷新后补齐（列表页本就重拉）。
+ * - `updatedByEmail` 为空而 `updatedAt` 晚于 `createdAt` = **系统路径**改的（调度器 /
+ *   告警引擎 / 对账），显示「系统」；两者都为空才是「—」。
+ * - `environments` 表没有 created_at / updated_at，所以那两列永远走「—」分支。
+ *
+ * `spec_cases` 只有 `createdByEmail`（后端没有 updated_by 列）——见 `SpecCase`。
+ */
+export type Ownership = { createdByEmail?: string | null; updatedByEmail?: string | null };
 /** Secret values stay on the server; only their key names are sent (Spec 4.6). */
 export type Environment = {
   id: string;
@@ -34,7 +48,7 @@ export type Environment = {
    * 变量覆盖决定。
    */
   defaultHeaders: Record<string, string>;
-};
+} & Ownership;
 export type ProjectSettings = { defaultEnvironmentId?: string; storePlaintext: boolean; mcpEnabled: boolean };
 
 /**
@@ -74,7 +88,8 @@ export type DataSource = {
   passwordConfigured: boolean;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
+
 export type DataSourceInput = {
   name: string;
   type: DataSourceType;
@@ -125,7 +140,7 @@ export type MockResponse = { statusCode: number; headers: Record<string, string>
 export type MockProxyPathMode = "append" | "fixed" | "replace";
 export type MockProxyQueryMode = "forward" | "drop" | "append";
 export type MockProxyConfig = { targetUrl: string; allowedHosts: string[]; timeoutMs: number; maxResponseBytes: number; pathMode?: MockProxyPathMode; queryMode?: MockProxyQueryMode; fixedQuery?: Record<string, string> };
-export type Mock = { id: string; endpointId?: string; snapshotExecutionId?: string; name: string; publicId: string; mode: MockMode; enabled: boolean; priority: number; requestMatch: Record<string, unknown>; response: MockResponse; proxyConfig?: MockProxyConfig; delayMs: number; createdAt: string; updatedAt: string };
+export type Mock = { id: string; endpointId?: string; snapshotExecutionId?: string; name: string; publicId: string; mode: MockMode; enabled: boolean; priority: number; requestMatch: Record<string, unknown>; response: MockResponse; proxyConfig?: MockProxyConfig; delayMs: number; createdAt: string; updatedAt: string } & Ownership;
 export type MockInput = { endpointId?: string | null; executionId?: string | null; name: string; mode: MockMode; enabled: boolean; priority: number; requestMatch: Record<string, unknown>; response: MockResponse; proxyConfig?: MockProxyConfig; delayMs: number };
 export type MockRequestLog = { id: string; method: string; path: string; matched: boolean; statusCode: number; durationMs: number; requestSnapshot: Record<string, unknown>; responseSizeBytes: number; createdAt: string };
 /** MongoDB operations (P2-7.3). Filter/pipeline values may carry `{{name}}`. */
@@ -174,7 +189,7 @@ export type Endpoint = {
   lastDurationMs?: number;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 /**
  * The request definition a case freezes (交互文档 3.1.3 快照隔离). Editing the
@@ -333,7 +348,7 @@ export type Script = {
   symbols?: ScriptCompletionSymbol[];
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 export type ScriptKind = "assertion" | "hook" | "response" | "library" | "node";
 export type ScriptRuntimeKind = Exclude<ScriptKind, "library">;
@@ -403,7 +418,7 @@ export type TestCase = {
   lastRun?: Execution;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 /**
  * 列表用的用例摘要（跨接口选择器 / 套件成员）。
@@ -426,7 +441,7 @@ export type TestCaseSummary = {
   lastRun?: Execution;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 export type TestCaseInput = {
   name: string;
@@ -539,7 +554,7 @@ export type Execution = {
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
-};
+} & TriggeredByEmail;
 
 export type ExecutionStatus = "queued" | "running" | "success" | "failed" | "canceled";
 /** A step row can also be `skipped` — a condition branch that did not fire. */
@@ -562,7 +577,7 @@ export type BatchDebugResult = {
   createdAt: string;
   finishedAt?: string;
   items: { endpointId: string; endpointName: string; execution?: Execution; error?: string }[];
-};
+} & TriggeredByEmail;
 export type BatchDebugSummary = Omit<BatchDebugResult, "items">;
 
 /**
@@ -787,7 +802,7 @@ export type Flow = {
   tags: string[];
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 export type FlowPlanStep = { nodeId: string; name: string; endpointId?: string; type?: FlowNode["type"] };
 
@@ -824,10 +839,19 @@ export type ExecutionIndex = {
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
-};
+} & TriggeredByEmail;
 
 /** 触发源（P3，迁移 030 的 CHECK 值域）。 */
 export type TriggerSource = "manual" | "scheduled" | "webhook" | "ci";
+/**
+ * 触发人（P11 边界 11，前端）：`triggeredBy` 存 uuid，`triggeredByEmail` 是读时 JOIN 的
+ * email 快照——列表上能直接显示的是后者（后端 `TriggeredByEmail`）。
+ *
+ * 语义与资产归属（`Ownership`）**不同**：这里 `null` 表示「**没有人工触发人**」
+ * （定时 / Webhook / 非人 CI），显示「系统」；只有「触发源是手动而 email 缺失」才是
+ * 「—」（这次响应没取到，如入队回执）。两个 null 的话术不同，不要统一。
+ */
+export type TriggeredByEmail = { triggeredByEmail?: string | null };
 
 /**
  * A generic step record (P2-0), matching `mapExecutionStep` server-side.
@@ -1014,7 +1038,7 @@ export type SuiteExecutionDetail = SuiteExecution & {
   triggerRefName?: string;
   executionSteps: ExecutionStep[];
   runs: Execution[];
-};
+} & TriggeredByEmail;
 
 /**
  * 套件级通知设置（P3-11）：终态按开关投递到所选渠道，模版可覆盖默认。
@@ -1038,7 +1062,7 @@ export type TestSuite = {
   tags: string[];
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 /**
  * 列表不解析 tag/all 的成员数：那要为每一行跑两条查询，而列表能显示的只是筛选
@@ -1260,7 +1284,7 @@ export type Schedule = {
   lastRunAt?: string;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 export type ScheduleInput = {
   name?: string;
@@ -1326,7 +1350,7 @@ export type WebhookTrigger = {
   lastTriggeredAt?: string;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 export type WebhookTriggerInput = {
   name?: string;
@@ -1352,7 +1376,7 @@ export type NotificationChannel = {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 export type NotificationChannelInput = {
   name?: string;
@@ -1383,7 +1407,7 @@ export type AlertRule = {
   lastFiredAt?: string;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 export type AlertRuleInput = {
   name?: string;
@@ -1440,7 +1464,7 @@ export type SuiteReportSummary = {
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
-};
+} & TriggeredByEmail;
 
 /** 一份报告（6.4 的四段）：标识 / 触发 / 结论 / 成员明细（不分页）。 */
 export type SuiteReport = {
@@ -1467,7 +1491,7 @@ export type SuiteReport = {
   startedAt: string | null;
   finishedAt: string | null;
   members: ExecutionStep[];
-};
+} & TriggeredByEmail;
 
 /** 趋势桶（边界 11）：空桶由服务端 generate_series 补齐，total=0 就是「没执行」。 */
 export type TrendBucket = {
@@ -1993,7 +2017,7 @@ export type PipelineRun = {
   claimedAt?: string;
   startedAt?: string;
   finishedAt?: string;
-};
+} & TriggeredByEmail;
 
 /** 报告解析出的 case 级结果（junit/allure；时间戳是 allure 的 epoch 毫秒）。 */
 export type PipelineRunCase = {
@@ -2486,7 +2510,7 @@ export type SpecModule = {
   automatedCount?: number;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 /** 文本用例的一个步骤：步骤 + 预期成对（行内两列）。 */
 export type SpecCaseStep = { step: string; expected: string };
@@ -2520,6 +2544,13 @@ export type SpecCase = {
   links?: SpecCaseLink[];
   createdAt: string;
   updatedAt: string;
+  /**
+   * 归属（P11 边界 7/9）：**只有创建人**。`spec_cases` 从 P7 起就有 `created_by`，但按
+   * 边界 2 没有 `updated_by` 列（后端 `SpecCase` 同一句话），所以列表**只加「创建人」一列**
+   * ——一列永远显示「—」比不显示更糟（边界 9 原写「两列」，这里按数据事实收成一列）。
+   * 要「更新人」得先给表加列（另立项）。
+   */
+  createdByEmail?: string | null;
 };
 
 /** 手工建/改的提交体（后端 `validateSpecCase` 同一套约束）。编号由服务端自增生成，不进提交体。 */
@@ -2872,9 +2903,20 @@ export const api = {
   /** 全局审计日志（分页 + action / project 筛选）。 */
   auditLogs: (filters?: { page?: number; pageSize?: number; action?: string; projectId?: string }) =>
     client.get("/system/audit-logs", { params: { page: filters?.page, pageSize: filters?.pageSize, action: filters?.action?.trim() || undefined, projectId: filters?.projectId || undefined } }).then(paged<AuditLog>),
-  /** 项目级审计（最近 50 条，项目管理员）：P6-4 成员页消费。 */
-  projectAuditLogs: (projectId: string) =>
-    client.get(`/projects/${projectId}/audit-logs`).then(data<AuditLog[]>),
+  /**
+   * 项目级审计（P11-10 边界 7/8）：developer 及以上可读（viewer 403），支持
+   * `action` / `targetType` / `targetId` 过滤与分页——资源详情的「变更历史」抽屉
+   * 就是 `targetType + targetId` 这一路（缺省第 1 页、每页 50 条，与旧「最近 50 条」同量）。
+   */
+  projectAuditLogs: (projectId: string, filters?: { page?: number; pageSize?: number; action?: string; targetType?: string; targetId?: string }) =>
+    client.get(`/projects/${projectId}/audit-logs`, {
+      params: {
+        page: filters?.page, pageSize: filters?.pageSize,
+        action: filters?.action?.trim() || undefined,
+        targetType: filters?.targetType?.trim() || undefined,
+        targetId: filters?.targetId || undefined,
+      },
+    }).then(paged<AuditLog>),
 
   /* ── P6-4：项目成员 ── */
   /** 成员表（viewer 可读；total = 成员数）。 */

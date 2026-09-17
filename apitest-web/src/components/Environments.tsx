@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AutoComplete, Drawer, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams, useSearchParams } from "react-router-dom";
-import { CopyPlus, Eye, EyeOff, Pencil, Trash2 } from "lucide-react";
+import { CopyPlus, Eye, EyeOff, History, Pencil, Trash2 } from "lucide-react";
 import { api, type Environment, type EnvironmentUsage, type RunnerLabelStatus } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useCanManageProject, useCanWrite } from "../hooks/useMyRole";
@@ -10,7 +10,9 @@ import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty } from "../ui";
 import { CopyButton } from "./CopyButton";
+import { ChangeHistoryDrawer } from "./AuditLogsPanel";
 import { IconButton } from "./IconButton";
+import { OwnerCell } from "./OwnerCell";
 import { fromPairs, toPairs } from "./KeyValueEditor";
 import { PublicScripts } from "./PublicScripts";
 import { VariableRowsEditor } from "./VariableRowsEditor";
@@ -125,6 +127,8 @@ export function Environments() {
   const filtered = Boolean(debouncedKeyword.trim());
 
   const [drawerEnv, setDrawerEnv] = useState<Environment | "new">();
+  /* 「变更历史」抽屉（P11-10 边界 8）：编辑已有环境时才有 target_id。 */
+  const [changeHistoryOpen, setChangeHistoryOpen] = useState(false);
 
   /* 助手页面上下文（P9-4c）：「把当前环境的 baseUrl 换成 stg」指向抽屉里正在编辑的
      环境——只带 id 与名字，secret 值绝不进上下文。 */
@@ -468,13 +472,15 @@ export function Environments() {
       {loading && <span className="muted">{t("filter.searching")}</span>}
     </div>
 
-    {list.length ? <table className="grid env-grid">
+    {list.length ? <div className="table-scroll"><table className="grid env-grid">
       <thead>
         <tr>
           <th>{t("environments.name")}</th>
           <th>{t("environments.runnerLabel")}</th>
           <th className="col-num">{t("environments.variables")}</th>
           <th className="col-num">Secrets</th>
+          <th className="col-owner">{t("common.createdBy")}</th>
+          <th className="col-owner">{t("common.updatedBy")}</th>
           <th className="col-actions" />
         </tr>
       </thead>
@@ -486,6 +492,10 @@ export function Environments() {
           <td className={`mono${env.runnerLabel === "default" ? " muted" : ""}`}>{env.runnerLabel}</td>
           <td className="col-num mono">{Object.keys(env.variables).length}</td>
           <td className="col-num mono">{env.secretKeys.length}</td>
+          {/* 归属两列（P11-7）：`environments` 没有 created_at / updated_at（后端 001 起就没有），
+              所以这里没有「系统」这一态——空值就是「建后没改过」，显示「—」。 */}
+          <td className="col-owner mono muted truncate"><OwnerCell kind="created" email={env.createdByEmail} /></td>
+          <td className="col-owner mono muted truncate"><OwnerCell kind="updated" email={env.updatedByEmail} /></td>
           <td className="col-actions">
             {canWrite && <div className="row-actions" onClick={(event) => event.stopPropagation()}>
               <IconButton
@@ -506,7 +516,7 @@ export function Environments() {
           </td>
         </tr>)}
       </tbody>
-    </table> : !loading && <Empty
+    </table></div> : !loading && <Empty
       title={filtered ? t("environments.emptyFiltered") : t("environments.emptyTitle")}
       hint={filtered ? t("suites.emptyFilteredHint") : t("environments.emptyHint")}
     />}
@@ -527,8 +537,9 @@ export function Environments() {
     <Drawer
       title={drawerEnv === "new" ? t("action.createEnvironment") : t("environments.editTitle")}
       open={Boolean(drawerEnv)}
-      onClose={closeDrawer}
+      onClose={() => { setChangeHistoryOpen(false); closeDrawer(); }}
       width={560}
+      extra={canWrite && drawerEnv && drawerEnv !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setChangeHistoryOpen(true)}><History size={14} />{t("audit.history")}</button> : undefined}
       footer={
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="btn" onClick={closeDrawer}>{t("action.cancel")}</button>
@@ -625,6 +636,16 @@ export function Environments() {
 
       <p className="form-note" style={{ marginTop: 12 }}>{t("environments.secretMaskNote")}</p>
     </Drawer>
+
+    {/* 环境的变更历史（P11-10 边界 8）：detail 只有字段名，variables / secrets 的值绝不进。 */}
+    {canWrite && drawerEnv && drawerEnv !== "new" && <ChangeHistoryDrawer
+      projectId={projectId!}
+      targetType="environment"
+      targetId={drawerEnv.id}
+      name={drawerEnv.name}
+      open={changeHistoryOpen}
+      onClose={() => setChangeHistoryOpen(false)}
+    />}
       </>}
   </main>;
 }

@@ -2,13 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Drawer, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
-import { Pencil, Trash2 } from "lucide-react";
+import { History, Pencil, Trash2 } from "lucide-react";
 import { api, type Script, type ScriptKind } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
 import { useThemeMode } from "../theme";
 import { Empty } from "../ui";
 import { IconButton } from "./IconButton";
+import { OwnerCell } from "./OwnerCell";
 import { ScriptCodeEditor } from "./ScriptCodeEditor";
+import { ChangeHistoryDrawer } from "./AuditLogsPanel";
 
 /**
  * 具名公共脚本 management (计划 4.0.1: follow / copy).
@@ -80,6 +82,8 @@ export function PublicScripts({ create, onCreateHandled }: {
    */
   const [libraries, setLibraries] = useState<Script[]>([]);
   const [draft, setDraft] = useState<Draft>();
+  /* 「变更历史」抽屉（P11-10 边界 8）：新建时还没有 target_id。 */
+  const [scriptHistoryOpen, setScriptHistoryOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState<string>();
   /** Followers of the script being edited, fetched when the drawer opens. */
@@ -221,13 +225,15 @@ export function PublicScripts({ create, onCreateHandled }: {
   return <>
     {loading
       ? <p className="muted">{t("common.loading")}</p>
-      : scripts.length ? <table className="grid script-grid">
+      : scripts.length ? <div className="table-scroll"><table className="grid script-grid">
         {/* Explicit widths: without them the name column shares space evenly
             with the timestamp and the four columns bunch up in the middle. */}
         <colgroup>
           <col />
           <col className="script-col-refs" />
           <col className="script-col-updated" />
+          <col className="col-owner" />
+          <col className="col-owner" />
           <col className="script-col-actions" />
         </colgroup>
         <thead>
@@ -235,6 +241,8 @@ export function PublicScripts({ create, onCreateHandled }: {
             <th>{t("scripts.colName")}</th>
             <th className="col-num">{t("scripts.colRefs")}</th>
             <th>{t("scripts.colUpdated")}</th>
+            <th className="col-owner">{t("common.createdBy")}</th>
+            <th className="col-owner">{t("common.updatedBy")}</th>
             <th className="col-actions" />
           </tr>
         </thead>
@@ -252,6 +260,9 @@ export function PublicScripts({ create, onCreateHandled }: {
               {refCounts[script.id] ? refCounts[script.id] : <span className="muted">{t("scripts.refsNone")}</span>}
             </td>
             <td className="mono muted">{new Date(script.updatedAt).toLocaleString()}</td>
+            {/* 归属两列（P11-7）：与上面的更新时间并列读——「什么时候改的」+「谁改的」。 */}
+            <td className="col-owner mono muted truncate"><OwnerCell kind="created" email={script.createdByEmail} /></td>
+            <td className="col-owner mono muted truncate"><OwnerCell kind="updated" email={script.updatedByEmail} createdAt={script.createdAt} updatedAt={script.updatedAt} /></td>
             <td>
                {canWrite && <div className="row-actions" onClick={(event) => event.stopPropagation()}>
                 <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => void openEdit(script)} />
@@ -260,7 +271,7 @@ export function PublicScripts({ create, onCreateHandled }: {
             </td>
           </tr>)}
         </tbody>
-      </table> : <Empty title={t("scripts.emptyTitle")} hint={t("scripts.emptyHint")} />}
+      </table></div> : <Empty title={t("scripts.emptyTitle")} hint={t("scripts.emptyHint")} />}
 
     {/* 有内容才放分页器：空态下它只是另一个「这里什么都没有」的提示。 */}
     {scripts.length > 0 && <div className="pager">
@@ -278,8 +289,9 @@ export function PublicScripts({ create, onCreateHandled }: {
     <Drawer
       title={draft ? (draft.script === "new" ? t("scripts.createPublic") : t("scripts.editPublicTitle", { name: draft.script.name ?? "" })) : ""}
       open={Boolean(draft)}
-      onClose={() => setDraft(undefined)}
+      onClose={() => { setScriptHistoryOpen(false); setDraft(undefined); }}
       width={640}
+      extra={canWrite && draft && draft.script !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setScriptHistoryOpen(true)}><History size={14} />{t("audit.history")}</button> : undefined}
       footer={
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="btn" onClick={() => setDraft(undefined)}>{t("action.cancel")}</button>
@@ -355,5 +367,16 @@ export function PublicScripts({ create, onCreateHandled }: {
         </div>
       </>}
     </Drawer>
+
+    {/* 公共脚本的变更历史（P11-10 边界 8）：detail 只有字段名，脚本正文绝不进。
+        匿名（用例私有）脚本没有独立生命周期，也没有这里的入口。 */}
+    {canWrite && draft && draft.script !== "new" && <ChangeHistoryDrawer
+      projectId={projectId!}
+      targetType="script"
+      targetId={draft.script.id}
+      name={draft.script.name ?? draft.name}
+      open={scriptHistoryOpen}
+      onClose={() => setScriptHistoryOpen(false)}
+    />}
   </>;
 }

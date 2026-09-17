@@ -7,6 +7,7 @@ import { api, type DataSource, type DataSourceConfig, type DataSourceInput, type
 import { useCanWrite } from "../hooks/useMyRole";
 import { Empty } from "../ui";
 import { IconButton } from "./IconButton";
+import { OwnerCell } from "./OwnerCell";
 
 const DATA_SOURCE_TYPES: { value: DataSourceType; label: string; port: number; username: string }[] = [
   { value: "postgresql", label: "PostgreSQL", port: 5432, username: "postgres" },
@@ -94,7 +95,7 @@ export function DataSourceList() {
       {canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => setEditing("new")}><Plus size={14} />{t("dataSources.create")}</button>}
     </div>
     {loading ? <p className="muted">{t("common.loading")}</p> : items.length ? <div className="table-scroll"><table className="grid data-source-grid">
-      <thead><tr><th>{t("dataSources.name")}</th><th>{t("dataSources.host")}</th><th>{t("dataSources.database")}</th><th>{t("dataSources.user")}</th><th className="col-ssl">{t("dataSources.ssl")}</th><th className="col-actions" /></tr></thead>
+      <thead><tr><th>{t("dataSources.name")}</th><th>{t("dataSources.host")}</th><th>{t("dataSources.database")}</th><th>{t("dataSources.user")}</th><th className="col-ssl">{t("dataSources.ssl")}</th><th className="col-owner">{t("common.createdBy")}</th><th className="col-owner">{t("common.updatedBy")}</th><th className="col-actions" /></tr></thead>
       <tbody>{items.map((item) => <tr key={item.id} data-clickable onClick={() => navigate(`/projects/${projectId}/data-sources/${item.id}`)}>
         <td><strong>{item.name}</strong><span className="resource-type mono">{item.type}</span></td>
         {/* 截断的单元格挂 title：定宽列里长主机名/用户名只剩省略号，悬停是唯一的读全途径。 */}
@@ -102,6 +103,9 @@ export function DataSourceList() {
         <td className="mono" title={item.config.database}>{item.config.database}</td>
         <td className="mono" title={item.config.username}>{item.config.username}</td>
         <td className="col-ssl">{item.config.ssl ? t("common.yes") : t("common.no")}</td>
+        {/* 归属两列（P11-7）：系统路径改的显示「系统」（边界 9）。 */}
+        <td className="col-owner mono muted truncate"><OwnerCell kind="created" email={item.createdByEmail} /></td>
+        <td className="col-owner mono muted truncate"><OwnerCell kind="updated" email={item.updatedByEmail} createdAt={item.createdAt} updatedAt={item.updatedAt} /></td>
         <td className="col-actions">{canWrite && <div className="row-actions" onClick={(event) => event.stopPropagation()}>
           <IconButton icon={<Cable size={14} />} label={t("dataSources.testConnection")} disabled={testing === item.id} onClick={() => void test(item)} />
           <IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => setEditing(item)} />

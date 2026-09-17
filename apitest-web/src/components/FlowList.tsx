@@ -10,6 +10,7 @@ import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, toRunStatus } from "../ui";
 import { IconButton } from "./IconButton";
+import { OwnerCell } from "./OwnerCell";
 import { RunStatusTag } from "./RunStatusTag";
 
 /**
@@ -203,12 +204,14 @@ export function FlowList() {
 
     {loading && <p className="muted">{t("filter.searching")}</p>}
 
-    {flows.length ? <table className="grid flow-grid">
+    {flows.length ? <div className="table-scroll"><table className="grid flow-grid">
       <colgroup>
         <col />
         <col className="flow-col-steps" />
         <col className="flow-col-env" />
         <col className="flow-col-result" />
+        <col className="col-owner" />
+        <col className="col-owner" />
         <col className="col-actions" />
       </colgroup>
       <thead><tr>
@@ -216,6 +219,8 @@ export function FlowList() {
         <th className="col-num">{t("flows.steps")}</th>
         <th>{t("flows.environment")}</th>
         <th className="col-status">{t("flows.lastRun")}</th>
+        <th className="col-owner">{t("common.createdBy")}</th>
+        <th className="col-owner">{t("common.updatedBy")}</th>
         <th className="col-actions" />
       </tr></thead>
       <tbody>
@@ -241,6 +246,9 @@ export function FlowList() {
                     </span>
                   : <span className="muted">{t("status.notRun")}</span>}
             </td>
+            {/* 归属两列（P11-7）：谁建的、谁最后改的。系统路径改的显示「系统」（边界 9）。 */}
+            <td className="col-owner mono muted truncate"><OwnerCell kind="created" email={flow.createdByEmail} /></td>
+            <td className="col-owner mono muted truncate"><OwnerCell kind="updated" email={flow.updatedByEmail} createdAt={flow.createdAt} updatedAt={flow.updatedAt} /></td>
             <td className="col-actions" onClick={(event) => event.stopPropagation()}>
               {canWrite && <div className="row-actions">
                 <IconButton icon={<Play size={14} />} label={t("action.run")} disabled={busy} onClick={() => void run(flow)} />
@@ -252,7 +260,7 @@ export function FlowList() {
           </tr>;
         })}
       </tbody>
-    </table> : !loading && <Empty
+    </table></div> : !loading && <Empty
       title={debouncedKeyword ? t("flows.emptySearchTitle") : t("flows.emptyTitle")}
       hint={debouncedKeyword ? t("flows.emptySearchHint") : t("flows.emptyHint")}
       action={debouncedKeyword || !canWrite ? undefined : <button className="btn btn-primary" onClick={() => setCreating(true)}>{t("action.createFlow")}</button>}

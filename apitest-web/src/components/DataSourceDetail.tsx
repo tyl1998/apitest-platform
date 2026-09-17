@@ -3,13 +3,14 @@ import { Drawer, Modal, Select, message } from "antd";
 import Editor from "@monaco-editor/react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Cable, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { Cable, History, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { api, type DataSource, type DataSourceOperation, type DataSourceType, type SqlDefinition, type SqlDefinitionInput, type SqlExecutionResult, type SqlParameter, type SqlParameterType } from "../api";
 import { defaultOperationText, formatOperation, operationLabelFromText, operationTemplates } from "../operationTemplates";
 import { useThemeMode } from "../theme";
 import { useCanWrite } from "../hooks/useMyRole";
 import { Empty } from "../ui";
 import { DataSourceDrawer, apiMessage } from "./DataSourceList";
+import { ChangeHistoryDrawer } from "./AuditLogsPanel";
 import { DatabaseResult } from "./DatabaseResult";
 import { IconButton } from "./IconButton";
 
@@ -29,6 +30,9 @@ export function DataSourceDetail() {
   const [loading, setLoading] = useState(true);
   const [editingSource, setEditingSource] = useState(false);
   const [testing, setTesting] = useState(false);
+  /* 「变更历史」抽屉（P11-10 边界 8）：数据源本体的建/改/删。SQL 定义有自己的入口
+     （编辑抽屉的 extra），因为它是另一张表的另一行资源。 */
+  const [changeHistoryOpen, setChangeHistoryOpen] = useState(false);
 
   async function load() {
     if (!projectId || !dataSourceId) return;
@@ -90,6 +94,7 @@ export function DataSourceDetail() {
       <div className="topbar-actions">
         {canWrite && <button className="btn btn-with-icon" disabled={testing} onClick={() => void testConnection()}><Cable size={14} />{testing ? t("action.running") : t("dataSources.testConnection")}</button>}
         {canWrite && <button className="btn btn-with-icon" onClick={() => setEditingSource(true)}><Pencil size={14} />{t("action.edit")}</button>}
+        {canWrite && <button className="btn btn-with-icon" onClick={() => setChangeHistoryOpen(true)}><History size={14} />{t("audit.history")}</button>}
       </div>
     </div>
     <div className="tabs detail-tabs" role="tablist">
@@ -119,6 +124,15 @@ export function DataSourceDetail() {
 
     <DataSourceDrawer projectId={projectId!} source={editingSource ? source : undefined} onClose={() => setEditingSource(false)} onSaved={(saved) => { setSource(saved); setEditingSource(false); }} />
     <SqlDefinitionDrawer projectId={projectId!} dataSourceId={dataSourceId!} sourceType={source.type} source={editSql === "new" ? "new" : definitions.find((item) => item.id === editSql)} open={Boolean(editSql)} onClose={() => setUrl({ tab: "sql" })} onSaved={async () => { setUrl({ tab: "sql" }); await load(); }} />
+    {/* 变更历史（P11-10 边界 8）：数据源本体的 create/update/delete。 */}
+    <ChangeHistoryDrawer
+      projectId={projectId!}
+      targetType="data_source"
+      targetId={dataSourceId!}
+      name={source.name}
+      open={changeHistoryOpen}
+      onClose={() => setChangeHistoryOpen(false)}
+    />
   </main>;
 }
 
@@ -133,6 +147,8 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<SqlExecutionResult>();
   const [error, setError] = useState<string>();
+  /* SQL 定义的变更历史入口（P11-10 边界 8）：与数据源本体分开的另一个 target。 */
+  const [sqlHistoryOpen, setSqlHistoryOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -211,7 +227,7 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open
      跟着编辑器文本走，所以手改 JSON 也会同步。 */
   const currentOperation = operationLabelFromText(operationText);
 
-  return <Drawer title={source === "new" ? t("dataSources.createSql") : t("dataSources.editSql")} open={open} onClose={onClose} width={820} footer={<div className="drawer-actions"><button className="btn" onClick={onClose}>{t("action.cancel")}</button><button className="btn btn-primary" disabled={saving || !source} onClick={() => void save()}>{saving ? "…" : t("action.save")}</button></div>}>
+  return <Drawer title={source === "new" ? t("dataSources.createSql") : t("dataSources.editSql")} open={open} onClose={() => { setSqlHistoryOpen(false); onClose(); }} width={820} extra={source && source !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setSqlHistoryOpen(true)}><History size={14} />{t("audit.history")}</button> : undefined} footer={<div className="drawer-actions"><button className="btn" onClick={onClose}>{t("action.cancel")}</button><button className="btn btn-primary" disabled={saving || !source} onClick={() => void save()}>{saving ? "…" : t("action.save")}</button></div>}>
     {!source && open ? <p className="muted">{t("common.loading")}</p> : <>
       <div className="form-grid">
         <label className="field"><span>{t("dataSources.sqlName")}</span><input className="input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} autoFocus /></label>
@@ -243,6 +259,15 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open
         <DatabaseResult result={result} error={error} />
       </div></section>
     </>}
+    {/* SQL 定义的变更历史（P11-10 边界 8）：已保存的定义才有 target_id。 */}
+    {source && source !== "new" && <ChangeHistoryDrawer
+      projectId={projectId}
+      targetType="sql_definition"
+      targetId={source.id}
+      name={source.name}
+      open={sqlHistoryOpen}
+      onClose={() => setSqlHistoryOpen(false)}
+    />}
   </Drawer>;
 }
 

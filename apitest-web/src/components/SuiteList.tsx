@@ -10,6 +10,7 @@ import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, toRunStatus } from "../ui";
 import { IconButton } from "./IconButton";
+import { OwnerCell } from "./OwnerCell";
 import { RunStatusTag } from "./RunStatusTag";
 import { SuiteRunModal } from "./SuiteRunModal";
 
@@ -171,17 +172,21 @@ export function SuiteList() {
 
     {loading && <p className="muted">{t("filter.searching")}</p>}
 
-    {suites.length ? <table className="grid suite-grid">
+    {suites.length ? <div className="table-scroll"><table className="grid suite-grid">
       <colgroup>
         <col />
         <col className="suite-col-selection" />
         <col className="suite-col-result" />
+        <col className="col-owner" />
+        <col className="col-owner" />
         <col className="col-actions" />
       </colgroup>
       <thead><tr>
         <th>{t("suites.name")}</th>
         <th>{t("suites.selection")}</th>
         <th className="col-status">{t("flows.lastRun")}</th>
+        <th className="col-owner">{t("common.createdBy")}</th>
+        <th className="col-owner">{t("common.updatedBy")}</th>
         <th className="col-actions" />
       </tr></thead>
       <tbody>
@@ -206,6 +211,9 @@ export function SuiteList() {
                     </span>
                   : <span className="muted">{t("status.notRun")}</span>}
             </td>
+            {/* 归属两列（P11-7）：系统路径改的显示「系统」（边界 9）。 */}
+            <td className="col-owner mono muted truncate"><OwnerCell kind="created" email={suite.createdByEmail} /></td>
+            <td className="col-owner mono muted truncate"><OwnerCell kind="updated" email={suite.updatedByEmail} createdAt={suite.createdAt} updatedAt={suite.updatedAt} /></td>
             <td className="col-actions" onClick={(event) => event.stopPropagation()}>
               {canWrite && <div className="row-actions">
                 {/* 运行的是已保存的配置（变量覆盖在弹窗里确认）：列表上没有草稿这个概念。 */}
@@ -217,7 +225,7 @@ export function SuiteList() {
           </tr>;
         })}
       </tbody>
-    </table> : !loading && <Empty
+    </table></div> : !loading && <Empty
       title={debouncedKeyword ? t("suites.emptyFiltered") : t("suites.emptyTitle")}
       hint={debouncedKeyword ? t("suites.emptyFilteredHint") : t("suites.emptyHint")}
       action={debouncedKeyword || !canWrite ? undefined : <button className="btn btn-primary" onClick={() => setCreating(true)}>{t("suites.createTitle")}</button>}

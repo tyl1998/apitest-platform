@@ -912,6 +912,10 @@ button.readout-click {
 .col-status { width: 96px; }
 .col-history { width: 132px; }
 .col-actions { width: 56px; text-align: right; }
+/* 资产归属（P11-7）：两列都是「一个人名」，定宽比让它们吃掉名字列的余量更好读——
+   email 是等宽字体下的机器数据，列宽一致才能上下扫。窄屏由 .table-scroll 兜底横向滚动，
+   页面本身永不横滚（Quiet Console 布局不变量）。 */
+.col-owner { width: 148px; }
 .col-path { color: var(--ink-2); }
 
 .cell-name { display: flex; align-items: center; gap: 9px; min-width: 0; }

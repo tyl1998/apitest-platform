@@ -6,6 +6,7 @@ import { ChevronDown, ChevronRight, Pencil, Play, Plus, Trash2 } from "lucide-re
 import { api, noRunnerLabel, type CiTask, type PipelineRun, type RunnerPool } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useCanWrite } from "../hooks/useMyRole";
+import { triggerLabel } from "../lib/trigger";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Readout, Tip } from "../ui";
 import { IconButton } from "./IconButton";
@@ -422,7 +423,9 @@ function CiTaskRow({ task, expanded, historyRuns, historyTotal, historyLoading, 
                 <td className="col-status">
                   <RunStatusTag status={toRunStatus(run.status)} />
                 </td>
-                <td>{t(`pipelineRun.trigger.${run.triggerSource}`)}</td>
+                {/* 触发列（P11-8）：触发源 + 触发人。这一格原来只渲染触发源，触发人用
+                    共享的 triggerLabel 拼在后面（引用名不在这格显示，与原来一致）。 */}
+                <td>{triggerLabel(t, run.triggerSource, undefined, run.triggeredByEmail)}</td>
                 <td className="col-num mono">{run.caseTotal}</td>
                 <td className="col-num mono">{run.passedCount}</td>
                 <td className="col-num mono">{run.failedCount > 0 ? <span className="text-fail">{run.failedCount}</span> : "0"}</td>

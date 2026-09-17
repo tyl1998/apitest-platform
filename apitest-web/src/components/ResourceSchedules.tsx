@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Drawer, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { CalendarClock, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { CalendarClock, History, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import {
   api, noRunnerLabel,
   type Schedule, type SchedulePreview, type ScheduleRun, type ScheduleTargetType,
@@ -11,6 +11,8 @@ import { useProjectStore } from "../stores/projectStore";
 import { useCanWrite } from "../hooks/useMyRole";
 import type { RunStatus } from "../ui";
 import { IconButton } from "./IconButton";
+import { OwnerCell } from "./OwnerCell";
+import { ChangeHistoryDrawer } from "./AuditLogsPanel";
 import { RunStatusTag } from "./RunStatusTag";
 import { fromPairs, toPairs, type Pair } from "./KeyValueEditor";
 import { VariableRowsEditor } from "./VariableRowsEditor";
@@ -72,6 +74,9 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
   const [loading, setLoading] = useState(false);
 
   const [editing, setEditing] = useState<Schedule | "new">();
+  /* 「变更历史」抽屉（P11-10 边界 8）：新建时还没有 target_id。调度器改的
+     next_run_at / last_run_at 不进审计（边界 3），这里只会有配置类改动。 */
+  const [scheduleHistoryOpen, setScheduleHistoryOpen] = useState(false);
   const [form, setForm] = useState<ScheduleForm>(emptyForm());
   const [variables, setVariables] = useState<Pair[]>([]);
   const [saving, setSaving] = useState(false);
@@ -286,13 +291,15 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
       <p className="form-note">{t(isCiTask ? "schedules.hintCiTask" : "schedules.hint")}</p>
       {overdue > 0 && <p className="form-error">{t("schedules.overdue", { count: overdue })}</p>}
       {loading && <p className="muted">{t("common.loading")}</p>}
-      {schedules.length ? <table className="grid schedule-grid">
+      {schedules.length ? <div className="table-scroll"><table className="grid schedule-grid">
         <colgroup>
           <col />
           <col className="schedule-col-cron" />
           <col className="schedule-col-clock" />
           <col className="schedule-col-clock" />
           <col className="col-status" />
+          <col className="col-owner" />
+          <col className="col-owner" />
           <col className="col-actions" />
         </colgroup>
         <thead><tr>
@@ -301,6 +308,8 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
           <th>{t("schedules.nextRun")}</th>
           <th>{t("schedules.lastRun")}</th>
           <th className="col-status">{t("schedules.enabled")}</th>
+          <th className="col-owner">{t("common.createdBy")}</th>
+          <th className="col-owner">{t("common.updatedBy")}</th>
           <th className="col-actions" />
         </tr></thead>
         <tbody>
@@ -320,6 +329,10 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
                 <span className="status-mark" />{schedule.enabled ? t("schedules.enabled") : t("schedules.disabled")}
               </span>
             </td>
+            {/* 归属两列（P11-7）：调度器只改运行簿记（next_run_at / last_run_at），不改配置，
+                所以这里的「系统」只可能来自对账等真正的系统写（边界 3）。 */}
+            <td className="col-owner mono muted truncate"><OwnerCell kind="created" email={schedule.createdByEmail} /></td>
+            <td className="col-owner mono muted truncate"><OwnerCell kind="updated" email={schedule.updatedByEmail} createdAt={schedule.createdAt} updatedAt={schedule.updatedAt} /></td>
             <td className="col-actions">
               <div className="row-actions">
                 {canWrite && <IconButton icon={<Play size={14} />} label={t("schedules.runNow")} disabled={running === schedule.id} onClick={() => void runNow(schedule)} />}
@@ -332,7 +345,7 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
         </tbody>
       {/* 空态就是表里的一行「暂无数据」：新建入口常驻在面板头上，空态卡片只会把
           页面拉长、还和旁边的表头抢视觉。 */}
-      </table> : !loading && <p className="muted">{t("common.noData")}</p>}
+      </table></div> : !loading && <p className="muted">{t("common.noData")}</p>}
       {total > 20 && <div className="pager">
         <Pagination simple current={page} pageSize={20} total={total} onChange={setPage} />
       </div>}
@@ -342,8 +355,9 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
     <Drawer
       title={editing === "new" ? t("schedules.createTitle") : t("schedules.editTitle")}
       open={Boolean(editing)}
-      onClose={() => setEditing(undefined)}
+      onClose={() => { setScheduleHistoryOpen(false); setEditing(undefined); }}
       width={560}
+      extra={canWrite && editing && editing !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setScheduleHistoryOpen(true)}><History size={14} />{t("audit.history")}</button> : undefined}
       footer={
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="btn" onClick={() => setEditing(undefined)}>{t("action.cancel")}</button>
@@ -404,6 +418,16 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
         {t("schedules.enabled")}
       </label>
     </Drawer>
+
+    {/* 调度的变更历史（P11-10 边界 8）：入口挂在编辑抽屉的 extra，目标就是这一条。 */}
+    {canWrite && editing && editing !== "new" && <ChangeHistoryDrawer
+      projectId={projectId}
+      targetType="schedule"
+      targetId={editing.id}
+      name={editing.name}
+      open={scheduleHistoryOpen}
+      onClose={() => setScheduleHistoryOpen(false)}
+    />}
 
     {/* 触发历史：一个到期时刻一行，skipped/failed 没有「点进执行」一说。 */}
     <Drawer
