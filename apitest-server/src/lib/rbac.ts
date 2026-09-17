@@ -78,3 +78,22 @@ export async function requireSystemAdmin(request: FastifyRequest, reply: Fastify
   if (!user.isSystemAdmin) { fail(reply, 403, 1003, "forbidden"); return undefined; }
   return user;
 }
+
+/**
+ * P11-10 边界 7: reads that `viewer` must not make, though it may read the
+ * project itself. Verdict-wise this is `requireProjectAccess(…, true)` (any
+ * non-viewer role passes), but naming it "developer" keeps the route honest:
+ * a read that writes nothing is not asking for write access, it is asking for
+ * a role the project decided is trusted with more than listings.
+ *
+ * First (and currently only) caller: the project audit read. Audit rows carry
+ * emails and IPs — the column-level ownership emails are public to every
+ * member, but the audit trail is one layer more private, so it does not share
+ * the "read = viewer included" verdict.
+ */
+export async function requireDeveloper(request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) {
+  const context = await requireProjectAccess(request, reply);
+  if (!context) return undefined;
+  if (context.myRole === "viewer") { fail(reply, 403, 1003, "forbidden"); return undefined; }
+  return context;
+}

@@ -113,10 +113,18 @@ export function applyCaseToFlowNodes(
   return { nodes: next, updated };
 }
 
-/** 同步后把图写回去。调用方负责事务与 `persistFlowScripts`。 */
-export async function writeFlowNodes(client: PoolClient, projectId: string, flowId: string, nodes: FlowNode[]) {
+/**
+ * 同步后把图写回去。调用方负责事务与 `persistFlowScripts`。
+ *
+ * `actorId` **必填**（P11 边界 3 复核）：这个模块的四个导出函数只被 `cases.ts` 的
+ * 「同步到流程」路由使用——那是一次人工点击，不是对账。计划 16.0 边界 3 曾把
+ * `lib/caseSync.ts` 列为系统路径，复核后更正：这里没有调度/对账入口，写 `updated_by`
+ * 才是对的（写 NULL 会让「我点了一次同步」显示成「系统改的」）。必填而不是默认 null：
+ * 将来真出现系统调用方，必须显式传 null 说明「这不是人改的」。
+ */
+export async function writeFlowNodes(client: PoolClient, projectId: string, flowId: string, nodes: FlowNode[], actorId: string | null) {
   await client.query(
-    "UPDATE flows SET nodes = $1::jsonb, updated_at = now() WHERE id = $2 AND project_id = $3",
-    [JSON.stringify(nodes), flowId, projectId],
+    "UPDATE flows SET nodes = $1::jsonb, updated_by = $4, updated_at = now() WHERE id = $2 AND project_id = $3",
+    [JSON.stringify(nodes), flowId, projectId, actorId],
   );
 }

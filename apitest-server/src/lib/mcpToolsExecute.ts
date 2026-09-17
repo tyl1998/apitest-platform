@@ -68,7 +68,7 @@ export const EXECUTE_TOOLS: readonly McpToolDefinition[] = [
       const explicit = Boolean(environmentId);
 
       try {
-        const executionId = await queueEndpointRun(identity.projectId, id.value, environmentId || null, explicit);
+        const executionId = await queueEndpointRun(identity.projectId, id.value, environmentId || null, explicit, undefined, identity.createdBy ?? null);
         auditMcpAction("mcp_tool.execute", "run_endpoint", identity, executionId, { endpointId: id.value });
         return toolResult({ executionId, status: "queued" });
       } catch (error) {
@@ -118,6 +118,8 @@ export const EXECUTE_TOOLS: readonly McpToolDefinition[] = [
         hooks: testCase.preRequestHooks,
         extracts: testCase.extracts,
         responseScripts: testCase.responseScripts,
+        /* P11 边界 11：MCP 执行的触发人 = Token 签发人（边界 4）。 */
+        triggeredBy: identity.createdBy ?? null,
       });
       auditMcpAction("mcp_tool.execute", "run_case", identity, executionId, { caseId: id.value });
       return toolResult({ executionId, status: "queued" });

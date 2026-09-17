@@ -133,6 +133,11 @@ export async function performFlowRun(flowExecutionId: string, signal: AbortSigna
 
   const row = claimed.rows[0]; const projectId = String(row.project_id); const indexId = String(row.execution_index_id);
   const spec = row.run_spec as FlowRunSpec; const plan = (row.plan ?? []) as FlowPlanStep[];
+  /* P11 边界 11 子执行继承：本流程每个节点落的 `executions` 行都要继承父执行的触发人，
+     所以在这里读一次（`flow_executions` 自己没有这一列——触发人是父执行的事实），随
+     `GraphContext` 下发；节点各自再查一次库没有意义。NULL = 定时 / Webhook / 非人 CI。 */
+  const parentIndex = await pool.query("SELECT triggered_by FROM execution_index WHERE id = $1", [indexId]);
+  const triggeredBy = parentIndex.rows[0]?.triggered_by ? String(parentIndex.rows[0].triggered_by) : null;
   await pool.query("UPDATE execution_index SET status = 'running', started_at = now() WHERE id = $1 AND status = 'queued'", [indexId]);
   await publishEvent({ kind: "flow", projectId, flowExecutionId, executionIndexId: indexId, status: "running", total: Number(row.total), successCount: 0, failedCount: 0, skippedCount: 0 });
 
@@ -156,6 +161,8 @@ export async function performFlowRun(flowExecutionId: string, signal: AbortSigna
     projectId, indexId, flowExecutionId,
     environment, environmentId: spec.environmentId, environmentName: row.environment_name ? String(row.environment_name) : undefined,
     signal, deadline, workerId, tokens: leafTokens,
+    /* 触发人（P11 边界 11）：上面从父索引读回的那一个，NULL = 定时 / Webhook / 非人 CI。 */
+    triggeredBy,
     onProgress: async (counts) => {
       await updateCounts(counts);
       await publishEvent({ kind: "flow", projectId, flowExecutionId, executionIndexId: indexId, status: "running", total: Number(row.total), successCount: counts.success, failedCount: counts.failed, skippedCount: counts.skipped });

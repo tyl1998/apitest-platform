@@ -1,5 +1,5 @@
 import { acceptedContent, inputRequired } from "@modelcontextprotocol/server";
-import { AUDIT_ACTIONS, writeAuditLogAsync } from "./audit.js";
+import { AUDIT_ACTIONS, writeAuditLogAsync, type AuditAction } from "./audit.js";
 import type { McpIdentity } from "./mcpAuth.js";
 import type { McpToolResult } from "./mcpServer.js";
 import { isUuid } from "./uuid.js";
@@ -80,11 +80,32 @@ export function auditMcpAction(
   });
 }
 
+/**
+ * P11-9：MCP 写路径的**资源级**审计，与 `auditMcpAction` 并行落两行——
+ * `mcp_tool.write` 回答「经哪把钥匙、哪个工具」，资源动作回答「哪个资产的变更历史」。
+ * 资源动作与 REST 面同名（`endpoint.create` …），`userId` 同为 Token 签发人，
+ * detail 只有字段名（`auditFields()` 的产物），绝不带 payload。
+ */
+export function auditMcpResource(
+  action: AuditAction,
+  targetType: string,
+  identity: McpIdentity,
+  targetId: string | null,
+  detail: Record<string, unknown>,
+): void {
+  writeAuditLogAsync({
+    action,
+    targetType,
+    targetId,
+    projectId: identity.projectId,
+    userId: identity.createdBy ?? null,
+    detail,
+  });
+}
+
 /** 工具 handler 的第三参：MRTR 重试回合里客户端带回来的 `inputResponses`（SDK 从
  *  per-request envelope 里挑出、已去掉 `{method,result}` 包装的裸结果）。 */
-export type MrtrContext = { inputResponses?: Record<string, unknown> } | undefined;
-
-/** 一次 delete_* 的 MRTR 闸门读数。 */
+export type MrtrContext = { inputResponses?: Record<string, unknown> } | undefined;/** 一次 delete_* 的 MRTR 闸门读数。 */
 export type MrtrGate =
   /** 首次调用：还没有任何回应，该发确认回合。 */
   | { phase: "first" }

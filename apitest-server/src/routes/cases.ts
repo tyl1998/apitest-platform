@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { evaluateAssertions, validateDeclarativeAssertions } from "../lib/assert.js";
 import { applyCaseToFlowNodes, caseFlowBindings, caseSyncPayload, writeFlowNodes } from "../lib/caseSync.js";
 import { NoRunnerError, enqueueRun } from "../lib/enqueue.js";
@@ -91,8 +92,15 @@ export async function caseRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string; endpointId: string } }>("/api/v1/projects/:id/endpoints/:endpointId/cases", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     if (!isUuid(request.params.endpointId)) return fail(reply, 404, 2001, "endpoint not found");
+    /* 这一份喂的是工作台侧栏的用例盒（CaseBox）——P11-7 之后它也要直读「谁建 / 谁改」，
+       所以这里补上 P11 归属的 email 快照（基表起别名：裸 `*` 会在两表同名的 id /
+       created_at 上取到 users 的值）。 */
     const result = await pool.query(
-      "SELECT * FROM test_cases WHERE project_id = $1 AND endpoint_id = $2 ORDER BY created_at DESC",
+      `SELECT c.*, creator.email AS created_by_email, updater.email AS updated_by_email
+         FROM test_cases c
+         LEFT JOIN users creator ON creator.id = c.created_by
+         LEFT JOIN users updater ON updater.id = c.updated_by
+        WHERE c.project_id = $1 AND c.endpoint_id = $2 ORDER BY c.created_at DESC`,
       [context.project.id, request.params.endpointId],
     );
     const data = await withLastRun(result.rows.map(mapTestCase));
@@ -131,9 +139,13 @@ export async function caseRoutes(app: FastifyInstance) {
               c.environment_id, c.environment_name, c.tags, c.created_at, c.updated_at,
               /* 脚本断言在 P2-2.1 已下线，mapTestCase 也把它们过滤掉；这里同样只数
                  声明式校验，否则选择器上的条数会和编辑器里看到的不一致。 */
-              (SELECT COUNT(*)::int FROM jsonb_array_elements(c.assertions) item WHERE item->>'type' <> 'script') AS assertion_count
+              (SELECT COUNT(*)::int FROM jsonb_array_elements(c.assertions) item WHERE item->>'type' <> 'script') AS assertion_count,
+              /* P11 归属列（边界 7/9）：email 快照；列清单本来就全带前缀，加 join 不撞名。 */
+              creator.email AS created_by_email, updater.email AS updated_by_email
          FROM test_cases c
          JOIN endpoints e ON e.id = c.endpoint_id
+         LEFT JOIN users creator ON creator.id = c.created_by
+         LEFT JOIN users updater ON updater.id = c.updated_by
         WHERE ${where}
         ORDER BY e.name, c.name, c.created_at DESC
         LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -198,19 +210,20 @@ export async function caseRoutes(app: FastifyInstance) {
       await client.query("BEGIN");
       const caseId = randomUUID();
       await client.query(
-        `INSERT INTO test_cases (id, project_id, endpoint_id, environment_id, environment_name, name, description, request_snapshot, assertions, tags)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, '[]'::jsonb, $9) RETURNING *`,
+        `INSERT INTO test_cases (id, project_id, endpoint_id, environment_id, environment_name, name, description, request_snapshot, assertions, tags, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, '[]'::jsonb, $9, $10) RETURNING *`,
         [
           caseId, context.project.id, request.params.endpointId,
           request.body.environmentId ?? null, name,
           request.body.name!.trim(), request.body.description?.trim() ?? "",
           JSON.stringify(toSnapshot(request.body.request!)), request.body.tags ?? [],
+          context.user.id,
         ],
       );
       const lifecycle = await persistCaseLifecycleScripts(client, context.project.id, caseId, {
         hooks: request.body.preRequestHooks ?? [],
         responseScripts: request.body.responseScripts ?? [],
-      });
+      }, context.user.id);
       const result = await client.query(
         `UPDATE test_cases SET assertions = $1::jsonb, pre_request_hooks = $2::jsonb,
            extracts = $3::jsonb, response_scripts = $4::jsonb WHERE id = $5 RETURNING *`,
@@ -220,6 +233,12 @@ export async function caseRoutes(app: FastifyInstance) {
         ],
       );
       await client.query("COMMIT");
+      /* P11-9 审计（边界 5/6）：成功后 fire-and-forget；detail 只有字段名。 */
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.testCaseCreate, targetType: "test_case", targetId: String(result.rows[0].id),
+        projectId: context.project.id, userId: context.user.id,
+        detail: { fields: auditFields(request.body) }, ip: request.ip,
+      });
       /* Returns the normalized assertions so the client picks up the ids it did
          not have when it built the request. */
       return reply.code(201).send(success(mapTestCase(result.rows[0])));
@@ -271,7 +290,7 @@ export async function caseRoutes(app: FastifyInstance) {
       const lifecycle = lifecycleGiven ? await persistCaseLifecycleScripts(client, context.project.id, request.params.caseId, {
         hooks: request.body.preRequestHooks ?? ((owner.rows[0].pre_request_hooks ?? []) as HookConfig[]),
         responseScripts: request.body.responseScripts ?? ((owner.rows[0].response_scripts ?? []) as ResponseScriptConfig[]),
-      }) : undefined;
+      }, context.user.id) : undefined;
 
       const result = await client.query(
         `UPDATE test_cases SET
@@ -285,6 +304,7 @@ export async function caseRoutes(app: FastifyInstance) {
             extracts = COALESCE($9::jsonb, extracts),
             response_scripts = COALESCE($10::jsonb, response_scripts),
             tags = COALESCE($11, tags),
+            updated_by = $14,
             updated_at = now()
           WHERE id = $12 AND project_id = $13 RETURNING *`,
         [
@@ -298,9 +318,15 @@ export async function caseRoutes(app: FastifyInstance) {
           lifecycle ? JSON.stringify(lifecycle.responseScripts) : null,
           request.body.tags ?? null,
           request.params.caseId, context.project.id,
+          context.user.id,
         ],
       );
       await client.query("COMMIT");
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.testCaseUpdate, targetType: "test_case", targetId: request.params.caseId,
+        projectId: context.project.id, userId: context.user.id,
+        detail: { fields: auditFields(request.body) }, ip: request.ip,
+      });
       return success(mapTestCase(result.rows[0]));
     } catch (error) {
       await client.query("ROLLBACK");
@@ -350,8 +376,21 @@ export async function caseRoutes(app: FastifyInstance) {
       }
       /* 摘成员必须与 DELETE 同一个事务：分两步会留下「用例已删、成员还在」的中间态，
          而那正是悬空行的来源。 */
-      const detached = await detachSuiteMember(client, context.project.id, "case", request.params.caseId);
+      const detached = await detachSuiteMember(client, context.project.id, "case", request.params.caseId, context.user.id);
       await client.query("COMMIT");
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.testCaseDelete, targetType: "test_case", targetId: String(result.rows[0].id),
+        projectId: context.project.id, userId: context.user.id, ip: request.ip,
+      });
+      /* 摘成员也是套件的一次写入（`detachSuiteMember` 落 updated_by）：审计在事务提交后
+         逐条补 suite.update，那条套件的「变更历史」才看得到这次连带改动。 */
+      for (const suite of detached) {
+        writeAuditLogAsync({
+          action: AUDIT_ACTIONS.testSuiteUpdate, targetType: "test_suite", targetId: suite.id,
+          projectId: context.project.id, userId: context.user.id,
+          detail: { fields: ["selection_config"], detachedMember: { type: "case", id: request.params.caseId } }, ip: request.ip,
+        });
+      }
       /* 回报改到了哪些套件：界面用它说「已从 N 个套件中移除」，而不是让用户下次打开
          套件才发现成员少了一个。 */
       return success({ id: String(result.rows[0].id), detachedSuites: detached });
@@ -441,11 +480,20 @@ export async function caseRoutes(app: FastifyInstance) {
         /* 走保存路径同一套归一 + 脚本持久化：同步写进去的节点必须与用户手动保存出来的
            形状一致，否则「同步过的流程」会变成第二种节点形状。 */
         const normalized = applied.nodes.map(toFlowNode);
-        const persisted = await persistFlowScripts(client, context.project.id, flowId, normalized);
-        await writeFlowNodes(client, context.project.id, flowId, persisted);
+        const persisted = await persistFlowScripts(client, context.project.id, flowId, normalized, context.user.id);
+        await writeFlowNodes(client, context.project.id, flowId, persisted, context.user.id);
         results.push({ flowId, flowName: flow.name, updatedNodeIds: applied.updated });
       }
       await client.query("COMMIT");
+      /* 同步改的是流程（`writeFlowNodes` 落 updated_by），审计按被改的流程逐条落
+         flow.update——资源「变更历史」下钻才拉得到这次改动。 */
+      for (const item of results) {
+        writeAuditLogAsync({
+          action: AUDIT_ACTIONS.flowUpdate, targetType: "flow", targetId: item.flowId,
+          projectId: context.project.id, userId: context.user.id,
+          detail: { fields: ["nodes"], syncedFromCase: request.params.caseId, updatedNodeIds: item.updatedNodeIds }, ip: request.ip,
+        });
+      }
       /* 逐条回报改到了哪几个节点：界面据此说「3 条流程 / 5 个节点」，而不是一句成功。 */
       return success({ flows: results });
     } catch (error) {
@@ -500,6 +548,8 @@ export async function caseRoutes(app: FastifyInstance) {
         source: "test_case",
         caseId: testCase.id,
         caseName: testCase.name,
+        /* P11 边界 11：谁点的「执行」。 */
+        triggeredBy: context.user.id,
         assertions: assertionOverride ?? testCase.assertions,
         hooks: request.body?.preRequestHooks ?? testCase.preRequestHooks,
         extracts: request.body?.extracts ?? testCase.extracts,

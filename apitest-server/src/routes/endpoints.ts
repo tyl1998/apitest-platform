@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync, type AuditBatchDetail } from "../lib/audit.js";
 import { NoRunnerError, cancelBatch, cancelRun, enqueueRun } from "../lib/enqueue.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, failNoRunner, success } from "../lib/response.js";
@@ -11,9 +12,9 @@ import { mapBatchExecution, mapEndpoint, mapExecution, type Endpoint, type Reque
 type ImportItem = EndpointInput;
 
 /** Column list shared by insert and import so the two cannot drift apart. */
-const WRITE_COLUMNS = "name, description, method, url, headers, query_params, path_params, body_type, body, body_text, auth, tags, default_environment_id";
+const WRITE_COLUMNS = "name, description, method, url, headers, query_params, path_params, body_type, body, body_text, auth, tags, default_environment_id, created_by";
 
-function writeValues(input: EndpointInput) {
+function writeValues(input: EndpointInput, createdBy: string) {
   return [
     input.name!.trim(),
     input.description?.trim() ?? "",
@@ -28,6 +29,8 @@ function writeValues(input: EndpointInput) {
     JSON.stringify(input.auth ?? { type: "none" }),
     input.tags ?? [],
     input.defaultEnvironmentId ?? null,
+    /* P11-1 列级归属：建的人。MCP 写路径走 mcpToolsWriteCore 自己的列常量，不共享这里。 */
+    createdBy,
   ];
 }
 
@@ -85,7 +88,7 @@ export function toRequestSnapshot(endpoint: Endpoint): RequestSnapshot {
  * definitions with no overrides, which is exactly this function's contract —
  * keeping it private would force a second copy of the environment chain.
  */
-export async function queueEndpointRun(projectId: string, endpointId: string, requestedEnvironmentId: string | null | undefined, explicitEnvironment: boolean, batchId?: string): Promise<string> {
+export async function queueEndpointRun(projectId: string, endpointId: string, requestedEnvironmentId: string | null | undefined, explicitEnvironment: boolean, batchId?: string, triggeredBy?: string | null): Promise<string> {
   const endpointResult = await pool.query("SELECT * FROM endpoints WHERE id = $1 AND project_id = $2", [endpointId, projectId]);
   if (!endpointResult.rowCount) throw new Error("endpoint not found");
   const endpoint = mapEndpoint(endpointResult.rows[0]);
@@ -117,27 +120,32 @@ export async function queueEndpointRun(projectId: string, endpointId: string, re
     environmentName,
     source: "endpoint_debug",
     batchId,
+    /* P11 边界 11：单条执行也要答「谁按的按钮」。批量走同一个入口，因此批量里的每一行
+       都带同一个触发人（调用方传的就是按批量按钮的那个人）。 */
+    triggeredBy: triggeredBy ?? null,
   });
 }
 
 export async function endpointRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string }; Querystring: { keyword?: string; method?: string; environmentId?: string; coverage?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/endpoints", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
-    const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
-    /* Server-side filtering, so a keyword matches every endpoint, not just the loaded page. */
+    const params: unknown[] = [context.project.id]; const clauses = ["endpoints.project_id = $1"];
+    /* Server-side filtering, so a keyword matches every endpoint, not just the loaded page.
+       列名一律带 `endpoints.` 前缀：P11 的归属列给这条查询加了 users join，`name` /
+       `created_at` 这些同名裸列会变成 ambiguous。 */
     const keyword = request.query.keyword?.trim();
-    if (keyword) { params.push(`%${keyword}%`); clauses.push(`(name ILIKE $${params.length} OR url ILIKE $${params.length} OR description ILIKE $${params.length})`); }
-    if (request.query.method && request.query.method !== "all") { params.push(request.query.method.toUpperCase()); clauses.push(`method = $${params.length}`); }
+    if (keyword) { params.push(`%${keyword}%`); clauses.push(`(endpoints.name ILIKE $${params.length} OR endpoints.url ILIKE $${params.length} OR endpoints.description ILIKE $${params.length})`); }
+    if (request.query.method && request.query.method !== "all") { params.push(request.query.method.toUpperCase()); clauses.push(`endpoints.method = $${params.length}`); }
     /* 覆盖率筛选（看板「已覆盖/未覆盖」下钻的落点）：口径与 /stats/overview 的
        coverageRate 同一表达式——有用例接口 = EXISTS(test_cases)。covered/uncovered
        之外不进 SQL（口径参数不静默报错也不放大，method 同款纪律）。 */
     if (request.query.coverage === "covered") clauses.push("EXISTS (SELECT 1 FROM test_cases tc WHERE tc.endpoint_id = endpoints.id)");
     else if (request.query.coverage === "uncovered") clauses.push("NOT EXISTS (SELECT 1 FROM test_cases tc WHERE tc.endpoint_id = endpoints.id)");
-    if (request.query.environmentId === "unset") clauses.push("default_environment_id IS NULL");
+    if (request.query.environmentId === "unset") clauses.push("endpoints.default_environment_id IS NULL");
     else if (request.query.environmentId) {
       if (!isUuid(request.query.environmentId)) return fail(reply, 400, 1001, "environmentId must be a UUID or unset");
       if (!await validEnvironment(context.project.id, request.query.environmentId)) return fail(reply, 400, 1001, "environment must belong to the project");
-      params.push(request.query.environmentId); clauses.push(`default_environment_id = $${params.length}`);
+      params.push(request.query.environmentId); clauses.push(`endpoints.default_environment_id = $${params.length}`);
     }
     /* Pagination is opt-in: the project store still fetches the whole list for
        endpoint pickers (flow nodes, mock 快照来源), so the absence of `pageSize`
@@ -149,7 +157,9 @@ export async function endpointRoutes(app: FastifyInstance) {
        LIMIT 1），那笔大请求连同「最近运行」列一起删除。`source <> 'flow_step'`
        与旧的前端拉法同一口径：流程步骤不冒充接口的独立运行。 */
     const select = `SELECT endpoints.*, COALESCE(cases.total, 0) AS case_count,
-           lr.last_status, lr.last_duration_ms
+           lr.last_status, lr.last_duration_ms,
+           /* P11 归属列（边界 7/9）：email 快照，只读这两列，不带 users 的其它字段。 */
+           creator.email AS created_by_email, updater.email AS updated_by_email
          FROM endpoints
          /* Sub-select, not a join onto test_cases: joining would multiply the
             endpoint row per case and inflate anything else aggregated here. */
@@ -161,6 +171,8 @@ export async function endpointRoutes(app: FastifyInstance) {
             WHERE e.endpoint_id = endpoints.id AND e.source <> 'flow_step'
             ORDER BY e.created_at DESC LIMIT 1
          ) lr ON true
+         LEFT JOIN users creator ON creator.id = endpoints.created_by
+         LEFT JOIN users updater ON updater.id = endpoints.updated_by
          WHERE ${clauses.join(" AND ")}
          ORDER BY endpoints.created_at DESC`;
     /* caseCount is a real number now that用例 exist (P1); 0 truthfully means
@@ -221,9 +233,15 @@ export async function endpointRoutes(app: FastifyInstance) {
     if (invalid) return fail(reply, 400, 1001, invalid);
     if (!await validEnvironment(context.project.id, request.body.defaultEnvironmentId)) return fail(reply, 400, 1001, "default environment must belong to the project");
     const result = await pool.query(
-      `INSERT INTO endpoints (id, project_id, ${WRITE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13::jsonb, $14, $15) RETURNING *`,
-      [randomUUID(), context.project.id, ...writeValues(request.body)],
+      `INSERT INTO endpoints (id, project_id, ${WRITE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13::jsonb, $14, $15, $16) RETURNING *`,
+      [randomUUID(), context.project.id, ...writeValues(request.body, context.user.id)],
     );
+    /* P11-9 审计（边界 5/6）：成功后 fire-and-forget；detail 只有字段名。 */
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.endpointCreate, targetType: "endpoint", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return reply.code(201).send(success(mapEndpoint(result.rows[0])));
   });
 
@@ -254,6 +272,7 @@ export async function endpointRoutes(app: FastifyInstance) {
          auth = COALESCE($13::jsonb, auth),
          tags = COALESCE($14, tags),
          default_environment_id = CASE WHEN $15::boolean THEN $16 ELSE default_environment_id END,
+         updated_by = $19,
          updated_at = now()
        WHERE id = $17 AND project_id = $18 RETURNING *`,
       [
@@ -271,9 +290,15 @@ export async function endpointRoutes(app: FastifyInstance) {
          b.tags ?? null,
          "defaultEnvironmentId" in b, b.defaultEnvironmentId ?? null,
          request.params.endpointId, context.project.id,
+         context.user.id,
       ],
     );
     if (!result.rowCount) return fail(reply, 404, 2001, "endpoint not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.endpointUpdate, targetType: "endpoint", targetId: request.params.endpointId,
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return success(mapEndpoint(result.rows[0]));
   });
 
@@ -301,11 +326,17 @@ export async function endpointRoutes(app: FastifyInstance) {
 
     const result = await pool.query(
       `INSERT INTO endpoints (id, project_id, ${WRITE_COLUMNS})
-       SELECT $1, project_id, $2, description, method, url, headers, query_params, path_params, body_type, body, body_text, auth, tags, default_environment_id
+       SELECT $1, project_id, $2, description, method, url, headers, query_params, path_params, body_type, body, body_text, auth, tags, default_environment_id, $5
        FROM endpoints WHERE id = $3 AND project_id = $4 RETURNING *`,
-      [randomUUID(), name, request.params.endpointId, context.project.id],
+      [randomUUID(), name, request.params.endpointId, context.project.id, context.user.id],
     );
     if (!result.rowCount) return fail(reply, 404, 2001, "endpoint not found");
+    /* 复制也是创建：动作与普通 create 同一行，detail 记来源（动作证据）与请求体字段名。 */
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.endpointCreate, targetType: "endpoint", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body), duplicatedFrom: request.params.endpointId }, ip: request.ip,
+    });
     return reply.code(201).send(success(mapEndpoint(result.rows[0])));
   });
 
@@ -314,6 +345,10 @@ export async function endpointRoutes(app: FastifyInstance) {
     if (!isUuid(request.params.endpointId)) return fail(reply, 404, 2001, "endpoint not found");
     const result = await pool.query("DELETE FROM endpoints WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.endpointId, context.project.id]);
     if (!result.rowCount) return fail(reply, 404, 2001, "endpoint not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.endpointDelete, targetType: "endpoint", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id, ip: request.ip,
+    });
     return success({ id: result.rows[0].id });
   });
 
@@ -333,6 +368,13 @@ export async function endpointRoutes(app: FastifyInstance) {
       }
       const deleted = await client.query("DELETE FROM endpoints WHERE project_id = $1 AND id = ANY($2::uuid[]) RETURNING id", [context.project.id, endpointIds]);
       await client.query("COMMIT");
+      /* 批量删除落**一行**（边界 6）：target_id 没有单一落点（UUID 列），数量进 detail。 */
+      const detail: AuditBatchDetail = { ids: deleted.rowCount ?? 0 };
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.endpointDelete, targetType: "endpoint", targetId: null,
+        projectId: context.project.id, userId: context.user.id,
+        detail, ip: request.ip,
+      });
       return success({ ids: deleted.rows.map((row) => String(row.id)), deleted: deleted.rowCount });
     } catch (error) {
       await client.query("ROLLBACK");
@@ -352,7 +394,7 @@ export async function endpointRoutes(app: FastifyInstance) {
     const body = request.body ?? {};
     const explicitEnvironment = Object.prototype.hasOwnProperty.call(body, "environmentId");
     let executionId: string;
-    try { executionId = await queueEndpointRun(context.project.id, request.params.endpointId, body.environmentId, explicitEnvironment); }
+    try { executionId = await queueEndpointRun(context.project.id, request.params.endpointId, body.environmentId, explicitEnvironment, undefined, context.user.id); }
     catch (error) {
       /* 分区没有执行器是基础设施问题，不是坏输入：2004 + label，让界面说清是哪个分区
          没人服务，而不是笼统的「请求无法准备」。 */
@@ -398,7 +440,7 @@ export async function endpointRoutes(app: FastifyInstance) {
      */
     for (const endpointId of endpointIds) {
       try {
-        await queueEndpointRun(context.project.id, endpointId, strategy === "override" ? body.environmentId ?? null : undefined, strategy === "override", batchId);
+        await queueEndpointRun(context.project.id, endpointId, strategy === "override" ? body.environmentId ?? null : undefined, strategy === "override", batchId, context.user.id);
       } catch (error) {
         /* Queue down mid-batch: stop rather than leave the rest unqueued and
            the batch permanently short of its total. 分区没有执行器同理——先把已经
@@ -457,8 +499,14 @@ export async function endpointRoutes(app: FastifyInstance) {
     const where = clauses.join(" AND ");
     const count = await pool.query(`SELECT COUNT(*)::int AS total FROM batch_executions WHERE ${where}`, params);
     params.push(pageSize, (page - 1) * pageSize);
+    /* P11 边界 11：批量没有自己的触发行人列（迁移 064 只给 executions 加了
+       triggered_by），但一次批量里每一行 execution 的触发人必然相同——从成员行派生
+       一列即可，不必再加列加索引。用标量子查询而不是 join：这条 WHERE 的列都没带前缀，
+       join users 会让 created_at 变成 ambiguous。 */
     const result = await pool.query(
-      `SELECT * FROM batch_executions WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      `SELECT *, (SELECT u.email FROM executions e JOIN users u ON u.id = e.triggered_by
+                   WHERE e.batch_id = batch_executions.id LIMIT 1) AS triggered_by_email
+         FROM batch_executions WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params,
     );
     return success(result.rows.map(mapBatchExecution), { page, pageSize, total: Number(count.rows[0].total) });
@@ -467,7 +515,13 @@ export async function endpointRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string; batchId: string } }>("/api/v1/projects/:id/batch-executions/:batchId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     if (!isUuid(request.params.batchId)) return fail(reply, 404, 2001, "batch execution not found");
-    const batchResult = await pool.query("SELECT * FROM batch_executions WHERE id = $1 AND project_id = $2", [request.params.batchId, context.project.id]);
+    /* 同列表：批量本身没有触发行人列，从成员行派生（见 batch-executions 列表注释）。 */
+    const batchResult = await pool.query(
+      `SELECT *, (SELECT u.email FROM executions e JOIN users u ON u.id = e.triggered_by
+                   WHERE e.batch_id = batch_executions.id LIMIT 1) AS triggered_by_email
+         FROM batch_executions WHERE id = $1 AND project_id = $2`,
+      [request.params.batchId, context.project.id],
+    );
     if (!batchResult.rowCount) return fail(reply, 404, 2001, "batch execution not found");
     /* Ordered by created_at, which is enqueue order, so the list keeps the
        order the user selected rather than the order workers happened to finish. */
@@ -491,7 +545,15 @@ export async function endpointRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string; executionId: string } }>("/api/v1/projects/:id/executions/:executionId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     if (!isUuid(request.params.executionId)) return fail(reply, 404, 2001, "execution not found");
-    const result = await pool.query("SELECT * FROM executions WHERE id = $1 AND project_id = $2", [request.params.executionId, context.project.id]);
+    const result = await pool.query(
+      /* P11 边界 11：单条执行也要答「谁触发的」。基表起别名，裸 `*` 会在两表同名的
+         id / created_at 上取到 users 的值。 */
+      `SELECT ex.*, triggerer.email AS triggered_by_email
+         FROM executions ex
+         LEFT JOIN users triggerer ON triggerer.id = ex.triggered_by
+        WHERE ex.id = $1 AND ex.project_id = $2`,
+      [request.params.executionId, context.project.id],
+    );
     if (!result.rowCount) return fail(reply, 404, 2001, "execution not found");
     return success(mapExecution(result.rows[0]));
   });
@@ -523,9 +585,13 @@ export async function endpointRoutes(app: FastifyInstance) {
        Both tables carry project_id, so the joined query qualifies every clause. */
     const qualifiedWhere = clauses.map((clause) => `executions.${clause}`).join(" AND ");
     const result = await pool.query(
-      `SELECT executions.*, flow_executions.flow_name AS flow_name
+      `SELECT executions.*, flow_executions.flow_name AS flow_name,
+              triggerer.email AS triggered_by_email
          FROM executions
          LEFT JOIN flow_executions ON flow_executions.id = executions.flow_execution_id
+         /* P11 边界 11：谁触发的（email 快照）。只在 users 上 join，别名独立于上面的
+            两条 join；WHERE 已经逐条以 executions. 限定，不会与 users 的同名列撞。 */
+         LEFT JOIN users triggerer ON triggerer.id = executions.triggered_by
         WHERE ${qualifiedWhere} ORDER BY executions.created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params,
     );
@@ -546,24 +612,36 @@ export async function endpointRoutes(app: FastifyInstance) {
 
       if (existing.rowCount && strategy === "update") {
         const result = await pool.query(
-          `UPDATE endpoints SET name = $1, description = $2, headers = $3::jsonb, query_params = $4::jsonb, path_params = $5::jsonb, body_type = $6, body = $7::jsonb, body_text = $8, auth = $9::jsonb, tags = $10, updated_at = now() WHERE id = $11 RETURNING *`,
+          `UPDATE endpoints SET name = $1, description = $2, headers = $3::jsonb, query_params = $4::jsonb, path_params = $5::jsonb, body_type = $6, body = $7::jsonb, body_text = $8, auth = $9::jsonb, tags = $10, updated_by = $12, updated_at = now() WHERE id = $11 RETURNING *`,
           [
             item.name!.trim(), item.description?.trim() ?? "",
             JSON.stringify(item.headers ?? {}), JSON.stringify(item.queryParams ?? {}), JSON.stringify(item.pathParams ?? {}),
             item.bodyType ?? (item.body === undefined ? "none" : "json"),
             item.body === undefined ? null : JSON.stringify(item.body), item.bodyText ?? null,
             JSON.stringify(item.auth ?? { type: "none" }), item.tags ?? [], existing.rows[0].id,
+            context.user.id,
           ],
         );
         updated.push(mapEndpoint(result.rows[0]));
+        /* 导入按条目挂审计（每条资源一行，P11-10 的资源「变更历史」才拉得到）。 */
+        writeAuditLogAsync({
+          action: AUDIT_ACTIONS.endpointUpdate, targetType: "endpoint", targetId: String(result.rows[0].id),
+          projectId: context.project.id, userId: context.user.id,
+          detail: { fields: auditFields(item) }, ip: request.ip,
+        });
         continue;
       }
 
       const result = await pool.query(
-        `INSERT INTO endpoints (id, project_id, ${WRITE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13::jsonb, $14, $15) RETURNING *`,
-        [randomUUID(), context.project.id, ...writeValues(item)],
+        `INSERT INTO endpoints (id, project_id, ${WRITE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13::jsonb, $14, $15, $16) RETURNING *`,
+        [randomUUID(), context.project.id, ...writeValues(item, context.user.id)],
       );
       imported.push(mapEndpoint(result.rows[0]));
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.endpointCreate, targetType: "endpoint", targetId: String(result.rows[0].id),
+        projectId: context.project.id, userId: context.user.id,
+        detail: { fields: auditFields(item), imported: true }, ip: request.ip,
+      });
     }
 
     return success({ imported, updated, skipped }, { total: imported.length + updated.length });

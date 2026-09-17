@@ -41,6 +41,21 @@ export type ProjectMember = {
 export type MemberCandidate = { id: string; email: string; name: string };
 export type Project = { id: string; name: string; description: string; ownerId: string; createdAt: string };
 /**
+ * 列级归属（P11，边界 1/7/9）：谁建的、谁最后改的，随行以 **email 快照** 返回。
+ *
+ * 不是表上的列——`created_by` / `updated_by` 存的是 uuid，这里回可显示的名字，由查询
+ * `LEFT JOIN users` 带出。与 `ProjectMember.grantedByEmail`、`mapAuditLog.user_email`
+ * 同一形制（用户改名后跟着新名走：归属不是历史，是当下的事实）。
+ *
+ * 两个字段都是可选且可空：`null` 的语义是「本次查询没有这个值」——
+ * - 列表接口一律带 join（P11-5），因此列上显示的是真话；
+ * - create / update 的 `RETURNING *` 与内部读取没有 join，读成 `null`（前端刷新列表后
+ *   自然补齐）；
+ * - `updated_by` 为 NULL 而 `updatedAt` 晚于 `createdAt` = 系统路径改的（调度器 / 告警
+ *   引擎 / 对账，边界 3），前端显示「系统」；两者都没有才是「—」。
+ */
+export type Ownership = { createdByEmail?: string | null; updatedByEmail?: string | null };
+/**
  * Secret values never leave the server (Spec 4.6 默认掩码). Only the key names
  * travel, so the UI can show "configured" without ever holding the plaintext.
  */
@@ -53,7 +68,7 @@ export type Environment = {
    * （如 `{"X-Env-Tag": "{{lane}}"}`），由触发时的变量覆盖决定这一次走哪条泳道。
    */
   defaultHeaders: Record<string, string>;
-};
+} & Ownership;
 export type BodyType = "none" | "json" | "form" | "text";
 export type EndpointAuth =
   | { type: "none" }
@@ -81,7 +96,8 @@ export type Endpoint = {
   defaultEnvironmentId?: string;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
+
 /**
  * The request definition a test case freezes (交互文档 3.1.3 完全快照隔离).
  *
@@ -220,7 +236,7 @@ export type Script = {
   dependencies: string[];
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 export type TestCase = {
   id: string;
@@ -239,7 +255,7 @@ export type TestCase = {
   tags: string[];
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 /**
  * 列表用的用例摘要：跨接口用例选择器与套件成员（P2-4）看的就是这个。
@@ -264,7 +280,7 @@ export type TestCaseSummary = {
   tags: string[];
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 /**
  * One value a节点 lifts out of its response into the flow variable bag (P1-2).
@@ -634,7 +650,7 @@ export type Flow = {
   tags: string[];
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 /** What the flow decided to run, kept after `run_spec` is cleared (see 012). */
 export type FlowPlanStep = { nodeId: string; name: string; type: FlowNode["type"]; endpointId?: string };
@@ -705,7 +721,7 @@ export type DataSource = {
   passwordConfigured: boolean;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 export type SqlDefinition = {
   id: string;
@@ -721,7 +737,7 @@ export type SqlDefinition = {
   params: SqlParameterDefinition[];
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 /** P2-5 external integration stub. The public id is a random capability, not a project id. */
 export type MockMode = "auto" | "fixed" | "template" | "proxy";
@@ -745,7 +761,7 @@ export type MockProxyConfig = {
 export type Mock = {
   id: string; projectId: string; endpointId?: string; snapshotExecutionId?: string; name: string; publicId: string; mode: MockMode; enabled: boolean; priority: number;
   requestMatch: Record<string, unknown>; response: MockResponse; proxyConfig?: MockProxyConfig; delayMs: number; createdAt: string; updatedAt: string;
-};
+} & Ownership;
 export type MockRequestLog = {
   id: string; mockId?: string; method: string; path: string; matched: boolean; statusCode: number; durationMs: number;
   requestSnapshot: Record<string, unknown>; responseSizeBytes: number; createdAt: string;
@@ -771,6 +787,16 @@ export type TriggerContext = {
   /** 触发人（手动 / MCP execute / CI 手动触发）；非人触发缺省。 */
   userId?: string;
 };
+/**
+ * 触发人（P11 边界 11，读侧第三问）：`triggered_by` 存 uuid，这里回可显示的 email
+ * 快照，由查询 `LEFT JOIN users` 带出——与 `Ownership` 同一形制、同一取值口。
+ *
+ * `null` 的语义是「**没有人工触发人**」：定时 / Webhook / 非人 CI 都是这一种（边界
+ * 3 的「非人工」同义），前端显示「系统」；未 join 的查询也读成 null（前端刷新后补齐）。
+ * 注意与 `Ownership` 的差别：那边 null 是「建后没改过」（显示「—」），这边 null 是
+ * 「系统触发的」——两个 null 的前端话术不同，不要统一。
+ */
+export type TriggeredByEmail = { triggeredByEmail?: string | null };
 
 export type ExecutionIndex = {
   id: string;
@@ -803,7 +829,7 @@ export type ExecutionIndex = {
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
-};
+} & TriggeredByEmail;
 
 export type ExecutionStep = {
   id: string;
@@ -917,7 +943,7 @@ export type Execution = {
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
-};
+} & TriggeredByEmail;
 
 /** Terminal states. A run outside this set is still in the queue or in flight. */
 export const SETTLED_STATUSES = ["success", "failed", "canceled"];
@@ -979,7 +1005,7 @@ export type BatchExecution = {
   status: "queued" | "running" | "completed" | "canceled";
   createdAt: string;
   finishedAt?: string;
-};
+} & TriggeredByEmail;
 
 /**
  * 一个套件成员：一次**独立执行**的目标（P2-4）。
@@ -1061,7 +1087,7 @@ export type TestSuite = {
   tags: string[];
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 export type SuiteExecution = {
   id: string;
@@ -1148,7 +1174,7 @@ export type Schedule = {
   lastRunAt?: string;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 /**
  * 一个到期时刻及其结果（边界 2 / 3）。
@@ -1213,7 +1239,7 @@ export type WebhookTrigger = {
   lastTriggeredAt?: string;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 /** 四种「POST 一段 JSON 到一个 URL」渠道（边界 8：Email 不做）。 */
 export type NotificationChannelType = "webhook" | "wecom" | "dingtalk" | "slack";
@@ -1231,7 +1257,7 @@ export type NotificationChannel = {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 /**
  * 告警指标（边界 9）：`execution_failed` 是事件型（失败事件一到就评估，无窗口），
@@ -1261,7 +1287,7 @@ export type AlertRule = {
   lastFiredAt?: string;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 /** 一次通知投递的证据（边界 10）：「没收到告警」的三种原因靠它区分。 */
 export type NotificationDelivery = {
@@ -1551,6 +1577,18 @@ export type AuditLog = {
   createdAt: string;
 };
 
+/**
+ * P11 列级归属 / 触发人的 email 取值口：列表查询以 `LEFT JOIN users` 带出
+ * `created_by_email` / `updated_by_email` / `triggered_by_email`（别名见各查询）。
+ *
+ * 未 join 的查询、uuid 列为 NULL 的行、用户已被删除的行，都得到 `null`——
+ * 与 `mapAuditLog` 的 `user_email` 同一条判据，语义分别见 `Ownership` 与
+ * `TriggeredByEmail`（两个 null 的前端话术不同）。
+ */
+function ownershipEmail(value: unknown): string | null {
+  return value ? String(value) : null;
+}
+
 export function mapAuditLog(row: Record<string, unknown>): AuditLog {
   return {
     id: Number(row.id),
@@ -1583,6 +1621,8 @@ export function mapEnvironment(row: Record<string, unknown>): Environment {
     runnerLabel: String(row.runner_label ?? "default"),
     /* 环境默认头（P3/6.5）：列 DEFAULT '{}'，旧行与未接线前读成空对象即「无默认头」。 */
     defaultHeaders: (row.default_headers ?? {}) as Record<string, string>,
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -1605,6 +1645,8 @@ export function mapEndpoint(row: Record<string, unknown>): Endpoint {
     defaultEnvironmentId: row.default_environment_id ? String(row.default_environment_id) : undefined,
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -1627,10 +1669,11 @@ export function mapTestCase(row: Record<string, unknown>): TestCase {
     tags: (row.tags as string[]) ?? [],
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
-/** `assertion_count` 与 `endpoint_name` 由查询算出，不在 test_cases 表里。 */
 export function mapTestCaseSummary(row: Record<string, unknown>): TestCaseSummary {
   return {
     id: String(row.id),
@@ -1645,6 +1688,8 @@ export function mapTestCaseSummary(row: Record<string, unknown>): TestCaseSummar
     tags: (row.tags as string[]) ?? [],
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -1666,6 +1711,8 @@ export function mapScript(row: Record<string, unknown>): Script {
     dependencies: (row.dependencies as string[] | null) ?? [],
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -1683,6 +1730,8 @@ export function mapFlow(row: Record<string, unknown>): Flow {
     tags: (row.tags as string[]) ?? [],
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -1777,6 +1826,8 @@ export function mapTestSuite(row: Record<string, unknown>): TestSuite {
     notify: normalizeSuiteNotify(row.notify_config),
     tags: (row.tags ?? []) as string[],
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -1809,6 +1860,8 @@ export function mapDataSource(row: Record<string, unknown>): DataSource {
     id: String(row.id), projectId: String(row.project_id), name: String(row.name), type,
     config: normalizeDataSourceConfig(row.config, type), passwordConfigured: Boolean(row.credentials_encrypted),
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -1819,6 +1872,8 @@ export function mapSqlDefinition(row: Record<string, unknown>): SqlDefinition {
     statementType: row.statement_type ? String(row.statement_type) as SqlStatementType : undefined,
     sql: row.sql ? String(row.sql) : undefined, operation: row.operation ?? undefined, params: (row.params ?? []) as SqlParameterDefinition[],
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -1829,6 +1884,8 @@ export function mapMock(row: Record<string, unknown>): Mock {
     requestMatch: (row.request_match ?? {}) as Record<string, unknown>, response: row.response as MockResponse,
     proxyConfig: row.proxy_config ? row.proxy_config as MockProxyConfig : undefined, delayMs: Number(row.delay_ms),
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -1854,6 +1911,7 @@ export function mapExecutionIndex(row: Record<string, unknown>): ExecutionIndex 
     createdAt: new Date(String(row.created_at)).toISOString(),
     startedAt: row.started_at ? new Date(String(row.started_at)).toISOString() : undefined,
     finishedAt: row.finished_at ? new Date(String(row.finished_at)).toISOString() : undefined,
+    triggeredByEmail: ownershipEmail(row.triggered_by_email),
   };
 }
 
@@ -1901,6 +1959,7 @@ export function mapExecution(row: Record<string, unknown>): Execution {
     finishedAt: row.finished_at ? new Date(String(row.finished_at)).toISOString() : undefined,
     /* run_spec is deliberately absent: it carries auth material and exists only
        so a worker can pick the run up. */
+    triggeredByEmail: ownershipEmail(row.triggered_by_email),
   };
 }
 
@@ -1913,6 +1972,10 @@ export function mapBatchExecution(row: Record<string, unknown>): BatchExecution 
     status: String(row.status) as BatchExecution["status"],
     createdAt: new Date(String(row.created_at)).toISOString(),
     finishedAt: row.finished_at ? new Date(String(row.finished_at)).toISOString() : undefined,
+    /* P11 边界 11：批量没有自己的触发行人列（迁移 064 只给 `executions` 加了
+       `triggered_by`），但一次批量里每一行 execution 的触发人必然相同——查询从
+       成员行派生出这一列（见 batch-executions 列表）。 */
+    triggeredByEmail: ownershipEmail(row.triggered_by_email),
   };
 }
 
@@ -1955,6 +2018,8 @@ export function mapSchedule(row: Record<string, unknown>): Schedule {
     lastRunAt: row.last_run_at ? new Date(String(row.last_run_at)).toISOString() : undefined,
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -1990,6 +2055,8 @@ export function mapWebhookTrigger(row: Record<string, unknown>): WebhookTrigger 
     lastTriggeredAt: row.last_triggered_at ? new Date(String(row.last_triggered_at)).toISOString() : undefined,
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -2003,6 +2070,8 @@ export function mapNotificationChannel(row: Record<string, unknown>): Notificati
     enabled: Boolean(row.enabled),
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -2020,6 +2089,8 @@ export function mapAlertRule(row: Record<string, unknown>): AlertRule {
     lastFiredAt: row.last_fired_at ? new Date(String(row.last_fired_at)).toISOString() : undefined,
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -2653,7 +2724,7 @@ export type PipelineRun = {
   claimedAt?: string;
   startedAt?: string;
   finishedAt?: string;
-};
+} & TriggeredByEmail;
 
 export function mapPipelineRun(row: Record<string, unknown>): PipelineRun {
   const filter = row.case_filter as { case_keys?: unknown[] } | null | undefined;
@@ -2691,6 +2762,9 @@ export function mapPipelineRun(row: Record<string, unknown>): PipelineRun {
     claimedAt: row.claimed_at ? new Date(String(row.claimed_at)).toISOString() : undefined,
     startedAt: row.started_at ? new Date(String(row.started_at)).toISOString() : undefined,
     finishedAt: row.finished_at ? new Date(String(row.finished_at)).toISOString() : undefined,
+    /* P11 边界 11 读侧：`triggered_by` 的 email 快照（此前 mapper 只回 uuid，前端零处
+       渲染）。查询侧在 pipeline_runs 的读点 join users。 */
+    triggeredByEmail: ownershipEmail(row.triggered_by_email),
   };
 }
 
@@ -2939,7 +3013,7 @@ export type SpecModule = {
   automatedCount?: number;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 
 export function mapSpecModule(row: Record<string, unknown>): SpecModule {
   return {
@@ -2952,6 +3026,8 @@ export function mapSpecModule(row: Record<string, unknown>): SpecModule {
     automatedCount: row.automated_count === undefined || row.automated_count === null ? undefined : Number(row.automated_count),
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+    createdByEmail: ownershipEmail(row.created_by_email),
+    updatedByEmail: ownershipEmail(row.updated_by_email),
   };
 }
 
@@ -2986,6 +3062,13 @@ export type SpecCase = {
   linkCount?: number;
   /** 已自动化（P7-6 列表行）：有 ≥1 条非 endpoint 绑定（与筛选、覆盖口径同一表达式）。 */
   automated?: boolean;
+  /**
+   * 建的人（P11 边界 7/9）：`spec_cases.created_by` 从 P7 起就有，本阶段只补读侧
+   * （JOIN users 取 email）。**刻意没有 `updatedByEmail`**——这张表在边界 2 的
+   * 「天生带 created_by」名单里，本阶段不补 `updated_by`，所以「谁最后改的」无数据
+   * 可回，列表列显示「—」。要它就得先给表加列（另立项）。
+   */
+  createdByEmail?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -3016,6 +3099,8 @@ export function mapSpecCase(row: Record<string, unknown>): SpecCase {
     automated: row.automated === undefined || row.automated === null ? undefined : Boolean(row.automated),
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
+    /* 只有 createdByEmail（见 SpecCase 上的说明）：spec_cases 没有 updated_by 列。 */
+    createdByEmail: ownershipEmail(row.created_by_email),
   };
 }
 

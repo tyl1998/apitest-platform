@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
 import { writeAuditLogAsync } from "../lib/audit.js";
 import { hashPassword } from "../lib/auth.js";
-import { requireProjectAdmin, requireSystemAdmin } from "../lib/rbac.js";
+import { requireDeveloper, requireSystemAdmin } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
 import { mapAuditLog, mapManagedUser } from "../models/types.js";
@@ -267,23 +267,49 @@ export async function systemUserRoutes(app: FastifyInstance) {
   });
 
   /**
-   * 项目级审计（计划 10.2：`requireProjectAdmin`，最近 50 条，无分页）：给 P6-4 的
-   * 成员页与项目设置页读「这个项目里谁做了什么」。系统管理员在这里也过
-   * `requireProjectAdmin`（守卫里短路放行），口径与成员管理一致。
+   * 项目级审计（计划 10.2 / P11-10 边界 7、8）。
+   *
+   * **读权自 P11-10 起放宽到 developer**（原 `requireProjectAdmin`；viewer 仍 403）：
+   * 列级归属（createdBy/updatedBy）全部成员可见，审计级多带 email 与 IP，所以两者
+   * 不共用「读 = 含 viewer」的判据。系统管理员在 `requireDeveloper` 里短路放行。
+   *
+   * **过滤与分页**从 P11-10 起接上（与全局 `/system/audit-logs` 同一形状）：
+   * `action` / `targetType` / `targetId`，缺省按时间倒序第 1 页、每页 50 条——资源详情
+   * 的「变更历史」抽屉就是 `?targetType=&targetId=` 这一路（边界 8）。
    */
-  app.get<{ Params: { id: string } }>("/api/v1/projects/:id/audit-logs", async (request, reply) => {
-    const context = await requireProjectAdmin(request, reply); if (!context) return;
+  app.get<{ Params: { id: string }; Querystring: { page?: string; pageSize?: string; action?: string; targetType?: string; targetId?: string } }>("/api/v1/projects/:id/audit-logs", async (request, reply) => {
+    const context = await requireDeveloper(request, reply); if (!context) return;
+    /* 与 dashboard 的动态过滤同一纪律：值压 params 数组，占位符序号现场算。 */
+    const params: unknown[] = [context.project.id];
+    const clauses = ["a.project_id = $1"];
+    const action = request.query?.action?.trim();
+    if (action) { params.push(action); clauses.push(`a.action = $${params.length}`); }
+    const targetType = request.query?.targetType?.trim();
+    if (targetType) { params.push(targetType); clauses.push(`a.target_type = $${params.length}`); }
+    const targetId = request.query?.targetId?.trim();
+    if (targetId) {
+      /* 坏 uuid 在 cast 前拦下（规则 5）：「给了但非法」回 400 更诚实，不是静默空集。 */
+      if (!isUuid(targetId)) return fail(reply, 400, 1001, "targetId must be a UUID");
+      params.push(targetId); clauses.push(`a.target_id = $${params.length}`);
+    }
+    const where = clauses.join(" AND ");
+    const total = await pool.query(`SELECT COUNT(*)::int AS total FROM audit_logs a WHERE ${where}`, params);
+    const page = Math.max(1, Number(request.query?.page ?? 1));
+    const pageSize = Math.min(100, Math.max(1, Number(request.query?.pageSize ?? 50)));
+    params.push(pageSize, (page - 1) * pageSize);
+    /* LEFT JOIN 用户：user_id 可空（调度器 / Webhook 触发源），行必须留下来；
+       email 做快照展示——用户被禁用/改名后审计仍要读得出「当时是谁」。 */
     const result = await pool.query(
       `SELECT a.id, a.project_id, a.user_id, a.action, a.target_type, a.target_id, a.detail, a.ip, a.created_at,
               u.email AS user_email, p.name AS project_name
          FROM audit_logs a
          LEFT JOIN users u ON u.id = a.user_id
          LEFT JOIN projects p ON p.id = a.project_id
-        WHERE a.project_id = $1
+        WHERE ${where}
         ORDER BY a.created_at DESC
-        LIMIT 50`,
-      [context.project.id],
+        LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
     );
-    return success(result.rows.map(mapAuditLog), { total: result.rowCount });
+    return success(result.rows.map(mapAuditLog), { page, pageSize, total: Number(total.rows[0].total) });
   });
 }

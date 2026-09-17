@@ -2,6 +2,7 @@ import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import type { FastifyInstance } from "fastify";
 import type { Redis } from "ioredis";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { decryptSecret, encryptSecret } from "../lib/crypto.js";
 import { createRedis } from "../lib/queue.js";
 import { requireProjectAccess } from "../lib/rbac.js";
@@ -36,10 +37,14 @@ const NONCE_TTL_SECONDS = SIGNATURE_WINDOW_SECONDS * 2;
 const TARGET_TABLES: Record<WebhookTargetType, string> = { flow: "flows", suite: "test_suites", ci_task: "ci_tasks" };
 
 /** 带目标名的一行（目标被删后 LEFT JOIN 得 NULL，仍读得通）。 */
-const SELECT_TRIGGER = `SELECT w.*, COALESCE(f.name, ts.name, ct.name) AS target_name FROM webhook_triggers w
+/* P11 归属列（边界 7/9）：`LEFT JOIN users` 带出 email 快照。常量被列表与详情共用；
+   基表已显式 `w.*`，加 join 不会污染投影。 */
+const SELECT_TRIGGER = `SELECT w.*, COALESCE(f.name, ts.name, ct.name) AS target_name, creator.email AS created_by_email, updater.email AS updated_by_email FROM webhook_triggers w
   LEFT JOIN flows f ON w.target_type = 'flow' AND f.id = w.target_id
   LEFT JOIN test_suites ts ON w.target_type = 'suite' AND ts.id = w.target_id
-  LEFT JOIN ci_tasks ct ON w.target_type = 'ci_task' AND ct.id = w.target_id`;
+  LEFT JOIN ci_tasks ct ON w.target_type = 'ci_task' AND ct.id = w.target_id
+  LEFT JOIN users creator ON creator.id = w.created_by
+  LEFT JOIN users updater ON updater.id = w.updated_by`;
 
 type TriggerBody = {
   name?: string;
@@ -108,10 +113,16 @@ export async function webhookTriggerRoutes(app: FastifyInstance) {
     /* 明文只在这一次响应里出现（边界 6）：之后管理接口只回 hasSecret，丢了只能轮换。 */
     const secret = randomBytes(32).toString("base64url");
     const result = await pool.query(
-      `INSERT INTO webhook_triggers (id, project_id, name, target_type, target_id, environment_id, public_id, secret_encrypted, enabled)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [randomUUID(), context.project.id, name, request.body.targetType, request.body.targetId, request.body.environmentId ?? null, randomBytes(18).toString("base64url"), encryptSecret(secret), request.body.enabled ?? true],
+      `INSERT INTO webhook_triggers (id, project_id, name, target_type, target_id, environment_id, public_id, secret_encrypted, enabled, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [randomUUID(), context.project.id, name, request.body.targetType, request.body.targetId, request.body.environmentId ?? null, randomBytes(18).toString("base64url"), encryptSecret(secret), request.body.enabled ?? true, context.user.id],
     );
+    /* P11-9 审计（边界 5/6）：detail 只有字段名，secret 明文绝不进。 */
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.webhookTriggerCreate, targetType: "webhook_trigger", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return reply.code(201).send(success({ ...mapWebhookTrigger(result.rows[0]), secret }));
   });
 
@@ -149,11 +160,16 @@ export async function webhookTriggerRoutes(app: FastifyInstance) {
 
     await pool.query(
       `UPDATE webhook_triggers SET name = COALESCE($1, name), target_type = COALESCE($2, target_type),
-         target_id = COALESCE($3, target_id), environment_id = $4, enabled = COALESCE($5, enabled), updated_at = now()
+         target_id = COALESCE($3, target_id), environment_id = $4, enabled = COALESCE($5, enabled), updated_by = $8, updated_at = now()
        WHERE id = $6 AND project_id = $7`,
-      [name ?? null, targetType ?? null, targetId ?? null, environmentId, request.body?.enabled ?? null, request.params.triggerId, context.project.id],
+      [name ?? null, targetType ?? null, targetId ?? null, environmentId, request.body?.enabled ?? null, request.params.triggerId, context.project.id, context.user.id],
     );
     const updated = await pool.query(`${SELECT_TRIGGER} WHERE w.id = $1 AND w.project_id = $2`, [request.params.triggerId, context.project.id]);
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.webhookTriggerUpdate, targetType: "webhook_trigger", targetId: request.params.triggerId,
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return success(mapWebhookTrigger(updated.rows[0]));
   });
 
@@ -162,6 +178,10 @@ export async function webhookTriggerRoutes(app: FastifyInstance) {
     if (!isUuid(request.params.triggerId)) return fail(reply, 404, 2001, "webhook trigger not found");
     const result = await pool.query("DELETE FROM webhook_triggers WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.triggerId, context.project.id]);
     if (!result.rowCount) return fail(reply, 404, 2001, "webhook trigger not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.webhookTriggerDelete, targetType: "webhook_trigger", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id, ip: request.ip,
+    });
     return success({ id: result.rows[0].id });
   });
 
@@ -171,10 +191,16 @@ export async function webhookTriggerRoutes(app: FastifyInstance) {
     if (!isUuid(request.params.triggerId)) return fail(reply, 404, 2001, "webhook trigger not found");
     const secret = randomBytes(32).toString("base64url");
     const result = await pool.query(
-      "UPDATE webhook_triggers SET secret_encrypted = $2, updated_at = now() WHERE id = $1 AND project_id = $3 RETURNING id",
-      [request.params.triggerId, encryptSecret(secret), context.project.id],
+      "UPDATE webhook_triggers SET secret_encrypted = $2, updated_by = $4, updated_at = now() WHERE id = $1 AND project_id = $3 RETURNING id",
+      [request.params.triggerId, encryptSecret(secret), context.project.id, context.user.id],
     );
     if (!result.rowCount) return fail(reply, 404, 2001, "webhook trigger not found");
+    /* 轮换也是一次 update：字段名写死 "secret"，新旧明文都不进。 */
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.webhookTriggerUpdate, targetType: "webhook_trigger", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: ["secret"] }, ip: request.ip,
+    });
     return success({ id: result.rows[0].id, secret });
   });
 
@@ -225,7 +251,11 @@ export async function webhookTriggerRoutes(app: FastifyInstance) {
       if (first !== "OK") return fail(reply, 401, 1002, "nonce has already been used");
 
       /* last_triggered_at 记「准入成功」：外部调用方已经敲对了门，执行失败与否是
-         执行的事，不该把一次被 2004 拒绝的触发显示成「从没来过」。 */
+         执行的事，不该把一次被 2004 拒绝的触发显示成「从没来过」。
+
+         `updated_by` 刻意不写（P11 边界 3）：这是外部调用方触发的运行事实，不是「谁
+         改了这条配置」——它没有登录用户可写，硬塞成配置创建人会把「系统触发」答成
+         「某人改过」。「触发人」这一问由执行记录回答（P11-6），不在这张表上。 */
       await pool.query("UPDATE webhook_triggers SET last_triggered_at = now() WHERE id = $1", [row.id]);
 
       const projectId = String(row.project_id);

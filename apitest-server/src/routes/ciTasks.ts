@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, writeAuditLogAsync } from "../lib/audit.js";
 import { normalizeIdempotencyKey } from "../lib/idempotency.js";
 import { notifySerializedQueue } from "../lib/pipelineRun.js";
 import { requireProjectAccess } from "../lib/rbac.js";
@@ -233,6 +234,21 @@ export async function ciTaskRoutes(app: FastifyInstance) {
       const result = await client.query("DELETE FROM ci_tasks WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.taskId, context.project.id]);
       await client.query("COMMIT");
       if (!result.rowCount) return fail(reply, 404, 2001, "CI task not found");
+      /* 连带删掉的引用调度 / Webhook 触发各落一行 delete（suites.ts 同款；P11-9）。 */
+      for (const row of referencingSchedules.rows) {
+        writeAuditLogAsync({
+          action: AUDIT_ACTIONS.scheduleDelete, targetType: "schedule", targetId: String(row.id),
+          projectId: context.project.id, userId: context.user.id,
+          detail: { fields: [], cascadeFrom: request.params.taskId }, ip: request.ip,
+        });
+      }
+      for (const row of referencingTriggers.rows) {
+        writeAuditLogAsync({
+          action: AUDIT_ACTIONS.webhookTriggerDelete, targetType: "webhook_trigger", targetId: String(row.id),
+          projectId: context.project.id, userId: context.user.id,
+          detail: { fields: [], cascadeFrom: request.params.taskId }, ip: request.ip,
+        });
+      }
       return success({ id: result.rows[0].id });
     } catch (error) {
       await client.query("ROLLBACK"); throw error;

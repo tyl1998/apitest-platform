@@ -122,6 +122,10 @@ async function recordRun(
  * 下一拍还可能成功。不可解析的 cron 永远不会成功，每 10 秒重试只会刷出无穷的 failed
  * 行。所以停靠（next_run_at 置 NULL，移出到期扫描）而不是禁用：enabled 保持 true，
  * 配置页重新保存时 P3-6 的路由会重算 next_run_at。
+ *
+ * `updated_by` 刻意不写（P11 边界 3）：本文件三条 UPDATE 都只动调度器的运行簿记
+ * （`next_run_at` / `last_run_at`），没有登录用户在这一刻改过配置。写了会把「调度器
+ * 走到这一拍」显示成「某人刚改过」——而配置的归属由 P11-3 的 schedules 路由负责。
  */
 async function park(schedule: DueSchedule, reason: string) {
   await pool.query("UPDATE schedules SET next_run_at = NULL WHERE id = $1 AND next_run_at = $2", [schedule.id, schedule.nextRunAt]);

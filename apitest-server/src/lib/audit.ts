@@ -116,6 +116,53 @@ export const AUDIT_ACTIONS = {
   failureCategoryCreate: "failure_category.create",
   failureCategoryUpdate: "failure_category.update",
   failureCategoryDelete: "failure_category.delete",
+  /* ── P11-9：核心资源 CRUD（方案 B，计划 16.2 / 16.5）。14 类资源 × create/update/delete
+     = 42 个动作（`target_type` 与动作前缀同名，读侧 `targetType` 过滤直接可用）。
+     detail 一律走 `auditFields()`：**只记字段名列表**，不记任何值——接口 URL、脚本内容、
+     环境 variables 的值、渠道 url 全部挡在外面（边界 5）。挂载在主写路径成功之后、
+     fire-and-forget（边界 6）。 ── */
+  endpointCreate: "endpoint.create",
+  endpointUpdate: "endpoint.update",
+  endpointDelete: "endpoint.delete",
+  testCaseCreate: "test_case.create",
+  testCaseUpdate: "test_case.update",
+  testCaseDelete: "test_case.delete",
+  environmentCreate: "environment.create",
+  environmentUpdate: "environment.update",
+  environmentDelete: "environment.delete",
+  flowCreate: "flow.create",
+  flowUpdate: "flow.update",
+  flowDelete: "flow.delete",
+  testSuiteCreate: "test_suite.create",
+  testSuiteUpdate: "test_suite.update",
+  testSuiteDelete: "test_suite.delete",
+  scriptCreate: "script.create",
+  scriptUpdate: "script.update",
+  scriptDelete: "script.delete",
+  dataSourceCreate: "data_source.create",
+  dataSourceUpdate: "data_source.update",
+  dataSourceDelete: "data_source.delete",
+  sqlDefinitionCreate: "sql_definition.create",
+  sqlDefinitionUpdate: "sql_definition.update",
+  sqlDefinitionDelete: "sql_definition.delete",
+  mockCreate: "mock.create",
+  mockUpdate: "mock.update",
+  mockDelete: "mock.delete",
+  scheduleCreate: "schedule.create",
+  scheduleUpdate: "schedule.update",
+  scheduleDelete: "schedule.delete",
+  webhookTriggerCreate: "webhook_trigger.create",
+  webhookTriggerUpdate: "webhook_trigger.update",
+  webhookTriggerDelete: "webhook_trigger.delete",
+  notificationChannelCreate: "notification_channel.create",
+  notificationChannelUpdate: "notification_channel.update",
+  notificationChannelDelete: "notification_channel.delete",
+  alertRuleCreate: "alert_rule.create",
+  alertRuleUpdate: "alert_rule.update",
+  alertRuleDelete: "alert_rule.delete",
+  specModuleCreate: "spec_module.create",
+  specModuleUpdate: "spec_module.update",
+  specModuleDelete: "spec_module.delete",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
@@ -123,7 +170,8 @@ export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
 export type AuditInput = {
   action: AuditAction;
   targetType: string;
-  targetId: string;
+  /** 可空：批量动作（如接口批量删除）没有单一目标行，数量进 detail（边界 6）。 */
+  targetId: string | null;
   /** 可空：系统级动作（如 Runner Token 签发）没有项目归属。 */
   projectId?: string | null;
   /** 可空：调度器 / Webhook 之类的非人触发源没有 user。 */
@@ -133,6 +181,25 @@ export type AuditInput = {
   /** 缺省空串（列 NOT NULL DEFAULT ''，显式传空保持同一形状）。 */
   ip?: string;
 };
+
+/**
+ * P11-9 方案 B 的 detail 形状（计划 16.5 边界 5）：审计只回答「改了哪些键」，
+ * 不回答「改成什么」。`fields` 是**字段名**列表，与 `AuditInput.detail` 的自由记录
+ * 并存——P6/P8/P9 的老动作维持各自形状，新的资源 CRUD 动作统一用它。
+ */
+export type AuditFieldDetail = { fields: string[] };
+
+/**
+ * `AuditFieldDetail.fields` 的唯一来源：取自有键的**键名**，不读任何值。
+ * 非对象 / null / 数组得到空列表，调用方不必先判类型；同一个请求体多处复用不重算。
+ */
+export function auditFields(body: unknown): AuditFieldDetail["fields"] {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return [];
+  return Object.keys(body as Record<string, unknown>).sort();
+}
+
+/** 批量删除的动作证据（计划 16.5 边界 6）：不逐行落审计，只记删了几条。 */
+export type AuditBatchDetail = { ids: number };
 
 /** detail 的护栏：JSON 序列化后超过 4KB 视为调用方在转储 payload，截断而不是照单全收。 */
 const DETAIL_MAX_BYTES = 4096;

@@ -44,6 +44,12 @@ export type GraphContext = {
   deadline: AbortSignal;
   workerId?: string;
   tokens: TokenPool;
+  /**
+   * 触发人（P11 边界 11）：流程节点落 `executions` 行的证据也要能答「谁触发的」。
+   * 由 `performFlowRun` 从父 `execution_index.triggered_by` 读一次后随上下文下发——
+   * 每个节点各查一次库没有意义，而 NULL（定时 / Webhook / 非人 CI）是合法值。
+   */
+  triggeredBy?: string | null;
   /** 顶层进度回调；嵌套图不传（计数归容器节点，不进父级）。 */
   onProgress?: (counts: { success: number; failed: number; skipped: number }) => void;
 };
@@ -261,9 +267,9 @@ export async function runGraph(
       `INSERT INTO executions (
          id, project_id, endpoint_id, endpoint_name, environment_id, environment_name,
          source, flow_execution_id, flow_node_id, flow_node_name,
-         status, duration_ms, request_snapshot, started_at, worker_id
-       ) VALUES ($1, $2, $3, $4, $5, $6, 'flow_step', $7, $8, $9, 'running', 0, $10::jsonb, now(), $11)`,
-      [executionId, ctx.projectId, node.endpointId, node.name, ctx.environmentId ?? null, ctx.environmentName ?? null, ctx.flowExecutionId ?? null, node.id, node.name, JSON.stringify({ method: node.request.method, url: node.request.url, query: node.request.queryParams, headers: node.request.headers }), ctx.workerId ?? null],
+         status, duration_ms, request_snapshot, started_at, worker_id, triggered_by
+       ) VALUES ($1, $2, $3, $4, $5, $6, 'flow_step', $7, $8, $9, 'running', 0, $10::jsonb, now(), $11, $12)`,
+      [executionId, ctx.projectId, node.endpointId, node.name, ctx.environmentId ?? null, ctx.environmentName ?? null, ctx.flowExecutionId ?? null, node.id, node.name, JSON.stringify({ method: node.request.method, url: node.request.url, query: node.request.queryParams, headers: node.request.headers }), ctx.workerId ?? null, ctx.triggeredBy ?? null],
     );
     if (childStepId) {
       await pool.query(

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { PoolClient } from "pg";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, writeAuditLogAsync } from "../lib/audit.js";
 import {
   INGEST_MAX_BODY_BYTES, INGEST_MAX_RECORDS, IngestPayloadError, IngestTooLargeError,
   PROTOCOL_VERSION, RepositoryConflictError, ingest, type IngestPayload,
@@ -712,16 +713,18 @@ export async function ingestRoutes(app: FastifyInstance) {
     try {
       await client.query("BEGIN");
       /* 最小 endpoint：列清单与 endpoints.ts 的 WRITE_COLUMNS 同一张表（那边刻意不导出——
-         routes 之间不互相 import 内部助手）。这里除身份与模板外全空，列变动时两处同步。 */
+         routes 之间不互相 import 内部助手）。这里除身份与模板外全空，列变动时两处同步
+         （P11 的 `created_by` 就是一次同步：登记是人工动作，落 `context.user.id`）。 */
       const created = await client.query(
         `INSERT INTO endpoints (id, project_id, name, description, method, url,
-           headers, query_params, path_params, body_type, body, body_text, auth, tags, default_environment_id)
+           headers, query_params, path_params, body_type, body, body_text, auth, tags, default_environment_id, created_by)
          VALUES ($1, $2, $3, $4, $5, $6,
-           '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 'none', NULL, NULL, '{"type":"none"}'::jsonb, '{}', NULL)
+           '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 'none', NULL, NULL, '{"type":"none"}'::jsonb, '{}', NULL, $7)
          RETURNING *`,
         [
           randomUUID(), context.project.id,
           name || `${method} ${path}`, "从未匹配区一键登记", method, `{{baseUrl}}${path}`,
+          context.user.id,
         ],
       );
       const endpointId = String(created.rows[0].id);
@@ -732,6 +735,12 @@ export async function ingestRoutes(app: FastifyInstance) {
           )
         : { linkedRecords: 0, linkedCases: 0 };
       await client.query("COMMIT");
+      /* P11-9 审计：一键登记是人动作，落的是一行 endpoint.create（登记时带的字段名）。 */
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.endpointCreate, targetType: "endpoint", targetId: endpointId,
+        projectId: context.project.id, userId: context.user.id,
+        detail: { fields: ["name", "method", "url"], registeredFrom: "ingest-unmatched" }, ip: request.ip,
+      });
       return reply.code(201).send(success({ endpoint: mapEndpoint(created.rows[0]), ...attached }));
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});

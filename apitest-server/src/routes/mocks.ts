@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
@@ -9,6 +10,15 @@ import { mapMock, mapMockRequestLog, type Mock, type MockMode, type MockProxyCon
 type MockBody = { endpointId?: string | null; executionId?: string | null; name?: string; mode?: MockMode; enabled?: boolean; priority?: number; requestMatch?: Record<string, unknown>; response?: MockResponse; proxyConfig?: MockProxyConfig; delayMs?: number };
 type TestBody = { method?: string; path?: string; query?: Record<string, string>; headers?: Record<string, string>; body?: unknown };
 const MODES: MockMode[] = ["auto", "fixed", "template", "proxy"];
+
+/**
+ * 列表用的投影（P11 归属列，边界 7/9）：`LEFT JOIN users` 带出 email 快照。
+ * 基表显式 `m.*`——裸 `*` 会在两表同名的 id / name / created_at 上取到 users 的值，
+ * 把整行映射悄悄换成人表的字段。
+ */
+const SELECT_MOCK = `SELECT m.*, creator.email AS created_by_email, updater.email AS updated_by_email FROM mocks m
+  LEFT JOIN users creator ON creator.id = m.created_by
+  LEFT JOIN users updater ON updater.id = m.updated_by`;
 
 function validate(body: MockBody, partial = false): string | undefined {
   if (!partial || body.name !== undefined) if (!body.name?.trim()) return "name is required";
@@ -158,13 +168,13 @@ export async function mockRoutes(app: FastifyInstance) {
        unpaged shape stays so the contract remains "give me everything" unless
        the client explicitly asks for a page. */
     if (request.query.pageSize === undefined) {
-      const result = await pool.query("SELECT * FROM mocks WHERE project_id = $1 ORDER BY priority DESC, created_at DESC", [context.project.id]);
+      const result = await pool.query(`${SELECT_MOCK} WHERE m.project_id = $1 ORDER BY m.priority DESC, m.created_at DESC`, [context.project.id]);
       return success(result.rows.map(mapMock));
     }
     const page = Math.max(1, Number(request.query.page ?? 1));
     const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
     const count = await pool.query("SELECT COUNT(*)::int AS total FROM mocks WHERE project_id = $1", [context.project.id]);
-    const result = await pool.query("SELECT * FROM mocks WHERE project_id = $1 ORDER BY priority DESC, created_at DESC LIMIT $2 OFFSET $3", [context.project.id, pageSize, (page - 1) * pageSize]);
+    const result = await pool.query(`${SELECT_MOCK} WHERE m.project_id = $1 ORDER BY m.priority DESC, m.created_at DESC LIMIT $2 OFFSET $3`, [context.project.id, pageSize, (page - 1) * pageSize]);
     return success(result.rows.map(mapMock), { page, pageSize, total: Number(count.rows[0].total) });
   });
 
@@ -179,9 +189,15 @@ export async function mockRoutes(app: FastifyInstance) {
     if (body.mode === "auto" && !snapshot) return fail(reply, 400, 1001, "auto mode needs a selected successful execution");
     const response: MockResponse = snapshot ?? body.response ?? { statusCode: 200, headers: { "content-type": "application/json" }, body: "{}" };
     const result = await pool.query(
-      "INSERT INTO mocks (id, project_id, endpoint_id, snapshot_execution_id, name, public_id, mode, enabled, priority, request_match, response, proxy_config, delay_ms) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13) RETURNING *",
-      [randomUUID(), context.project.id, body.endpointId ?? null, body.mode === "auto" ? body.executionId ?? null : null, body.name!.trim(), randomBytes(18).toString("base64url"), body.mode!, body.enabled ?? true, body.priority ?? 0, JSON.stringify(body.requestMatch ?? {}), JSON.stringify(response), cleanProxyConfig(body.proxyConfig) ? JSON.stringify(cleanProxyConfig(body.proxyConfig)) : null, body.delayMs ?? 0],
+      "INSERT INTO mocks (id, project_id, endpoint_id, snapshot_execution_id, name, public_id, mode, enabled, priority, request_match, response, proxy_config, delay_ms, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,$14) RETURNING *",
+      [randomUUID(), context.project.id, body.endpointId ?? null, body.mode === "auto" ? body.executionId ?? null : null, body.name!.trim(), randomBytes(18).toString("base64url"), body.mode!, body.enabled ?? true, body.priority ?? 0, JSON.stringify(body.requestMatch ?? {}), JSON.stringify(response), cleanProxyConfig(body.proxyConfig) ? JSON.stringify(cleanProxyConfig(body.proxyConfig)) : null, body.delayMs ?? 0, context.user.id],
     );
+    /* P11-9 审计（边界 5/6）：detail 只有字段名，响应体（可能含业务数据）绝不进。 */
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.mockCreate, targetType: "mock", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(body) }, ip: request.ip,
+    });
     return reply.code(201).send(success(mapMock(result.rows[0])));
   });
 
@@ -211,9 +227,14 @@ export async function mockRoutes(app: FastifyInstance) {
     if (nextMode === "auto" && !snapshot) return fail(reply, 400, 1001, "auto mode needs a selected successful execution");
     const nextResponse = snapshot ?? (nextMode === "auto" ? undefined : body.response);
     const result = await pool.query(
-      "UPDATE mocks SET endpoint_id = COALESCE($1, endpoint_id), snapshot_execution_id = CASE WHEN $2 = 'auto' THEN $3::uuid WHEN $2 IS NOT NULL THEN NULL ELSE snapshot_execution_id END, name = COALESCE($4, name), mode = COALESCE($2, mode), enabled = COALESCE($5, enabled), priority = COALESCE($6, priority), request_match = COALESCE($7::jsonb, request_match), response = COALESCE($8::jsonb, response), proxy_config = COALESCE($9::jsonb, proxy_config), delay_ms = COALESCE($10, delay_ms), updated_at = now() WHERE id = $11 AND project_id = $12 RETURNING *",
-      [body.endpointId ?? null, body.mode ?? null, nextMode === "auto" ? body.executionId ?? null : null, body.name?.trim() ?? null, body.enabled ?? null, body.priority ?? null, body.requestMatch === undefined ? null : JSON.stringify(body.requestMatch), nextResponse === undefined ? null : JSON.stringify(nextResponse), body.proxyConfig === undefined ? null : JSON.stringify(cleanProxyConfig(body.proxyConfig)), body.delayMs ?? null, request.params.mockId, context.project.id],
+      "UPDATE mocks SET endpoint_id = COALESCE($1, endpoint_id), snapshot_execution_id = CASE WHEN $2 = 'auto' THEN $3::uuid WHEN $2 IS NOT NULL THEN NULL ELSE snapshot_execution_id END, name = COALESCE($4, name), mode = COALESCE($2, mode), enabled = COALESCE($5, enabled), priority = COALESCE($6, priority), request_match = COALESCE($7::jsonb, request_match), response = COALESCE($8::jsonb, response), proxy_config = COALESCE($9::jsonb, proxy_config), delay_ms = COALESCE($10, delay_ms), updated_by = $13, updated_at = now() WHERE id = $11 AND project_id = $12 RETURNING *",
+      [body.endpointId ?? null, body.mode ?? null, nextMode === "auto" ? body.executionId ?? null : null, body.name?.trim() ?? null, body.enabled ?? null, body.priority ?? null, body.requestMatch === undefined ? null : JSON.stringify(body.requestMatch), nextResponse === undefined ? null : JSON.stringify(nextResponse), body.proxyConfig === undefined ? null : JSON.stringify(cleanProxyConfig(body.proxyConfig)), body.delayMs ?? null, request.params.mockId, context.project.id, context.user.id],
     );
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.mockUpdate, targetType: "mock", targetId: request.params.mockId,
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(body) }, ip: request.ip,
+    });
     return success(mapMock(result.rows[0]));
   });
 
@@ -222,6 +243,10 @@ export async function mockRoutes(app: FastifyInstance) {
     if (!isUuid(request.params.mockId)) return fail(reply, 404, 2001, "mock not found");
     const result = await pool.query("DELETE FROM mocks WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.mockId, context.project.id]);
     if (!result.rowCount) return fail(reply, 404, 2001, "mock not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.mockDelete, targetType: "mock", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id, ip: request.ip,
+    });
     return success({ id: String(result.rows[0].id) });
   });
 

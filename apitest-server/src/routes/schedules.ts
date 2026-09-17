@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { normalizeIdempotencyKey } from "../lib/idempotency.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
@@ -48,9 +49,13 @@ const PREVIEW_NEXT = 5;
  * 两个 LEFT JOIN 各自带 `target_type` 判据（P4.5-12）：两张表的 id 都是 UUID，不加类型
  * 判据的话一个套件 id 与一个任务 id 理论上可以同时命中，`COALESCE` 挑到哪个成了运气。
  */
-const SELECT_SCHEDULE = `SELECT s.*, COALESCE(ts.name, ct.name) AS target_name FROM schedules s
+/* P11 归属列（边界 7/9）：`LEFT JOIN users` 带出 email 快照。常量被列表 / 详情 / PUT
+   回读共用，三处一起拿到归属；基表已显式 `s.*`，加 join 不会污染投影。 */
+const SELECT_SCHEDULE = `SELECT s.*, COALESCE(ts.name, ct.name) AS target_name, creator.email AS created_by_email, updater.email AS updated_by_email FROM schedules s
   LEFT JOIN test_suites ts ON s.target_type = 'suite' AND ts.id = s.target_id
-  LEFT JOIN ci_tasks ct ON s.target_type = 'ci_task' AND ct.id = s.target_id`;
+  LEFT JOIN ci_tasks ct ON s.target_type = 'ci_task' AND ct.id = s.target_id
+  LEFT JOIN users creator ON creator.id = s.created_by
+  LEFT JOIN users updater ON updater.id = s.updated_by`;
 
 export async function scheduleRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string }; Querystring: { keyword?: string; enabled?: string; targetType?: string; targetId?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/schedules", async (request, reply) => {
@@ -98,16 +103,23 @@ export async function scheduleRoutes(app: FastifyInstance) {
     const enabled = request.body.enabled ?? true;
     const nextRunAt = computeNextRunAt(checked.cron!, checked.timezone!, enabled);
     const result = await pool.query(
-      `INSERT INTO schedules (id, project_id, name, target_type, target_id, environment_id, cron, timezone, enabled, variables, next_run_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11) RETURNING *`,
+      `INSERT INTO schedules (id, project_id, name, target_type, target_id, environment_id, cron, timezone, enabled, variables, next_run_at, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12) RETURNING *`,
       [
         randomUUID(), context.project.id, checked.name!, checked.targetType!, checked.targetId!,
         request.body.environmentId ?? null, checked.cron!, checked.timezone!, enabled,
         JSON.stringify(request.body.variables ?? {}), nextRunAt,
+        context.user.id,
       ],
     );
     /* 目标名单独读一次（INSERT 的 RETURNING 拿不到 join 列）。表名来自 SCHEDULE_TARGET_TABLES。 */
     const target = await pool.query(`SELECT name FROM ${SCHEDULE_TARGET_TABLES[checked.targetType!]} WHERE id = $1`, [checked.targetId!]);
+    /* P11-9 审计（边界 5/6）：detail 只有字段名。 */
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.scheduleCreate, targetType: "schedule", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return reply.code(201).send(success(mapSchedule({ ...result.rows[0], target_name: target.rows[0]?.name })));
   });
 
@@ -167,7 +179,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
     await pool.query(
       `UPDATE schedules SET name = COALESCE($1, name), target_type = $2, target_id = $3,
          environment_id = $4, cron = $5, timezone = $6, enabled = $7,
-         variables = COALESCE($8::jsonb, variables), next_run_at = $9, updated_at = now()
+         variables = COALESCE($8::jsonb, variables), next_run_at = $9, updated_by = $12, updated_at = now()
        WHERE id = $10 AND project_id = $11`,
       [
         checked.name ?? null,
@@ -178,9 +190,15 @@ export async function scheduleRoutes(app: FastifyInstance) {
         environmentId, cron, timezone, enabled,
         request.body?.variables !== undefined ? JSON.stringify(request.body.variables) : null,
         nextRunAt, request.params.scheduleId, context.project.id,
+        context.user.id,
       ],
     );
     const updated = await pool.query(`${SELECT_SCHEDULE} WHERE s.id = $1 AND s.project_id = $2`, [request.params.scheduleId, context.project.id]);
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.scheduleUpdate, targetType: "schedule", targetId: request.params.scheduleId,
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return success(mapSchedule(updated.rows[0]));
   });
 
@@ -191,6 +209,10 @@ export async function scheduleRoutes(app: FastifyInstance) {
        execution_index，靠无 FK 的 trigger_ref_* 活过这次删除。 */
     const result = await pool.query("DELETE FROM schedules WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.scheduleId, context.project.id]);
     if (!result.rowCount) return fail(reply, 404, 2001, "schedule not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.scheduleDelete, targetType: "schedule", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id, ip: request.ip,
+    });
     return success({ id: result.rows[0].id });
   });
 

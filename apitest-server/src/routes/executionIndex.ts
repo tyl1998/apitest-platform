@@ -54,14 +54,26 @@ export async function executionIndexRoutes(app: FastifyInstance) {
     }
     const where = clauses.join(" AND "); const count = await pool.query(`SELECT COUNT(*)::int AS total FROM execution_index WHERE ${where}`, params);
     params.push(pageSize, (page - 1) * pageSize);
-    const result = await pool.query(`SELECT * FROM execution_index WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+    /* P11 边界 11：触发人的 email 快照。用标量子查询而不是 join——这条 WHERE 的列
+       （created_at / kind / status …）都没带前缀，users 上同名的 created_at / status
+       会让整条查询变 ambiguous。 */
+    const result = await pool.query(
+      `SELECT *, (SELECT u.email FROM users u WHERE u.id = execution_index.triggered_by) AS triggered_by_email
+         FROM execution_index WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params,
+    );
     return success(result.rows.map(mapExecutionIndex), { page, pageSize, total: Number(count.rows[0].total) });
   });
 
   app.get<{ Params: { id: string; indexId: string } }>("/api/v1/projects/:id/execution-index/:indexId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
     if (!isUuid(request.params.indexId)) return fail(reply, 404, 2001, "execution index not found");
-    const result = await pool.query("SELECT * FROM execution_index WHERE id = $1 AND project_id = $2", [request.params.indexId, context.project.id]);
+    /* 同列表：触发人 email 快照（P11 边界 11），标量子查询见上。 */
+    const result = await pool.query(
+      `SELECT *, (SELECT u.email FROM users u WHERE u.id = execution_index.triggered_by) AS triggered_by_email
+         FROM execution_index WHERE id = $1 AND project_id = $2`,
+      [request.params.indexId, context.project.id],
+    );
     if (!result.rowCount) return fail(reply, 404, 2001, "execution index not found");
     /* 只回顶层步骤，与套件明细（`routes/suites.ts`）一致：循环/子流程的内层证据按需走
        `GET /execution-steps/:stepId/children`。不过滤的话，一次 100 迭代的循环会把上千行

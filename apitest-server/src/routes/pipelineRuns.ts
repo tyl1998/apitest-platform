@@ -48,8 +48,13 @@ export async function pipelineRunRoutes(app: FastifyInstance) {
         [ciTaskId],
       );
       const runs = await pool.query(
-        `SELECT * FROM pipeline_runs WHERE ci_task_id = $1
-          ORDER BY run_number DESC LIMIT $2 OFFSET $3`,
+        /* P11 边界 11：报告/运行记录的触发人 email 快照。基表起别名，裸 `*` 会取到
+           users 的同名列（id / created_at）。 */
+        `SELECT pr.*, triggerer.email AS triggered_by_email
+           FROM pipeline_runs pr
+           LEFT JOIN users triggerer ON triggerer.id = pr.triggered_by
+          WHERE pr.ci_task_id = $1
+          ORDER BY pr.run_number DESC LIMIT $2 OFFSET $3`,
         [ciTaskId, pageSize, (page - 1) * pageSize],
       );
       return success(runs.rows.map(mapPipelineRun), { page, pageSize, total: Number(total.rows[0].total) });
@@ -70,8 +75,10 @@ export async function pipelineRunRoutes(app: FastifyInstance) {
     /* 带出任务名（P8-6 验收反馈）：执行记录的 runner 行显示「任务名 #序号」，点进
        详情后面包屑只有「#序号」对不上——行的身份与详情的身份必须是同一个词。 */
     const result = await pool.query(
-      `SELECT pr.*, t.name AS task_name
+      `SELECT pr.*, t.name AS task_name, triggerer.email AS triggered_by_email
          FROM pipeline_runs pr LEFT JOIN ci_tasks t ON t.id = pr.ci_task_id
+         /* P11 边界 11：谁触发的（email 快照，与列表同一形制）。 */
+         LEFT JOIN users triggerer ON triggerer.id = pr.triggered_by
         WHERE pr.id = $1 AND pr.project_id = $2`,
       [request.params.runId, context.project.id],
     );

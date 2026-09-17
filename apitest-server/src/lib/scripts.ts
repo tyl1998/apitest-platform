@@ -43,8 +43,9 @@ export async function persistCaseScripts(
   projectId: string,
   caseId: string,
   assertions: Assertion[],
+  actorId: string | null = null,
 ): Promise<Assertion[]> {
-  return persistOwnedScripts(client, projectId, { column: "owner_case_id", id: caseId, label: "case" }, assertions);
+  return persistOwnedScripts(client, projectId, { column: "owner_case_id", id: caseId, label: "case" }, assertions, actorId);
 }
 
 /** All request-lifecycle scripts owned by one test case, persisted atomically. */
@@ -53,11 +54,12 @@ export async function persistCaseLifecycleScripts(
   projectId: string,
   caseId: string,
   input: { hooks: HookConfig[]; responseScripts: ResponseScriptConfig[] },
+  actorId: string | null = null,
 ): Promise<{ hooks: HookConfig[]; responseScripts: ResponseScriptConfig[] }> {
   const owner = { column: "owner_case_id", id: caseId, label: "case" } as const;
   const seen: string[] = [];
-  const hooks = await persistHookRefs(client, projectId, owner, input.hooks, seen);
-  const responseScripts = await persistResponseScriptRefs(client, projectId, owner, input.responseScripts, seen);
+  const hooks = await persistHookRefs(client, projectId, owner, input.hooks, seen, actorId);
+  const responseScripts = await persistResponseScriptRefs(client, projectId, owner, input.responseScripts, seen, actorId);
   await collectGarbage(client, owner, seen);
   return { hooks, responseScripts };
 }
@@ -97,6 +99,7 @@ export async function persistFlowScripts(
   projectId: string,
   flowId: string,
   nodes: FlowNode[],
+  actorId: string | null = null,
 ): Promise<FlowNode[]> {
   const owner = { column: "owner_flow_id", id: flowId, label: "flow" } as const;
   /**
@@ -114,17 +117,17 @@ export async function persistFlowScripts(
     for (const node of list) {
       /* Script and condition nodes have no response to judge, so they carry no
          assertions or extracts — only request/database nodes do. */
-      const assertions = await persistOwnedScripts(client, projectId, owner, node.type === "request" || node.type === "database" ? node.assertions ?? [] : [], seen, false);
+      const assertions = await persistOwnedScripts(client, projectId, owner, node.type === "request" || node.type === "database" ? node.assertions ?? [] : [], actorId, seen, false);
       /* Hooks live in the same table under the same ownership, so they must be
          collected into the same `seen` list — sweeping with only the assertion ids
          would delete every anonymous hook script in the flow. */
-      const preRequestHooks = await persistHookRefs(client, projectId, owner, node.type === "request" ? node.preRequestHooks ?? [] : [], seen);
-      const responseScripts = await persistResponseScriptRefs(client, projectId, owner, node.type === "request" ? node.responseScripts ?? [] : [], seen);
+      const preRequestHooks = await persistHookRefs(client, projectId, owner, node.type === "request" ? node.preRequestHooks ?? [] : [], seen, actorId);
+      const responseScripts = await persistResponseScriptRefs(client, projectId, owner, node.type === "request" ? node.responseScripts ?? [] : [], seen, actorId);
       if (node.type === "script") {
         /* A script node's body is a third kind (计划 5.0.3): it is not judging a
            response nor rewriting a request, so it cannot ride on the assertion or
            hook kind. Same ownership, same follow/copy rules. */
-        const script = await persistScriptRef(client, projectId, owner, node.script, "node", seen);
+        const script = await persistScriptRef(client, projectId, owner, node.script, "node", seen, actorId);
         normalized.push({ ...node, script });
       } else if (node.type === "request") {
         normalized.push({ ...node, assertions, preRequestHooks, responseScripts });
@@ -166,6 +169,7 @@ async function persistScriptRef(
   ref: ScriptRef,
   kind: "assertion" | "hook" | "response" | "node",
   referenced: string[],
+  actorId: string | null,
 ): Promise<ScriptRef> {
   if (ref.content !== undefined && ref.content.length > MAX_SCRIPT_LENGTH) {
     throw new Error(`a script must be at most ${MAX_SCRIPT_LENGTH} characters`);
@@ -176,9 +180,9 @@ async function persistScriptRef(
     if (!ref.content?.trim()) throw new Error("a new script cannot be empty");
     const id = randomUUID();
     await client.query(
-      `INSERT INTO scripts (id, project_id, name, language, kind, content, ${owner.column})
-       VALUES ($1, $2, NULL, 'javascript', $3, $4, $5)`,
-      [id, projectId, kind, ref.content, owner.id],
+      `INSERT INTO scripts (id, project_id, name, language, kind, content, ${owner.column}, created_by)
+       VALUES ($1, $2, NULL, 'javascript', $3, $4, $5, $6)`,
+      [id, projectId, kind, ref.content, owner.id, actorId],
     );
     await replaceScriptDeps(client, projectId, id, ref.dependencies);
     referenced.push(id);
@@ -223,9 +227,9 @@ async function persistScriptRef(
     );
     const id = randomUUID();
     await client.query(
-      `INSERT INTO scripts (id, project_id, name, language, kind, content, ${owner.column})
-       VALUES ($1, $2, NULL, 'javascript', $3, $4, $5)`,
-      [id, projectId, kind, ref.content ?? String(row.content ?? ""), owner.id],
+      `INSERT INTO scripts (id, project_id, name, language, kind, content, ${owner.column}, created_by)
+       VALUES ($1, $2, NULL, 'javascript', $3, $4, $5, $6)`,
+      [id, projectId, kind, ref.content ?? String(row.content ?? ""), owner.id, actorId],
     );
     await replaceScriptDeps(client, projectId, id, ref.dependencies ?? inherited.rows.map((dep) => String(dep.depends_on_id)));
     referenced.push(id);
@@ -238,8 +242,8 @@ async function persistScriptRef(
     }
     if (!ref.content.trim()) throw new Error("a script cannot be empty");
     await client.query(
-      "UPDATE scripts SET content = $1, updated_at = now() WHERE id = $2 AND project_id = $3",
-      [ref.content, ref.scriptId, projectId],
+      "UPDATE scripts SET content = $1, updated_by = $4, updated_at = now() WHERE id = $2 AND project_id = $3",
+      [ref.content, ref.scriptId, projectId, actorId],
     );
   }
   /* Library declarations are part of the script, so an anonymous script's list
@@ -253,17 +257,17 @@ async function persistScriptRef(
   return { scriptId: String(row.id) };
 }
 
-async function persistHookRefs(client: PoolClient, projectId: string, owner: ScriptOwner, hooks: HookConfig[], seen: string[]): Promise<HookConfig[]> {
+async function persistHookRefs(client: PoolClient, projectId: string, owner: ScriptOwner, hooks: HookConfig[], seen: string[], actorId: string | null): Promise<HookConfig[]> {
   return Promise.all(hooks.map(async (hook) => ({
     ...hook,
-    script: hook.script ? await persistScriptRef(client, projectId, owner, hook.script, "hook", seen) : undefined,
+    script: hook.script ? await persistScriptRef(client, projectId, owner, hook.script, "hook", seen, actorId) : undefined,
   })));
 }
 
-async function persistResponseScriptRefs(client: PoolClient, projectId: string, owner: ScriptOwner, scripts: ResponseScriptConfig[], seen: string[]): Promise<ResponseScriptConfig[]> {
+async function persistResponseScriptRefs(client: PoolClient, projectId: string, owner: ScriptOwner, scripts: ResponseScriptConfig[], seen: string[], actorId: string | null): Promise<ResponseScriptConfig[]> {
   return Promise.all(scripts.map(async (config) => ({
     ...config,
-    script: config.script ? await persistScriptRef(client, projectId, owner, config.script, "response", seen) : undefined,
+    script: config.script ? await persistScriptRef(client, projectId, owner, config.script, "response", seen, actorId) : undefined,
   })));
 }
 
@@ -308,6 +312,7 @@ async function persistOwnedScripts(
   projectId: string,
   owner: ScriptOwner,
   assertions: Assertion[],
+  actorId: string | null,
   collect: string[] = [],
   sweep = true,
 ): Promise<Assertion[]> {
@@ -318,7 +323,7 @@ async function persistOwnedScripts(
       if (assertion.type !== "script") return assertion;
       const ref = assertion.script;
       if (!ref) throw new Error("script assertions require a script reference");
-      return { ...assertion, script: await persistScriptRef(client, projectId, owner, ref, "assertion", referenced) };
+      return { ...assertion, script: await persistScriptRef(client, projectId, owner, ref, "assertion", referenced, actorId) };
     }),
   );
 

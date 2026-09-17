@@ -27,8 +27,12 @@ function derivedColumns(): string {
 
 export async function loadSuiteReport(projectId: string, executionId: string) {
   const result = await pool.query(
-    `SELECT se.*, ${derivedColumns()}, ei.trigger_source, ei.trigger_ref_id, ei.trigger_ref_name
+    /* P11 边界 11：报告详情也要答「谁触发的」——触发人在父索引上，join users 取 email
+       快照（`ei` 已在本查询里，加一条 users join 即可；本查询的列都带前缀）。 */
+    `SELECT se.*, ${derivedColumns()}, ei.trigger_source, ei.trigger_ref_id, ei.trigger_ref_name,
+            triggerer.email AS triggered_by_email
        FROM suite_executions se JOIN execution_index ei ON ei.id = se.execution_index_id
+       LEFT JOIN users triggerer ON triggerer.id = ei.triggered_by
       WHERE se.id = $1 AND se.project_id = $2`,
     [executionId, projectId],
   );
@@ -65,6 +69,8 @@ export async function loadSuiteReport(projectId: string, executionId: string) {
     triggerSource: String(row.trigger_source ?? "manual"),
     triggerRefId: row.trigger_ref_id ? String(row.trigger_ref_id) : null,
     triggerRefName: row.trigger_ref_name ? String(row.trigger_ref_name) : null,
+    /* P11 边界 11：null = 定时 / Webhook / 非人 CI（前端显示「系统」）。 */
+    triggeredByEmail: row.triggered_by_email ? String(row.triggered_by_email) : null,
     variableOverrides: (row.variable_overrides ?? {}) as Record<string, string>,
     status: String(row.status),
     error: row.error ? String(row.error) : null,
@@ -175,8 +181,10 @@ function guessAttachmentType(name: string): string {
  */
 export async function loadRunnerReport(projectId: string, runId: string): Promise<{ run: PipelineRun; taskName: string; cases: PipelineRunCase[]; report: ReportView | null } | null> {
   const runRow = await pool.query(
-    `SELECT pr.*, t.name AS task_name FROM pipeline_runs pr
+    `SELECT pr.*, t.name AS task_name, triggerer.email AS triggered_by_email FROM pipeline_runs pr
        LEFT JOIN ci_tasks t ON t.id = pr.ci_task_id
+       /* P11 边界 11：报告详情（含免登录分享页）也要显示触发人。 */
+       LEFT JOIN users triggerer ON triggerer.id = pr.triggered_by
       WHERE pr.id = $1 AND pr.project_id = $2`,
     [runId, projectId],
   );

@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields, type AuditAction } from "./audit.js";
 import { toFlowNode, validateFlowGraph } from "./flow.js";
 import { checkFlowReferences } from "./flowRefs.js";
-import { resolveBinding } from "./mcpAuth.js";
+import { resolveBinding, type McpIdentity } from "./mcpAuth.js";
 import { rejectCredentialNamedVariables, rejectLiteralSecrets, rejectLiteralSecretsInSnapshot } from "./mcpSecretGuard.js";
-import { auditMcpAction, requiredUuidArg, stringArg, toolError, toolResult } from "./mcpToolResult.js";
+import { auditMcpAction, auditMcpResource, requiredUuidArg, stringArg, toolError, toolResult } from "./mcpToolResult.js";
 import type { McpToolDefinition } from "./mcpServer.js";
 import { persistCaseLifecycleScripts, persistFlowScripts } from "./scripts.js";
 import { DEFAULT_RUNNER_LABEL } from "./queue.js";
@@ -37,10 +38,10 @@ import {
  */
 
 /** 与 REST 面 `endpoints.ts` 的 WRITE_COLUMNS 同一份列清单（INSERT 与 UPDATE 不许漂移）。 */
-const ENDPOINT_WRITE_COLUMNS = "name, description, method, url, headers, query_params, path_params, body_type, body, body_text, auth, tags, default_environment_id";
+const ENDPOINT_WRITE_COLUMNS = "name, description, method, url, headers, query_params, path_params, body_type, body, body_text, auth, tags, default_environment_id, created_by";
 
 /** `writeValues` 与 REST 路由逐字段相同（lib/validate 之外这是唯一共享的写形状）。 */
-function endpointWriteValues(input: EndpointInput) {
+function endpointWriteValues(input: EndpointInput, createdBy: string | null) {
   return [
     input.name!.trim(),
     input.description?.trim() ?? "",
@@ -55,6 +56,9 @@ function endpointWriteValues(input: EndpointInput) {
     JSON.stringify(input.auth ?? { type: "none" }),
     input.tags ?? [],
     input.defaultEnvironmentId ?? null,
+    /* P11 归属：Token 签发人（`identity.createdBy`，边界 4）。它不是「操作者伪造的
+       头」——token 归人、绑定归项目（P12），签发人就是这条写路径上唯一的人。 */
+    createdBy,
   ];
 }
 
@@ -74,6 +78,7 @@ async function upsertEndpoint(
   projectId: string,
   input: EndpointInput,
   strategy: "update" | "skip",
+  createdBy: string | null,
 ): Promise<{ row: Record<string, unknown>; outcome: "created" | "updated" | "skipped"; conflict: boolean }> {
   const existing = await pool.query(
     "SELECT * FROM endpoints WHERE project_id = $1 AND method = $2 AND url = $3 LIMIT 1",
@@ -83,7 +88,7 @@ async function upsertEndpoint(
     if (strategy === "skip") return { row: existing.rows[0], outcome: "skipped", conflict: true };
     const updated = await pool.query(
       `UPDATE endpoints SET name = $1, description = $2, headers = $3::jsonb, query_params = $4::jsonb, path_params = $5::jsonb,
-         body_type = $6, body = $7::jsonb, body_text = $8, auth = $9::jsonb, tags = $10, default_environment_id = COALESCE($11, default_environment_id), updated_at = now()
+         body_type = $6, body = $7::jsonb, body_text = $8, auth = $9::jsonb, tags = $10, default_environment_id = COALESCE($11, default_environment_id), updated_by = $13, updated_at = now()
        WHERE id = $12 RETURNING *`,
       [
         input.name!.trim(), input.description?.trim() ?? "",
@@ -92,13 +97,14 @@ async function upsertEndpoint(
         input.body === undefined ? null : JSON.stringify(input.body), input.bodyText ?? null,
         JSON.stringify(input.auth ?? { type: "none" }), input.tags ?? [], input.defaultEnvironmentId ?? null,
         String(existing.rows[0].id),
+        createdBy,
       ],
     );
     return { row: updated.rows[0], outcome: "updated", conflict: true };
   }
   const inserted = await pool.query(
-    `INSERT INTO endpoints (id, project_id, ${ENDPOINT_WRITE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13::jsonb, $14, $15) RETURNING *`,
-    [randomUUID(), projectId, ...endpointWriteValues(input)],
+    `INSERT INTO endpoints (id, project_id, ${ENDPOINT_WRITE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13::jsonb, $14, $15, $16) RETURNING *`,
+    [randomUUID(), projectId, ...endpointWriteValues(input, createdBy)],
   );
   return { row: inserted.rows[0], outcome: "created", conflict: false };
 }
@@ -123,26 +129,35 @@ function auditWrite(tool: string, identity: Parameters<typeof auditMcpAction>[2]
   auditMcpAction("mcp_tool.write", tool, identity, targetId, detail);
 }
 
+/**
+ * P11-9：资源级审计的本地入口——与 `auditWrite` 并排落一行，让该资产的「变更历史」
+ * 也看得到这次 MCP 写入（与 REST 面同名动作、同一 detail 形状）。
+ */
+function auditResource(action: AuditAction, targetType: string, identity: McpIdentity, targetId: string | null, body: unknown) {
+  auditMcpResource(action, targetType, identity, targetId, { fields: auditFields(body) });
+}
+
 /** `create_case` / `update_case` 的保存事务：用例行 + 生命周期脚本同进退（REST 同款）。 */
-async function saveCase(projectId: string, caseId: string, endpointId: string, input: CaseInput): Promise<Record<string, unknown>> {
+async function saveCase(projectId: string, caseId: string, endpointId: string, input: CaseInput, createdBy: string | null): Promise<Record<string, unknown>> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query(
-      `INSERT INTO test_cases (id, project_id, endpoint_id, environment_id, environment_name, name, description, request_snapshot, assertions, tags)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, '[]'::jsonb, $9)`,
+      `INSERT INTO test_cases (id, project_id, endpoint_id, environment_id, environment_name, name, description, request_snapshot, assertions, tags, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, '[]'::jsonb, $9, $10)`,
       [
         caseId, projectId, endpointId,
         input.environmentId ?? null,
         await environmentName(projectId, input.environmentId),
         input.name!.trim(), input.description?.trim() ?? "",
         JSON.stringify(toSnapshot(input.request!)), input.tags ?? [],
+        createdBy,
       ],
     );
     const lifecycle = await persistCaseLifecycleScripts(client, projectId, caseId, {
       hooks: input.preRequestHooks ?? [],
       responseScripts: input.responseScripts ?? [],
-    });
+    }, createdBy);
     const result = await client.query(
       `UPDATE test_cases SET assertions = $1::jsonb, pre_request_hooks = $2::jsonb,
          extracts = $3::jsonb, response_scripts = $4::jsonb WHERE id = $5 RETURNING *`,
@@ -169,12 +184,12 @@ async function environmentName(projectId: string, environmentId: string | null |
 }
 
 /** flow 保存的事务骨架（建/改共用）：行先落、脚本后接、节点树回写。 */
-async function persistFlow(projectId: string, flowId: string, write: (client: PoolClient) => Promise<void>, nodes: ReturnType<typeof toFlowNode>[]): Promise<Record<string, unknown>> {
+async function persistFlow(projectId: string, flowId: string, write: (client: PoolClient) => Promise<void>, nodes: ReturnType<typeof toFlowNode>[], createdBy: string | null): Promise<Record<string, unknown>> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await write(client);
-    const persisted = await persistFlowScripts(client, projectId, flowId, nodes);
+    const persisted = await persistFlowScripts(client, projectId, flowId, nodes, createdBy);
     const result = await client.query("UPDATE flows SET nodes = $1::jsonb WHERE id = $2 RETURNING *", [JSON.stringify(persisted), flowId]);
     await client.query("COMMIT");
     return result.rows[0];
@@ -222,8 +237,9 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
       }
 
       const strategy = stringArg(args, "conflictStrategy") === "skip" ? "skip" : "update";
-      const { row, outcome, conflict } = await upsertEndpoint(identity.projectId, input, strategy);
+      const { row, outcome, conflict } = await upsertEndpoint(identity.projectId, input, strategy, identity.createdBy ?? null);
       auditWrite("create_endpoint", identity, String(row.id), { outcome, method: input.method, url: input.url });
+      if (outcome !== "skipped") auditResource(outcome === "created" ? AUDIT_ACTIONS.endpointCreate : AUDIT_ACTIONS.endpointUpdate, "endpoint", identity, String(row.id), input);
       return toolResult({ endpoint: mapEndpoint(row), outcome, ...(conflict ? { conflict: true } : {}) });
     },
   },
@@ -279,10 +295,11 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
       if (leaked) return toolError(`the source endpoint carries a literal credential value, so it cannot be copied across projects: ${leaked}`);
 
       const strategy = stringArg(args, "conflictStrategy") === "skip" ? "skip" : "update";
-      const { row: saved, outcome, conflict } = await upsertEndpoint(identity.projectId, input, strategy);
+      const { row: saved, outcome, conflict } = await upsertEndpoint(identity.projectId, input, strategy, identity.createdBy ?? null);
       auditWrite("copy_endpoint", identity, String(saved.id), {
         outcome, fromProjectId, fromEndpointId: id.value, method: input.method, url: input.url,
       });
+      if (outcome !== "skipped") auditResource(outcome === "created" ? AUDIT_ACTIONS.endpointCreate : AUDIT_ACTIONS.endpointUpdate, "endpoint", identity, String(saved.id), input);
       return toolResult({
         endpoint: mapEndpoint(saved),
         outcome,
@@ -344,6 +361,7 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
            auth = COALESCE($13::jsonb, auth),
            tags = COALESCE($14, tags),
            default_environment_id = CASE WHEN $15::boolean THEN $16 ELSE default_environment_id END,
+           updated_by = $19,
            updated_at = now()
          WHERE id = $17 AND project_id = $18 RETURNING *`,
         [
@@ -361,10 +379,12 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
           input.tags ?? null,
           "defaultEnvironmentId" in input, input.defaultEnvironmentId ?? null,
           id.value, identity.projectId,
+          identity.createdBy ?? null,
         ],
       );
       if (!result.rowCount) return toolError("endpoint not found (2001)");
       auditWrite("update_endpoint", identity, id.value, {});
+      auditResource(AUDIT_ACTIONS.endpointUpdate, "endpoint", identity, id.value, input);
       return toolResult(mapEndpoint(result.rows[0]));
     },
   },
@@ -414,8 +434,9 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
       }
 
       const caseId = randomUUID();
-      const row = await saveCase(identity.projectId, caseId, id.value, input);
+      const row = await saveCase(identity.projectId, caseId, id.value, input, identity.createdBy ?? null);
       auditWrite("create_case", identity, caseId, { endpointId: id.value, outcome: "created" });
+      auditResource(AUDIT_ACTIONS.testCaseCreate, "test_case", identity, caseId, input);
       return toolResult({ case: mapTestCase(row), outcome: "created" });
     },
   },
@@ -472,7 +493,7 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
         const lifecycle = lifecycleGiven ? await persistCaseLifecycleScripts(client, identity.projectId, id.value, {
           hooks: input.preRequestHooks ?? ((owner.rows[0].pre_request_hooks ?? []) as HookConfig[]),
           responseScripts: input.responseScripts ?? ((owner.rows[0].response_scripts ?? []) as ResponseScriptConfig[]),
-        }) : undefined;
+        }, identity.createdBy ?? null) : undefined;
 
         const result = await client.query(
           `UPDATE test_cases SET
@@ -486,6 +507,7 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
              extracts = COALESCE($9::jsonb, extracts),
              response_scripts = COALESCE($10::jsonb, response_scripts),
              tags = COALESCE($11, tags),
+             updated_by = $14,
              updated_at = now()
            WHERE id = $12 AND project_id = $13 RETURNING *`,
           [
@@ -499,10 +521,12 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
             lifecycle ? JSON.stringify(lifecycle.responseScripts) : null,
             input.tags ?? null,
             id.value, identity.projectId,
+            identity.createdBy ?? null,
           ],
         );
         await client.query("COMMIT");
         auditWrite("update_case", identity, id.value, {});
+        auditResource(AUDIT_ACTIONS.testCaseUpdate, "test_case", identity, id.value, input);
         return toolResult(mapTestCase(result.rows[0]));
       } catch (error) {
         await client.query("ROLLBACK");
@@ -583,12 +607,13 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
       const insert = async (client: PoolClient) => {
         if (created) {
           await client.query(
-            `INSERT INTO flows (id, project_id, name, description, environment_id, environment_name, nodes, edges, variables, tags)
-             VALUES ($1, $2, $3, $4, $5, $6, '[]'::jsonb, $7::jsonb, $8::jsonb, $9)`,
+            `INSERT INTO flows (id, project_id, name, description, environment_id, environment_name, nodes, edges, variables, tags, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6, '[]'::jsonb, $7::jsonb, $8::jsonb, $9, $10)`,
             [
               flowId, identity.projectId, name, input.description?.trim() ?? "",
               input.environmentId ?? null, envName,
               JSON.stringify(input.edges ?? []), JSON.stringify(input.variables ?? {}), input.tags ?? [],
+              identity.createdBy ?? null,
             ],
           );
           return;
@@ -601,6 +626,7 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
              edges = COALESCE($7::jsonb, edges),
              variables = COALESCE($8::jsonb, variables),
              tags = COALESCE($9, tags),
+             updated_by = $10,
              updated_at = now()
            WHERE id = $1 AND project_id = $2`,
           [
@@ -610,12 +636,14 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
             input.edges ? JSON.stringify(input.edges) : null,
             input.variables ? JSON.stringify(input.variables) : null,
             input.tags ?? null,
+            identity.createdBy ?? null,
           ],
         );
       };
 
-      const row = await persistFlow(identity.projectId, flowId, insert, nodes);
+      const row = await persistFlow(identity.projectId, flowId, insert, nodes, identity.createdBy ?? null);
       auditWrite("upsert_flow", identity, flowId, { outcome: created ? "created" : "updated", nodeCount: nodes.length });
+      auditResource(created ? AUDIT_ACTIONS.flowCreate : AUDIT_ACTIONS.flowUpdate, "flow", identity, flowId, input);
       return toolResult({ flow: mapFlow(row), outcome: created ? "created" : "updated" });
     },
   },
@@ -669,18 +697,21 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
          部署层配置，人在 UI 里定；新建环境只需要名字与普通变量。 */
       const result = created
         ? await pool.query(
-            `INSERT INTO environments (id, project_id, name, variables, secrets, runner_label, default_headers)
-             VALUES ($1, $2, $3, $4::jsonb, '{}'::jsonb, $5, '{}'::jsonb) RETURNING *`,
-            [environmentId, identity.projectId, name, JSON.stringify(variables ?? {}), DEFAULT_RUNNER_LABEL],
+            `INSERT INTO environments (id, project_id, name, variables, secrets, runner_label, default_headers, created_by)
+             VALUES ($1, $2, $3, $4::jsonb, '{}'::jsonb, $5, '{}'::jsonb, $6) RETURNING *`,
+            [environmentId, identity.projectId, name, JSON.stringify(variables ?? {}), DEFAULT_RUNNER_LABEL, identity.createdBy ?? null],
           )
         : await pool.query(
             /* updated_at 写不得（environments 表没有这一列——迁移 001/027/030 都没加，
-               ㉙：UPDATE 分支一执行就 500）。变量替换语义本身不依赖时间戳。 */
-            `UPDATE environments SET variables = COALESCE($2::jsonb, variables)
+               ㉙：UPDATE 分支一执行就 500）。变量替换语义本身不依赖时间戳。
+               P11-1 补的 `updated_by` 是个例外：它是列，不是时间戳，写它不会 500，
+               也正好补上这张表原本完全没有的「谁改过」。 */
+            `UPDATE environments SET variables = COALESCE($2::jsonb, variables), updated_by = $4
               WHERE id = $1 AND project_id = $3 RETURNING *`,
-            [environmentId, variables ? JSON.stringify(variables) : null, identity.projectId],
+            [environmentId, variables ? JSON.stringify(variables) : null, identity.projectId, identity.createdBy ?? null],
           );
       auditWrite("upsert_environment", identity, environmentId, { outcome: created ? "created" : "updated" });
+      auditResource(created ? AUDIT_ACTIONS.environmentCreate : AUDIT_ACTIONS.environmentUpdate, "environment", identity, environmentId, args);
       return toolResult({ environment: mapEnvironment(result.rows[0]), outcome: created ? "created" : "updated" });
     },
   },

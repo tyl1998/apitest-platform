@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields } from "./audit.js";
 import { notifySerializedQueue } from "./pipelineRun.js";
 import {
-  auditMcpAction, mrtrGate, mrtrRequired, MRTR_REFUSED_MESSAGE,
+  auditMcpAction, auditMcpResource, mrtrGate, mrtrRequired, MRTR_REFUSED_MESSAGE,
   requiredUuidArg, toolError, toolResult,
   type MrtrContext,
 } from "./mcpToolResult.js";
@@ -119,26 +120,30 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
       const suiteId = created ? randomUUID() : String(existing.rows[0].id);
       const result = created
         ? await pool.query(
-            `INSERT INTO test_suites (id, project_id, name, description, selection_type, selection_config, execution_config, notify_config, tags)
-             VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9) RETURNING *`,
+            `INSERT INTO test_suites (id, project_id, name, description, selection_type, selection_config, execution_config, notify_config, tags, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10) RETURNING *`,
             [
               suiteId, identity.projectId, input.name!.trim(), input.description?.trim() ?? "",
               input.selection!.type!, JSON.stringify(toSelectionConfig(input.selection!)),
               JSON.stringify(execution), JSON.stringify(normalizeSuiteNotify(input.notify ?? {})), input.tags ?? [],
+              identity.createdBy ?? null,
             ],
           )
         : await pool.query(
             `UPDATE test_suites SET
                name = $3, description = $4, selection_type = $5, selection_config = $6::jsonb,
-               execution_config = $7::jsonb, notify_config = $8::jsonb, tags = $9, updated_at = now()
+               execution_config = $7::jsonb, notify_config = $8::jsonb, tags = $9, updated_by = $10, updated_at = now()
              WHERE id = $1 AND project_id = $2 RETURNING *`,
             [
               suiteId, identity.projectId, input.name!.trim(), input.description?.trim() ?? "",
               input.selection!.type!, JSON.stringify(toSelectionConfig(input.selection!)),
               JSON.stringify(execution), JSON.stringify(normalizeSuiteNotify(input.notify ?? {})), input.tags ?? [],
+              identity.createdBy ?? null,
             ],
           );
       auditMcpAction("mcp_tool.write", "create_suite", identity, suiteId, { outcome: created ? "created" : "updated" });
+      /* P11-9：资源级审计与 mcp_tool.write 并行落一行（detail 只有字段名）。 */
+      auditMcpResource(created ? AUDIT_ACTIONS.testSuiteCreate : AUDIT_ACTIONS.testSuiteUpdate, "test_suite", identity, suiteId, { fields: auditFields(input) });
       return toolResult({ suite: mapTestSuite(result.rows[0]), outcome: created ? "created" : "updated" });
     },
   },
@@ -186,6 +191,7 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
            execution_config = COALESCE($5::jsonb, execution_config),
            notify_config = COALESCE($6::jsonb, notify_config),
            tags = COALESCE($7, tags),
+           updated_by = $10,
            updated_at = now()
          WHERE id = $8 AND project_id = $9 RETURNING *`,
         [
@@ -194,10 +200,12 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
           input.selection?.type ?? null, selection, execution, notify,
           input.tags ?? null,
           id.value, identity.projectId,
+          identity.createdBy ?? null,
         ],
       );
       if (!result.rowCount) return toolError("test suite not found (2001)");
       auditMcpAction("mcp_tool.write", "update_suite", identity, id.value, {});
+      auditMcpResource(AUDIT_ACTIONS.testSuiteUpdate, "test_suite", identity, id.value, { fields: auditFields(input) });
       return toolResult(mapTestSuite(result.rows[0]));
     },
   },
@@ -235,6 +243,10 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
           removedSchedules: references.schedules.length,
           removedWebhookTriggers: references.webhookTriggers.length,
         });
+        auditMcpResource(AUDIT_ACTIONS.testSuiteDelete, "test_suite", identity, id.value, { fields: [] });
+        /* 连带删掉的引用者也各落一行：它们的「变更历史」不该只剩一个消失的资产。 */
+        for (const schedule of references.schedules) auditMcpResource(AUDIT_ACTIONS.scheduleDelete, "schedule", identity, schedule.id, { fields: [], cascadeFrom: id.value });
+        for (const trigger of references.webhookTriggers) auditMcpResource(AUDIT_ACTIONS.webhookTriggerDelete, "webhook_trigger", identity, trigger.id, { fields: [], cascadeFrom: id.value });
         return toolResult({ id: id.value, deleted: true, removedSchedules: references.schedules.length, removedWebhookTriggers: references.webhookTriggers.length });
       } catch (error) {
         await client.query("ROLLBACK");
@@ -287,16 +299,18 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
 
       const enabled = body.enabled ?? true;
       const result = await pool.query(
-        `INSERT INTO schedules (id, project_id, name, target_type, target_id, environment_id, cron, timezone, enabled, variables, next_run_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11) RETURNING *`,
+        `INSERT INTO schedules (id, project_id, name, target_type, target_id, environment_id, cron, timezone, enabled, variables, next_run_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12) RETURNING *`,
         [
           randomUUID(), identity.projectId, checked.name!, checked.targetType!, checked.targetId!,
           body.environmentId ?? null, checked.cron!, checked.timezone!, enabled,
           JSON.stringify(body.variables ?? {}), computeNextRunAt(checked.cron!, checked.timezone!, enabled),
+          identity.createdBy ?? null,
         ],
       );
       const target = await pool.query(`SELECT name FROM ${SCHEDULE_TARGET_TABLES[checked.targetType!]} WHERE id = $1`, [checked.targetId!]);
       auditMcpAction("mcp_tool.write", "create_schedule", identity, String(result.rows[0].id), { outcome: "created", targetType: checked.targetType });
+      auditMcpResource(AUDIT_ACTIONS.scheduleCreate, "schedule", identity, String(result.rows[0].id), { fields: auditFields(body) });
       return toolResult({ schedule: mapSchedule({ ...result.rows[0], target_name: target.rows[0]?.name }), outcome: "created" });
     },
   },
@@ -346,13 +360,14 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
       await pool.query(
         `UPDATE schedules SET name = COALESCE($1, name), target_type = $2, target_id = $3,
            environment_id = $4, cron = $5, timezone = $6, enabled = $7,
-           variables = COALESCE($8::jsonb, variables), next_run_at = $9, updated_at = now()
+           variables = COALESCE($8::jsonb, variables), next_run_at = $9, updated_by = $12, updated_at = now()
          WHERE id = $10 AND project_id = $11`,
         [
           checked.name ?? null, checked.targetType!, checked.targetId!,
           environmentId, cron, timezone, enabled,
           body.variables !== undefined ? JSON.stringify(body.variables) : null,
           nextRunAt, id.value, identity.projectId,
+          identity.createdBy ?? null,
         ],
       );
       const updated = await pool.query(
@@ -363,6 +378,7 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
         [id.value, identity.projectId],
       );
       auditMcpAction("mcp_tool.write", "update_schedule", identity, id.value, {});
+      auditMcpResource(AUDIT_ACTIONS.scheduleUpdate, "schedule", identity, id.value, { fields: auditFields(body) });
       return toolResult(mapSchedule(updated.rows[0]));
     },
   },
@@ -389,6 +405,7 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
       const result = await pool.query("DELETE FROM schedules WHERE id = $1 AND project_id = $2 RETURNING id", [id.value, identity.projectId]);
       if (!result.rowCount) return toolError("schedule not found (2001)");
       auditMcpAction("mcp_tool.write", "delete_schedule", identity, id.value, { outcome: "deleted" });
+      auditMcpResource(AUDIT_ACTIONS.scheduleDelete, "schedule", identity, id.value, { fields: [] });
       return toolResult({ id: id.value, deleted: true });
     },
   },
@@ -429,21 +446,25 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
         ruleId, identity.projectId, body.name!.trim(), body.metric!, body.comparator!,
         Number(body.threshold!), body.windowMinutes ?? null,
         body.cooldownSeconds ?? DEFAULT_COOLDOWN_SECONDS, body.channelIds!, body.enabled ?? true,
+        /* INSERT 与 UPDATE 共用这一份值数组（$11 在两条语句里分别是 created_by /
+           updated_by）——分开列值会让两个分支的列序悄悄漂移。 */
+        identity.createdBy ?? null,
       ];
       const result = created
         ? await pool.query(
-            `INSERT INTO alert_rules (id, project_id, name, metric, comparator, threshold, window_minutes, cooldown_seconds, channel_ids, enabled)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+            `INSERT INTO alert_rules (id, project_id, name, metric, comparator, threshold, window_minutes, cooldown_seconds, channel_ids, enabled, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
             values,
           )
         : await pool.query(
             `UPDATE alert_rules SET
                name = $3, metric = $4, comparator = $5, threshold = $6, window_minutes = $7,
-               cooldown_seconds = $8, channel_ids = $9, enabled = $10, updated_at = now()
+               cooldown_seconds = $8, channel_ids = $9, enabled = $10, updated_by = $11, updated_at = now()
              WHERE id = $1 AND project_id = $2 RETURNING *`,
             values,
           );
       auditMcpAction("mcp_tool.write", "create_alert_rule", identity, ruleId, { outcome: created ? "created" : "updated" });
+      auditMcpResource(created ? AUDIT_ACTIONS.alertRuleCreate : AUDIT_ACTIONS.alertRuleUpdate, "alert_rule", identity, ruleId, { fields: auditFields(body) });
       return toolResult({ rule: mapAlertRule(result.rows[0]), outcome: created ? "created" : "updated" });
     },
   },
@@ -492,7 +513,7 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
       const result = await pool.query(
         `UPDATE alert_rules SET name = COALESCE($1, name), metric = COALESCE($2, metric), comparator = COALESCE($3, comparator),
            threshold = COALESCE($4, threshold), window_minutes = $5, cooldown_seconds = COALESCE($6, cooldown_seconds),
-           channel_ids = COALESCE($7, channel_ids), enabled = COALESCE($8, enabled), updated_at = now()
+           channel_ids = COALESCE($7, channel_ids), enabled = COALESCE($8, enabled), updated_by = $11, updated_at = now()
          WHERE id = $9 AND project_id = $10 RETURNING *`,
         [
           body.name?.trim() ?? null, body.metric ?? null, body.comparator ?? null,
@@ -501,9 +522,11 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
           body.cooldownSeconds !== undefined ? Number(body.cooldownSeconds) : null,
           body.channelIds ?? null, body.enabled ?? null,
           id.value, identity.projectId,
+          identity.createdBy ?? null,
         ],
       );
       auditMcpAction("mcp_tool.write", "update_alert_rule", identity, id.value, {});
+      auditMcpResource(AUDIT_ACTIONS.alertRuleUpdate, "alert_rule", identity, id.value, { fields: auditFields(body) });
       return toolResult(mapAlertRule(result.rows[0]));
     },
   },
@@ -530,6 +553,7 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
       const result = await pool.query("DELETE FROM alert_rules WHERE id = $1 AND project_id = $2 RETURNING id", [id.value, identity.projectId]);
       if (!result.rowCount) return toolError("alert rule not found (2001)");
       auditMcpAction("mcp_tool.write", "delete_alert_rule", identity, id.value, { outcome: "deleted" });
+      auditMcpResource(AUDIT_ACTIONS.alertRuleDelete, "alert_rule", identity, id.value, { fields: [] });
       return toolResult({ id: id.value, deleted: true });
     },
   },
@@ -726,6 +750,10 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
           removedSchedules: references.schedules.length,
           removedWebhookTriggers: references.webhookTriggers.length,
         });
+        /* CI 任务不在 P11 的 14 张表里（天生带 created_by），但连带删掉的调度与
+           Webhook 触发在——它们各落一行 delete。 */
+        for (const schedule of references.schedules) auditMcpResource(AUDIT_ACTIONS.scheduleDelete, "schedule", identity, schedule.id, { fields: [], cascadeFrom: id.value });
+        for (const trigger of references.webhookTriggers) auditMcpResource(AUDIT_ACTIONS.webhookTriggerDelete, "webhook_trigger", identity, trigger.id, { fields: [], cascadeFrom: id.value });
         return toolResult({
           id: id.value, deleted: true,
           cascadedRuns: Number(runTotal.rows[0].total),

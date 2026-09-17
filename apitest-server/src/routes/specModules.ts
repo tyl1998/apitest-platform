@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
@@ -109,9 +110,15 @@ export async function specModuleRoutes(app: FastifyInstance) {
     if (duplicate.rowCount) return fail(reply, 409, 2003, "a module with this name already exists at this level");
 
     const result = await pool.query(
-      "INSERT INTO spec_modules (id, project_id, parent_id, name, path, position) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
-      [randomUUID(), context.project.id, typeof request.body.parentId === "string" ? request.body.parentId : null, name.name, path, position ?? 0],
+      "INSERT INTO spec_modules (id, project_id, parent_id, name, path, position, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
+      [randomUUID(), context.project.id, typeof request.body.parentId === "string" ? request.body.parentId : null, name.name, path, position ?? 0, context.user.id],
     );
+    /* P11-9 审计（边界 5/6）：detail 只有字段名。 */
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.specModuleCreate, targetType: "spec_module", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return reply.code(201).send(success(mapSpecModule(result.rows[0])));
   });
 
@@ -199,14 +206,20 @@ export async function specModuleRoutes(app: FastifyInstance) {
               NOT NULL（㉓：脑图内目录改名首次踩中，此前这条 UPDATE 从
               没被任何调用方执行过）。 */
            path = $5 || substring(path, $6::int),
+           updated_by = $9,
            updated_at = now()
        WHERE project_id = $7 AND starts_with(path, $8)
        RETURNING *`,
-      [request.params.moduleId, newName, newParentId, position, newPrefix, oldPrefix.length + 1, context.project.id, oldPrefix],
+      [request.params.moduleId, newName, newParentId, position, newPrefix, oldPrefix.length + 1, context.project.id, oldPrefix, context.user.id],
     );
     /* RETURNING 无序，根行用 id 认领；找不到说明并发下已被删——如实回 404。 */
     const row = result.rows.find((r: Record<string, unknown>) => String(r.id) === request.params.moduleId);
     if (!row) return fail(reply, 404, 2001, "spec module not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.specModuleUpdate, targetType: "spec_module", targetId: request.params.moduleId,
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return success(mapSpecModule(row));
   });
 
@@ -244,6 +257,10 @@ export async function specModuleRoutes(app: FastifyInstance) {
        通」，不阻止内容本身被删；被删用例的计划行没有继续存在的语义。 */
     const result = await pool.query("DELETE FROM spec_modules WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.moduleId, context.project.id]);
     if (!result.rowCount) return fail(reply, 404, 2001, "spec module not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.specModuleDelete, targetType: "spec_module", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id, ip: request.ip,
+    });
     return success({ id: result.rows[0].id });
   });
 
@@ -287,9 +304,15 @@ export async function specModuleRoutes(app: FastifyInstance) {
     try {
       await client.query("BEGIN");
       for (let index = 0; index < moduleIds.length; index++) {
-        await client.query("UPDATE spec_modules SET position = $1, updated_at = now() WHERE project_id = $2 AND id = $3", [index, context.project.id, moduleIds[index]]);
+        await client.query("UPDATE spec_modules SET position = $1, updated_by = $4, updated_at = now() WHERE project_id = $2 AND id = $3", [index, context.project.id, moduleIds[index], context.user.id]);
       }
       await client.query("COMMIT");
+      /* 整层重排是一次批量写：与接口批量删除同款，落**一行**带数量（边界 6）。 */
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.specModuleUpdate, targetType: "spec_module", targetId: null,
+        projectId: context.project.id, userId: context.user.id,
+        detail: { fields: ["position"], ids: moduleIds.length }, ip: request.ip,
+      });
       return success({ updated: moduleIds.length });
     } catch (error) {
       await client.query("ROLLBACK");

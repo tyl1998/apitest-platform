@@ -271,6 +271,8 @@ export async function reportRoutes(app: FastifyInstance) {
       triggerSource: String(row.trigger_source ?? "manual"),
       triggerRefId: row.trigger_ref_id ? String(row.trigger_ref_id) : null,
       triggerRefName: row.trigger_ref_name ? String(row.trigger_ref_name) : null,
+      /* P11 边界 11：触发人（null = 定时 / Webhook / 非人 CI，前端显示「系统」）。 */
+      triggeredByEmail: row.triggered_by_email ? String(row.triggered_by_email) : null,
       variableOverrides: (row.variable_overrides ?? {}) as Record<string, string>,
       status: String(row.status),
       total: Number(row.total), successCount: Number(row.success_count), failedCount: Number(row.failed_count), skippedCount: Number(row.skipped_count),
@@ -463,9 +465,13 @@ function reportUnionSql(): string {
              THEN EXTRACT(EPOCH FROM (se.started_at - se.created_at)) * 1000 END AS queue_ms,
            ${PASS_RATE_SQL("se")} AS pass_rate,
            ei.trigger_source, ei.trigger_ref_id, ei.trigger_ref_name,
+           /* P11 边界 11：两个分支列序必须一致（UNION ALL 按位置对齐），所以这一列在
+              两支里都紧跟 trigger_* 三列。 */
+           su_triggerer.email AS triggered_by_email,
            se.created_at, se.started_at, se.finished_at
       FROM suite_executions se
       JOIN execution_index ei ON ei.id = se.execution_index_id
+      LEFT JOIN users su_triggerer ON su_triggerer.id = ei.triggered_by
      WHERE se.project_id = $1
     UNION ALL
     SELECT 'runner' AS kind, pr.id, pr.project_id,
@@ -481,8 +487,10 @@ function reportUnionSql(): string {
              THEN EXTRACT(EPOCH FROM (pr.started_at - pr.created_at)) * 1000 END AS queue_ms,
            ${PASS_RATE_SQL("pr", "passed_count")} AS pass_rate,
            pr.trigger_source, pr.trigger_ref_id, pr.trigger_ref_name,
+           pr_triggerer.email AS triggered_by_email,
            pr.created_at, pr.started_at, pr.finished_at
       FROM pipeline_runs pr
       LEFT JOIN ci_tasks t ON t.id = pr.ci_task_id
+      LEFT JOIN users pr_triggerer ON pr_triggerer.id = pr.triggered_by
      WHERE pr.project_id = $1`;
 }

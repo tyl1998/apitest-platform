@@ -174,6 +174,10 @@ export async function performSuiteRun(suiteExecutionId: string, signal: AbortSig
         /* 覆盖层压过环境变量（performRun 里合并），泳道默认头 {{lane}} 在这里生效。 */
         variables: overrides,
         runnerLabel,
+        /* P11 边界 11 子执行继承：用例成员不建自己的 index 行，触发人从套件那一行
+           （run_spec 里冻的 trigger）取——不继承的话，一次手动套件跑出来的几十条成员
+           全显示「系统」，比不显示更糟。流程成员走 insertFlowRun 的 trigger 通道。 */
+        triggeredBy: trigger?.userId ?? null,
       });
       /* 证据指针先落库再开跑：中途取消要能顺着它找到这次请求。 */
       await pool.query("UPDATE execution_steps SET http_execution_id = $2 WHERE id = $1", [stepId, executionId]);

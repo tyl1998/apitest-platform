@@ -197,9 +197,14 @@ export async function specCaseRoutes(app: FastifyInstance) {
               (SELECT COUNT(*)::int FROM spec_case_links l WHERE l.spec_case_id = c.id) AS link_count,
               /* 已自动化（P7-6 列表列）：与 automation 筛选、覆盖口径三者同一表达式——
                  有 ≥1 条非 endpoint 绑定。不限定用例状态（deprecated 的绑定事实照实读）。 */
-              EXISTS (SELECT 1 FROM spec_case_links l WHERE l.spec_case_id = c.id AND l.target_type <> 'endpoint') AS automated
+              EXISTS (SELECT 1 FROM spec_case_links l WHERE l.spec_case_id = c.id AND l.target_type <> 'endpoint') AS automated,
+              /* P11 归属列（边界 7/9）：只有「创建人」。spec_cases 天生带 created_by
+                 （P7），但按边界 2 没有 updated_by 列，所以这里没有 updated_by_email——
+                 前端该列显示「—」，要它得先给表加列（另立项）。 */
+              creator.email AS created_by_email
          FROM spec_cases c
          JOIN spec_modules m ON m.id = c.module_id
+         LEFT JOIN users creator ON creator.id = c.created_by
         WHERE ${where}
         /* 模块序（path 字典序即深度优先）→ 编号 → 标题：与树视图 P7-6 落地后两视图
            的行序一致，切换视图时同一批用例不会换位置。 */

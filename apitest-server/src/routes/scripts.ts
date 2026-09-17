@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { PoolClient } from "pg";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { runResponseScript, runScriptAssertion, runScriptHook, type ScriptCheck, type SecretResolver } from "../lib/sandbox.js";
@@ -98,13 +99,16 @@ export async function scriptRoutes(app: FastifyInstance) {
     }
     const where = clauses.join(" AND ");
     /* Shared by both reads: the list renders the dependency order and the editor
-       preselects from it. */
+       preselects from it. P11 归属列（边界 7/9）也挂在这里：`LEFT JOIN users`
+       带出 email 快照，WHERE 里的列本来就带 `s.` 前缀，加 join 不会撞名。 */
     const body = `
       FROM scripts s
       LEFT JOIN (
         SELECT script_id, array_agg(depends_on_id ORDER BY position) AS ids
           FROM script_deps GROUP BY script_id
       ) d ON d.script_id = s.id
+      LEFT JOIN users creator ON creator.id = s.created_by
+      LEFT JOIN users updater ON updater.id = s.updated_by
       WHERE ${where}
       ORDER BY s.kind, s.name`;
     /* Libraries carry a parsed symbol list for the picker; other kinds do not. */
@@ -122,10 +126,10 @@ export async function scriptRoutes(app: FastifyInstance) {
       const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
       const count = await pool.query(`SELECT COUNT(*)::int AS total FROM scripts s WHERE ${where}`, params);
       params.push(pageSize, (page - 1) * pageSize);
-      const result = await pool.query(`SELECT s.*, COALESCE(d.ids, '{}') AS dependencies${body} LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+      const result = await pool.query(`SELECT s.*, COALESCE(d.ids, '{}') AS dependencies, creator.email AS created_by_email, updater.email AS updated_by_email${body} LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
       return success(mapRows(result.rows), { page, pageSize, total: Number(count.rows[0].total) });
     }
-    const result = await pool.query(`SELECT s.*, COALESCE(d.ids, '{}') AS dependencies${body}`, params);
+    const result = await pool.query(`SELECT s.*, COALESCE(d.ids, '{}') AS dependencies, creator.email AS created_by_email, updater.email AS updated_by_email${body}`, params);
     const data = mapRows(result.rows);
     return success(data, { total: data.length });
   });
@@ -174,9 +178,9 @@ export async function scriptRoutes(app: FastifyInstance) {
     try {
       await client.query("BEGIN");
       const result = await client.query(
-        `INSERT INTO scripts (id, project_id, name, language, kind, content, owner_case_id)
-         VALUES ($1, $2, $3, 'javascript', $4, $5, NULL) RETURNING *`,
-        [randomUUID(), context.project.id, request.body.name!.trim(), kind, request.body.content!],
+        `INSERT INTO scripts (id, project_id, name, language, kind, content, owner_case_id, created_by)
+         VALUES ($1, $2, $3, 'javascript', $4, $5, NULL, $6) RETURNING *`,
+        [randomUUID(), context.project.id, request.body.name!.trim(), kind, request.body.content!, context.user.id],
       );
       const created = String(result.rows[0].id);
       const dependencyError = await replaceDependencies(client, context.project.id, created, kind, request.body.dependencies ?? []);
@@ -186,6 +190,12 @@ export async function scriptRoutes(app: FastifyInstance) {
       }
       const dependencies = await dependencyIds(created, client);
       await client.query("COMMIT");
+      /* P11-9 审计（边界 5/6）：detail 只有字段名，脚本正文绝不进。 */
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.scriptCreate, targetType: "script", targetId: created,
+        projectId: context.project.id, userId: context.user.id,
+        detail: { fields: auditFields(request.body) }, ip: request.ip,
+      });
       return reply.code(201).send(success(mapScript({ ...result.rows[0], dependencies })));
     } catch (error) {
       await client.query("ROLLBACK");
@@ -231,10 +241,11 @@ export async function scriptRoutes(app: FastifyInstance) {
         `UPDATE scripts SET
            name = COALESCE($1, name),
            content = COALESCE($2, content),
+           updated_by = $5,
            updated_at = now()
          /* name IS NOT NULL keeps this route off anonymous scripts. */
          WHERE id = $3 AND project_id = $4 AND name IS NOT NULL RETURNING *`,
-        [request.body.name?.trim() ?? null, request.body.content ?? null, request.params.scriptId, context.project.id],
+        [request.body.name?.trim() ?? null, request.body.content ?? null, request.params.scriptId, context.project.id, context.user.id],
       );
       if (!result.rowCount) {
         await client.query("ROLLBACK");
@@ -257,6 +268,11 @@ export async function scriptRoutes(app: FastifyInstance) {
       const dependencies = await dependencyIds(request.params.scriptId, client);
       await client.query("COMMIT");
 
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.scriptUpdate, targetType: "script", targetId: request.params.scriptId,
+        projectId: context.project.id, userId: context.user.id,
+        detail: { fields: auditFields(request.body) }, ip: request.ip,
+      });
       const followers = await scriptUsage(context.project.id, request.params.scriptId);
       return success({ ...mapScript({ ...result.rows[0], dependencies }), followers, followerCount: followers.length });
     } catch (error) {
@@ -297,6 +313,10 @@ export async function scriptRoutes(app: FastifyInstance) {
       [request.params.scriptId, context.project.id],
     );
     if (!result.rowCount) return fail(reply, 404, 2001, "script not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.scriptDelete, targetType: "script", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id, ip: request.ip,
+    });
     return success({ id: String(result.rows[0].id), affectedCases: users.length });
   });
 

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, writeAuditLogAsync } from "../lib/audit.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
@@ -370,10 +371,10 @@ export async function specImportRoutes(app: FastifyInstance) {
             if (modulesByPath.has(prefix)) continue;
             const parentId = depth === 1 ? null : modulesByPath.get(`/${segments.slice(0, depth - 1).join("/")}/`) ?? null;
             const inserted = await client.query(
-              `INSERT INTO spec_modules (id, project_id, parent_id, name, path, position)
-               VALUES ($1, $2, $3, $4, $5, 0)
+              `INSERT INTO spec_modules (id, project_id, parent_id, name, path, position, created_by)
+               VALUES ($1, $2, $3, $4, $5, 0, $6)
                ON CONFLICT (project_id, path) DO NOTHING RETURNING id`,
-              [randomUUID(), context.project.id, parentId, segments[depth - 1], prefix],
+              [randomUUID(), context.project.id, parentId, segments[depth - 1], prefix, context.user.id],
             );
             let moduleId = inserted.rowCount ? String(inserted.rows[0].id) : undefined;
             if (!moduleId) {
@@ -459,6 +460,15 @@ export async function specImportRoutes(app: FastifyInstance) {
         }
 
         await client.query("COMMIT");
+        /* P11-9 审计：导入补建的模块是**批量**写，落一行带数量（边界 6）；
+           spec_cases 不在 P11 的 14 张表内，无同名动作。 */
+        if (modulesCreated > 0) {
+          writeAuditLogAsync({
+            action: AUDIT_ACTIONS.specModuleCreate, targetType: "spec_module", targetId: null,
+            projectId: context.project.id, userId: context.user.id,
+            detail: { fields: ["name", "path"], ids: modulesCreated, imported: true }, ip: request.ip,
+          });
+        }
         return success({ created, updated, skipped, duplicate, modulesCreated });
       } catch (error) {
         await client.query("ROLLBACK");

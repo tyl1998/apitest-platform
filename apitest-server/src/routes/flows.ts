@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { NoRunnerError, enqueueRun, cancelFlowRun } from "../lib/enqueue.js";
 import { MAX_FLOW_NODES, planStages, toFlowNode, topologicalOrder, validateFlowGraph, validateNode } from "../lib/flow.js";
 import { checkFlowReferences, flowsReferencing } from "../lib/flowRefs.js";
@@ -25,6 +26,14 @@ type FlowInput = {
   variables?: Record<string, string>;
   tags?: string[];
 };
+
+/**
+ * 列表投影（P11 归属列，边界 7/9）：`LEFT JOIN users` 带出 email 快照，基表显式
+ * `fl.*`——裸 `*` 会在两表同名的 id / name / created_at 上取到 users 的值。
+ */
+const SELECT_FLOW = `SELECT fl.*, creator.email AS created_by_email, updater.email AS updated_by_email FROM flows fl
+  LEFT JOIN users creator ON creator.id = fl.created_by
+  LEFT JOIN users updater ON updater.id = fl.updated_by`;
 
 /**
  * 单步调试的时间预算。
@@ -207,11 +216,11 @@ async function flowUsage(projectId: string, flowId: string) {
 export async function flowRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string }; Querystring: { keyword?: string; tag?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/flows", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
-    const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
+    const params: unknown[] = [context.project.id]; const clauses = ["fl.project_id = $1"];
     const keyword = request.query.keyword?.trim();
     /* Filtering in SQL so a keyword matches every flow, not just a loaded page. */
-    if (keyword) { params.push(`%${keyword}%`); clauses.push(`(name ILIKE $${params.length} OR description ILIKE $${params.length})`); }
-    if (request.query.tag?.trim()) { params.push(request.query.tag.trim()); clauses.push(`$${params.length} = ANY(tags)`); }
+    if (keyword) { params.push(`%${keyword}%`); clauses.push(`(fl.name ILIKE $${params.length} OR fl.description ILIKE $${params.length})`); }
+    if (request.query.tag?.trim()) { params.push(request.query.tag.trim()); clauses.push(`$${params.length} = ANY(fl.tags)`); }
     const where = clauses.join(" AND ");
     /* Pagination is opt-in: the member picker and flow selectors fetch the whole
        list, so the absence of `pageSize` keeps the unpaginated contract they rely
@@ -219,15 +228,15 @@ export async function flowRoutes(app: FastifyInstance) {
     if (request.query.pageSize !== undefined) {
       const page = Math.max(1, Number(request.query.page ?? 1));
       const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
-      const count = await pool.query(`SELECT COUNT(*)::int AS total FROM flows WHERE ${where}`, params);
+      const count = await pool.query(`SELECT COUNT(*)::int AS total FROM flows fl WHERE ${where}`, params);
       params.push(pageSize, (page - 1) * pageSize);
-      const result = await pool.query(`SELECT * FROM flows WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+      const result = await pool.query(`${SELECT_FLOW} WHERE ${where} ORDER BY fl.created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
       const flows = result.rows.map(mapFlow);
       const runs = await latestRuns(flows.map((flow) => flow.id));
       const data = flows.map((flow) => ({ ...flow, nodeCount: flow.nodes.length, lastRun: runs.get(flow.id) }));
       return success(data, { page, pageSize, total: Number(count.rows[0].total) });
     }
-    const result = await pool.query(`SELECT * FROM flows WHERE ${where} ORDER BY created_at DESC`, params);
+    const result = await pool.query(`${SELECT_FLOW} WHERE ${where} ORDER BY fl.created_at DESC`, params);
     const flows = result.rows.map(mapFlow);
     const runs = await latestRuns(flows.map((flow) => flow.id));
     /* nodeCount travels alongside rather than inside Flow: the list only needs
@@ -266,17 +275,24 @@ export async function flowRoutes(app: FastifyInstance) {
       await client.query("BEGIN");
       const flowId = randomUUID();
       await client.query(
-        `INSERT INTO flows (id, project_id, name, description, environment_id, environment_name, nodes, edges, variables, tags)
-         VALUES ($1, $2, $3, $4, $5, $6, '[]'::jsonb, $7::jsonb, $8::jsonb, $9)`,
+        `INSERT INTO flows (id, project_id, name, description, environment_id, environment_name, nodes, edges, variables, tags, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, '[]'::jsonb, $7::jsonb, $8::jsonb, $9, $10)`,
         [
           flowId, context.project.id, request.body.name!.trim(), request.body.description?.trim() ?? "",
           request.body.environmentId ?? null, name,
           JSON.stringify(request.body.edges ?? []), JSON.stringify(request.body.variables ?? {}), request.body.tags ?? [],
+          context.user.id,
         ],
       );
-      const persisted = await persistFlowScripts(client, context.project.id, flowId, nodes);
+      const persisted = await persistFlowScripts(client, context.project.id, flowId, nodes, context.user.id);
       const result = await client.query("UPDATE flows SET nodes = $1::jsonb WHERE id = $2 RETURNING *", [JSON.stringify(persisted), flowId]);
       await client.query("COMMIT");
+      /* P11-9 审计（边界 5/6）：detail 只有字段名。 */
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.flowCreate, targetType: "flow", targetId: String(result.rows[0].id),
+        projectId: context.project.id, userId: context.user.id,
+        detail: { fields: auditFields(request.body) }, ip: request.ip,
+      });
       return reply.code(201).send(success(mapFlow(result.rows[0])));
     } catch (error) {
       await client.query("ROLLBACK");
@@ -320,7 +336,7 @@ export async function flowRoutes(app: FastifyInstance) {
         return fail(reply, 404, 2001, "flow not found");
       }
 
-      const persisted = nodes ? await persistFlowScripts(client, context.project.id, request.params.flowId, nodes) : undefined;
+      const persisted = nodes ? await persistFlowScripts(client, context.project.id, request.params.flowId, nodes, context.user.id) : undefined;
       const result = await client.query(
         `UPDATE flows SET
            name = COALESCE($1, name),
@@ -331,6 +347,7 @@ export async function flowRoutes(app: FastifyInstance) {
            edges = COALESCE($7::jsonb, edges),
            variables = COALESCE($8::jsonb, variables),
            tags = COALESCE($9, tags),
+           updated_by = $12,
            updated_at = now()
          WHERE id = $10 AND project_id = $11 RETURNING *`,
         [
@@ -342,9 +359,15 @@ export async function flowRoutes(app: FastifyInstance) {
           request.body.variables ? JSON.stringify(request.body.variables) : null,
           request.body.tags ?? null,
           request.params.flowId, context.project.id,
+          context.user.id,
         ],
       );
       await client.query("COMMIT");
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.flowUpdate, targetType: "flow", targetId: request.params.flowId,
+        projectId: context.project.id, userId: context.user.id,
+        detail: { fields: auditFields(request.body) }, ip: request.ip,
+      });
       return success(mapFlow(result.rows[0]));
     } catch (error) {
       await client.query("ROLLBACK");
@@ -395,8 +418,20 @@ export async function flowRoutes(app: FastifyInstance) {
         await client.query("ROLLBACK");
         return fail(reply, 404, 2001, "flow not found");
       }
-      const detached = await detachSuiteMember(client, context.project.id, "flow", request.params.flowId);
+      const detached = await detachSuiteMember(client, context.project.id, "flow", request.params.flowId, context.user.id);
       await client.query("COMMIT");
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.flowDelete, targetType: "flow", targetId: String(result.rows[0].id),
+        projectId: context.project.id, userId: context.user.id, ip: request.ip,
+      });
+      /* 摘成员也是套件的一次写入（见 cases.ts 同款）：提交后逐条补 suite.update。 */
+      for (const suite of detached) {
+        writeAuditLogAsync({
+          action: AUDIT_ACTIONS.testSuiteUpdate, targetType: "test_suite", targetId: suite.id,
+          projectId: context.project.id, userId: context.user.id,
+          detail: { fields: ["selection_config"], detachedMember: { type: "flow", id: request.params.flowId } }, ip: request.ip,
+        });
+      }
       return success({ id: String(result.rows[0].id), detachedSuites: detached });
     } catch (error) {
       await client.query("ROLLBACK");
@@ -487,6 +522,8 @@ export async function flowRoutes(app: FastifyInstance) {
         source: "flow_step",
         flowNodeId: node.id,
         flowNodeName: node.name,
+        /* P11 边界 11：单步调试也是一次「人按的按钮」。 */
+        triggeredBy: context.user.id,
         assertions: node.assertions,
         /* Evaluated too, so the debug says whether the chained value would be
            captured — a step that "passes" while extracting nothing is exactly

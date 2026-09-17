@@ -23,6 +23,7 @@ export async function detachSuiteMember(
   projectId: string,
   type: "case" | "flow",
   id: string,
+  actorId: string | null,
 ): Promise<{ id: string; name: string }[]> {
   const member = JSON.stringify({ type, id });
   const containment = JSON.stringify({ members: [{ type, id }] });
@@ -33,16 +34,17 @@ export async function detachSuiteMember(
          COALESCE((
            SELECT jsonb_agg(entry.member ORDER BY entry.ord)
              FROM jsonb_array_elements(selection_config->'members')
-                  WITH ORDINALITY AS entry(member, ord)
-            WHERE NOT (entry.member @> $3::jsonb)
+                       WITH ORDINALITY AS entry(member, ord)
+             WHERE NOT (entry.member @> $3::jsonb)
          ), '[]'::jsonb)
        ),
+       updated_by = $4,
        updated_at = now()
      WHERE project_id = $1
        AND selection_type = 'manual'
        AND selection_config @> $2::jsonb
      RETURNING id, name`,
-    [projectId, containment, member],
+    [projectId, containment, member, actorId],
   );
   return result.rows.map((row) => ({ id: String(row.id), name: String(row.name) }));
 }

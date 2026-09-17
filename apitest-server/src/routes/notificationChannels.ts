@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { encryptSecret, decryptSecret } from "../lib/crypto.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
@@ -48,7 +49,15 @@ function validateChannel(body: ChannelBody, partial: boolean): string | undefine
 export async function notificationChannelRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>("/api/v1/projects/:id/notification-channels", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
-    const result = await pool.query("SELECT * FROM notification_channels WHERE project_id = $1 ORDER BY created_at DESC", [context.project.id]);
+    /* P11 归属列（边界 7/9）：join users 取 email 快照，基表显式 `nc.*`（见 alertRules 注释）。 */
+    const result = await pool.query(
+      `SELECT nc.*, creator.email AS created_by_email, updater.email AS updated_by_email
+         FROM notification_channels nc
+         LEFT JOIN users creator ON creator.id = nc.created_by
+         LEFT JOIN users updater ON updater.id = nc.updated_by
+        WHERE nc.project_id = $1 ORDER BY nc.created_at DESC`,
+      [context.project.id],
+    );
     return success(result.rows.map(mapNotificationChannel), { total: result.rowCount });
   });
 
@@ -59,10 +68,16 @@ export async function notificationChannelRoutes(app: FastifyInstance) {
     /* secret 明文不落日志、不回显：写库即加密，之后接口只回「是否已配置」。 */
     const encrypted = typeof request.body?.secret === "string" && request.body.secret ? encryptSecret(request.body.secret) : null;
     const result = await pool.query(
-      `INSERT INTO notification_channels (id, project_id, name, type, url, secret_encrypted, template_prefix, enabled)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [randomUUID(), context.project.id, request.body!.name!.trim(), request.body!.type!, request.body!.url!.trim(), encrypted, request.body?.templatePrefix?.trim() || null, request.body?.enabled ?? true],
+      `INSERT INTO notification_channels (id, project_id, name, type, url, secret_encrypted, template_prefix, enabled, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [randomUUID(), context.project.id, request.body!.name!.trim(), request.body!.type!, request.body!.url!.trim(), encrypted, request.body?.templatePrefix?.trim() || null, request.body?.enabled ?? true, context.user.id],
     );
+    /* P11-9 审计（边界 5/6）：detail 只有字段名，url 与 secret 的值绝不进。 */
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.notificationChannelCreate, targetType: "notification_channel", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return reply.code(201).send(success(mapNotificationChannel(result.rows[0])));
   });
 
@@ -87,10 +102,15 @@ export async function notificationChannelRoutes(app: FastifyInstance) {
 
     const result = await pool.query(
       `UPDATE notification_channels SET name = COALESCE($1, name), type = COALESCE($2, type), url = COALESCE($3, url),
-         secret_encrypted = $4, template_prefix = $5, enabled = COALESCE($6, enabled), updated_at = now()
+         secret_encrypted = $4, template_prefix = $5, enabled = COALESCE($6, enabled), updated_by = $9, updated_at = now()
        WHERE id = $7 AND project_id = $8 RETURNING *`,
-      [request.body?.name?.trim() ?? null, (request.body?.type as NotificationChannelType) ?? null, request.body?.url?.trim() ?? null, encrypted, templatePrefix, request.body?.enabled ?? null, request.params.channelId, context.project.id],
+      [request.body?.name?.trim() ?? null, (request.body?.type as NotificationChannelType) ?? null, request.body?.url?.trim() ?? null, encrypted, templatePrefix, request.body?.enabled ?? null, request.params.channelId, context.project.id, context.user.id],
     );
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.notificationChannelUpdate, targetType: "notification_channel", targetId: request.params.channelId,
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return success(mapNotificationChannel(result.rows[0]));
   });
 
@@ -133,11 +153,18 @@ export async function notificationChannelRoutes(app: FastifyInstance) {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      await client.query("UPDATE alert_rules SET channel_ids = array_remove(channel_ids, $1::uuid) WHERE project_id = $2 AND channel_ids @> ARRAY[$1]::uuid[]", [request.params.channelId, context.project.id]);
+      /* 这是人工删除（force 之后）的连带清理：规则的内容确实变了，所以 `updated_by`
+         与 `updated_at` 一起写——只写其一会让「谁最后改的」与「改在什么时候」互相矛盾。
+         同款的 test_suites / ci_tasks 摘除在下面那个循环里（各自按有无该列处理）。 */
+      await client.query("UPDATE alert_rules SET channel_ids = array_remove(channel_ids, $1::uuid), updated_by = $3, updated_at = now() WHERE project_id = $2 AND channel_ids @> ARRAY[$1]::uuid[]", [request.params.channelId, context.project.id, context.user.id]);
       /* 套件与任务通知的 channelIds 是 JSONB 数组（jsonb_agg 重建，空集写 '[]'），与
          alert_rules 的 UUID[] 是两种摘法——同一条事务里各自做对。两张表的语句只差表名，
-         循环而不是抄两遍：表名来自代码里的字面量数组，不是输入。 */
+         循环而不是抄两遍：表名来自代码里的字面量数组，不是输入。
+
+         `test_suites` 有 `updated_by`（P11-1），`ci_tasks` 没有（边界 2：天生带 created_by
+         的表不补 updated_by）——归属后缀因此按表拼，与表名一样是代码决定的值。 */
       for (const table of ["test_suites", "ci_tasks"] as const) {
+        const ownership = table === "test_suites" ? ", updated_by = $3, updated_at = now()" : "";
         await client.query(
           `UPDATE ${table} SET notify_config = jsonb_set(notify_config, '{channelIds}',
               COALESCE((
@@ -145,14 +172,35 @@ export async function notificationChannelRoutes(app: FastifyInstance) {
                   FROM jsonb_array_elements(notify_config->'channelIds')
                        WITH ORDINALITY AS entry(channel, ord)
                  WHERE entry.channel <> to_jsonb($1::uuid)
-              ), '[]'::jsonb), true)
+              ), '[]'::jsonb), true)${ownership}
             WHERE project_id = $2 AND notify_config->'channelIds' @> to_jsonb(ARRAY[$1]::uuid[])`,
-          [request.params.channelId, context.project.id],
+          table === "test_suites"
+            ? [request.params.channelId, context.project.id, context.user.id]
+            : [request.params.channelId, context.project.id],
         );
       }
       const deleted = await client.query("DELETE FROM notification_channels WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.channelId, context.project.id]);
       await client.query("COMMIT");
       if (!deleted.rowCount) return fail(reply, 404, 2001, "notification channel not found");
+      /* 渠道删除连带改了规则与套件的配置：提交后逐条补 update 审计（同 cases.ts 摘成员）。 */
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.notificationChannelDelete, targetType: "notification_channel", targetId: String(deleted.rows[0].id),
+        projectId: context.project.id, userId: context.user.id, ip: request.ip,
+      });
+      for (const rule of referencing.rows) {
+        writeAuditLogAsync({
+          action: AUDIT_ACTIONS.alertRuleUpdate, targetType: "alert_rule", targetId: String(rule.id),
+          projectId: context.project.id, userId: context.user.id,
+          detail: { fields: ["channel_ids"], detachedChannel: request.params.channelId }, ip: request.ip,
+        });
+      }
+      for (const suite of referencingSuites.rows) {
+        writeAuditLogAsync({
+          action: AUDIT_ACTIONS.testSuiteUpdate, targetType: "test_suite", targetId: String(suite.id),
+          projectId: context.project.id, userId: context.user.id,
+          detail: { fields: ["notify_config"], detachedChannel: request.params.channelId }, ip: request.ip,
+        });
+      }
       return success({ id: deleted.rows[0].id });
     } catch (error) {
       await client.query("ROLLBACK"); throw error;

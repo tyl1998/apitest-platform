@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields } from "./audit.js";
 import {
-  auditMcpAction, mrtrGate, mrtrRequired, MRTR_REFUSED_MESSAGE,
+  auditMcpAction, auditMcpResource, mrtrGate, mrtrRequired, MRTR_REFUSED_MESSAGE,
   pageArgs, requiredUuidArg, stringArg, toolError, toolResult,
   type MrtrContext,
 } from "./mcpToolResult.js";
@@ -384,10 +385,12 @@ export const WRITE_SPEC_TOOLS: readonly McpToolDefinition[] = [
       }
 
       const result = await pool.query(
-        "INSERT INTO spec_modules (id, project_id, parent_id, name, path, position) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
-        [randomUUID(), identity.projectId, typeof args.parentId === "string" ? args.parentId : null, name, path, position ?? 0],
+        "INSERT INTO spec_modules (id, project_id, parent_id, name, path, position, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
+        [randomUUID(), identity.projectId, typeof args.parentId === "string" ? args.parentId : null, name, path, position ?? 0, identity.createdBy ?? null],
       );
       auditMcpAction("mcp_tool.write", "create_spec_module", identity, String(result.rows[0].id), { outcome: "created" });
+      /* P11-9：资源级审计并行落一行（spec_cases 不在 P11 的 14 张表内，无同名动作）。 */
+      auditMcpResource(AUDIT_ACTIONS.specModuleCreate, "spec_module", identity, String(result.rows[0].id), { fields: auditFields(args) });
       return toolResult({ module: mapSpecModule(result.rows[0]), outcome: "created" });
     },
   },

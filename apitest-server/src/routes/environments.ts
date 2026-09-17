@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { DEFAULT_RUNNER_LABEL, RUNNER_LABEL_PATTERN } from "../lib/queue.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
@@ -9,6 +10,16 @@ import { isUuid } from "../lib/uuid.js";
 import { mapEndpoint, mapEnvironment } from "../models/types.js";
 
 type VariableInput = Record<string, string>;
+
+/**
+ * 列表投影（P11 归属列，边界 7/9）：`LEFT JOIN users` 带出 email 快照，基表显式
+ * `ev.*`。注：`environments` 表没有 created_at / updated_at（001 起就没有），所以
+ * 「系统改的」那条时间判据在这张表上不成立——`updated_by_email` 为 null 只表示
+ * 「建后没改过」，前端显示「—」而不是「系统」。
+ */
+const SELECT_ENVIRONMENT = `SELECT ev.*, creator.email AS created_by_email, updater.email AS updated_by_email FROM environments ev
+  LEFT JOIN users creator ON creator.id = ev.created_by
+  LEFT JOIN users updater ON updater.id = ev.updated_by`;
 
 /**
  * Secrets are written as a patch, not a replacement: the client never holds the
@@ -137,15 +148,15 @@ export async function environmentRoutes(app: FastifyInstance) {
     if (request.query.page !== undefined || request.query.pageSize !== undefined) {
       const page = Math.max(1, Number(request.query.page ?? 1));
       const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
-      const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
-      if (request.query.keyword?.trim()) { params.push(`%${request.query.keyword.trim()}%`); clauses.push(`name ILIKE $${params.length}`); }
+      const params: unknown[] = [context.project.id]; const clauses = ["ev.project_id = $1"];
+      if (request.query.keyword?.trim()) { params.push(`%${request.query.keyword.trim()}%`); clauses.push(`ev.name ILIKE $${params.length}`); }
       const where = clauses.join(" AND ");
-      const count = await pool.query(`SELECT COUNT(*)::int AS total FROM environments WHERE ${where}`, params);
+      const count = await pool.query(`SELECT COUNT(*)::int AS total FROM environments ev WHERE ${where}`, params);
       params.push(pageSize, (page - 1) * pageSize);
-      const result = await pool.query(`SELECT * FROM environments WHERE ${where} ORDER BY name LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+      const result = await pool.query(`${SELECT_ENVIRONMENT} WHERE ${where} ORDER BY ev.name LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
       return success(result.rows.map(mapEnvironment), { page, pageSize, total: Number(count.rows[0].total) });
     }
-    const result = await pool.query("SELECT * FROM environments WHERE project_id = $1 ORDER BY name", [context.project.id]);
+    const result = await pool.query(`${SELECT_ENVIRONMENT} WHERE ev.project_id = $1 ORDER BY ev.name`, [context.project.id]);
     return success(result.rows.map(mapEnvironment));
   });
 
@@ -161,9 +172,15 @@ export async function environmentRoutes(app: FastifyInstance) {
     const defaults = normalizeDefaultHeaders(request.body.defaultHeaders);
     if (defaults.error) return fail(reply, 400, 1001, defaults.error);
     const result = await pool.query(
-      "INSERT INTO environments (id, project_id, name, variables, secrets, runner_label, default_headers) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7::jsonb) RETURNING *",
-      [randomUUID(), context.project.id, name, JSON.stringify(cleanVariables(request.body.variables) ?? {}), JSON.stringify(applySecretPatch({}, request.body.secrets)), runner.label ?? DEFAULT_RUNNER_LABEL, JSON.stringify(defaults.headers ?? {})],
+      "INSERT INTO environments (id, project_id, name, variables, secrets, runner_label, default_headers, created_by) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7::jsonb, $8) RETURNING *",
+      [randomUUID(), context.project.id, name, JSON.stringify(cleanVariables(request.body.variables) ?? {}), JSON.stringify(applySecretPatch({}, request.body.secrets)), runner.label ?? DEFAULT_RUNNER_LABEL, JSON.stringify(defaults.headers ?? {}), context.user.id],
     );
+    /* P11-9 审计（边界 5/6）：detail 只有字段名，**secret 的键名也不进**——只报 body 的键。 */
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.environmentCreate, targetType: "environment", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return reply.code(201).send(success(mapEnvironment(result.rows[0])));
   });
 
@@ -192,11 +209,21 @@ export async function environmentRoutes(app: FastifyInstance) {
 
     /* 分区标签改了不影响已经排队/在跑的执行：那些行上有自己的快照（迁移 027），
        它们的 job 也已经在原来那条队列里。这正是快照存在的理由。默认头同理——
-       它在每次请求组装时读取（loadEnvironment），改了只影响之后的执行。 */
+       它在每次请求组装时读取（loadEnvironment），改了只影响之后的执行。
+
+       `updated_by` 在这里是唯一的时间无关归属：`environments` 表没有 created_at /
+       updated_at 列（001 起就没有，P11-1 只补了 created_by/updated_by），所以这条
+       UPDATE 没有 `updated_at = now()` 可依附，也不能靠「时间新于」判「系统改的」。
+       环境只由 REST 人工路径写，NULL 就是「建后未改过」。 */
     const result = await pool.query(
-      "UPDATE environments SET name = COALESCE($1, name), variables = COALESCE($2::jsonb, variables), secrets = $3::jsonb, runner_label = COALESCE($6, runner_label), default_headers = COALESCE($7::jsonb, default_headers) WHERE id = $4 AND project_id = $5 RETURNING *",
-      [name || null, variables ? JSON.stringify(variables) : null, JSON.stringify(secrets), request.params.environmentId, context.project.id, runner.label ?? null, defaults.headers ? JSON.stringify(defaults.headers) : null],
+      "UPDATE environments SET name = COALESCE($1, name), variables = COALESCE($2::jsonb, variables), secrets = $3::jsonb, runner_label = COALESCE($6, runner_label), default_headers = COALESCE($7::jsonb, default_headers), updated_by = $8 WHERE id = $4 AND project_id = $5 RETURNING *",
+      [name || null, variables ? JSON.stringify(variables) : null, JSON.stringify(secrets), request.params.environmentId, context.project.id, runner.label ?? null, defaults.headers ? JSON.stringify(defaults.headers) : null, context.user.id],
     );
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.environmentUpdate, targetType: "environment", targetId: request.params.environmentId,
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return success(mapEnvironment(result.rows[0]));
   });
 
@@ -225,12 +252,17 @@ export async function environmentRoutes(app: FastifyInstance) {
     for (let index = 2; names.has(name.toLowerCase()); index += 1) name = `${requested} ${index}`;
 
     const result = await pool.query(
-      `INSERT INTO environments (id, project_id, name, variables, secrets, runner_label, default_headers)
-       SELECT $1, project_id, $2, variables, secrets, runner_label, default_headers
+      `INSERT INTO environments (id, project_id, name, variables, secrets, runner_label, default_headers, created_by)
+       SELECT $1, project_id, $2, variables, secrets, runner_label, default_headers, $5
        FROM environments WHERE id = $3 AND project_id = $4 RETURNING *`,
-      [randomUUID(), name, request.params.environmentId, context.project.id],
+      [randomUUID(), name, request.params.environmentId, context.project.id, context.user.id],
     );
     if (!result.rowCount) return fail(reply, 404, 2001, "environment not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.environmentCreate, targetType: "environment", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body), duplicatedFrom: request.params.environmentId }, ip: request.ip,
+    });
     return reply.code(201).send(success(mapEnvironment(result.rows[0])));
   });
 
@@ -261,6 +293,10 @@ export async function environmentRoutes(app: FastifyInstance) {
     await pool.query("UPDATE executions SET environment_name = COALESCE(environment_name, (SELECT name FROM environments WHERE id = $1)) WHERE environment_id = $1", [request.params.environmentId]);
     const result = await pool.query("DELETE FROM environments WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.environmentId, context.project.id]);
     if (!result.rowCount) return fail(reply, 404, 2001, "environment not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.environmentDelete, targetType: "environment", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id, ip: request.ip,
+    });
     return success({ id: result.rows[0].id });
   });
 }

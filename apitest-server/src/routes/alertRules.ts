@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
@@ -22,7 +23,16 @@ import { mapAlertRule, type AlertComparator, type AlertMetric } from "../models/
 export async function alertRuleRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>("/api/v1/projects/:id/alert-rules", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
-    const result = await pool.query("SELECT * FROM alert_rules WHERE project_id = $1 ORDER BY created_at DESC", [context.project.id]);
+    /* P11 归属列（边界 7/9）：`LEFT JOIN users` 带出 email 快照。基表必须显式取
+       `ar.*`——裸 `*` 在两表都有的 id/name/created_at 上会取到 users 的值。 */
+    const result = await pool.query(
+      `SELECT ar.*, creator.email AS created_by_email, updater.email AS updated_by_email
+         FROM alert_rules ar
+         LEFT JOIN users creator ON creator.id = ar.created_by
+         LEFT JOIN users updater ON updater.id = ar.updated_by
+        WHERE ar.project_id = $1 ORDER BY ar.created_at DESC`,
+      [context.project.id],
+    );
     return success(result.rows.map(mapAlertRule), { total: result.rowCount });
   });
 
@@ -35,10 +45,16 @@ export async function alertRuleRoutes(app: FastifyInstance) {
       return fail(reply, 400, 1001, "channelIds must reference notification channels in this project");
     }
     const result = await pool.query(
-      `INSERT INTO alert_rules (id, project_id, name, metric, comparator, threshold, window_minutes, cooldown_seconds, channel_ids, enabled)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-      [randomUUID(), context.project.id, body.name!.trim(), body.metric!, body.comparator!, Number(body.threshold!), body.windowMinutes ?? null, body.cooldownSeconds ?? DEFAULT_COOLDOWN_SECONDS, body.channelIds!, body.enabled ?? true],
+      `INSERT INTO alert_rules (id, project_id, name, metric, comparator, threshold, window_minutes, cooldown_seconds, channel_ids, enabled, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [randomUUID(), context.project.id, body.name!.trim(), body.metric!, body.comparator!, Number(body.threshold!), body.windowMinutes ?? null, body.cooldownSeconds ?? DEFAULT_COOLDOWN_SECONDS, body.channelIds!, body.enabled ?? true, context.user.id],
     );
+    /* P11-9 审计（边界 5/6）：detail 只有字段名。 */
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.alertRuleCreate, targetType: "alert_rule", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(body) }, ip: request.ip,
+    });
     return reply.code(201).send(success(mapAlertRule(result.rows[0])));
   });
 
@@ -70,7 +86,7 @@ export async function alertRuleRoutes(app: FastifyInstance) {
     const result = await pool.query(
       `UPDATE alert_rules SET name = COALESCE($1, name), metric = COALESCE($2, metric), comparator = COALESCE($3, comparator),
          threshold = COALESCE($4, threshold), window_minutes = $5, cooldown_seconds = COALESCE($6, cooldown_seconds),
-         channel_ids = COALESCE($7, channel_ids), enabled = COALESCE($8, enabled), updated_at = now()
+         channel_ids = COALESCE($7, channel_ids), enabled = COALESCE($8, enabled), updated_by = $11, updated_at = now()
        WHERE id = $9 AND project_id = $10 RETURNING *`,
       [
         request.body?.name?.trim() ?? null, request.body?.metric ?? null, request.body?.comparator ?? null,
@@ -79,8 +95,14 @@ export async function alertRuleRoutes(app: FastifyInstance) {
         request.body?.cooldownSeconds !== undefined ? Number(request.body.cooldownSeconds) : null,
         channelIds ?? null, request.body?.enabled ?? null,
         request.params.ruleId, context.project.id,
+        context.user.id,
       ],
     );
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.alertRuleUpdate, targetType: "alert_rule", targetId: request.params.ruleId,
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return success(mapAlertRule(result.rows[0]));
   });
 
@@ -90,6 +112,10 @@ export async function alertRuleRoutes(app: FastifyInstance) {
     if (!isUuid(request.params.ruleId)) return fail(reply, 404, 2001, "alert rule not found");
     const result = await pool.query("DELETE FROM alert_rules WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.ruleId, context.project.id]);
     if (!result.rowCount) return fail(reply, 404, 2001, "alert rule not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.alertRuleDelete, targetType: "alert_rule", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id, ip: request.ip,
+    });
     return success({ id: result.rows[0].id });
   });
 }

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { pool } from "../db.js";
 import { isSupportedDataSourceType } from "../lib/adapters/index.js";
+import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { validateOperation } from "../lib/adapters/operations.js";
 import { encryptSecret } from "../lib/crypto.js";
 import { loadDataSource, loadSqlDefinition } from "../lib/dataSources.js";
@@ -15,6 +16,18 @@ import { defaultPort, definitionKind, mapDataSource, mapSqlDefinition, type Data
 
 type DataSourceBody = { name?: string; type?: DataSourceType; config?: Partial<DataSourceConfig>; password?: string | null };
 type SqlBody = { name?: string; description?: string; kind?: "sql" | "mongo" | "redis"; statementType?: SqlStatementType; sql?: string; operation?: unknown; params?: SqlParameterDefinition[] };
+
+/**
+ * 两个列表的投影（P11 归属列，边界 7）：`LEFT JOIN users` 带出 email 快照，
+ * 基表显式 `ds.*` / `sd.*`——裸 `*` 会在两表同名的 id / name / created_at 上取到
+ * users 的值（mocks.ts 有同款注释）。
+ */
+const SELECT_DATA_SOURCE = `SELECT ds.*, creator.email AS created_by_email, updater.email AS updated_by_email FROM data_sources ds
+  LEFT JOIN users creator ON creator.id = ds.created_by
+  LEFT JOIN users updater ON updater.id = ds.updated_by`;
+const SELECT_SQL_DEFINITION = `SELECT sd.*, creator.email AS created_by_email, updater.email AS updated_by_email FROM sql_definitions sd
+  LEFT JOIN users creator ON creator.id = sd.created_by
+  LEFT JOIN users updater ON updater.id = sd.updated_by`;
 type RunBody = {
   sqlDefinitionId?: string;
   kind?: "sql" | "mongo" | "redis";
@@ -177,13 +190,13 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     /* Pagination is opt-in: flow node pickers still fetch the whole list, so the
        absence of `pageSize` keeps the unpaginated contract they rely on. */
     if (request.query.pageSize === undefined) {
-      const result = await pool.query("SELECT * FROM data_sources WHERE project_id = $1 ORDER BY name", [context.project.id]);
+      const result = await pool.query(`${SELECT_DATA_SOURCE} WHERE ds.project_id = $1 ORDER BY ds.name`, [context.project.id]);
       return success(result.rows.map(mapDataSource));
     }
     const page = Math.max(1, Number(request.query.page ?? 1));
     const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
     const count = await pool.query("SELECT COUNT(*)::int AS total FROM data_sources WHERE project_id = $1", [context.project.id]);
-    const result = await pool.query("SELECT * FROM data_sources WHERE project_id = $1 ORDER BY name LIMIT $2 OFFSET $3", [context.project.id, pageSize, (page - 1) * pageSize]);
+    const result = await pool.query(`${SELECT_DATA_SOURCE} WHERE ds.project_id = $1 ORDER BY ds.name LIMIT $2 OFFSET $3`, [context.project.id, pageSize, (page - 1) * pageSize]);
     return success(result.rows.map(mapDataSource), { page, pageSize, total: Number(count.rows[0].total) });
   });
 
@@ -202,9 +215,15 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     try {
       const encrypted = typeof request.body.password === "string" ? encryptSecret(request.body.password) : null;
       const result = await pool.query(
-        "INSERT INTO data_sources (id, project_id, name, type, config, credentials_encrypted) VALUES ($1, $2, $3, $4, $5::jsonb, $6) RETURNING *",
-        [randomUUID(), context.project.id, name, type, JSON.stringify(cleanConfig(request.body.config!, undefined, type)), encrypted],
+        "INSERT INTO data_sources (id, project_id, name, type, config, credentials_encrypted, created_by) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7) RETURNING *",
+        [randomUUID(), context.project.id, name, type, JSON.stringify(cleanConfig(request.body.config!, undefined, type)), encrypted, context.user.id],
       );
+      /* P11-9 审计（边界 5/6）：detail 只有字段名，password 的值绝不进。 */
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.dataSourceCreate, targetType: "data_source", targetId: String(result.rows[0].id),
+        projectId: context.project.id, userId: context.user.id,
+        detail: { fields: auditFields(request.body) }, ip: request.ip,
+      });
       return reply.code(201).send(success(mapDataSource(result.rows[0])));
     } catch (error) {
       return fail(reply, 500, 5001, error instanceof Error ? error.message : "data source could not be created");
@@ -241,9 +260,14 @@ export async function dataSourceRoutes(app: FastifyInstance) {
       const passwordGiven = Object.prototype.hasOwnProperty.call(request.body, "password");
       const encrypted = passwordGiven ? (request.body.password === null ? null : encryptSecret(String(request.body.password))) : existing.rows[0].credentials_encrypted;
       const result = await pool.query(
-        "UPDATE data_sources SET name = COALESCE($1, name), config = $2::jsonb, credentials_encrypted = $3, updated_at = now() WHERE id = $4 AND project_id = $5 RETURNING *",
-        [name ?? null, JSON.stringify(config), encrypted, request.params.dataSourceId, context.project.id],
+        "UPDATE data_sources SET name = COALESCE($1, name), config = $2::jsonb, credentials_encrypted = $3, updated_by = $6, updated_at = now() WHERE id = $4 AND project_id = $5 RETURNING *",
+        [name ?? null, JSON.stringify(config), encrypted, request.params.dataSourceId, context.project.id, context.user.id],
       );
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.dataSourceUpdate, targetType: "data_source", targetId: request.params.dataSourceId,
+        projectId: context.project.id, userId: context.user.id,
+        detail: { fields: auditFields(request.body) }, ip: request.ip,
+      });
       return success(mapDataSource(result.rows[0]));
     } catch (error) {
       return fail(reply, 500, 5001, error instanceof Error ? error.message : "data source could not be updated");
@@ -265,6 +289,10 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     if (!usage) return fail(reply, 404, 2001, "data source not found");
     if (usage.blocked && request.query.force !== "true") return sendUsageConflict(reply, "data source is referenced", usage);
     const result = await pool.query("DELETE FROM data_sources WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.dataSourceId, context.project.id]);
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.dataSourceDelete, targetType: "data_source", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id, ip: request.ip,
+    });
     return success({ id: String(result.rows[0].id) });
   });
 
@@ -308,7 +336,7 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     if (!isUuid(request.params.dataSourceId)) return fail(reply, 404, 2001, "data source not found");
     const source = await pool.query("SELECT 1 FROM data_sources WHERE id = $1 AND project_id = $2", [request.params.dataSourceId, context.project.id]);
     if (!source.rowCount) return fail(reply, 404, 2001, "data source not found");
-    const result = await pool.query("SELECT * FROM sql_definitions WHERE data_source_id = $1 AND project_id = $2 ORDER BY name", [request.params.dataSourceId, context.project.id]);
+    const result = await pool.query(`${SELECT_SQL_DEFINITION} WHERE sd.data_source_id = $1 AND sd.project_id = $2 ORDER BY sd.name`, [request.params.dataSourceId, context.project.id]);
     return success(result.rows.map(mapSqlDefinition));
   });
 
@@ -324,11 +352,17 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     const duplicate = await pool.query("SELECT 1 FROM sql_definitions WHERE data_source_id = $1 AND lower(name) = lower($2)", [request.params.dataSourceId, request.body.name!.trim()]);
     if (duplicate.rowCount) return fail(reply, 409, 2003, "an SQL definition with this name already exists");
     const result = await pool.query(
-      `INSERT INTO sql_definitions (id, project_id, data_source_id, name, description, kind, statement_type, sql, operation, params)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb) RETURNING *`,
+      `INSERT INTO sql_definitions (id, project_id, data_source_id, name, description, kind, statement_type, sql, operation, params, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11) RETURNING *`,
       [randomUUID(), context.project.id, request.params.dataSourceId, request.body.name!.trim(), request.body.description?.trim() ?? "", kind,
-       kind === "sql" ? request.body.statementType : null, kind === "sql" ? request.body.sql!.trim() : null, kind === "sql" ? null : request.body.operation ?? null, JSON.stringify(request.body.params ?? [])],
+       kind === "sql" ? request.body.statementType : null, kind === "sql" ? request.body.sql!.trim() : null, kind === "sql" ? null : request.body.operation ?? null, JSON.stringify(request.body.params ?? []),
+       context.user.id],
     );
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.sqlDefinitionCreate, targetType: "sql_definition", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return reply.code(201).send(success(mapSqlDefinition(result.rows[0])));
   });
 
@@ -379,10 +413,16 @@ export async function dataSourceRoutes(app: FastifyInstance) {
         statement_type = CASE WHEN $3 = 'sql' THEN COALESCE($4, statement_type) ELSE NULL END,
         sql = CASE WHEN $3 = 'sql' THEN COALESCE($5, sql) ELSE NULL END,
         operation = CASE WHEN $3 = 'sql' THEN NULL ELSE COALESCE($6::jsonb, operation) END,
-        params = $7::jsonb, updated_at = now() WHERE id = $8 AND project_id = $9 RETURNING *`,
+        params = $7::jsonb, updated_by = $10, updated_at = now() WHERE id = $8 AND project_id = $9 RETURNING *`,
       [name ?? null, request.body.description?.trim() ?? null, nextKind, request.body.statementType ?? null, request.body.sql?.trim() ?? null,
-       request.body.operation !== undefined ? JSON.stringify(request.body.operation) : null, JSON.stringify(nextParams), existing.id, context.project.id],
+       request.body.operation !== undefined ? JSON.stringify(request.body.operation) : null, JSON.stringify(nextParams), existing.id, context.project.id,
+       context.user.id],
     );
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.sqlDefinitionUpdate, targetType: "sql_definition", targetId: request.params.sqlId,
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return success(mapSqlDefinition(result.rows[0]));
   });
 
@@ -393,6 +433,10 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     if (!usage) return fail(reply, 404, 2001, "SQL definition not found");
     if (usage.blocked && request.query.force !== "true") return sendUsageConflict(reply, "SQL definition is referenced", usage);
     const result = await pool.query("DELETE FROM sql_definitions WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.sqlId, context.project.id]);
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.sqlDefinitionDelete, targetType: "sql_definition", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id, ip: request.ip,
+    });
     return success({ id: String(result.rows[0].id) });
   });
 

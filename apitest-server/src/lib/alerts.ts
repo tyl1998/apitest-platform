@@ -80,7 +80,13 @@ async function loadEventContext(executionIndexId: string | undefined): Promise<E
   };
 }
 
-/** 冷却认领：先本地判窗口，再 compare-and-set 抢「这次派发归我」。 */
+/**
+ * 冷却认领：先本地判窗口，再 compare-and-set 抢「这次派发归我」。
+ *
+ * `updated_by` 刻意不写（P11 边界 3）：`last_fired_at` 是告警引擎的运行事实（这条规则
+ * 什么时候响过），不是「谁改了这条规则」——规则的归属由 P11-3 的 alert_rules 路由负责。
+ * 硬塞成规则创建人会把每次自动派发都显示成一次人工编辑。
+ */
 async function claimCooldown(rule: { id: string; lastFiredAt?: string; cooldownSeconds: number }): Promise<boolean> {
   if (rule.lastFiredAt && Date.now() - new Date(rule.lastFiredAt).getTime() < rule.cooldownSeconds * 1000) return false;
   const claimed = await pool.query(

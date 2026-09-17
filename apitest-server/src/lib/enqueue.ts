@@ -102,6 +102,16 @@ export type EnqueueInput = {
    * 时写出一行本机 worker 认领不了的记录——而那台 worker 正拿着它准备就地跑。
    */
   runnerLabel?: string;
+  /**
+   * 触发人（P11 边界 11）：谁按的按钮。单条执行此前不问这个，所以这列也是本阶段加的
+   * （迁移 064，`executions.triggered_by`）。
+   *
+   * REST 手动跑 / 批量 → `context.user.id`；MCP execute → Token 签发人；调度 / Webhook /
+   * 非人 CI → NULL（与边界 3 的「非人工」同义，前端显示「系统」）。**子执行继承父执行**：
+   * 套件用例成员由 `performSuiteRun` 从套件的 `spec.trigger.userId` 下发，流程节点的
+   * HTTP 证据由 worker 从父 `execution_index.triggered_by` 取（`flowGraph`）。
+   */
+  triggeredBy?: string | null;
 };
 
 /**
@@ -140,8 +150,8 @@ export async function insertRun(input: EnqueueInput): Promise<{ executionId: str
   await pool.query(
     `INSERT INTO executions (
        id, project_id, endpoint_id, endpoint_name, environment_id, environment_name, batch_id,
-       source, case_id, case_name, flow_node_id, flow_node_name, status, duration_ms, request_snapshot, run_spec, runner_label
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'queued', 0, $13::jsonb, $14::jsonb, $15)`,
+       source, case_id, case_name, flow_node_id, flow_node_name, status, duration_ms, request_snapshot, run_spec, runner_label, triggered_by
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'queued', 0, $13::jsonb, $14::jsonb, $15, $16)`,
     [
       executionId, input.projectId, input.endpointId, input.endpointName,
       input.environmentId ?? null, input.environmentName ?? null, input.batchId ?? null,
@@ -155,6 +165,7 @@ export async function insertRun(input: EnqueueInput): Promise<{ executionId: str
       JSON.stringify({ method: input.request.method, url: input.request.url, query: input.request.queryParams, headers: input.request.headers }),
       JSON.stringify(spec),
       runnerLabel,
+      input.triggeredBy ?? null,
     ],
   );
   return { executionId, runnerLabel };

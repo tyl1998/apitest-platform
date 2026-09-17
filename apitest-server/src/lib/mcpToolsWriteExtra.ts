@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields } from "./audit.js";
 import {
-  auditMcpAction, mrtrGate, mrtrRequired, MRTR_REFUSED_MESSAGE,
+  auditMcpAction, auditMcpResource, mrtrGate, mrtrRequired, MRTR_REFUSED_MESSAGE,
   requiredUuidArg, stringArg, toolError, toolResult,
   type MrtrContext,
 } from "./mcpToolResult.js";
@@ -126,14 +127,14 @@ export const WRITE_EXTRA_TOOLS: readonly McpToolDefinition[] = [
         await client.query("BEGIN");
         const result = created
           ? await client.query(
-              `INSERT INTO scripts (id, project_id, name, language, kind, content, owner_case_id)
-               VALUES ($1, $2, $3, 'javascript', $4, $5, NULL) RETURNING *`,
-              [scriptId, identity.projectId, input.name!.trim(), kind, input.content!],
+              `INSERT INTO scripts (id, project_id, name, language, kind, content, owner_case_id, created_by)
+               VALUES ($1, $2, $3, 'javascript', $4, $5, NULL, $6) RETURNING *`,
+              [scriptId, identity.projectId, input.name!.trim(), kind, input.content!, identity.createdBy ?? null],
             )
           : await client.query(
-              `UPDATE scripts SET content = $2, updated_at = now()
+              `UPDATE scripts SET content = $2, updated_by = $4, updated_at = now()
                 WHERE id = $1 AND project_id = $3 AND name IS NOT NULL RETURNING *`,
-              [scriptId, input.content!, identity.projectId],
+              [scriptId, input.content!, identity.projectId, identity.createdBy ?? null],
             );
         if (!result.rowCount) {
           await client.query("ROLLBACK");
@@ -147,6 +148,8 @@ export const WRITE_EXTRA_TOOLS: readonly McpToolDefinition[] = [
         const dependencies = await dependencyIds(scriptId, client);
         await client.query("COMMIT");
         auditMcpAction("mcp_tool.write", "create_script", identity, scriptId, { outcome: created ? "created" : "updated" });
+        /* P11-9：资源级审计并行落一行（detail 只有字段名，脚本正文绝不进）。 */
+        auditMcpResource(created ? AUDIT_ACTIONS.scriptCreate : AUDIT_ACTIONS.scriptUpdate, "script", identity, scriptId, { fields: auditFields(input) });
         return toolResult({ script: mapScript({ ...result.rows[0], dependencies }), outcome: created ? "created" : "updated" });
       } catch (error) {
         await client.query("ROLLBACK");
@@ -197,9 +200,9 @@ export const WRITE_EXTRA_TOOLS: readonly McpToolDefinition[] = [
       try {
         await client.query("BEGIN");
         const result = await client.query(
-          `UPDATE scripts SET name = COALESCE($1, name), content = COALESCE($2, content), updated_at = now()
+          `UPDATE scripts SET name = COALESCE($1, name), content = COALESCE($2, content), updated_by = $5, updated_at = now()
            WHERE id = $3 AND project_id = $4 AND name IS NOT NULL RETURNING *`,
-          [input.name?.trim() ?? null, input.content ?? null, id.value, identity.projectId],
+          [input.name?.trim() ?? null, input.content ?? null, id.value, identity.projectId, identity.createdBy ?? null],
         );
         if (!result.rowCount) {
           await client.query("ROLLBACK");
@@ -216,6 +219,7 @@ export const WRITE_EXTRA_TOOLS: readonly McpToolDefinition[] = [
         await client.query("COMMIT");
         const followers = await scriptUsage(identity.projectId, id.value);
         auditMcpAction("mcp_tool.write", "update_script", identity, id.value, { followers: followers.length });
+        auditMcpResource(AUDIT_ACTIONS.scriptUpdate, "script", identity, id.value, { fields: auditFields(input) });
         return toolResult({ ...mapScript({ ...result.rows[0], dependencies }), followers, followerCount: followers.length });
       } catch (error) {
         await client.query("ROLLBACK");
@@ -255,6 +259,7 @@ export const WRITE_EXTRA_TOOLS: readonly McpToolDefinition[] = [
       );
       if (!result.rowCount) return toolError("script not found (2001)");
       auditMcpAction("mcp_tool.write", "delete_script", identity, id.value, { outcome: "deleted", affectedFollowers: followers.length });
+      auditMcpResource(AUDIT_ACTIONS.scriptDelete, "script", identity, id.value, { fields: [] });
       return toolResult({ id: id.value, deleted: true, affectedFollowers: followers.length });
     },
   },
@@ -321,6 +326,7 @@ export const WRITE_EXTRA_TOOLS: readonly McpToolDefinition[] = [
         blockedEndpoints: endpoints.length,
         executionsTotal: Number(executions.rows[0].total),
       });
+      auditMcpResource(AUDIT_ACTIONS.environmentDelete, "environment", identity, id.value, { fields: [] });
       return toolResult({ id: id.value, deleted: true, affectedEndpoints: endpoints.length });
     },
   },

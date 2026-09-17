@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { cancelSuiteRun } from "../lib/enqueue.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
@@ -31,6 +32,14 @@ import {
  */
 
 /**
+ * 列表投影（P11 归属列，边界 7/9）：`LEFT JOIN users` 带出 email 快照，基表显式
+ * `su.*`——裸 `*` 会在两表同名的 id / name / created_at 上取到 users 的值。
+ */
+const SELECT_SUITE = `SELECT su.*, creator.email AS created_by_email, updater.email AS updated_by_email FROM test_suites su
+  LEFT JOIN users creator ON creator.id = su.created_by
+  LEFT JOIN users updater ON updater.id = su.updated_by`;
+
+/**
  * 校验与归一已提取到 `lib/validateSuite.ts`（P5-5b，边界 8 的同一笔账）：MCP 的
  * create_suite / update_suite 与这些路由跑同一份校验。此处仅留路由壳。
  */
@@ -53,15 +62,15 @@ export async function suiteRoutes(app: FastifyInstance) {
        读不完的表没有任何好处。keyword/tag 过滤留在 SQL 里，命中覆盖全量而不止本页。 */
     const page = Math.max(1, Number(request.query.page ?? 1));
     const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
-    const params: unknown[] = [context.project.id]; const clauses = ["project_id = $1"];
+    const params: unknown[] = [context.project.id]; const clauses = ["su.project_id = $1"];
     const keyword = request.query.keyword?.trim();
     /* Filtering in SQL so a keyword matches every suite, not just a loaded page. */
-    if (keyword) { params.push(`%${keyword}%`); clauses.push(`(name ILIKE $${params.length} OR description ILIKE $${params.length})`); }
-    if (request.query.tag?.trim()) { params.push(request.query.tag.trim()); clauses.push(`$${params.length} = ANY(tags)`); }
+    if (keyword) { params.push(`%${keyword}%`); clauses.push(`(su.name ILIKE $${params.length} OR su.description ILIKE $${params.length})`); }
+    if (request.query.tag?.trim()) { params.push(request.query.tag.trim()); clauses.push(`$${params.length} = ANY(su.tags)`); }
     const where = clauses.join(" AND ");
-    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM test_suites WHERE ${where}`, params);
+    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM test_suites su WHERE ${where}`, params);
     params.push(pageSize, (page - 1) * pageSize);
-    const result = await pool.query(`SELECT * FROM test_suites WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+    const result = await pool.query(`${SELECT_SUITE} WHERE ${where} ORDER BY su.created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
     const suites = result.rows.map(mapTestSuite);
     const runs = await latestRuns(suites.map((suite) => suite.id));
     /* 刻意不在列表里解析 tag/all 的成员数：那要为每一行跑两条查询，而列表能显示的
@@ -88,14 +97,21 @@ export async function suiteRoutes(app: FastifyInstance) {
 
     const suiteId = randomUUID();
     const result = await pool.query(
-      `INSERT INTO test_suites (id, project_id, name, description, selection_type, selection_config, execution_config, notify_config, tags)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9) RETURNING *`,
+      `INSERT INTO test_suites (id, project_id, name, description, selection_type, selection_config, execution_config, notify_config, tags, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10) RETURNING *`,
       [
         suiteId, context.project.id, request.body.name!.trim(), request.body.description?.trim() ?? "",
         request.body.selection!.type, JSON.stringify(toSelectionConfig(request.body.selection!)),
         JSON.stringify(execution), JSON.stringify(normalizeSuiteNotify(request.body?.notify ?? {})), request.body.tags ?? [],
+        context.user.id,
       ],
     );
+    /* P11-9 审计（边界 5/6）：detail 只有字段名。 */
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.testSuiteCreate, targetType: "test_suite", targetId: String(result.rows[0].id),
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return reply.code(201).send(success(mapTestSuite(result.rows[0])));
   });
 
@@ -127,6 +143,7 @@ export async function suiteRoutes(app: FastifyInstance) {
          execution_config = COALESCE($5::jsonb, execution_config),
          notify_config = COALESCE($6::jsonb, notify_config),
          tags = COALESCE($7, tags),
+         updated_by = $10,
          updated_at = now()
        WHERE id = $8 AND project_id = $9 RETURNING *`,
       [
@@ -135,9 +152,15 @@ export async function suiteRoutes(app: FastifyInstance) {
         request.body.selection?.type ?? null, selection, execution, notify,
         request.body.tags ?? null,
         request.params.suiteId, context.project.id,
+        context.user.id,
       ],
     );
     if (!result.rowCount) return fail(reply, 404, 2001, "test suite not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.testSuiteUpdate, targetType: "test_suite", targetId: request.params.suiteId,
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: auditFields(request.body) }, ip: request.ip,
+    });
     return success(mapTestSuite(result.rows[0]));
   });
 
@@ -184,6 +207,25 @@ export async function suiteRoutes(app: FastifyInstance) {
       const result = await client.query("DELETE FROM test_suites WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.suiteId, context.project.id]);
       await client.query("COMMIT");
       if (!result.rowCount) return fail(reply, 404, 2001, "test suite not found");
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.testSuiteDelete, targetType: "test_suite", targetId: String(result.rows[0].id),
+        projectId: context.project.id, userId: context.user.id, ip: request.ip,
+      });
+      /* 连带删掉的引用调度 / Webhook 触发各落一行 delete：MCP 删除路径同款。 */
+      for (const row of referencingSchedules.rows) {
+        writeAuditLogAsync({
+          action: AUDIT_ACTIONS.scheduleDelete, targetType: "schedule", targetId: String(row.id),
+          projectId: context.project.id, userId: context.user.id,
+          detail: { fields: [], cascadeFrom: request.params.suiteId }, ip: request.ip,
+        });
+      }
+      for (const row of referencingTriggers.rows) {
+        writeAuditLogAsync({
+          action: AUDIT_ACTIONS.webhookTriggerDelete, targetType: "webhook_trigger", targetId: String(row.id),
+          projectId: context.project.id, userId: context.user.id,
+          detail: { fields: [], cascadeFrom: request.params.suiteId }, ip: request.ip,
+        });
+      }
       return success({ id: result.rows[0].id });
     } catch (error) {
       await client.query("ROLLBACK"); throw error;
