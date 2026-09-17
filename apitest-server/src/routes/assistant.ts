@@ -80,10 +80,21 @@ function failUpstream(reply: FastifyReply, error: unknown) {
  * undefined**——调用方只要 `if (!resolved) return;`。解密失败原本会冒成 500，
  * 但用户看到的处置动作与「未配置」一致（去设置卡重填），500 只会让人去找运维；
  * 原因进服务端日志就够（解密失败是部署级线索，不该出现在用户界面）。
+ *
+ * 「没有默认 agent」这条腿也必须 fail（2026-09-17 缺陷修复）：早先它只是 return
+ * undefined，没有任何响应——路由提前 return 后 Fastify 回 200 空体，前端把空体
+ * 当数据：会话列表变 undefined（`.some` 抛错→「加载失败」误报），建会话把
+ * undefined 塞进列表（渲染读 `conversation.id` 当场白屏）。守卫契约是「拒绝即已
+ * 回完」，这里补齐。
  */
 async function loadResolvedDefaultAgent(reply: FastifyReply, userId: string) {
   try {
-    return await loadEnabledDefaultUserAgent(userId);
+    const resolved = await loadEnabledDefaultUserAgent(userId);
+    if (!resolved) {
+      fail(reply, 503, CODE_NOT_CONFIGURED, NO_DEFAULT_AGENT);
+      return undefined;
+    }
+    return resolved;
   } catch (error) {
     reply.log.warn({ err: errorMessage(error) }, "assistant credentials could not be decrypted");
     fail(reply, 503, CODE_NOT_CONFIGURED, CREDENTIAL_UNREADABLE);

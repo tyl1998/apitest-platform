@@ -32,8 +32,15 @@ services:
 
   # 产物对象存储（ARTIFACT_STORAGE_DRIVER=s3 时用）。9000 是 S3 API，9001 是
   # 控制台。凭证与 apitest-server/.env 里的 AWS_ACCESS_KEY_ID / SECRET 保持一致。
+  #
+  # 用 minio/minio **一个镜像**就够：它自带 mc（/usr/bin/mc），健康检查与桶初始化都用它
+  # ——不再依赖 `minio/mc`（MinIO 社区镜像 2025-10-23 起停止发布、2026-02 上游归档，
+  # `minio/mc:latest` 在多数环境拉取即 `manifest unknown`，就是它导致的启动失败）。
+  #
+  # 内网镜像仓库 / 自建 tag 用 `MINIO_IMAGE=...` 覆盖，不动这份文件；要固定版本可指向
+  # 最后一个公开发布版 `minio/minio:RELEASE.2025-09-07T16-13-09Z`。
   minio:
-    image: minio/minio:latest
+    image: ${MINIO_IMAGE:-minio/minio:latest}
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: apitest
@@ -44,6 +51,7 @@ services:
     volumes:
       - minio_data:/data
     healthcheck:
+      # minio 镜像自带 mc（/usr/bin/mc），健康检查与下面的桶初始化都用它。
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 5s
@@ -51,8 +59,11 @@ services:
 
   # 桶初始化（一次性）：等 minio 就绪后 mc mb，已存在则跳过（--ignore-existing）。
   # 幂等，随 up -d 反复运行无害；桶名与 .env 的 ARTIFACT_S3_BUCKET 保持一致。
+  #
+  # 复用 minio 镜像自带的 mc，**不再依赖已下架的 `minio/mc` 仓库**（2026-02 起
+  # `minio/mc:latest` 在多数环境拉取即 `manifest unknown`，就是它导致的启动失败）。
   minio-init:
-    image: minio/mc:latest
+    image: ${MINIO_IMAGE:-minio/minio:latest}
     depends_on:
       minio:
         condition: service_healthy

@@ -2,6 +2,7 @@ import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
 import Fastify, { type FastifyInstance } from "fastify";
 import { seedAdmin } from "./lib/auth.js";
+import { seedAssistantProvider } from "./lib/assistant/providers.js";
 import { success } from "./lib/response.js";
 import { authRoutes } from "./routes/auth.js";
 import { projectRoutes } from "./routes/projects.js";
@@ -150,5 +151,8 @@ export async function buildApp(): Promise<FastifyInstance> {
 if (process.env.NODE_ENV !== "test") {
   const app = await buildApp();
   await seedAdmin();
+  /* 空库的默认上游（agent-vendor-agent，见 lib/assistant/providers.ts）：按名字幂等插入，
+     已有 provider 不改；agent-vendor_BASE_URL 未配置则跳过。 */
+  await seedAssistantProvider();
   await app.listen({ port: Number(process.env.PORT ?? 3000), host: "0.0.0.0" });
 }
