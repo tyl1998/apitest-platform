@@ -216,6 +216,10 @@ export function buildMcpServer(principal: McpPrincipal | undefined): McpServer {
       async (args, ctx) => {
         const call = resolveCall(tool, (args ?? {}) as Record<string, unknown>, principal);
         if ("error" in call) return toolError(call.error);
+        /* 临时调试钩子（2026-09-17）：把每次 MCP 工具调用连同入参打到 api 日志，定位
+           update_endpoint 这类写工具实际收到什么形状的入参（如 body 变成字符串）。
+           入参可能含业务数据——只进本地 .dev-logs/api.log（gitignore），不入库。 */
+        console.log(`[mcp-call] ${tool.name} projectId=${call.identity.projectId || "-"}`, JSON.stringify(args ?? {}));
         return tool.handler((args ?? {}) as Record<string, unknown>, call.identity, ctx?.mcpReq);
       },
     );

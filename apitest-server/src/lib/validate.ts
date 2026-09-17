@@ -49,6 +49,13 @@ export function validateEndpoint(input: EndpointInput, partial = false): string 
     if (!input.url.includes("{{") && !/^https?:\/\//i.test(input.url.trim())) return "url must start with http:// or https://";
   }
   if (input.bodyType !== undefined && !BODY_TYPES.includes(input.bodyType)) return `bodyType must be one of ${BODY_TYPES.join(", ")}`;
+  /* 2026-09-17：bodyType=json 时 body 必须是对象（数组也算对象）。字符串 body 是调用侧
+     序列化错误（如 Java Map.toString），JSON.stringify 会把它双重编码成 jsonb string
+     静默落库——这里变成显式错误。null 保留三态「清空」语义（partial 更新）。 */
+  const effectiveBodyType = input.bodyType ?? (input.body === undefined ? undefined : "json");
+  if (effectiveBodyType === "json" && input.body !== undefined && input.body !== null && typeof input.body !== "object") {
+    return "body must be an object when bodyType is json";
+  }
   return undefined;
 }
 
@@ -62,6 +69,10 @@ export function validateCase(input: CaseInput, partial = false): string | undefi
     /* Variables are resolved at run time, so only validate literal URLs here. */
     if (!request.url.includes("{{") && !/^https?:\/\//i.test(request.url.trim())) return "request.url must start with http:// or https://";
     if (request.bodyType !== undefined && !BODY_TYPES.includes(request.bodyType)) return `request.bodyType must be one of ${BODY_TYPES.join(", ")}`;
+    const effectiveCaseBodyType = request.bodyType ?? (request.body === undefined ? undefined : "json");
+    if (effectiveCaseBodyType === "json" && request.body !== undefined && request.body !== null && typeof request.body !== "object") {
+      return "request.body must be an object when bodyType is json";
+    }
   }
   return validateDeclarativeAssertions(input.assertions)
     ?? validateHooks(input.preRequestHooks, "case")

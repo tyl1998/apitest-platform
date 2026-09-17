@@ -182,6 +182,9 @@ export async function mcpRoutes(app: FastifyInstance) {
   }
 
   app.all("/mcp", async (request, reply) => {
+    /* 临时调试钩子（2026-09-17）：打印每一条 /mcp 请求体（JSON-RPC），看智能体平台
+       实际发来什么。可能含业务数据——只进本地 .dev-logs/api.log（gitignore），不入库。 */
+    console.log("[mcp-request]", request.method, JSON.stringify(request.body ?? {}));
     /* Host / Origin 校验（纯函数、零 SQL，最便宜先跑）。Origin 白名单刻意为空：/mcp 的
        调用方是服务端 agent（不带 Origin，直接放行），平台自己的前端走 REST 面——带
        Origin 的请求只有 DNS rebinding 一种来源，全部拒绝。 */

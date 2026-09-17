@@ -217,7 +217,10 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
         queryParams: { type: "object", additionalProperties: { type: "string" } },
         pathParams: { type: "object", additionalProperties: { type: "string" } },
         bodyType: { type: "string", description: "none | json | form | text" },
-        body: { description: "parsed JSON payload, used when bodyType is json" },
+        /* 联合类型 ["object","null"] 会被智能体平台翻译成 String（windowMinutes/
+           environmentId 同证），模型会再次生成字符串。改单类型 object：SDK 直接拒绝
+           字符串，他们那边显示 object。body 的 null 清空本就未在描述中承诺，不再放行。 */
+        body: { type: "object", description: "parsed JSON payload (object), used when bodyType is json" },
         bodyText: { type: "string", description: "raw payload for form/text bodies" },
         auth: { type: "object", description: "{type:'none'} | {type:'bearer',token:'{{var}}'} | {type:'basic',...} | {type:'apiKey',...}" },
         tags: { type: "array", items: { type: "string" } },
@@ -324,7 +327,7 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
         queryParams: { type: "object", additionalProperties: { type: "string" } },
         pathParams: { type: "object", additionalProperties: { type: "string" } },
         bodyType: { type: "string" },
-        body: {},
+        body: { type: "object" },
         bodyText: { type: "string" },
         auth: { type: "object" },
         tags: { type: "array", items: { type: "string" } },
@@ -602,6 +605,11 @@ export const WRITE_CORE_TOOLS: readonly McpToolDefinition[] = [
         if (node.type !== "request") continue;
         const leaked = rejectLiteralSecretsInSnapshot(node.request);
         if (leaked) return toolError(`node "${node.name}": ${leaked}`);
+        /* 与 validateEndpoint 同款：json 请求体必须是对象，字符串（Java toString 之类）
+           会在 JSON.stringify 时双重编码进 flows.nodes 的 JSONB——显式拒绝。 */
+        if (node.request.bodyType === "json" && node.request.body !== undefined && node.request.body !== null && typeof node.request.body !== "object") {
+          return toolError(`node "${node.name}": body must be an object when bodyType is json (1001)`);
+        }
       }
 
       const insert = async (client: PoolClient) => {
