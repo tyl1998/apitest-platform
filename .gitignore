@@ -8,6 +8,7 @@ apitest-runner/
 # 运行时产物
 .dev-logs/
 .dev-pids
+.dev-pids.windows.json
 .dev-certs/
 .playwright-mcp/
 .vscode/
