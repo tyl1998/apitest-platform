@@ -3175,7 +3175,8 @@ token 只发 read scope，delete 类工具不进 agent 工具面，被要求删�
 ### 15.5 P11 立项并入本文件（2026-09-07 完成）
 
 - [x] 新增十六章 P11 — 资产归属（列级 created_by/updated_by + 审计级 audit_logs 接入），
-  范围、边界 10 项、迁移示意、改动量摸底与分批（P11-1 / P11-2）全部落在本文件。
+  范围、边界 11 项、迁移示意、改动量摸底与分批（第一轮 P11-1 ~ P11-8 / 第二轮 P11-9 ~
+  P11-10，实施顺序见 16.6）全部落在本文件。
 - [x] 15.2 里程碑表补 M12 行（与主计划 12.1 表一致）。
 - [x] 主计划新增「十五、P11 — 资产归属」指针章 + 路线图 ASCII / 头部说明 / 12.1 里程碑表同步。
 - [x] 本文件标题与头部归属、章节映射说明扩为 P6–P11。
@@ -3237,7 +3238,8 @@ token 只发 read scope，delete 类工具不进 agent 工具面，被要求删�
 
 ## 十六、P11 — 资产归属（谁创建 / 谁更新，列级 + 审计级，约 1.5 周）
 
-> 版本: v1.0（2026-09-07 立项，范围与边界已确认；尚未实现）。
+> 版本: v1.1（2026-09-07 立项，范围与边界已确认；2026-09-17 增补边界 11「触发人可见」；
+> P11-1 ~ P11-10 已实现——见 16.6 实现状态）。
 
 ### 16.0 P11 范围与边界（2026-09-07 确认）
 
@@ -3269,8 +3271,11 @@ token 只发 read scope，delete 类工具不进 agent 工具面，被要求删�
   `updated_by`，列表页直接显示。
 - **方案 B — 审计级归属**：回答「谁在什么时候改了什么、改了几次」。核心资源 CRUD
   接入 `audit_logs`，资源详情挂「变更历史」入口。
+- **第三问 — 触发人（2026-09-17 增补，见边界 11）**：执行/触发记录也要回答「这次是
+  谁触发的」，随方案 A 一起落（`execution_index` / `pipeline_runs` 已有列只需展示，
+  单条执行 `executions` 补 `triggered_by`）。
 
-**边界决策（10 项）**
+**边界决策（11 项；11 为 2026-09-17 用户增补，其余为 2026-09-07 原案）**
 
 1. **一个迁移：`060_p11_ownership.sql`**（原 056，2026-09-11 因 P8 占用 055/056、
    P9 占用 057 顺延为 058；2026-09-14 再被 P9-4 修订的 058 与 P9-4b 的 059 占用，
@@ -3281,10 +3286,14 @@ token 只发 read scope，delete 类工具不进 agent 工具面，被要求删�
    按更新人筛选没有真实场景。
 2. **不复制已有归属的表**：上面 12 张天生有 `created_by` 的表不补 `updated_by`
    （等有真实「谁改的」诉求再单独加，不在本阶段批量铺列）。
-3. **`updated_by` 只在用户触发的写路径更新**。调度器（`lib/schedule.ts`）、对账
-   （`lib/caseSync.ts`）、告警引擎（`lib/alerts.ts`）等系统路径写 `NULL`——「系统」
-   不是一个用户，写 NULL 语义为「非人工更新」，前端显示「系统」而不是空。禁止把这些
-   路径的 updated_by 硬塞成任务创建人。
+3. **`updated_by` 只在用户触发的写路径更新**。调度器（`lib/schedule.ts`）、告警引擎
+   （`lib/alerts.ts`）、Webhook 公开触发（`webhookTriggers.ts` 的 `last_triggered_at`）
+   等系统路径写 `NULL`——「系统」不是一个用户，写 NULL 语义为「非人工更新」，前端显示
+   「系统」而不是空。禁止把这些路径的 `updated_by` 硬塞成任务创建人。
+   **2026-09-17 复核更正**：本边界原先把 `lib/caseSync.ts` 也列为系统路径，实为误记——
+   该模块的四个导出函数**只**被 `cases.ts` 的「同步到流程」人工路由调用，没有任何调度 /
+   对账入口，因此 P11-4 给它写了 `updated_by`（`writeFlowNodes` 的 `actorId` 必填）。
+   同理 `lib/suiteMembers.ts`（用例/流程删除时从 manual 套件摘成员）也是人动作，写人。
 4. **REST 全挂、MCP 全挂、ingest 导入挂**。所有 INSERT 写 `context.user.id`（REST）
    或 Token 签发人（MCP，`mcpAuth` 已返回 createdBy）；`endpoints.ts` 的 duplicate、
    `ingest.ts` 的导入创建同样写入操作者。UPDATE 路径在既有 `updated_at = now()` 旁
@@ -3310,8 +3319,33 @@ token 只发 read scope，delete 类工具不进 agent 工具面，被要求删�
    updated_by 为 NULL 且 updated_at 新于 created_at 显示「系统」。i18n 三处词条。
 10. **不做版本历史/diff/回滚**——那是 P10 14.3 的范围（「接口变更追踪」），本阶段只
     回答归属，不回答内容演变。P7 11.0 边界 16 已把同一件事归到那里。
+11. **触发人可见（2026-09-17 用户增补）**：执行/触发记录也要回答「这次是谁触发的」。
+    归属是两问，资产问「谁建/谁改」，运行问「谁按的按钮」——同一阶段一起收口。
+    - **已有列，缺展示**：`execution_index.triggered_by`（迁移 057b）与
+      `pipeline_runs.triggered_by`（038）在人工路径已写入（REST 手动 / 套件 / 流程 =
+      `context.user.id`，MCP execute = Token 签发人；`flows.ts:432` / `suites.ts:266` /
+      `mcpToolsExecute.ts:261` / `trigger.ts:625`），定时 / Webhook / 非人 CI 留 NULL
+      （P9-1 收件口径，与边界 3 的「非人工」同义，前端显示「系统」）。但读侧 mapper
+      只回 uuid（`models/types.ts:2676`），前端零处渲染（`api.ts` 有 `triggeredBy?`
+      无人消费）——本阶段补读侧解析与展示，不需要动这些写路径。
+    - **缺落点**：单条执行 `executions`（001）无任何操作者列——手动跑一次接口、勾选执行
+      的套件成员、流程节点执行都只落这张表，「谁跑的」现在无处可查。补
+      `triggered_by UUID REFERENCES users(id) ON DELETE SET NULL`（第 15 张表，**不建
+      索引**——按触发人筛执行记录没有真实场景，与边界 1 同款取舍），并给
+      `EnqueueInput` 加可选 `triggeredBy`：REST → `context.user.id`，MCP execute →
+      Token 签发人，调度 / Webhook / CI → NULL。
+    - **子执行继承父执行触发人**（本项主要实现细节）：套件成员（`insertRun` 扇出）与
+      流程节点执行（worker 内 `flowGraph.ts:261` 落 `executions`）都要取父执行的
+      `execution_index.triggered_by`。否则「我手动跑了一次套件」下面几十条成员行全显示
+      「系统」——把「谁触发的」答成「没人触发」，比不显示更糟。
+    - **展示位置**：执行记录页三个 tab（单条 / 批量 / 父执行，`ExecutionRecords.tsx`）
+      与报告列表（套件报告 `SuiteReports.tsx`、CI 任务运行 `CiTaskList.tsx` /
+      `PipelineRunPage.tsx`、报告详情）的触发列，现有 `triggerLabel` 只渲染触发源，
+      扩为「触发源 · 触发人」；NULL 显示「系统」。项目成员均可见（同边界 7，无权限差异）。
+    - **不做**：按触发人筛选执行记录；在审计里重复记执行触发（`ci_task.trigger` 已在、
+      MCP execute 有 `mcp_tool.execute`）。
 
-### 16.1 数据库迁移：060_p11_ownership.sql（示意；原 056，2026-09-11 顺延 058、2026-09-14 再顺延 060）
+### 16.1 数据库迁移：064_p11_ownership.sql（**已实现 2026-09-17**；原 056，2026-09-11 顺延 058、2026-09-14 再顺延 060、实施时因 063 已被 P12 占用而实落 064，P14 顺延 065。下面为示意，实际形态见 `migrations/064_p11_ownership.sql` 与 16.6 实现状态）
 
 ```sql
 -- 14 张表同一模式，旧行 NULL 即可（不回填；项目未发布无历史包袱）
@@ -3322,41 +3356,328 @@ ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS updated_by UUID REFERENCES users(
 --   alert_rules / spec_modules 同款
 CREATE INDEX IF NOT EXISTS endpoints_project_created_by_idx ON endpoints(project_id, created_by);
 -- … 其余 13 张同款（只建 created_by，不建 updated_by，见边界 1）
+
+-- 第 15 张：单条执行的操作者（边界 11）。它是运行记录不是资产，只有一列、无索引，
+-- 也不参与上面的 created_by/updated_by 模式（执行行建了就定，没有「更新人」语义）。
+ALTER TABLE executions ADD COLUMN IF NOT EXISTS triggered_by UUID REFERENCES users(id) ON DELETE SET NULL;
 ```
 
-### 16.2 改动量与触点（立项摸底，2026-09-07）
+### 16.2 改动量与触点（立项摸底，2026-09-07；2026-09-17 补边界 11）
 
 | 项 | 方案 A | 方案 B | 触点 |
 | --- | --- | --- | --- |
-| 迁移 | 1 个文件，28 列 + 14 索引 | 0（复用 audit_logs） | `migrations/060_*.sql` |
-| INSERT | ~22 处写 created_by | ~22 处挂 create 审计 | routes/*.ts（14）+ mcpToolsWrite*（7）+ ingest.ts + lib/scripts.ts |
+| 迁移 | 1 个文件，29 列（14 表 × 2 + `executions.triggered_by`）+ 14 索引 | 0（复用 audit_logs） | `migrations/064_p11_ownership.sql` |
+| INSERT | ~22 处写 created_by + `EnqueueInput.triggeredBy` 一路下传 | ~22 处挂 create 审计 | routes/*.ts（14）+ mcpToolsWrite*（7）+ ingest.ts + lib/scripts.ts + lib/enqueue.ts |
 | UPDATE | ~23 处写 updated_by | ~23 处挂 update 审计 | 同上 + caseSync / schedule / suiteMembers / alerts（系统路径除外，边界 3） |
 | DELETE | —（不记列） | ~14 处挂 delete 审计 | routes/*.ts + mcpToolsWrite* |
-| types.ts | ~12 mapper + 类型加两字段 | 审计 detail 类型 | `models/types.ts` |
-| 前端 | api.ts + 11 列表组件加两列 | AuditLogsPanel 放权限 + 历史抽屉 | `components/*.tsx` |
+| types.ts | ~12 mapper + 类型加两字段；`Execution` / `ExecutionIndex` / `PipelineRun` 加 `triggeredByEmail` | 审计 detail 类型 | `models/types.ts` |
+| 前端 | api.ts + 11 列表组件加两列 + 执行记录/报告列表触发列并入触发人 | AuditLogsPanel 放权限 + 历史抽屉 | `components/*.tsx` |
 
-### 16.3 分批交付
+### 16.3 分批交付（两轮；批次细分见 16.6）
 
-- **P11-1（第一批，方案 A）**：迁移 060 + 全部 INSERT/UPDATE 触点写 user + mapper 加
-  字段 + 11 个列表加列。验收：任一核心资源创建后能在列表看到创建人；换人编辑后
-  更新人变化；系统路径（调度改 next_run_at）不显示人。
-- **P11-2（第二批，方案 B）**：AUDIT_ACTIONS 扩 42 动作 + 全写路径挂审计（成功后
-  fire-and-forget）+ 审计路由放开 developer + 过滤参数 targetType/targetId + 前端
-  「变更历史」抽屉。验收：对任一资源 create/update/delete 后审计页可见对应动作行；
+- **第一轮（方案 A + 触发人，P11-1 ~ P11-8）**：迁移 064 + 全部 INSERT/UPDATE 触点
+  写 user + `executions.triggered_by` 与 `EnqueueInput.triggeredBy` 下传（含子执行继承
+  父触发人）+ mapper 补字段与 `triggeredByEmail` 解析 + 11 个列表加列 + 执行记录/报告
+  列表触发列显示触发人。验收：任一核心资源创建后能在列表看到创建人；换人编辑后更新人
+  变化；系统路径（调度改 `next_run_at`）不显示人；手动跑一次套件/流程/接口后，父执行
+  与其下全部子执行都显示同一个触发人，定时与 Webhook 触发显示「系统」。
+- **第二轮（方案 B，P11-9 ~ P11-10）**：AUDIT_ACTIONS 扩 42 动作 + 全写路径挂审计
+  （成功后 fire-and-forget）+ 审计路由放开 developer + 过滤参数 targetType/targetId +
+  前端「变更历史」抽屉（**P11-9 = 前两项、P11-10 = 后三项，均已实现（2026-09-17）**）。
+  验收：对任一资源 create/update/delete 后审计页可见对应动作行；
   资源详情能拉出该资源的完整变更列表；viewer 调审计路由 403。
 
 ### 16.4 里程碑
 
 | 里程碑 | 阶段 | 交付物 | 验收标准 |
 | --- | --- | --- | --- |
-| M12 | P11 | 列级归属 + 资源 CRUD 全审计 | 任意核心资源可查「谁建/谁改」（列表直读 + 审计下钻两路）；系统写入显示「系统」；viewer 无审计读权 |
+| M12 | P11 | 列级归属 + 触发人可见 + 资源 CRUD 全审计 | 任意核心资源可查「谁建/谁改」（列表直读 + 审计下钻两路）；执行/报告记录可查「谁触发」（手动跑一次后父执行与全部子执行同一触发人）；系统写入与定时/Webhook 触发显示「系统」；viewer 无审计读权 |
 
 ### 16.5 明确不做
 
 - 不做逐版本 diff / 回滚（P10 14.3）。
 - 不做「按人筛选全部资产」的全局视图（P8 统计阶段的候选，有诉求再立项）。
+- 不做「按触发人筛选执行记录」（边界 11；`executions.triggered_by` 因此不建索引）。
 - 不给 12 张已带 created_by 的表批量补 updated_by（等真实诉求）。
 - 不在审计 detail 里记 payload 值或字段前后值（既有纪律，护栏已在 `lib/audit.ts`）。
+
+### 16.6 实施顺序（P11-1 … P11-10，2026-09-17 排定；批次口径见 16.3）
+
+| 步 | 内容 | 产出 |
+| --- | --- | --- |
+| P11-1 | **迁移 064**：14 张表 `created_by`/`updated_by` + `executions.triggered_by` + 14 个 `(project_id, created_by)` 索引（边界 1/11） — **已实现**（2026-09-17） | 本地库跑通，`\d executions` 见新列 |
+| P11-2 | **写路径 · 内容资产（REST）**：`endpoints.ts`（create / duplicate / 导入 / update，最大单独一批）→ `cases.ts` → `environments.ts` → `flows.ts` → `suites.ts` → `routes/scripts.ts` + `lib/scripts.ts` → `dataSources.ts`（`data_sources` + `sql_definitions`）→ `mocks.ts` → `specModules.ts` — **已实现**（2026-09-17） | 内容类资源的建/改落人 |
+| P11-3 | **写路径 · 调度与告警（REST）**：`schedules.ts` → `webhookTriggers.ts` → `notificationChannels.ts` → `alertRules.ts` — **已实现**（2026-09-17） | 调度与告警资源的建/改落人 |
+| P11-4 | **写路径 · MCP 与导入**：`mcpToolsWriteCore.ts`（endpoints / test_cases / flows / environments）→ `mcpToolsWriteCrud.ts`（suites / schedules / alert_rules）→ `mcpToolsWriteExtra.ts`（scripts）→ `mcpToolsSpec.ts`（spec_modules）→ `routes/specImport.ts` → `routes/ingest.ts`（写 `identity.createdBy` / 导入操作者）；**外加系统路径复核**（`schedule.ts` / `caseSync.ts` / `alerts.ts` 保持不写；`suiteMembers.ts` 是人动作要写） — **已实现**（2026-09-17；`caseSync.ts` 经复核改判为人路径并写人，见边界 3 更正） | MCP 与导入写路径落人；`updated_at = now()` 全部可归类「人 / 系统」 |
+| P11-5 | **读侧 mapper 与列表 JOIN**：`models/types.ts` 16 个 mapper 加 `createdByEmail`/`updatedByEmail`（14 张表 + `TestCaseSummary` + `SpecCase`）；各列表查询 LEFT JOIN users 取 email 快照（照 `mapAuditLog` 形制） — **已实现**（2026-09-17） | 列表接口回名字；viewer 亦可见（边界 7） |
+| P11-6 | **触发人（写路径 + 读侧）**：`EnqueueInput.triggeredBy` → `insertRun` 写 `executions.triggered_by`；REST 调用方（endpoints / cases / flows 单步 / suites / 批量）取 `context.user.id`、MCP execute 取 Token 签发人、调度 / Webhook / CI 留 NULL；**子执行继承**（套件成员由套件入队下发、流程节点由 worker 从父 `execution_index.triggered_by` 取）；`Execution` / `ExecutionIndex` / `PipelineRun` 补 `triggeredByEmail` 解析 — **已实现**（2026-09-17；另给 `BatchExecution` 派生同名读写侧，见实现状态） | 单条 / 父执行 / 报告三类记录都能答「谁触发」 |
+| P11-7 | **前端 · 资产归属列**：`api.ts` 类型（`createdByEmail`/`updatedByEmail`）+ 12 个列表位加两列（`EndpointList` / `FlowList` / `SuiteList` / `Environments` / `MockList` / `DataSourceList` / `PublicScripts` / `ResourceSchedules` / `Alerts` 两 tab / `SpecCases`；`CaseBox` 是卡片列表，改成 meta 行两项，见实现状态）+ `components/OwnerCell.tsx` + `.col-owner` + i18n — **已实现**（2026-09-17） | 列表直读「谁建 / 谁改」 |
+| P11-8 | **前端 · 触发人展示**：`api.ts` 加 `triggeredByEmail` + 抽 `lib/trigger.ts`（`triggerLabel` 扩为「触发源「引用」 · 触发人」、新增 `triggerPersonLabel`）；`ExecutionRecords.tsx` 三 tab 各加「触发人」列（原先没有触发列，见实现状态），`SuiteReports.tsx`（列表 + 详情，含免登录分享页）、`SuiteRunDrawer.tsx`、`CiTaskList.tsx`、`PipelineRunPage.tsx` 的触发列改为源 + 人 + i18n — **已实现**（2026-09-17） | 报告与执行记录直读「谁触发」；NULL → 「—」（手动）/「系统」（非手动） |
+| P11-9 | **审计动作 + 挂载（方案 B）**：`AUDIT_ACTIONS` 扩 14 资源 × create/update/delete ≈42 动作 + detail 类型（只字段名列表）；按 P11-2 ~ P11-4 同一文件顺序挂审计，成功后 fire-and-forget；批量删除（`endpoints.ts` batch-delete）落一行带 `ids` 数量 — **已实现**（2026-09-17；MCP 写工具与 `mcp_tool.write` 并行落资源动作，见实现状态） | 每个写路径都有动作行，detail 无 payload 值（边界 5/6） |
+| P11-10 | **审计读侧与前端 + 收尾**：`routes/systemUsers.ts` 项目审计路由放宽到 developer（viewer 仍 403）+ `targetType`/`targetId` 过滤；`AuditLogsPanel.tsx` 权限放开 + 资源详情「变更历史」抽屉（不做 diff，边界 8）+ i18n；更新本节与 16.3 状态，交用户验收 — **已实现**（2026-09-17；含项目「审计日志」页与 10 个资源的抽屉入口，见实现状态） | 审计下钻可用；viewer 403；两轮验收口径通过 |
+
+> **次序理由（2026-09-17）**：先迁移、再写路径、再读侧、最后前端——方案 A 与
+> `executions` / 触发人展示同轮落（一次迁移、一次前端轮），方案 B（P11-9 / P11-10）
+> 在其后独立一轮，避免「审计先挂、列还没写」时 detail 拿不到字段名。
+> 单个批次内部仍按「一个文件一次改动」推进，不把 P11-2 ~ P11-4 并成一次大改。
+>
+> **每批通则**：启动 / 重启服务与 type-check / build 由用户执行（AGENTS.md「验证归属」
+> 与「类型检查需显式请求」）；实现轮不自行跑测试或浏览器验收。
+
+**实现状态**
+
+- **P11-1（2026-09-17）**：`migrations/064_p11_ownership.sql` 落地。14 张核心表各补
+  `created_by` / `updated_by UUID REFERENCES users(id) ON DELETE SET NULL`（`ADD COLUMN
+  IF NOT EXISTS`，旧行不回填，边界 1/2）；14 条 `(project_id, created_by)` 索引（`updated_by`
+  无索引，边界 1）；第 15 张 `executions` 补 `triggered_by`（单列无索引，运行记录无「更新人」
+  语义，边界 11）。写路径（P11-2 ~ P11-4、P11-6）与读侧 / 前端（P11-5、P11-7、P11-8）
+  尚未接，迁移先行为的是让后续写入有列可落。**未在本地库执行、未验收**——按 AGENTS.md
+  验证归属，迁移与 `\d executions` 复核由用户跑 `./start.sh` 时完成。
+- **P11-2（2026-09-17）**：9 个 REST 写路径文件接入 `created_by` / `updated_by`，全部取
+  `context.user.id`。触点：`endpoints.ts` 5 处（create / patch / duplicate / 导入 update /
+  导入 insert；`WRITE_COLUMNS` 与 `writeValues()` 共享给 create 与导入，两处一起改，避免漂移）、
+  `cases.ts` 3 处（create INSERT / patch / 三处脚本持久化调用传 actor）、`environments.ts` 3 处、
+  `flows.ts` 2 处 + 2 处 actor、`suites.ts` 2 处、`routes/scripts.ts` 2 处、`dataSources.ts` 4 处、
+  `mocks.ts` 2 处、`specModules.ts` 3 处（含子树整块 UPDATE 与逐行 reorder）。
+  **`lib/scripts.ts` 加了 `actorId` 一路下传**（`persistCaseScripts` / `persistCaseLifecycleScripts` /
+  `persistFlowScripts` 三个导出函数为尾参默认 `null`，内部 helper 为必填）：匿名脚本的建、跨宿主
+  复制、以及在保存用例/流程时被就地改写（`UPDATE scripts SET content`）都落人。默认 `null` 是给
+  P11-4 的 MCP 调用方留的——那三个调用点在 P11-4 传 `identity.createdBy`。
+  两条**实现期发现**（不影响本轮验收，P11-4/前端轮需知）：
+  1. `environments` 表**没有 `created_at` / `updated_at` 列**（001 起就没有，P11-1 只补了
+     created_by/updated_by），所以它的 UPDATE 没有既有的 `updated_at = now()` 可依附，边界 9
+     的「`updated_at` 新于 `created_at` → 显示系统」在这张表上不成立。环境只由人工 REST 路径写，
+     `updated_by` 为 NULL 就是「建后未改过」，前端应显示「—」而不是「系统」。
+  2. `lib/caseSync.ts:writeFlowNodes` 的 `UPDATE flows SET nodes, updated_at = now()` 被
+     `cases.ts` 的**人工**「同步到流程」路由调用，而该文件在 P11-4 的「系统路径保持不写」名单里。
+     本轮按文件边界未动它，结果是同步一次流程会写 `updated_at` 而不写 `updated_by`（前端会显示
+     「系统」）。**P11-4 复核时必须区分**：`caseSync` 自己的对账入口不写，`writeFlowNodes` 这个
+     被人工路由复用的 helper 要么收 `actorId`、要么由调用方传入。
+- **P11-3（2026-09-17）**：4 个调度/告警 REST 文件接入，全部取 `context.user.id`。
+  `schedules.ts` 2 处（create INSERT / put）、`webhookTriggers.ts` 3 处（create / put /
+  rotate-secret）、`notificationChannels.ts` 3 处（create / put / 删除渠道时对
+  `alert_rules` 摘除悬空 `channel_ids` 的连带清理）、`alertRules.ts` 2 处（create / put）。
+  **两处刻意不写**（边界 3，均已在代码处留注释）：
+  1. `webhookTriggers.ts` 公开触发路由的 `UPDATE webhook_triggers SET last_triggered_at`
+     ——外部调用方触发的**运行事实**，没有登录用户可写；「触发人」这一问由 P11-6 的执行
+     记录回答，不在这张配置表上。
+  2. `lib/schedule.ts`（`next_run_at` / `last_run_at`）与 `lib/alerts.ts`
+     （`alert_rules.last_fired_at`）——调度器与告警引擎的系统路径，在 P11-4 的复核名单里，
+     本轮未动这两个文件。
+  **一条实现期发现**：`notificationChannels.ts` 的删除连带清理里，`alert_rules` 的
+  `channel_ids` 摘除按「内容确实变了」写了 `updated_by` + `updated_at`；同一个循环里
+  `test_suites.notify_config` 的摘除**未写**——它和 `ci_tasks` 共用一份语句模板，而
+  `ci_tasks` 不在 14 张表内（按边界 2 不补 `updated_by`），整批留给 P11-4 与
+  `suiteMembers.ts` 一起处理（同一类「级联改套件」的归属）。
+- **P11-4（2026-09-17）**：MCP 与导入写路径接入，actor 一律取 `identity.createdBy ?? null`
+  （Token 签发人，`McpIdentity.createdBy` 在类型上可选，故用 `?? null` 兜底）。
+  `mcpToolsWriteCore.ts` 8 处（`upsertEndpoint` 的 INSERT/UPDATE——`ENDPOINT_WRITE_COLUMNS`
+  与 `endpointWriteValues` 同步加列，供 `create_endpoint` / `copy_endpoint` 共用；
+  `update_endpoint`；`saveCase` 的 INSERT + `persistCaseLifecycleScripts`；
+  `update_case` 的 UPDATE + `persistCaseLifecycleScripts`；`upsert_flow` 的 INSERT/UPDATE +
+  `persistFlow`；`upsert_environment` 的 INSERT/UPDATE）、`mcpToolsWriteCrud.ts` 7 处
+  （`create_suite` 的 INSERT/UPDATE、`update_suite`、`create_schedule`、`update_schedule`、
+  `create_alert_rule` 的 INSERT/UPDATE、`update_alert_rule`；alert_rules 两个分支共用一份
+  `values` 数组，`$11` 在 INSERT 是 `created_by`、在 UPDATE 是 `updated_by`）、
+  `mcpToolsWriteExtra.ts` 3 处（`create_script` 的 INSERT/UPDATE、`update_script`）、
+  `mcpToolsSpec.ts` 1 处（`create_spec_module`）、`routes/specImport.ts` 1 处（模块前缀补建，
+  `ON CONFLICT DO NOTHING` 时保留原 `created_by`）、`routes/ingest.ts` 1 处（「从未匹配区
+  一键登记」建最小 endpoint；该处列清单手工镜像 `endpoints.ts` 的 `WRITE_COLUMNS`，注释已
+  同步）。**P11-2 留下的两处尾巴同轮收口**：`lib/caseSync.ts:writeFlowNodes` 收必填
+  `actorId`（复核后改判为人路径，见边界 3 更正）、`lib/suiteMembers.ts:detachSuiteMember`
+  收 `actorId`（人动作）；`notificationChannels.ts` 删除渠道的连带清理里，`test_suites`
+  的 `notify_config` 摘除补上 `updated_by` + `updated_at`，`ci_tasks` 因无该列（边界 2）
+  按表拼后缀跳过。
+  **系统路径复核结论（边界 3，均在代码处留注释）**：`lib/schedule.ts` 三条 UPDATE
+  （`next_run_at` / `last_run_at`）、`lib/alerts.ts` 的 `alert_rules.last_fired_at`、
+  `webhookTriggers.ts` 公开触发路由的 `last_triggered_at` **保持不写**——都是运行簿记，
+  没有登录用户在这一刻改过配置。三条 create 路径的内部跟写（`saveCase` 的 assertions、
+  `persistFlow` / `flows.ts` create 的 nodes）也不写 `updated_by`：它们是同一事务里
+  新建行的收尾，行上 `updated_by` 本就该是 NULL（显示「—」而非「系统」）。
+- **P11-5（2026-09-17）**：读侧落地。`models/types.ts` 新增 `Ownership` 类型（两字段
+  可选且可空，`null` 的语义是「本次查询没有这个值」）+ `ownershipEmail()` 取值口，
+  15 个实体类型 `& Ownership`、`SpecCase` 只加 `createdByEmail`；**16 个 mapper** 一并
+  回 `createdByEmail` / `updatedByEmail`（14 张表 + `TestCaseSummary`（CaseBox 用的就是
+  它）+ `SpecCase`）。
+  **字段名说明**：16.2 写的「加 `createdBy`/`updatedBy`」是列级归属的简称，实际落在 API 上
+  的是**两个 email 字段**——P11-7 的前端契约读的就是 `createdByEmail`/`updatedByEmail`，
+  且与既有 `ProjectMember.grantedByEmail`、`mapAuditLog.user_email` 同一形制。回 uuid 没有
+  消费方（没有「按用户 ID 跳转」的界面），故不发。原始 uuid 仍在表上，需要时再单开字段。
+  **列表 JOIN**：13 个路由文件的列表查询接上 `LEFT JOIN users creator/updater` 取 email
+  快照，覆盖边界 9 的 12 个列表组件的全部数据源（endpoints / cases / flows / test-suites /
+  environments / mocks / data-sources / sql-definitions / scripts / schedules /
+  webhook-triggers / notification-channels / alert-rules / spec-cases）。其中 schedules、
+  webhook-triggers 的投影常量被列表与详情共用，详情因此一起拿到归属；mocks / data-sources /
+  sql_definitions / environments / flows / test_suites 抽出 `SELECT_*` 投影常量（列表的
+  分页与全量两条分支共用一份，避免列清单漂移）。
+  **两个数据一致性陷阱（都在代码处留了注释）**：
+  1. 基表**必须显式取 `x.*`**。原来这些列表是 `SELECT *`，加 users join 后裸 `*` 会在两表
+     同名的 `id` / `name` / `created_at` 上取到 **users 的值**——映射会静默换行，不是报错。
+     为此把 8 处 `SELECT *` 改成 `SELECT <别名>.*` 并给基表起别名。
+  2. `endpoints` / `flows` / `test_suites` / `environments` 的 WHERE 里原本有不带前缀的列
+     （`name` / `description` / `tags` / `created_at` / `default_environment_id` …），join
+     users 后 `name` / `created_at` 会变 ambiguous（users 也有同名列）→ 报错。已一律加上
+     表前缀（cases / scripts / schedules / webhook-triggers / spec-cases / mocks 的子句本来
+     就带前缀，未动）。
+  **刻意不 join 的两处**：`spec_modules` 的模块树（边界 9 没有它对应的列表组件，字段照
+  `Ownership` 读成 null）；create/update 的 `RETURNING *` 与各详情内部读取。这些路径上
+  `createdByEmail` 为 null 表示「本次查询没取归属」，前端刷新列表后补齐。
+  **两处数据口径限制（前端 P11-7 必须知道，否则会显示错）**：
+  1. `SpecCases` 只有**创建人**：`spec_cases` 按边界 2 没有 `updated_by` 列，
+     `updatedByEmail` 不存在，「更新人」列只能显示「—」。
+  2. `Environments` 没有 created_at / updated_at（001 起就没有），边界 9 的
+     「`updated_at` 晚于 `created_at` → 显示系统」在这张表上不成立——`updatedByEmail`
+     为 null 只表示「建后没改过」，应显示「—」而不是「系统」。
+- **P11-6（2026-09-17）**：触发人（边界 11）落地。
+  **写路径**：`EnqueueInput.triggeredBy` → `insertRun` 写 `executions.triggered_by`（迁移 064
+  的唯一新列）。REST 三处取人：`queueEndpointRun` 加尾参（单条调试与**批量**两条调用点都传
+  `context.user.id`，因此批量里每一行都是按批量按钮的那个人）、`routes/flows.ts` 单步调试、
+  `routes/cases.ts` 执行用例；MCP 两处取 Token 签发人（`run_endpoint` 经 `queueEndpointRun`、
+  `run_case`）；调度 / Webhook / 非人 CI / 仓库上报（`ingest.ts` 的 `trigger_source='ci'`）
+  一律 NULL——已逐条核对，无需改这些写入点。
+  **子执行继承**（本项主要实现细节）：套件**用例**成员由 `performSuiteRun` 从 run_spec 里冻的
+  `spec.trigger.userId` 下发（`performSuiteRun` 本就把 flow/trigger 一并读出来）；套件**流程**
+  成员早已走 `insertFlowRun` 的 `trigger` 通道，本次核对待确认后未改；流程节点落
+  `executions` 的证据由 `flowGraph.executeRequestStep` 从 `GraphContext.triggeredBy` 继承，
+  该值由 `performFlowRun` 认领后**从父 `execution_index.triggered_by` 读一次**再下发（每个
+  节点各查一次库没有意义；`nested()` 展开上下文，子流程/循环体内层图同样继承）。
+  **读路径**：`TriggeredByEmail` 类型（两字段同 `Ownership` 的可选可空约定，但 null 语义
+  **不同**——那边是「建后没改过」显示「—」，这边是「非人触发」显示「系统」，已在类型注释里
+  写明不要统一）+ `Execution` / `ExecutionIndex` / `PipelineRun` / `BatchExecution` 四个
+  mapper 回 `triggeredByEmail`。查询接线的四种形态：
+  1. **executions 列表与详情**（`endpoints.ts`）：`LEFT JOIN users triggerer`（列表的 WHERE
+     已逐条 `executions.` 限定，加 join 不撞名）。
+  2. **pipeline-runs 列表与详情**（`pipelineRuns.ts`）：同上（列都带 `pr.` 前缀）。
+  3. **execution-index 列表与详情**（`executionIndex.ts`）：用**标量子查询**而不是 join——
+     这条 WHERE 的列没带前缀，`users` 同名的 `created_at` / `status` 会让整条查询 ambiguous。
+  4. **批量**（`batch_executions`）：**没有触发行人列**（064 只给 `executions` 加），但一次批量
+     里每一行的触发人必然相同 → 从成员行**派生**一列（标量子查询 `LIMIT 1`），不加列不加索引。
+  报告侧：`reportPayload.ts` 的套件报告详情（`ei` 上加一条 users join）与仓库报告详情、
+  `reports.ts` 的 `suite-reports` UNION（**两个分支列序必须一致**，触发人列在两支里都紧跟
+  `trigger_*` 三列）及其行内 mapper。`CiTaskList` 的触发列读的是**展开后的历史表**（该表的
+  数据源是 ci-tasks 的 runs 列表，已接线），收起行不显示触发源，故 `mapCiTask.lastRun` 未扩字段。
+  **刻意不接线的读取点**（字段读成 null = 「本次查询没取」，P11-8 不要在这些地方显示该列）：
+  接口/用例/流程抽屉的范围执行历史列表、MCP 的 `get_execution` / `list_executions`、
+  免登录分享页的 executions 列表、批量详情里的成员行、create/update/cancel 的
+  `RETURNING *`。另：`routes/flows.ts` 的 `executeGenericStep` 写的一次性自指索引行保持 NULL
+  （它被排除在父执行列表外，没有展示位）。
+  与 P11-5 的写侧无关，**未在本地库执行、未跑 `pnpm check`**（同上）。
+- **P11-7（2026-09-17）**：前端归属列落地，共 12 个列表位。
+  **类型**：`api.ts` 新增 `Ownership` 类型（与后端同名的可选可空两字段 + 三态语义注释），
+  14 个资源类型 `& Ownership`（Environment / DataSource / Mock / Endpoint / Script /
+  TestCase / TestCaseSummary / Flow / TestSuite / Schedule / WebhookTrigger /
+  NotificationChannel / AlertRule / SpecModule；`FlowSummary` 继承 Flow），`SpecCase` 只加
+  `createdByEmail`。
+  **共用件**：`components/OwnerCell.tsx`（三态：email / 「系统」/「—」；只有「更新人」列会把
+  空值 + `updatedAt > createdAt` 读成「系统」，创建人列的空值一律「—」）+ `.col-owner`
+  （148px，配 `.table-scroll` 兜底）+ 3 个共享 i18n 键（`common.createdBy` /
+  `common.updatedBy` / `common.bySystem`，zh + en 各一份）。
+  **12 个列表位**：EndpointList / FlowList / SuiteList / Environments / MockList /
+  DataSourceList / PublicScripts / ResourceSchedules / Alerts（channels + rules 两张表）/
+  SpecCases 用表格两列（SpecCases 只一列）；**CaseBox 例外**——它是工作台侧栏的卡片列表
+  （div + meta 行，没有表头），两列改成 meta 行里的「创建人 / 更新人」两项，仍然直读、仍然
+  走同一个 `OwnerCell`。
+  **三处必要的连带改动**（都在本批，理由写在代码注释里）：
+  1. **`.table-scroll` 包裹**：给 EndpointList / FlowList / SuiteList / Environments /
+     PublicScripts / ResourceSchedules / Alerts 七张原本裸 `<table class="grid">` 的表加了
+     滚动容器。新增两列各 148px，不包会让窄屏下右缘被 `overflow: hidden` 裁掉（看不见又够不着）；
+     包上之后横滚发生**表内**，页面本身仍永不横滚（Quiet Console 布局不变量，19 个组件已有的做法）。
+  2. **补 P11-5 漏掉的一条读侧 join**：工作台侧栏用例盒的数据源是
+     `GET /endpoints/:endpointId/cases`（后端 `routes/cases.ts` 的 `SELECT * FROM test_cases`），
+     P11-5 只接了项目级那份，这条没接 → 侧栏两列会永远空。本批补上 `LEFT JOIN users`。
+  3. **MockList 是唯一未本地化的列表页**（正文仍是字面中文）。新增的两列用共享 i18n 键，
+     其余未动——该页整体本地化另立项。
+  **两处按数据事实收窄（边界 9 原写「两列」）**：`SpecCases` 只加「创建人」（`spec_cases` 没有
+  `updated_by`，一列永远「—」比不显示更糟）；`Environments` 的两列空值只能是「—」（001 起就
+  没有时间列，没有「系统」这一态）。
+  **未在浏览器里跑**（AGENTS.md 验证归属）：只做了机械核对——逐文件 JSX 标签配平（table /
+  th / td / tr / `.table-scroll` 包裹）、逐表列与单元格对齐（colgroup ↔ th ↔ td ↔ OwnerCell
+  数量一致）。`pnpm check` / `pnpm build` 与 `/theme-preview.html` 两模式走查由用户执行。
+- **P11-8（2026-09-17）**：触发人展示落地。
+  **类型**：`api.ts` 新增 `TriggeredByEmail`（一字段，语义注释写明与 `Ownership` 的空值话术
+  **不同**：这里 null = 没有人工触发人），7 个类型 `& TriggeredByEmail`（Execution /
+  ExecutionIndex / `BatchDebugResult`（批量，`BatchDebugSummary` 经 `Omit` 继承）/
+  SuiteReport / SuiteReportSummary / `SuiteExecutionDetail` / PipelineRun）。
+  **共用件**：新 `lib/trigger.ts`——`triggerPersonLabel(t, email, source)`：有 email 就显示；
+  为空且触发源**不是手动**（定时 / Webhook / 非人 CI，边界 3 写 NULL）→「系统」；为空且是
+  手动 →「—」（这次响应没取到，如入队回执）；`triggerLabel(t, source, refName, email)`
+  **从 `SuiteReports.tsx` 迁到这里**（`SuiteRunDrawer` / `SuiteReports` 两处 import 改路径），
+  文案变成「触发源「引用」 · 触发人」，第 4 参显式 `undefined` 时只渲染触发源（兼容不带这一维
+  的形状）。i18n 加 `common.triggeredBy`（zh/en）。
+  **展示点**：`SuiteReports.tsx` 列表与报告详情（详情组件与**免登录分享页**共用 → 分享页
+  一起拿到）、`SuiteRunDrawer.tsx` 的报告标识行、`CiTaskList.tsx` 展开历史表的触发列（原来
+  只渲染触发源）、`PipelineRunPage.tsx` 的触发事实行（页头，项目内详情）。
+  **`ExecutionRecords.tsx` 三个 tab 原先没有触发列**（边界 11 的「展示位置」假设它已有）——
+  本批给三张表各加一列「触发人」：父执行 tab 有 `trigger_source` 可判，手动 + 缺 email 读
+  「—」；单条执行与批量**没有** `trigger_source`（`executions` 只存触发人），缺 email 一律读
+  「系统」。三张表同时包上 `.table-scroll`（与 P11-7 同一理由）。
+  **不接的两处**：看板的「触发源分布」是聚合读数（不是行级触发人，按人聚合另立项）；
+  免登录的 **Runner** 报告分享页本来就没有触发事实行（只渲染 `PipelineReportBody`，没有新
+  增展示位；套件分享页因为共用 `SuiteReportDetail` 自然拿到了）。
+  **未在浏览器里跑**：只做机械核对——文件内 JSX 标签配平、`ExecutionRecords` 的 3 表头 ↔
+  3 单元格 ↔ 3 包裹一一对应、5 处 `triggerLabel` 与 3 处 `triggerPersonLabel` 调用签名一致。
+  `pnpm check` / `pnpm build` 与两模式走查由用户执行。
+- **P11-9（2026-09-17）**：审计动作 + 全写路径挂载（方案 B）。`lib/audit.ts` 的 `AUDIT_ACTIONS`
+  扩 **42 个动作**（14 资源 × create/update/delete，`target_type` 与动作前缀同名，读侧
+  `targetType` 过滤直接可用），并加 `auditFields()`（只取请求体**键名**的排序列表，绝不读值）
+  与 `AuditFieldDetail` / `AuditBatchDetail` 两个 detail 形状类型；`AuditInput.targetId` 放宽为
+  `string | null`（批量动作没有单一目标行）。
+  **挂载**按 P11-2 ~ P11-4 同一文件顺序，全部在**主写路径成功之后** fire-and-forget：
+  `endpoints.ts`（create / update / duplicate / delete / batch-delete **一行带 `ids` 数量** /
+  import 逐条 create+update——逐条是为了资源「变更历史」拉得到）、`cases.ts`（create / update /
+  delete / sync-to-flows 逐条 `flow.update`）、`environments.ts`、`flows.ts`、`suites.ts`
+  （含 force 连带删的 schedule / webhook_trigger 各一行）、`routes/scripts.ts`、
+  `dataSources.ts`（data_sources + sql_definitions 各三处）、`mocks.ts`、`specModules.ts`
+  （reorder 落一行带数量）、`schedules.ts`、`webhookTriggers.ts`（rotate-secret 记
+  `{fields:["secret"]}`，明文不进）、`notificationChannels.ts`、`alertRules.ts`、`ciTasks.ts`
+  （连带删的 schedule / webhook_trigger）、`specImport.ts`（补建模块一行带数量）、`ingest.ts`
+  （「从未匹配区一键登记」）。
+  **MCP 写路径落两行**：`lib/mcpToolResult.ts` 新增 `auditMcpResource()`；`mcpToolsWriteCore`
+  （endpoint / case / flow / environment）、`mcpToolsWriteCrud`（suite / schedule / alert_rule）、
+  `mcpToolsWriteExtra`（script / environment）、`mcpToolsSpec`（spec_module）在每个写工具成功后
+  与既有 `mcp_tool.write` **并行**落一行同名资源动作（`userId` = Token 签发人）——前者答「经哪把
+  钥匙、哪个工具」，后者答「哪个资产的变更历史」。幂等命中（skip）分支不落资源动作。
+  **三处级联按「内容确实变了」补审计**（与 P11-3/P11-4 的 `updated_by` 口径一致）：删用例 / 流程
+  摘套件成员 → 逐条 `test_suite.update`（带 `detachedMember` 证据）；删通知渠道摘
+  `channel_ids` / `notify_config` → `alert_rule.update` / `test_suite.update`；删套件 / CI 任务
+  连带删调度与 Webhook 触发 → 各一行 `schedule.delete` / `webhook_trigger.delete`。
+  **刻意不挂**（边界 3 系统路径 + 非本阶段资源）：`lib/schedule.ts`（`next_run_at` /
+  `last_run_at`）、`lib/alerts.ts`（`last_fired_at`）、`webhookTriggers.ts` 公开触发的
+  `last_triggered_at`；`lib/scripts.ts` 的匿名脚本写（`owner_case_id` / `owner_flow_id`，随宿主
+  用例/流程的审计行）；`spec_cases` / `ci_tasks` 等不在 14 张表内的资源无同名动作。
+  **未在本地库执行、未跑 `pnpm check`**：按 AGENTS.md 验证归属，类型检查与手工验收由用户执行。
+- **P11-10（2026-09-17）**：审计读侧与前端 + 收尾。
+  **读侧放宽（边界 7）**：`lib/rbac.ts` 新增 `requireDeveloper`（判据与
+  `requireProjectAccess(…, true)` 相同——任何非 viewer 角色通过；单独命名是为了让「一次不含
+  viewer 的读」不必伪装成写权限），项目审计路由 `GET /projects/:id/audit-logs` 从
+  `requireProjectAdmin` 换成它：**developer 可读、viewer 仍 403**，系统管理员照旧短路。
+  **过滤与分页（边界 8 的数据面）**：同一路由接上 `action` / `targetType` / `targetId` 与
+  `page` / `pageSize`（缺省第 1 页 50 条，与旧「最近 50 条」同量），动态 WHERE 用
+  `params.push` + `$${params.length}`（规则 4），非法 `targetId` 在 uuid cast 前回 400（规则 5），
+  `meta` 从 `{ total }` 扩成 `{ page, pageSize, total }`。
+  **前端**：`api.projectAuditLogs(projectId, filters)` 改分页形状；`AuditLogsPanel.tsx` 新增
+  `projectId` 作用域（项目内不重复「项目」列、第二行改标 target_id 短前缀、加 `targetType`
+  过滤），同文件新增 `ProjectAuditPage`（项目配置 → **审计日志**页，`ProjectShell` 的
+  `nav.audit` 入口**对 viewer 不渲染**——路由不藏，后端仍是权限的单一事实）与
+  `ChangeHistoryDrawer`（按 `targetType + targetId` 拉行，只列动作 / 操作者 / 变更字段 / 时间，
+  **不做 diff**；字段名由 P11-9 的 `auditFields()` 写入，`DETAIL_KEYS` 把 `fields` / `ids` /
+  `imported` 排到前面）；i18n 补 `nav.audit` 与 8 个 `audit.*` 键（中英各一份）。
+  成员页的「最近变更（审计，最近 50 条）」摘要**跟着后端判据从 project_admin 放宽到
+  developer**（前端闸门比后端严也是一种漂移），完整视图仍在新的审计页。
+  **抽屉入口（8 个资源 10 处）**：接口工作台（`endpoint`，加载了用例则跟 `test_case` 走）、流程
+  工作台（`flow`）、套件工作台（`test_suite`）、数据源详情页（`data_source`）与 SQL 编辑抽屉
+  （`sql_definition`）、环境编辑抽屉（`environment`）、Mock 编辑抽屉（`mock`）、公共脚本编辑
+  抽屉（`script`）、调度编辑抽屉（`schedule`）、告警渠道与规则编辑抽屉（`notification_channel`
+  / `alert_rule`）；入口一律 `canWrite`（= developer+）才渲染，抽屉关闭时同时复位自己的
+  `open`，避免内嵌抽屉在外层抽屉关闭后仍留在屏幕上。
+  **未挂入口的两种资源**：`webhook_trigger` 前端至今没有管理界面（只有 API/MCP 路径），
+  `spec_module` 只有模块树（重命名/建删的 Modal，没有「模块详情」面）——两者的历史走项目
+  「审计日志」页的 `targetType` 过滤，符合边界 8 的「资源详情/工作台」字面范围。
+  **未在本地库执行、未跑 `pnpm check` / `pnpm build`、未做浏览器走查**：按 AGENTS.md 验证归属，
+  迁移、类型检查与手工验收均由用户执行（本批前端改动只做了机械核对——所有改动文件通过解析
+  级语法检查）。
+- **未在本地库执行、未跑 `pnpm check`**——按 AGENTS.md 验证归属，迁移、类型检查与手工验收
+  均由用户执行。
 
 ## 十七、后置：产物下载侧转发（P4.5 边界 14 修订，2026-09-11 用户确认，未排期）
 
