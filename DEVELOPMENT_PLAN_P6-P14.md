@@ -2645,6 +2645,16 @@ POST   /api/v1/notifications/read-all                   全部已读
     按钮直接进设置卡。
 - **e2e**：seed 直插通用协议 provider 行 + 经 API 为种子管理员配用户 agent（不再
   借 server 的 crypto.ts 本地加密）；用例断言不变（协议不变量天然与引擎解耦）。
+- **空库默认上游种子（2026-09-17 增补，用户要求）**：`seedAssistantProvider()`（照
+  `seedAdmin()` 先例在启动时跑一次）按名字幂等插入 `agent-vendor-agent`（固定名，agent-vendor 通用
+  协议 + `user_params`）；`assistant_providers` 原本为空时它同时是默认行，已有库则只补
+  一行、不抢默认位、不覆盖任何已有配置。baseUrl 从 **`agent-vendor_BASE_URL`** 读（内网地址
+  不入库），未配置则整体跳过。这样空库开箱不必等管理员手配即可到「配置我的 agent」
+  这一步。
+  同批修一条守卫缺陷（见 `issue_fix/问题记录-助手未配置空体两缺陷.md`）：
+  `loadResolvedDefaultAgent` 的「没有默认 agent」腿原先只 `return undefined` 没回响应，
+  Fastify 以 200 空体收场——前端把空体当数据（会话列表报错、建会话白屏）。补齐
+  503/2005 `fail` 后，未配置一律走 13.0 边界 15 的「未配置」引导，不是错误。
 - **验证**：前后端 `pnpm check` 通过；服务重启与实测按 AGENTS.md 留给用户。
   手工验收链路：系统管理建 provider（或用存量翻译行）→ 抽屉圆钮 → 设置卡配
   agentId/apiKey → 测试 → 保存（自动默认）→ 对话流式 → 切换上游再配一份 →

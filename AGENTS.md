@@ -50,6 +50,13 @@ Repo-root convenience scripts manage the four app processes (backend API, execut
 - `./start.sh --restart [api|worker|scheduler|web ...]` — stop the listed services (or all of them when none are named) and start them again. Useful after a backend change: `./start.sh --restart api worker` recycles only the two server-side processes while the frontend keeps running.
 - `./stop.sh` — stop the four app processes (kills the whole `pnpm → tsx → node` process tree). Postgres/Redis stay running.
 
+**Windows** (same semantics, PowerShell; `*.cmd` wrappers next to each script run with `-ExecutionPolicy Bypass` for double-click/cmd use):
+
+- `.\start.ps1` / `.\start.ps1 -Restart api worker` / `.\start.ps1 -SkipMigrate` — behind `start.cmd`.
+- `.\stop.ps1 [api worker ...]` — behind `stop.cmd`.
+- `apitest-runner` has its own pair: `.\start.ps1 [start|fg|stop|restart|status] [cli|api]` and `.\stop.ps1 [-Force]`.
+- Windows has no POSIX signals/`nohup`/`lsof`: background services run from a generated `.dev-logs\<name>.run.cmd` (`Start-Process`, hidden window, survives the terminal) and stop via `taskkill /T` on the pnpm→node tree; ports are probed with `TcpClient`.
+
 Implementation details:
 
 - Started processes write logs to `.dev-logs/{api,worker,scheduler,web}.log`; their PIDs are recorded in `.dev-pids` (`name=pid` lines). `stop.sh` kills from the pidfile first, then pattern-matches any leftovers.

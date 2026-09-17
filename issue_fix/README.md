@@ -83,6 +83,10 @@
 | 助手引擎响应路径双重解包 | `问题记录-助手引擎响应路径双重解包.md` | P9-4b 用户实测：任何配置正确的平台测试连接必报「assistant upstream did not return a conversation id」。根因是 `callJson` 预剥了一层 `data`，而协议的「会话 id 响应路径」本就是根相对设计——agent-vendor 的 `{"code":"0000","data":89}` 被剥成数字 `89` 后再取 `.data` 路径当场取空。修法：引擎返回响应根对象、路径配置说了算（引擎不解信封）；`engineHistory` 的独立读腿同款修正。修复后本地 agent-vendor（agentId=38）全链路实测通：建会话 → 工具行（get_project_overview EXECUTING/FINISHED）→ token 流式 |
 | 助手 MRTR 删除确认被当文字吞掉 | `问题记录-助手MRTR删除确认被当文字吞掉.md` | 2026-09-15 用户实测：让 agent 删环境，agent 说「已发送确认表单」但抽屉里什么都没有、聊天里回「确认」也无效。根因：/mcp 的 MRTR 闸门与 agent-vendor 转述都正常（确认请求以 `MESSAGE + data.type=ELICITATION + elicitationSchema` 到达聊天流），但引擎的 token 映射把它当普通文字增量，schema/工具名整体丢弃。修法：协议映射新增 `sse.elicit`（判别字段分流）+ `sse.tool.input`（确认卡拿删除目标），迁移 060 补 agent-vendor 方言协议；前端渲染 MRTR 确认表单卡，确认动作因上游第三方 resume 通道（/api/v1/chat/resume-elicitation）对 API-Key 会话稳定 5000 而走**本人 JWT 的既有 REST**（usage 两段式，与环境页同款）；provider 编辑面板 `buildInput` 改为保留表单未管理的协议键，防保存剥掉新映射 |
 | 助手凭据通道两缺陷 | `问题记录-助手凭据通道两缺陷.md` | 2026-09-16 P9-8 收尾自查（非用户实测）发现两处都在用户级凭据这条路上：① PUT `my-agents` 的 `params` 循环只验「键来自模式」、没排除 `secret: true` 项 ⇒ 明文 apiKey 可落进明文列并随 `GET /my-agents` 回显，且因 `toRuntimeAgent` 先铺 params 再叠 secrets 而**照常可用**、静默生效（破门槛 12）；修法：`secretKeys` 命中即 400，params 整份替换语义使下次保存即清残留，不回填（未上线）。② `toRuntimeAgent` 解密失败直接冒成 Fastify 500（函数注释写着「抛清楚」但无路由接住），用户拿不到指向性；修法：`loadResolvedDefaultAgent` 统一闸门 + 会话归属/测试连接两处同款 catch，一律 503/2005「去设置卡重填」，原因只进服务端日志 |
+| 助手未配置时列表报错 + 建会话白屏 | `问题记录-助手未配置空体两缺陷.md` | 2026-09-17 用户实测：provider 与个人 agent 都没配时，点开助手弹「会话列表加载失败」、点「新会话」白屏。同源根因：`loadResolvedDefaultAgent` 只处理了「凭据解密失败」这条腿，「没有默认 agent」时只 `return undefined` 没回响应 ⇒ Fastify 以 200 空体收场，前端把空体当数据（列表 `.some` 抛错、建会话 `undefined` 进列表后渲染读 `conversation.id` 白屏）。修法：后端补 503/2005 `fail`（守卫「拒绝即已回完」）；前端建会话空行按失败收口、闸门语义不弹错误 toast。配套新增空库默认 provider 种子（`agent-vendor-agent`） |
+| Windows 启动 minio 镜像下架 | `问题记录-Windows启动minio镜像下架.md` | 2026-09-17 Windows 首次起基建：`minio-init` 拉 `minio/mc:latest` 报 `manifest unknown`。根因是上游下架（MinIO 社区镜像 2025-10-23 停发、2026-02 归档），不是本仓库配置错。修法：`minio-init` 改用 `minio/minio` 镜像自带的 `mc`（healthcheck 本就在用它），初始化命令不变；两服务走 `MINIO_IMAGE` 覆盖口子。同批补齐 Windows 版 start/stop 脚本 |
+
+
 
 ## 约定
 
