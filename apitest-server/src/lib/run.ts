@@ -3,6 +3,7 @@ import { evaluateAssertions } from "./assert.js";
 import { publishEvent } from "./events.js";
 import { applyExtracts } from "./flow.js";
 import { applyPreRequestHooks } from "./hooks.js";
+import { getWriterObjectStore, type StorageDriverName } from "./objectStore.js";
 import { applyResponseScripts } from "./responseScripts.js";
 import type { HookRequest } from "./sandbox.js";
 import { resolveDeep, resolveVariables } from "./resolve.js";
@@ -14,8 +15,25 @@ import type { Assertion, AssertionResult, FlowExtract, FlowExtractResult, HookCo
 export { BODY_TYPES, METHODS } from "./http.js";
 
 const REQUEST_TIMEOUT_MS = 30_000;
-/** Responses are kept for reading, not archiving, so the tail is dropped. */
+/**
+ * Responses are kept for reading, not archiving, so the tail is dropped.
+ *
+ * P10-1 起「dropped」只对 `executions.response_body` 成立：超过这条线的正文整段
+ * 转存对象存储（`response_body_object_key`），行里仍只留前 10KB。断言 / extract /
+ * 响应脚本的契约不变——它们看到的还是这 10KB，通过率不因转存而变。
+ */
 const RESPONSE_LIMIT = 10_000;
+/**
+ * 转存落盘的字节上限（P10-1，2026-09-19 用户拍板：默认 8MB，与 `/ingest` 和 Runner
+ * complete 的口径对齐）。`response.text()` 本来就整段读进内存，这条线只约束**写进
+ * 对象存储的量**：超过它的正文按「无全量」处理（key 为空），行上仍有截断预览与真实大小。
+ */
+const RESPONSE_OFFLOAD_MAX_BYTES = Number(process.env.RESPONSE_OFFLOAD_MAX_BYTES ?? 8 * 1024 * 1024);
+
+/** 转存对象的 key：一次执行至多一个正文对象，由执行 id 派生，重写即覆盖（幂等）。 */
+export function responseBodyObjectKey(executionId: string): string {
+  return `executions/${executionId}/response`;
+}
 
 /**
  * 写一个头，同名（大小写不敏感）只留一份。
@@ -109,17 +127,27 @@ export type LoadedEnvironment = {
   secretValues: string[];
   /** Project opt-in: store execution evidence unmasked (Spec 4.6 放宽). */
   storePlaintext: boolean;
+  /**
+   * 项目级「大响应体转存对象存储」开关（P10-1，默认开）。与 `storePlaintext` 同源
+   * （`project_settings`），同样是项目属性而不是环境属性——没有环境的执行也要读到它。
+   */
+  offloadLargeResponse: boolean;
 };
 
 export async function loadEnvironment(projectId: string, environmentId: string | undefined): Promise<LoadedEnvironment> {
   if (!environmentId) {
     /* The plaintext flag is project-scoped, so a run without an environment must
        still read it — otherwise the toggle silently stays masked for such runs. */
-    const setting = await pool.query("SELECT store_plaintext FROM project_settings WHERE project_id = $1", [projectId]);
-    return { variables: {}, defaultHeaders: {}, secretValues: [], storePlaintext: Boolean(setting.rows[0]?.store_plaintext) };
+    const setting = await pool.query("SELECT store_plaintext, offload_large_response FROM project_settings WHERE project_id = $1", [projectId]);
+    return {
+      variables: {}, defaultHeaders: {}, secretValues: [],
+      storePlaintext: Boolean(setting.rows[0]?.store_plaintext),
+      /* 无行 = 列默认（true）：这张表只在项目设置被 PUT 过一次时才有行。 */
+      offloadLargeResponse: setting.rows[0] ? Boolean(setting.rows[0].offload_large_response) : true,
+    };
   }
   const result = await pool.query(
-    `SELECT e.*, ps.store_plaintext FROM environments e
+    `SELECT e.*, ps.store_plaintext, ps.offload_large_response FROM environments e
      LEFT JOIN project_settings ps ON ps.project_id = e.project_id
      WHERE e.id = $1 AND e.project_id = $2`,
     [environmentId, projectId],
@@ -133,6 +161,8 @@ export async function loadEnvironment(projectId: string, environmentId: string |
     defaultHeaders: (row.default_headers ?? {}) as Record<string, string>,
     secretValues: Object.values((row.secrets ?? {}) as Record<string, string>),
     storePlaintext: Boolean(row.store_plaintext),
+    /* LEFT JOIN 没配上设置行时是 NULL，按列默认 true 处理（与上面的无环境分支同口径）。 */
+    offloadLargeResponse: row.offload_large_response === null || row.offload_large_response === undefined ? true : Boolean(row.offload_large_response),
   };
 }
 
@@ -179,6 +209,13 @@ export type RunOutcome = {
   /** Masked, i.e. what gets stored and shown. */
   responseBody?: string;
   /**
+   * 完整正文转存到对象存储后的 key 与驱动（P10-1）。两者同时有或同时无：只有
+   * `responseTruncated` 且转存成功时才有值；转存关闭 / 超落盘上限 / 写入失败时为空，
+   * 行上仍是截断预览——「无全量」是一种合法状态，不是错误。
+   */
+  responseBodyObjectKey?: string;
+  responseBodyStorageDriver?: StorageDriverName;
+  /**
    * Unmasked, truncated body. Never stored — it exists so a flow can extract a
    * chained value out of it. Masking would replace a token that happens to equal
    * an environment secret, and the next step would then send the mask.
@@ -221,12 +258,23 @@ export async function executeRequest(options: {
   signal: AbortSignal;
   /** Shown if the request could not be built at all. */
   snapshot: unknown;
+  /**
+   * 这次执行的行 id：转存对象的 key 由它派生（P10-1）。不传就不转存——只有会落到
+   * `executions` 行上的调用才有资格拥有一个正文对象，否则对象没有任何行指着它。
+   */
+  executionId?: string;
 }): Promise<RunOutcome> {
   const outcome: RunOutcome = {
     status: "failed", durationMs: 0, request: options.snapshot,
     responseHeaders: {}, responseSizeBytes: 0, responseTruncated: false,
     assertionResults: [], extractResults: [], hookResults: [], responseScriptResults: [], temporaryVariables: {}, committedVariables: {},
   };
+  /**
+   * 转存推迟到计时结束之后（见函数尾）：写对象存储是平台开销，不是被测接口的耗时，
+   * 混进 `durationMs` 会让一个 5MB 响应的接口「看起来」慢了一次 S3 往返。这里只把
+   * 整段正文与脱敏函数带出 try 块——它本来就整段在内存里，没有第二份拷贝。
+   */
+  let pendingOffload: { text: string; contentType: string; mask: (value: unknown) => unknown } | undefined;
 
   const startedAt = performance.now();
   let responseOk = false;
@@ -313,6 +361,16 @@ export async function executeRequest(options: {
     outcome.responseTruncated = responseText.length > RESPONSE_LIMIT;
     outcome.rawBody = responseText.slice(0, RESPONSE_LIMIT);
     outcome.responseBody = maskValue(outcome.rawBody) as string;
+    /**
+     * 转存判定（P10-1）与截断**同一条线**：截断了才有「全量」可言，没截断的正文行里
+     * 本来就是完整的。开关是项目级；落盘上限是环境变量。三个条件缺一即「无全量」。
+     */
+    if (
+      outcome.responseTruncated && environment.offloadLargeResponse && options.executionId
+      && outcome.responseSizeBytes <= RESPONSE_OFFLOAD_MAX_BYTES
+    ) {
+      pendingOffload = { text: responseText, contentType: outcome.responseContentType ?? "application/octet-stream", mask: maskValue };
+    }
 
     if (options.extracts?.length) {
       /**
@@ -368,6 +426,8 @@ export async function executeRequest(options: {
   }
   outcome.durationMs = Math.round(performance.now() - startedAt);
 
+  if (pendingOffload && options.executionId) await offloadResponseBody(outcome, options.executionId, pendingOffload);
+
   /**
    * A case asserting `$.status = 404` must pass on a 404, so once assertions
    * exist they alone decide the verdict. Without them the run falls back to the
@@ -389,6 +449,33 @@ export async function executeRequest(options: {
   if (outcome.status === "success") outcome.committedVariables = { ...outcome.temporaryVariables };
 
   return outcome;
+}
+
+/**
+ * 把完整正文写进对象存储，成功才在 outcome 上落 key（P10-1）。
+ *
+ * **脱敏口径与内联 body 一致**：`store_plaintext` 关着的项目，对象里的也是打码后的
+ * 正文——否则「下载完整响应」就成了绕过全站脱敏的后门。打码对整段做，代价是一次
+ * 字符串替换，可接受。
+ *
+ * **写失败不让执行失败**：对象存储挂了 / 没配 bucket / 磁盘满，都只损失「全量」这一
+ * 项增量——行上的截断预览、断言结论、真实大小一样不少。失败只记日志，不进 `error`
+ * （那一栏是被测接口的事实，不是平台自己的运维事故）。
+ */
+async function offloadResponseBody(
+  outcome: RunOutcome,
+  executionId: string,
+  pending: { text: string; contentType: string; mask: (value: unknown) => unknown },
+): Promise<void> {
+  const key = responseBodyObjectKey(executionId);
+  try {
+    const store = await getWriterObjectStore();
+    await store.putObject(key, Buffer.from(String(pending.mask(pending.text)), "utf8"), { contentType: pending.contentType });
+    outcome.responseBodyObjectKey = key;
+    outcome.responseBodyStorageDriver = store.driver;
+  } catch (error) {
+    console.warn(`[run] response body offload failed for execution ${executionId} (${outcome.responseSizeBytes} bytes): ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /**
@@ -456,6 +543,7 @@ export async function performRun(executionId: string, signal: AbortSignal, worke
     },
     signal,
     snapshot: row.request_snapshot,
+    executionId,
   });
 
   /**
@@ -483,6 +571,10 @@ export async function performRun(executionId: string, signal: AbortSignal, worke
 /**
  * Writes the terminal state of one execution row. Returns false when the row
  * was no longer `running`, which means a cancel got there first.
+ *
+ * 正文对象的 key 与终态**同一条 UPDATE** 落下（P10-1）：不拆成「先 settle 再补 key」，
+ * 否则详情页会有一个窗口看不到下载入口。代价是取消恰好撞上大响应时对象已写、行不
+ * 指向它——孤儿对象归 P10-2 的生命周期处理，这里不为罕见竞态多一次 UPDATE。
  */
 export async function settleExecution(executionId: string, result: RunOutcome): Promise<boolean> {
   const settled = await pool.query(
@@ -492,6 +584,7 @@ export async function settleExecution(executionId: string, result: RunOutcome): 
        response_size_bytes = $9, response_truncated = $10, response_body = $11,
        assertion_results = $12::jsonb, extract_results = $13::jsonb, hook_results = $14::jsonb,
        response_script_results = $15::jsonb, finished_at = now(),
+       response_body_object_key = $16, response_body_storage_driver = $17,
        /* Cleared once terminal: it holds auth material and has no reader left. */
        run_spec = NULL
      WHERE id = $1 AND status = 'running' RETURNING status`,
@@ -501,6 +594,7 @@ export async function settleExecution(executionId: string, result: RunOutcome): 
       result.responseSizeBytes, result.responseTruncated, result.responseBody ?? null,
        JSON.stringify(result.assertionResults), JSON.stringify(result.extractResults), JSON.stringify(result.hookResults),
        JSON.stringify(result.responseScriptResults),
+       result.responseBodyObjectKey ?? null, result.responseBodyStorageDriver ?? null,
     ],
   );
   return Boolean(settled.rowCount);

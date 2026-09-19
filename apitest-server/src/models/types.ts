@@ -1950,6 +1950,9 @@ export function mapExecution(row: Record<string, unknown>): Execution {
     responseHeaders: (row.response_headers ?? {}) as Record<string, string>, responseContentType: row.response_content_type ? String(row.response_content_type) : undefined,
     responseSizeBytes: Number(row.response_size_bytes ?? 0), responseTruncated: Boolean(row.response_truncated),
     responseBody: row.response_body === null ? undefined : String(row.response_body),
+    /* 完整正文是否已转存对象存储（P10-1）：布尔而非把 key 回传——key 是驱动内寻址细节，
+       前端拿直链要走 presign，不该自己拼存储路径。 */
+    responseBodyStored: row.response_body_object_key !== null && row.response_body_object_key !== undefined,
     assertionResults: (row.assertion_results ?? []) as AssertionResult[],
     extractResults: (row.extract_results ?? []) as FlowExtractResult[],
     hookResults: (row.hook_results ?? []) as HookResult[],

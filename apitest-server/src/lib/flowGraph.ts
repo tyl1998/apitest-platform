@@ -288,6 +288,8 @@ export async function runGraph(
         request: node.request, assertions: node.assertions ?? [], extracts: node.extracts ?? [], hooks: node.preRequestHooks ?? [], responseScripts: node.responseScripts ?? [],
         environment: async () => ({ ...ctx.environment, variables: inputBag }), signal: AbortSignal.any([ctx.signal, ctx.deadline, handle.signal]),
         snapshot: { method: node.request.method, url: node.request.url, query: node.request.queryParams, headers: node.request.headers },
+        /* 流程节点的执行行就是它自己 INSERT 的这一行，转存 key 从它派生（P10-1）。 */
+        executionId,
       });
     } finally { releaseInflight(executionId); }
     const result: NodeOutcome = {

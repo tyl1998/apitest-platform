@@ -56,6 +56,15 @@ export interface ObjectStore {
    * 把报告装载与产物列表一起饿死。存在性查询是元数据级（HeadObject），不碰字节流。
    */
   objectExists(key: string): Promise<boolean>;
+  /**
+   * 服务端直接写一个对象（P10-1，大响应体转存）。
+   *
+   * 这不违反「平台永不代理大文件流」：那条约束禁的是把浏览器 / Runner 的字节流经
+   * API 进程中转；这里的字节是 worker 自己 `fetch` 回来、已经整段在内存里的响应正文，
+   * 除了它没有第二个持有者。key 由调用方定（带前缀，如 `executions/<id>/response`），
+   * 同 key 重写即覆盖——调用方以此保证幂等。
+   */
+  putObject(key: string, body: Buffer, opts: { contentType: string }): Promise<void>;
 }
 
 /* ── fs 驱动 ─────────────────────────────────────────────────────────────────── */
@@ -197,6 +206,19 @@ export async function getObjectStore(baseUrlFallback: string): Promise<ObjectSto
         const { stat } = await import("node:fs/promises");
         return stat(`${fsStorageRoot()}/${key}`).then((s) => s.isFile()).catch(() => false);
       },
+      async putObject(key, body) {
+        const { mkdir, writeFile } = await import("node:fs/promises");
+        const { dirname, join, resolve } = await import("node:path");
+        /* 与 routes/runners.ts 的落盘 / 下载同一条越界防线：key 是调用方拼的相对路径，
+           解析后必须仍在存储根之下。 */
+        const root = resolve(fsStorageRoot());
+        const file = resolve(join(root, key));
+        if (!file.startsWith(root + "/") && !file.startsWith(root + "\\")) {
+          throw new Error("object key escapes the storage root");
+        }
+        await mkdir(dirname(file), { recursive: true });
+        await writeFile(file, body);
+      },
     };
     return store;
   }
@@ -239,6 +261,15 @@ export async function getObjectStore(baseUrlFallback: string): Promise<ObjectSto
         throw error;
       }
     },
+    async putObject(key, body, opts) {
+      await s3.client.send(new PutObjectCommand({
+        Bucket: s3.bucket,
+        Key: key,
+        Body: body,
+        ContentType: opts.contentType,
+        ContentLength: body.length,
+      }));
+    },
   };
   return store;
 }
@@ -248,4 +279,19 @@ export async function getSharedObjectStore(baseUrlFallback: string): Promise<Obj
   if (cachedStore) return cachedStore;
   cachedStore = await getObjectStore(baseUrlFallback);
   return cachedStore;
+}
+
+/**
+ * 只写不签 URL 的调用方（worker 里的 `settleExecution` 转存大响应体，P10-1）取 store。
+ *
+ * worker / scheduler 进程手里没有 FastifyRequest，拿不到 `requestBaseUrl`；而 `putObject`
+ * 根本不用 base URL。但不能拿一个空 base 去喂 `getSharedObjectStore`：那个 memo 不带
+ * key，先到者的 base 会固化进之后每一条 fs 直链——万一哪天写路径进了 API 进程，
+ * 就把产物下载直链全签成 `/runner/artifacts/...` 这种没有 host 的相对地址。
+ * 所以：fs 驱动无状态、构造零开销，每次现造一个；s3 驱动的 client 才是要复用的东西，
+ * 而 s3 的 presign 从不用 base，共享它是安全的。
+ */
+export async function getWriterObjectStore(): Promise<ObjectStore> {
+  if (storageDriverName() === "fs") return getObjectStore(publicBaseUrl(""));
+  return getSharedObjectStore("");
 }

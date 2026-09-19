@@ -83,7 +83,7 @@ export async function projectRoutes(app: FastifyInstance) {
 
   app.get<{ Params: { id: string } }>("/api/v1/projects/:id/settings", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
-    const result = await pool.query("SELECT default_environment_id, store_plaintext, mcp_enabled FROM project_settings WHERE project_id = $1", [context.project.id]);
+    const result = await pool.query("SELECT default_environment_id, store_plaintext, mcp_enabled, offload_large_response FROM project_settings WHERE project_id = $1", [context.project.id]);
     const row = result.rows[0];
     return success({
       defaultEnvironmentId: row?.default_environment_id ? String(row.default_environment_id) : undefined,
@@ -92,13 +92,16 @@ export async function projectRoutes(app: FastifyInstance) {
          默认值在迁移的列默认上，不在行上。（assistant_enabled 已随 P9-4 修订摘除，
          迁移 058——助手不设项目闸门。） */
       mcpEnabled: Boolean(row?.mcp_enabled),
+      /* 无行 = true（P10-1）：转存的列默认是开，语义是「大响应体默认保全」，与上面
+         两个「默认关」的开关相反——缺行时照抄列默认，别照抄邻居。 */
+      offloadLargeResponse: row ? Boolean(row.offload_large_response) : true,
     });
   });
 
   /* 项目设置写改挂 requireProjectAdmin（P6 边界 4）：默认环境 / store_plaintext /
-     mcp_enabled 是项目级配置，project_admin 专属；资源 CRUD 仍走
-     developer 可写的 requireProjectAccess。 */
-  app.put<{ Params: { id: string }; Body: { defaultEnvironmentId?: string | null; storePlaintext?: boolean; mcpEnabled?: boolean } }>("/api/v1/projects/:id/settings", async (request, reply) => {
+     mcp_enabled / offload_large_response 是项目级配置，project_admin 专属；资源 CRUD
+     仍走 developer 可写的 requireProjectAccess。 */
+  app.put<{ Params: { id: string }; Body: { defaultEnvironmentId?: string | null; storePlaintext?: boolean; mcpEnabled?: boolean; offloadLargeResponse?: boolean } }>("/api/v1/projects/:id/settings", async (request, reply) => {
     const context = await requireProjectAdmin(request, reply); if (!context) return;
     const environmentId = request.body.defaultEnvironmentId ?? null;
     if (environmentId) {
@@ -111,26 +114,33 @@ export async function projectRoutes(app: FastifyInstance) {
     if (request.body.mcpEnabled !== undefined && typeof request.body.mcpEnabled !== "boolean") {
       return fail(reply, 400, 1001, "mcpEnabled must be a boolean");
     }
+    if (request.body.offloadLargeResponse !== undefined && typeof request.body.offloadLargeResponse !== "boolean") {
+      return fail(reply, 400, 1001, "offloadLargeResponse must be a boolean");
+    }
     /* 两个开关同款 COALESCE（计划 9.1 点名的坑）：只改默认环境的一次 PUT 不该把开关
-        顺手清回 false——显式传 false 才是「关掉」。UPDATE 侧必须引用**原始参数**
-        （$3/$4），不能引用 EXCLUDED：VALUES 侧为了让全新行拿到 NOT NULL 默认值
-        已经 COALESCE(null → false)，EXCLUDED 里的缺省开关永远是 false 而非 null，
-        再 COALESCE 就把未传的开关清掉了（局部 PUT 互相清开关的缺陷，记
-        issue_fix/问题记录-settings局部PUT互清开关.md）。 */
+         顺手清回 false——显式传 false 才是「关掉」。UPDATE 侧必须引用**原始参数**
+         （$3/$4/$5），不能引用 EXCLUDED：VALUES 侧为了让全新行拿到 NOT NULL 默认值
+         已经 COALESCE(null → 列默认)，EXCLUDED 里的缺省开关永远是列默认而非 null，
+         再 COALESCE 就把未传的开关清掉了（局部 PUT 互相清开关的缺陷，记
+         issue_fix/问题记录-settings局部PUT互清开关.md）。offload_large_response 的
+         列默认是 true（P10-1），VALUES 侧的缺省也必须是 true，否则第一次只改默认
+         环境的 PUT 会把一个从没被碰过的项目悄悄关掉转存。 */
     const result = await pool.query(
-      `INSERT INTO project_settings (project_id, default_environment_id, store_plaintext, mcp_enabled) VALUES ($1, $2, COALESCE($3, false), COALESCE($4, false))
+      `INSERT INTO project_settings (project_id, default_environment_id, store_plaintext, mcp_enabled, offload_large_response) VALUES ($1, $2, COALESCE($3, false), COALESCE($4, false), COALESCE($5, true))
        ON CONFLICT (project_id) DO UPDATE SET
           default_environment_id = EXCLUDED.default_environment_id,
           store_plaintext = COALESCE($3, project_settings.store_plaintext),
-          mcp_enabled = COALESCE($4, project_settings.mcp_enabled)
-       RETURNING default_environment_id, store_plaintext, mcp_enabled`,
-      [context.project.id, environmentId, request.body.storePlaintext ?? null, request.body.mcpEnabled ?? null],
+          mcp_enabled = COALESCE($4, project_settings.mcp_enabled),
+          offload_large_response = COALESCE($5, project_settings.offload_large_response)
+       RETURNING default_environment_id, store_plaintext, mcp_enabled, offload_large_response`,
+      [context.project.id, environmentId, request.body.storePlaintext ?? null, request.body.mcpEnabled ?? null, request.body.offloadLargeResponse ?? null],
     );
     const row = result.rows[0];
     return success({
       defaultEnvironmentId: row.default_environment_id ? String(row.default_environment_id) : undefined,
       storePlaintext: Boolean(row.store_plaintext),
       mcpEnabled: Boolean(row.mcp_enabled),
+      offloadLargeResponse: Boolean(row.offload_large_response),
     });
   });
 

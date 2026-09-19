@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { pool } from "../db.js";
 import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync, type AuditBatchDetail } from "../lib/audit.js";
 import { NoRunnerError, cancelBatch, cancelRun, enqueueRun } from "../lib/enqueue.js";
+import { getSharedObjectStore, requestBaseUrl, storageDriverName } from "../lib/objectStore.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, failNoRunner, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
@@ -556,6 +557,38 @@ export async function endpointRoutes(app: FastifyInstance) {
     );
     if (!result.rowCount) return fail(reply, 404, 2001, "execution not found");
     return success(mapExecution(result.rows[0]));
+  });
+
+  /**
+   * 完整响应体的下载直链（P10-1，计划 14.1）：`response_body_object_key` 有值的执行，
+   * 详情页的「下载完整响应」来这里换一条短活 presignGet 直链（fs 5 分钟，与产物列表
+   * 同款），浏览器随后直接打对象存储 / fs 直链端点——**平台不代理大流**（边界 14）。
+   *
+   * 直链按需签而不是随执行详情下发：详情被列表、分享、MCP 多处复用，行行都签等于给
+   * 每次列表多一次 HMAC / S3 签名，还会把短活 URL 泄进公开分享载荷。
+   */
+  app.get<{ Params: { id: string; executionId: string } }>("/api/v1/projects/:id/executions/:executionId/response-body", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply); if (!context) return;
+    if (!isUuid(request.params.executionId)) return fail(reply, 404, 2001, "execution not found");
+    const result = await pool.query(
+      "SELECT response_body_object_key, response_body_storage_driver FROM executions WHERE id = $1 AND project_id = $2",
+      [request.params.executionId, context.project.id],
+    );
+    if (!result.rowCount) return fail(reply, 404, 2001, "execution not found");
+    const row = result.rows[0];
+    if (!row.response_body_object_key) return fail(reply, 404, 2001, "this execution has no full response body stored");
+    /* 行上记的驱动与当前部署不一致（迁移 / 换驱动之后）：对象还在旧驱动里，新驱动签出的
+       直链必然 404。按「不存在」回答，而不是签一条打不开的链接。 */
+    if (String(row.response_body_storage_driver) !== storageDriverName()) {
+      return fail(reply, 404, 2001, "the full response body was stored with a different storage driver and is no longer reachable");
+    }
+    const store = await getSharedObjectStore(requestBaseUrl(request));
+    const downloadUrl = await store.presignGet(String(row.response_body_object_key), {
+      expiresSeconds: 300,
+      /* 文件名对齐分享 / 产物的净化规则（非安全边界，只防奇怪的响应头值）。 */
+      downloadName: `response-${request.params.executionId}.txt`,
+    });
+    return success({ downloadUrl, expiresIn: 300 });
   });
 
   app.get<{ Params: { id: string }; Querystring: { status?: string; endpointId?: string; source?: string; caseId?: string; from?: string; to?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/executions", async (request, reply) => {
