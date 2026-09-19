@@ -17,6 +17,7 @@ apitest-e2e-python/
 ├── drill/               # P9-8 上游异常演练（stub 假上游 + 逐项清单，非 pytest）
 ├── test_case/
 │   ├── auth/            # /api/v1/auth/*
+│   ├── p10/             # P10-1 大响应转存种子上游（造一条 responseBodyStored=true 的执行）
 │   ├── projects/        # /api/v1/projects*
 │   ├── runner/          # /api/v1/system/runner-*（Runner 相关只读查询）
 │   └── system/          # /api/v1/system/*（limits / runner-labels 只读查询）
@@ -78,6 +79,16 @@ python -m pytest test_case -v
 ```bash
 python -m pytest test_case -v --host http://127.0.0.1:3000
 ```
+
+## P10-1 前端核验种子（test_case/p10）
+
+给「下载完整响应」按钮造一条真实的大响应执行，跑通后打开浏览器核验：
+`python -m pytest test_case/p10 -v`。它起一个本机假上游（11KB 响应），建端点、
+排队执行并轮询到终态，断言 `responseBodyStored=true`，再走一遍详情页按钮调用的
+`/response-body` 直链端点。
+
+**前置：apitest-server 与 worker 都在跑**（执行队列从不内联进 API 进程）。若 worker
+没起，执行会停在 `queued`，用例按超时失败并提示，不会误当成通过。
 
 ## apitrack 上报（可选）
 
