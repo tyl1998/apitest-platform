@@ -35,7 +35,16 @@
 > P10-6 执行结果回放（边界待确认），见十四章；④ **新增 P10-7 前端列表首屏闪空态修复**
 > （零迁移、纯前端，根因与影响面见 14.5）；⑤ **新增 P10-8 顶层操作区不随内容滚动**
 > （零迁移、纯前端、改动面较大，分三步铺开，见 14.6）；**八批实施顺序见 14.4**（迁移线
-> 串行 065 → 066 → 067，零迁移批次并行收口；前端线 P10-7 → P10-8 内部串行）
+> 串行 065 → 066 → 067，零迁移批次并行收口；前端线 P10-7 → P10-8 内部串行）；
+> 2026-09-19 **P10-1 已实现**（迁移 065 落地：`executions.response_body_object_key` +
+> `response_body_storage_driver`、`project_settings.offload_large_response` 默认开；口径
+> 三条拍板与实现要点见 14.1 实现状态，下一步为 P10-2 分区表 066）；
+> 2026-09-19 **P10-8 已实现**（纯前端、零迁移）：三步铺完——统一载体 `PageToolbar` +
+> 后续「上下两张同宽卡片」形态（上卡固定 head/操作/搜索/筛选，下卡 `list-scroll` /
+> `table-scroll` 卡内滚动、表头吸附），覆盖列表页 / tab 页 / repo 页 / 详情页 / 工作台 /
+> 全局层；碰撞收口重算了 `.spec-tree` / `.workbench-side` / `.history-rail` 等既有 sticky
+> 偏移与写死视口高度。落点清单见 14.6 实现状态。残留小尾：过高 `filter-bar` 小屏限高、
+> `.flow-canvas` 族若日后进卡片模型再算。未跑 build/preview，目视验收由用户完成）
 > 归属: 本文件是 `DEVELOPMENT_PLAN.md` 的阶段扩编。四个新阶段插在 P5（MCP）之后、
 > 原 P6（性能/插件/版本，**已顺延为 P10，插件机制 2026-09-18 砍除**）之前；**P10 全章于 2026-09-05 自主计划
 > 十四章并入本文件**；**P11 于 2026-09-07 立项并入本文件十六章；P12 于 2026-09-14
@@ -3119,15 +3128,20 @@ token 只发 read scope，delete 类工具不进 agent 工具面，被要求删�
 
 **现状核对（2026-09-18，落码前先钉事实）**
 
+> 以下两条「现状」中，前两条已被 **P10-1（2026-09-19 实现）** 改写，保留原文作为该批次
+> 的提出依据；迁移起号已由 064 → **065**。第 3、4 条仍成立（P10-2 / P10-3 未做）。
+
 - **大响应体是硬砍丢弃，不是转存**：`lib/run.ts:311-315` 在 `RESPONSE_LIMIT = 10_000`
   处 `slice`，超出部分直接消失；`executions.response_body` 从未存过完整正文，只留
-  `response_truncated` 标志与 `response_size_bytes` 真实大小。
+  `response_truncated` 标志与 `response_size_bytes` 真实大小。**（P10-1 已改：超限正文
+  转存对象存储，行内仍只留预览。）**
 - **对象存储已就位但只服务产物**：`lib/objectStore.ts` 的 `fs` / `s3` 双驱动 +
   presign 上传/下载 + `getSharedObjectStore` memoize（P4.5 落地，见 8.4），执行记录侧
-  一字未用。
+  一字未用。**（P10-1 已改：新增 `putObject` 服务端写入，执行正文成为第二个消费者。）**
 - **没有查询缓存**：ioredis 只用于 BullMQ 队列 / 取消广播 / 告警订阅；唯一缓存是 P8-4
   给 `/stats/*` 的 **30s 进程内存 TTL**，多 API 实例不共享，也不覆盖其它热点读路径。
-- **`executions` 未分区**；最新迁移 **064**，本阶段起号 **065 / 066**。
+- **`executions` 未分区**；最新迁移 **064**，本阶段起号 **065 / 066**（**065 已用于
+  P10-1**，P10-2 起号 066）。
 
 #### P10-1 大响应体口径变更 + 转存对象存储（迁移 065）★口径变更，先定规则再写码
 
@@ -3142,6 +3156,37 @@ token 只发 read scope，delete 类工具不进 agent 工具面，被要求删�
   `RESPONSE_LIMIT` 契约保持），避免动断言判定与通过率。
 - **转存可关**：受项目或系统设置控制，默认小项目走 `fs` 即可，不强制依赖 S3。
 - **边界**：历史行无完整正文可补，`response_body_object_key` 为空即「无全量」，不回填。
+
+> **P10-1 实现状态（2026-09-19）**：迁移 **065**（`065_p10_response_body_offload.sql`）
+> 落地三条改动——`executions.response_body_object_key TEXT` +
+> `response_body_storage_driver TEXT CHECK ('fs','s3')`、`project_settings.offload_large_response
+> BOOLEAN NOT NULL DEFAULT true`。**未加 size / content-type 列**：002 的
+> `response_size_bytes` / `response_content_type` 记的本来就是完整正文的真实值与类型。
+> 对象 key 由执行 id 派生（`executions/<id>/response`），一次执行至多一个正文对象，同
+> key 重写即覆盖；**不走 `artifacts` 表**（039 注释里的预留在此收口为「用 executions 列」，
+> 理由：一次执行最多一个对象、多一张多态表只多一次 join）。
+>
+> **落码前拍板的三条口径（2026-09-19 用户确认）**：① **转存开关是项目级、默认开**——
+> 没有系统设置表，复用 `project_settings`（读写挂在 `requireProjectAdmin`，与前两个开关
+> 同权限）；**项目级开关默认 true 是这张表的第一例**，`VALUES` 侧缺省必须 COALESCE 到
+> `true`，否则「只改默认环境」的一次局部 PUT 会把没碰过的项目悄悄关掉转存。② **落盘上限
+> 走环境变量 `RESPONSE_OFFLOAD_MAX_BYTES`，默认 8MB**（与 `INGEST_MAX_BODY_BYTES` /
+> `RUNNER_COMPLETE_MAX_BODY_BYTES` 同口径）；`response.text()` 本来就整段进内存，这条线
+> 只约束写盘量。③ **公开分享页不提供「下载完整响应」**——那条通路要登录态的项目端点，
+> 分享页两者都没有，入口按 `publicView` 收起，公开证据闭包保持只读。
+>
+> **实现要点**：`lib/objectStore.ts` 的 `ObjectStore` 接口补 `putObject`（fs 直写 + 越界
+> 防护、s3 `PutObjectCommand`），并新增 `getWriterObjectStore()` 供无 `FastifyRequest` 的
+> worker 进程取 store（fs 现造、s3 复用 memo，避免把空 base 固化进产物直链）；转存在
+> `executeRequest` 里**脱敏后**写对象（对象里不能有明文 secret），且**推迟到 `durationMs`
+> 定格之后**——写对象是平台开销，不该算进被测接口的耗时；写失败只记日志，降级为「无全量」，
+> 不让执行失败。断言 / extract / 响应脚本仍只吃 10KB，判定与通过率零变化。读侧新增
+> `GET /api/v1/projects/:id/executions/:executionId/response-body` 按需签 5 分钟短活直链
+> （不随执行详情下发：详情被列表 / 分享 / MCP 复用，行行签会浪费并泄进分享载荷）；API 只
+> 回传布尔 `responseBodyStored`，不回传 key。前端 `DownloadFullResponseButton` 同时接入证据
+> 抽屉与接口工作台实时响应面板。**对象删除 / 生命周期仍留 P10-2**（对象与行同生命周期，
+> 不能只归档行留下孤儿对象）。**历史行不回填**；`responseBodyStored=false` 覆盖
+> 历史行 / 项目关闭转存 / 超上限 / 写入失败 四种合法状态。
 
 #### P10-2 执行历史归档（分区表，迁移 066）
 
@@ -3259,14 +3304,14 @@ ioredis 均在）。里程碑挂 M7。
 
 | 序 | 批次 | 迁移 | 前置 | 说明 |
 | --- | --- | --- | --- | --- |
-| 1 | **P10-1** 大响应体口径变更 + 转存对象存储 | 065 | — | 风险最高、口径变更，最先做、最先暴露问题 |
+| 1 | **P10-1** 大响应体口径变更 + 转存对象存储 | 065 | — | 风险最高、口径变更，最先做、最先暴露问题 —— **已实现**（2026-09-19，见 14.1 实现状态） |
 | 2 | **P10-2** 执行历史归档（分区表） | 066 | P10-1 | 对象生命周期必须先由 P10-1 定义 |
 | 3 | **P10-4** 统一版本模型 + 资产接入 | 067 | —（与性能线解耦） | 承接 065/066 之后，独占本迁移号 |
 | 4 | **P10-5** 版本列表 + diff 展示 + 回滚 | 无 | P10-4 | ★diff 改动内容是硬验收项 |
 | 5 | **P10-3** 查询缓存补齐 | 无 | P10-1 / P10-2 收口后 | 失效策略依赖写路径最终形状；可与 4 并行 |
 | 6 | **P10-6** 执行结果回放 | 待定 | P10-1 + 边界确认 | (a)/(b) 二选一后再排期 |
-| 7 | **P10-7** 前端列表首屏闪空态修复 | 无 | —（零迁移、纯前端） | 可与迁移线任一步并行；见 14.5 |
-| 8 | **P10-8** 顶层操作区不随内容滚动 | 无 | P10-7（`ui.tsx` 与列表页重叠） | 改动面大、分三步；见 14.6 |
+| 7 | **P10-7** 前端列表首屏闪空态修复 **[x] 已实现 2026-09-19** | 无 | —（零迁移、纯前端） | 见 14.5「实现状态」 |
+| 8 | **P10-8** 顶层操作区不随内容滚动 **[x] 已实现 2026-09-19** | 无 | P10-7（`ui.tsx` 与列表页重叠） | 改动面大、分三步；见 14.6 |
 
 **关键路径**：P10-1 → P10-2 → P10-4 → P10-5（版本线不阻塞性能线，但迁移线串行）。
 **可并行**：第 4 步（P10-5）、第 5 步（P10-3）不含迁移；前端线（第 7、8 步）亦可与迁移线并行。
@@ -3328,7 +3373,26 @@ ioredis 均在）。里程碑挂 M7。
 - **验收标准**：有数据的列表进入页面**不出现空态帧**（含项目切换）；加载中显示 loading 文案；
   空数据仍正确显示空态；双模式与 940/700/560/420 断点不回归。
 
-### 14.6 顶层操作区不随内容滚动（P10-8，零迁移，纯前端，改动面较大）
+**实现状态（已实现，2026-09-19）**——取最小改法，并一并修项目切换（用户口径「不闪屏」）：
+
+- **修法选型**：不引入 `useListData` 共享 hook；照 `Members.tsx:45-46` 先例把列表页 `loading`
+  初值改为 `true`（首次取数结束前不落 `!loading && <Empty>` 空分支），一处消除 M1/M2 两类闪空态。
+  `ui.tsx` 的 `Empty` **不加 pending 语义**：各页既有 `!loading &&` 守卫配合初值 true 即已不闪，
+  改 `Empty` 签名要动所有调用点、收益不抵改动面。
+- **落码文件（11 个列表 `loading` 初值 false→true）**：`Alerts` / `EndpointList` /
+  `ExecutionRecords` / `Environments` / `GlobalApp`（项目卡片墙）/ `FlowList` / `SuiteList` /
+  `SuiteReports` / `IngestRuns` / `IngestUnmatched` / `ResourceSchedules`。已 `useState(true)` 的
+  页面（`Members` / `CiTaskList` / `TestPlans` / `MockList` / `NotificationsPage` / `PublicScripts`
+  / `DataSourceList` / `DataSourceDetail`）与非 `!loading` 门控页（`McpPage` 走 `tools===undefined`、
+  `Trends` 走状态机）不动。
+- **第 4 条（项目切换旧数据残留）一并修**，未用 `main.tsx` 路由级 `key`（会重挂整壳、切项目闪
+  一下侧栏/顶栏），改为 `ProjectShell.tsx` 给 `<Outlet key={projectId}>`：切项目只重挂正文、壳保持
+  挂载，页面本地列表状态随之复位，消除旧数据残留且不闪壳。
+- **第 5 条 `projectStore.loadProject`**：改为**先 `set({ loading:true })` 再清 `environments`/
+  `endpoints`**，依赖 store 的筛选下拉据此显示「加载中」而非在清空到重取之间闪一帧空列表。
+  `refresh()` 维持不设 loading（只刷项目列表/角色，不属首屏取数窗口）。
+
+### 14.6 顶层操作区不随内容滚动（P10-8，零迁移，纯前端，改动面较大）— **[x] 已实现 2026-09-19**
 
 **问题（2026-09-18 用户报告）**：大部分页面下滑时，顶层操作区（搜索、新建、保存、筛选）会
 被一起滚走，用户必须在滚动中途回滚到顶部才能操作。期望：**顶层操作部分保持不动**，只有下方
@@ -3407,6 +3471,124 @@ ioredis 均在）。里程碑挂 M7。
 表格之上、在 `var-picker` 等正文浮层之下**，打开浮层时不被压在下面；④ `.spec-tree` /
 画布 / 历史栏等既有 sticky 与写死视口高度**无重叠、无裁切**；⑤ 940/700/560/420 断点与双
 模式不回归（含 ≤560px 的降级形态）；⑥ 无新增动画；⑦ 无横向滚动（`scrollWidth === clientWidth`）。
+
+**实现状态（分三步、每步停下供验收；吸附范围取「head + 操作/筛选行一起吸、小屏降级」）**
+
+- **决策点定案**：① 吸附范围＝`page-head` + 操作/筛选行一起吸；② 过高的 `filter-bar`（如
+  `ExecutionRecords`）本轮先整条吸附，限高/只吸首行留作第三步小屏降级一并处理；③ `.spec-tree`
+  等既有 sticky 的偏移重算在第三步；④ 列表页与工作台/编辑器分批验收——**第一步只做列表页**。
+
+- **[x] 第一步（已实现 2026-09-19）——统一载体 + 主体列表页**：
+  - `ui.tsx` 新增 `PageToolbar`（纯承载节点，不做 `position:fixed`）；`design-system.css` 新增
+    `.page-toolbar`：`position:sticky; top:0`、层级 token `--z-page-toolbar:5`（表格之上、
+    `var-picker-scrim`10 之下）、不透明底 `--bg`、靠负外边距把底色铺过 `.content` 顶/侧留白与
+    超宽屏右侧（解决 1680px 上限与透字）、`--line` 分界、条内 measure 与纵向间距统一接管。
+  - `.content` 顶/侧内边距抽成 `--content-pad-top`/`--content-pad-x` 变量，`.page-toolbar` 据此
+    对齐；`data-topnav`（全局壳）改写为覆盖该变量（全局页正文在第二步接入）。
+  - 铺到组合①列表页共 **10 个**：`EndpointList` / `FlowList` / `SuiteList` / `ExecutionRecords`
+    / `Members` / `TestPlans`(列表) / `DataSourceList` / `MockList` / `SuiteReports`(列表) /
+    `Trends`。（`EndpointList` 的 `bulk-bar` 选中条留在吸附条之外，随正文滚动。）
+
+- **[x] 第二步（已实现 2026-09-19）——组合②/③ 起步，后续经卡片化改版铺满全部页面**：
+  - **[x] 组合②`.tabs` 页**：`Environments`（page-head + envs/scripts tabs 一起吸；envs 的
+    `filter-bar` 留在正文）、`Alerts`（page-head + channels/rules/deliveries tabs）、`McpPage`
+    （仅 page-head）。
+  - **[x] 组合③ repo 页 5 个**：`CiTaskList` / `RepoCaseTree` / `IngestRuns` / `IngestUnmatched`
+    / `RepoCredentials`——各自把 `RepoPageHead` + `RepoTabs` 包进 `PageToolbar`；`CiTaskList` 的
+    `readouts` KPI 块留在吸附条外照常滚动（决策点 2 定案）。
+  - **[ ] 顺延到后续**：工作台保存条（结构与列表页不同、与 `.workbench-side`/`.history-rail`
+    既有 sticky 交叉，需随第三步偏移重算一起做）；组合④ 全局页（在 `.page-card` 内，包含块不同，
+    需先核 `.page-card` 是否形成 sticky 包含块）与 `NotificationsPage`/`MePage`（全局壳内）；
+    `SpecCases`（`.spec-split` 内，与 `.spec-tree` 同上下文，计划列为本批最高风险）；详情页
+    `SuiteReportPage`/`TestPlanPage`/`DataSourceDetail`。
+
+- **验收反馈修正（2026-09-19，第二步中）**：
+  1. **吸附条与正文分开**：`.page-toolbar` 底色由 `--bg` 抬到 `--surface`，**去掉 `border-bottom`
+     分界线**（下方可滚动内容自带边框，再画线会与它的顶边打架）；条内下缘留 `--s4`、与正文再由
+     `margin --s5` 拉开。确立纪律：**搜索/筛选输入框必须留在吸附区内**（`Environments` 原把 envs
+     的 `filter-bar` 漏在滚动区，滚动时输入框顶部被吸附条盖住，已移入 toolbar）。
+  2. **删除列表页中间态**：移除 `正在搜索…`/`common.loading` 这类首屏 loading 文案（12 个列表页：
+     `EndpointList`/`FlowList`/`SuiteList`/`ExecutionRecords`/`SuiteReports`/`Environments`/
+     `Members`/`TestPlans`/`DataSourceList`/`MockList`/`CiTaskList`/`IngestRuns`/`IngestUnmatched`/
+     `Alerts`），加载期间**不渲染任何中间态**；`Empty` 仍由 `!loading` 守卫（空数据不闪）。
+     保留：`CiTaskList` 展开行内的 `historyLoading`、`RepoCaseTree` 未放置面板、`Trends` 图表
+     状态机与详情页（`TestPlanPage`/`SuiteReportPage`）的加载态——那些不是列表首屏闪屏。
+  2b. **补齐（2026-09-19）**：`PublicScripts`（环境页 scripts tab）与 `RepoCaseTree` 主列表上
+     残留的 `common.loading` 中间态一并移除（`Empty` 仍由 `!loading` 守卫）；`IngestRuns`
+     展开行内的明细 loading 同样改为加载期间不渲染。仍保留的是「非列表首屏」加载态：
+     `CiTaskList` 展开行 `historyLoading`、`RepoCaseTree` 未放置面板与 `SpecCaseDrawer`、
+     勾选执行的触发弹窗任务列表、`Trends` 图表状态机、详情页加载态。
+
+- **卡片化改版（2026-09-19，第二步中；目标形态由「吸附条」改为「上下两张同宽卡片」）**：
+  - **形态**：`.content-split`（纵向 flex + `overflow:hidden`，正文不再整体滚动）把列表页
+    `main.content` 分成两张同宽卡片——上卡 `.page-toolbar`（`position:static`、边框圆角，
+    承载标题/描述/操作/搜索/筛选，固定不滚），下卡 `.list-card`（`display:flex;
+    flex-direction:column; overflow:hidden`，卡内滚动、表头吸附、滚动条在卡内），两卡间
+    `--s4` 间隙。高度由 flex 分配，不写死视口高度，标题行高变化不再裁切列表。
+  - **滚动归属（关键约束）**：表格页的滚动必须落在 `.list-card > .table-scroll`（`flex:1;
+    min-height:0; overflow:auto`）——`.table-scroll` 自身即滚动包含块，表头吸附才成立。
+  - **新增通用滚动容器 `.list-scroll`**（非表格内容：统计读数/图表/分区面板/树）：`flex:1;
+    min-height:0; overflow:auto`，内容按普通块流排，不被当成卡的 flex 子项压扁、也不会像
+    没有滚动容器那样被整块裁掉；空态用 `min-height:100%` 撑满滚动视口后居中。**表格页不得
+    用它**（滚动祖先变了会失效表头吸附）。`.list-card > * { min-width:0 }` 保留（防宽内容
+    撑破卡边）。
+  - **已卡片化**：`Environments`（样板）/ `EndpointList` / `FlowList` / `SuiteList` /
+    `DataSourceList` / `IngestRuns` / `IngestUnmatched` / `RepoCredentials` / `Members` /
+    `MockList` / `SuiteReports` / `Alerts` / `CiTaskList`；`Trends` 本轮改用 `list-scroll`
+    （非表格页原先无滚动容器，被 `overflow:hidden` 整块裁掉且不能滚）。
+  - **本轮新增**：`ExecutionRecords`（三种 `recordType` 分支同一时刻只渲染一条，卡内始终
+    只有一个 `.table-scroll`）、`TestPlans`（列表）、`RepoCaseTree`（覆盖率 KPI 连同
+    `countingNote` 从正文移入上卡，树体走 `list-scroll`）、`McpPage`（三个分区面板走
+    `list-scroll`）。
+  - **同根因补齐**（卡片化后卡内没有纵向滚动容器、内容被 `overflow:hidden` 整块裁掉）：
+    `RepoCredentials`（分区面板走 `list-scroll`）、`SuiteReports`（裸 `report-grid` 表补
+    `.table-scroll`）、`Alerts` 派发 tab（裸表补 `.table-scroll`）、`PublicScripts`
+    （环境页 scripts tab 的列表补 `.list-card`，此前 fragment 直挂 `.content-split` 无滚动）、
+    `IngestUnmatched`（不变量说明与「显示已静默」筛选移入上卡，主表 + 分页 + 末尾「判定规则」
+    面板统一走 `list-scroll`——此前面板作卡内静态页脚会被裁掉且够不着）、`Members`
+    （成员表与「最近审计」表同卡两张 `.table-scroll` 抢 `flex:1`，改为整块 `list-scroll`）。
+  - **已知待办**：`IngestUnmatched` 的末尾「判定规则」面板与主表同卡（主表 `table-scroll`
+    占 `flex:1`，面板作静态页脚，展开较高时会被裁）；过高 `filter-bar` 在小屏仍占较多高度
+    （限高留待后续）。
+
+- **剩余页面收口（2026-09-19 续做）**：
+  - **详情页转卡片**（`content-split` + 上卡 head/读数 + 下卡 `list-scroll`）：`TestPlanPage`
+    （读数进上卡、项表进下卡直接 `table-scroll`）、`SuiteReportPage`（`SuiteReportDetail`
+    拆 `head`/`body`，站内视图两张卡；分享页仍返回原始片段）、`DataSourceDetail`（head +
+    tabs 进上卡，配置/SQL 分支进 `list-scroll`）、`PipelineRunPage`（`RepoPageHead` 进上卡，
+    facts/notes/tabs/面板进 `list-scroll`）、`ProjectAuditPage`（审计表走 `list-card`）。
+  - **工作台保存条**：`EndpointWorkspace`（page-head + case-banner 进上卡，workbench 进
+    `list-scroll`）、`SuiteWorkspace`（page-head + run-bar 进上卡）、`CiTaskEditor`（页头 +
+    `RepoTabs` 进上卡，分区面板进 `list-scroll`）。`FlowWorkspace` 不改：`.flow-content`
+    本身是定高 flex 列（画布撑满、`.content` 不滚），页头原本就常驻。
+  - **用例库 `SpecCases`**：head + `filter-bar` 进上卡（`filter-bar` 从 `.spec-split` 右列
+    移到上卡），`.spec-split` 进 `list-scroll`；`≥941px` 时卡片给高度、左右两栏各自滚
+     （新增 `.list-card .spec-split`/`.spec-tree` 规则与右列 `.spec-main`），左树不再按视口
+     写死 `100dvh - 150px`。
+  - **筛选条进上卡 / 成员页去审计（2026-09-19 验收反馈）**：`IngestRuns`（筛选 + 总数）、
+    `Alerts` 派发 tab、`ProjectAuditPage`（描述进 `page-head`、筛选项进工具卡）的筛选项从
+    列表卡移到工具卡——只筛下面那张表的控件与它筛的表分居两卡，会读成「三个标签各管一段」。
+    `AuditLogsPanel` 为此拆成 `useAuditLogs`（状态）/ `AuditLogsFilters` / `AuditLogsTable`
+    三块，系统页那个自足面板的渲染不变。`Members` 删除表尾「最近变更（审计，最近 50 条）」
+    摘要：它与项目「审计日志」页同接口、同一批行，留着只是把一份可下钻的清单复述成不可
+    下钻的 50 行；随之删掉 `auditLogs` 状态、`AuditDetail` 依赖与 `members.auditTitle` /
+    `members.auditEmpty` 两个 i18n 键（中英各一份）。
+  - **全局层**：页面装在单张 `.page-card` 里。**改为「卡内滚动」**（2026-09-19 验收：卡内
+    sticky 会让正文滑到操作区之上/之下重叠）——`.content` 不再滚动，`.page-card` 撑满视口
+    高度成 flex 列，`.page-card-toolbar` 固定在卡顶（flex、非 sticky），正文在
+    `.page-card-body` 里滚动；铺到 `DashboardPage`（head + 筛选提示）、`ProjectsPage`
+    （head + filter-bar）、`SystemPage`（head + tabs）、`MePage`（head + tabs）。
+  - **第三步碰撞收口（本轮做掉的部分）**：`.list-card .mindmap-canvas` 改为填满右栏
+    （`height:100%`）、`.list-scroll .history-card` 高度按卡高重算（`calc(100dvh - 300px)`）；
+    `.workbench-side`/`.history-rail` 的 sticky `top` 仍在卡内生效（口径与原文一致）；
+    `≤560px` 新增卡片内距收紧。`FlowWorkspace` 的 `.flow-canvas`/`.flow-list-wrap` 写死高度
+    未动（该页未进卡片模型）。
+  - **未做/待验收**：`SpecCases`、工作台、全局层与详情页改版需**人工目视验收**（本次未跑
+    build/preview）；`.spec-tree` 在 `≥941px` 的「卡内定高 + 双栏自滚」是最大改动点。
+
+- **[x] 第三步（碰撞收口，已实现 2026-09-19）**：`top` 与写死 `calc(100dvh - N)` 已在卡片化页面按卡高重算
+  （见上）；`≤560px` 卡片内距降级已加。**残留小尾（不阻塞本阶段）**：过高 `filter-bar` 限高、
+  `.flow-canvas` 族若日后进卡片模型需再算。
 
 ---
 
