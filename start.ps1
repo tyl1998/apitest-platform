@@ -160,22 +160,33 @@ Remove-Item Env:WORKER_LABELS -ErrorAction SilentlyContinue
 # 调度器（P3-4）：第三个进程。cron 认领 / 漏跑判定 / 告警派发都在它里面；多实例安全
 # 但推荐单实例。改后端调度逻辑后 .\start.ps1 -Restart scheduler 即可单独回收它。
 Start-One scheduler $Server "pnpm.cmd scheduler"
-Start-One web       $Web "pnpm.cmd dev -- --host 0.0.0.0 --port 5173"
+# 直接 exec vite：`pnpm dev -- --host ...` 在 Windows 下 pnpm.cmd 会把字面 `--` 也
+# 透传给 vite，vite(cac) 把 `--` 之后的东西当成尾随参数而不解析，于是 --host 不生效、
+# 只绑默认 localhost(::1)。用 pnpm exec 直接把参数交给 vite，绑到 0.0.0.0 供局域网访问。
+Start-One web       $Web "pnpm.cmd exec vite --host 0.0.0.0 --port 5173"
 
 # 执行分区（P2-8）与 Runner（P4.5）**本脚本不自动拉起**：前者要在目标网段的机器上，
 # 后者通常部署在另一台机器（只出站 HTTPS 到本平台）。Runner 见 apitest-runner\start.ps1。
 
 # ── 等待就绪 ────────────────────────────────────────────────────────────────
 function Test-TcpPort([int]$Port) {
-  $client = New-Object System.Net.Sockets.TcpClient
-  try {
-    $client.Connect("127.0.0.1", $Port)
-    return $true
-  } catch {
-    return $false
-  } finally {
-    $client.Dispose()
+  # 同时探 IPv4/IPv6 回环：vite 默认 host 会绑到 ::1，只探 127.0.0.1 会永远连不上，
+  # 于是 Wait-Port 白白耗满 60s（bash 版用 lsof 不区分地址族，所以没这问题）。
+  # 每次连接带 1s 超时，避免「端口被占但不回应」时 Connect 阻塞。
+  foreach ($h in @("127.0.0.1", "::1")) {
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+      $iar = $client.BeginConnect($h, $Port, $null, $null)
+      if ($iar.AsyncWaitHandle.WaitOne(1000) -and $client.Connected) {
+        $client.EndConnect($iar)
+        return $true
+      }
+    } catch {
+    } finally {
+      $client.Close()
+    }
   }
+  return $false
 }
 
 function Wait-Port([string]$Name, [int]$Port, [string]$Log) {
