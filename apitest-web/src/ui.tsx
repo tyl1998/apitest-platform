@@ -154,6 +154,16 @@ export function Empty({ title, hint, action }: { title: string; hint: string; ac
   );
 }
 
+/**
+ * 列表页顶部操作区吸附条（P10-8）：把 `page-head` 与搜索/新建/筛选行包进来，下滑
+ * 时保持可见、正文从其下方穿过。样式全在 design-system.css 的 `.page-toolbar`
+ * （sticky / 不透明底 / 铺满滚动条宽度 / 层级 / 纵向间距），这里只提供承载节点，
+ * 不引入 position:fixed（那会退化成第二个壳层，违背「只有 .content 滚动」）。
+ */
+export function PageToolbar({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={className ? `page-toolbar ${className}` : "page-toolbar"}>{children}</div>;
+}
+
 const PHASES = ["dns", "tcp", "tls", "ttfb", "body"] as const;
 const PHASE_LABEL: Record<(typeof PHASES)[number], string> = {
   dns: "DNS", tcp: "TCP", tls: "TLS", ttfb: "TTFB", body: "下载",

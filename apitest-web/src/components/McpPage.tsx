@@ -6,7 +6,7 @@ import { Unlink } from "lucide-react";
 import { api, type McpProjectBinding, type McpScope, type McpToolSummary } from "../api";
 import { useCanManageProject } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty } from "../ui";
+import { Empty, PageToolbar } from "../ui";
 import { apiMessage } from "./DataSourceList";
 import { CopyButton } from "./CopyButton";
 
@@ -100,7 +100,8 @@ export function McpPage() {
     count: (tools ?? []).filter((tool) => tool.scope === scope).length,
   }));
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div>
         <h1>{t("mcp.title")}</h1>
@@ -119,12 +120,15 @@ export function McpPage() {
         </label>}
       </div>
     </div>
+    </PageToolbar>
 
+    <div className="list-card">
     {failed ? <Empty
       title={t("mcp.loadFailed")}
       hint={t("mcp.loadFailedHint")}
       action={<button className="btn" onClick={() => void load()}>{t("action.retry")}</button>}
     /> : bindings === undefined || tools === undefined ? <p className="muted">{t("common.loading")}</p> : <>
+      <div className="list-scroll">
       {/* ── 一、服务与端点 ──────────────────────────────────────────────────── */}
       <section className="panel">
         <div className="panel-head"><strong>{t("mcp.service")}</strong></div>
@@ -215,6 +219,8 @@ export function McpPage() {
           </table></div>
         </div>
       </section>
+    </div>
     </>}
+    </div>
   </main>;
 }

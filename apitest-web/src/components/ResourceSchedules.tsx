@@ -71,7 +71,8 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
   const [total, setTotal] = useState(0);
   const [overdue, setOverdue] = useState(0);
   const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(false);
+  /* 初值 true：首帧取数尚未发出，false 会让有数据的列表先闪一帧空态（P10-7）。 */
+  const [loading, setLoading] = useState(true);
 
   const [editing, setEditing] = useState<Schedule | "new">();
   /* 「变更历史」抽屉（P11-10 边界 8）：新建时还没有 target_id。调度器改的

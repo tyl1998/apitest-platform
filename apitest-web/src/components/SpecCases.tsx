@@ -9,7 +9,7 @@ import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
 import { useDebounced } from "../hooks/useDebounced";
 import { saveBlob } from "../lib/download";
-import { Empty, Status, Tip, toRunStatus, type RunStatus } from "../ui";
+import { Empty, PageToolbar, Status, Tip, toRunStatus, type RunStatus } from "../ui";
 import { IconButton } from "./IconButton";
 import { OwnerCell } from "./OwnerCell";
 import { SpecImportModal } from "./SpecImportModal";
@@ -971,7 +971,8 @@ export function SpecCases() {
     {data.items.length > 0 && <div className="pager"><Pagination current={page} pageSize={pageSize} total={data.total} pageSizeOptions={PAGE_SIZES} showSizeChanger showQuickJumper={data.total > pageSize * 5} onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }} /></div>}
   </>;
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div><h1>{t("specCases.title")}</h1><p>{t("specCases.hint")}</p></div>
       <div className="topbar-actions">
@@ -992,7 +993,11 @@ export function SpecCases() {
         {canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => setEditing("new")}><Plus size={14} />{t("specCases.create")}</button>}
       </div>
     </div>
+    {filterBar}
+    </PageToolbar>
 
+    <div className="list-card">
+    <div className="list-scroll">
     {/* 树面板在两个视图里都常驻（第五轮反馈：脑图不解析树，树不动）；切换只换右半。 */}
     <div className="spec-split">
       <aside className="spec-tree">
@@ -1038,8 +1043,7 @@ export function SpecCases() {
               {renderTree(moduleTreeNodes, 0)}
             </>}
       </aside>
-      <div style={{ minWidth: 0 }}>
-        {filterBar}
+      <div className="spec-main">
         {view === "mindmap" ? (projectId && <SpecMindMap
           /* key=projectId：切项目整图重挂（展开集不跨项目）。 */
           key={projectId}
@@ -1060,6 +1064,8 @@ export function SpecCases() {
           onSaved={bumpRevision}
         />) : <>{bulkBar}{caseTable}</>}
       </div>
+    </div>
+    </div>
     </div>
 
     {/* ── 批量动作弹窗 ─────────────────────────────────────────────────────── */}

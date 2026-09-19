@@ -3,21 +3,23 @@ import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 import { UserPlus } from "lucide-react";
-import { api, type AuditLog, type MemberCandidate, type ProjectMember, type ProjectRole } from "../api";
+import { api, type MemberCandidate, type ProjectMember, type ProjectRole } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
-import { useCanManageProject, useCanWrite } from "../hooks/useMyRole";
+import { useCanManageProject } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty, Status, Tip } from "../ui";
-import { AuditDetail } from "./AuditLogsPanel";
+import { Empty, PageToolbar, Status, Tip } from "../ui";
 
 /**
  * 成员与权限（P6-4，计划 10.3）：成员表（角色下拉就地改）+ 添加成员（搜索平台用户 →
- * 选角色）+ 最近审计 50 条。
+ * 选角色）。
  *
  * 页面对 viewer/developer 也可读（`GET /members` 是项目读权限——「知道找谁要权限」
  * 是这张表的产品理由），但**管理面**（添加 / 改角色 / 移除）只对 project_admin 渲染
- * （边界 6「只藏入口不做禁用态」；后端守卫才是权限的单一事实）。审计摘要自 P11-10 起
- * 对 developer 也渲染（读权放宽到 developer，边界 7），完整视图在项目配置 → 审计日志页。
+ * （边界 6「只藏入口不做禁用态」；后端守卫才是权限的单一事实）。
+ *
+ * 审计摘要曾嵌在表尾（P6-2/P11-10），2026-09-19 删除：它的内容与项目配置 → 审计日志页
+ * 完全重合（同一接口、同一批行），成员页留着只是把一份可下钻的清单复述成不可下钻的
+ * 50 行；「刚才谁动了谁」由那一个入口回答，这一页只管成员。
  *
  * 最后一个 project_admin 在 UI 层就锁死（不渲染下拉与移除，给 Tip 说明）——那两个
  * 操作必然 409，「一个必然失败的按钮比没有按钮更糟」（与 UsersPanel 的自锁闸同款
@@ -36,12 +38,8 @@ export function Members() {
   const { projectId } = useParams();
   const { projectId: loadedProjectId, loading: projectLoading } = useProjectStore();
   const canManage = useCanManageProject();
-  /* 审计读的最小角色是 developer（P11-10 边界 7），比「管成员」低一档——摘要视图跟着
-     后端判据走，否则 developer 会在成员页被一个前端闸门挡住，而接口是允许他的。 */
-  const canReadAudit = useCanWrite();
 
   const [members, setMembers] = useState<ProjectMember[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   /* 初始 true：项目 store 未就位前 load 不发请求，false 会让空态闪一下「还没有成员」。 */
   const [loading, setLoading] = useState(true);
 
@@ -57,15 +55,11 @@ export function Members() {
     if (!projectId || loadedProjectId !== projectId || projectLoading) return;
     setLoading(true);
     try {
-      /* 审计区是摘要视图（完整审计在项目配置 → 审计日志页）：viewer 连请求都不发
-         （403 不是错误处理，是这条路径不该存在）。 */
-      const requests: Promise<void>[] = [api.members(projectId).then(setMembers)];
-      if (canReadAudit) requests.push(api.projectAuditLogs(projectId).then((result) => setAuditLogs(result.items)));
-      await Promise.all(requests);
+      setMembers(await api.members(projectId));
     } catch {
       message.error(t("members.loadFailed"));
     } finally { setLoading(false); }
-  }, [projectId, loadedProjectId, projectLoading, canManage, canReadAudit, t]);
+  }, [projectId, loadedProjectId, projectLoading, t]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -134,7 +128,8 @@ export function Members() {
   /* 唯一的 project_admin：改角色/移除必然 409，UI 直接不给这两个入口（文件头注释）。 */
   const adminCount = members.filter((member) => member.role === "project_admin").length;
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div><h1>{t("members.title")}</h1><p>{t("members.hint")}</p></div>
     </div>
@@ -163,7 +158,12 @@ export function Members() {
         <UserPlus size={14} />{t("members.add")}
       </button>
     </div>}
+    </PageToolbar>
 
+    {/* 审计摘要删掉后卡内只剩这一张表，`list-scroll` 那层包装一并去掉：滚动要落在
+        `.table-scroll` 自己身上（它是 `overflow-x:auto` 的滚动包含块，表头吸附的祖先
+        必须是它），套在外层会让 `.table-scroll` 失去定高、吸附表头形同虚设。 */}
+    <div className="list-card">
     {members.length ? <div className="table-scroll"><table className="grid">
       <thead><tr>
         <th>{t("members.member")}</th>
@@ -212,28 +212,6 @@ export function Members() {
         })}
       </tbody>
     </table></div> : !loading && <Empty title={t("members.emptyTitle")} hint={t("members.emptyHint")} />}
-
-    {/* ── 最近审计（项目审计读端的摘要视图，P6-2 建好等这里消费）──────────────
-        只读最近 50 条、无筛选无分页——成员页要回答的是「刚才谁动了谁」；翻历史、
-        按资源下钻用项目配置 → 审计日志页（P11-10 边界 7/8，developer 及以上可见）。 */}
-    {canReadAudit && <>
-      <h3 className="subhead" style={{ marginTop: "var(--s6)" }}>{t("members.auditTitle")}</h3>
-      {auditLogs.length ? <div className="table-scroll"><table className="grid">
-        <thead><tr>
-          <th>{t("audit.action")}</th>
-          <th>{t("audit.operator")}</th>
-          <th>{t("audit.detailColumn")}</th>
-          <th>{t("audit.time")}</th>
-        </tr></thead>
-        <tbody>
-          {auditLogs.map((log) => <tr key={log.id}>
-            <td><span className="mono">{log.action}</span></td>
-            <td className="mono muted">{log.userEmail ?? t("audit.nonUser")}</td>
-            <td><AuditDetail detail={log.detail} /></td>
-            <td className="mono muted">{new Date(log.createdAt).toLocaleString()}</td>
-          </tr>)}
-        </tbody>
-      </table></div> : <p className="muted">{t("members.auditEmpty")}</p>}
-    </>}
+    </div>
   </main>;
 }

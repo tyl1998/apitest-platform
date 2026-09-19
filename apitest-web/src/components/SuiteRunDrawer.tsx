@@ -176,8 +176,8 @@ export function SuiteRunDrawer({ projectId, run, onClose, onCancel, canceling }:
 export function MemberEvidence({ projectId, row, shareToken }: { projectId?: string; row: MemberRow; shareToken?: string }) {
   const { t } = useTranslation();
 
-  /* 用例成员：一次请求，快照就是全部。 */
-  if (row.execution) return <ExecutionDetail result={row.execution} />;
+  /* 用例成员：一次请求，快照就是全部。分享页收起「下载完整响应」（P10-1）。 */
+  if (row.execution) return <ExecutionDetail result={row.execution} publicView={Boolean(shareToken)} />;
   /* 流程成员：它自己是一次父执行，证据在那棵步骤树里。 */
   if (row.childIndexId) return <FlowMemberSteps projectId={projectId} indexId={row.childIndexId} shareToken={shareToken} />;
 

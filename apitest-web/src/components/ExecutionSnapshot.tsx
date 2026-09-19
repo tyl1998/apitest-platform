@@ -1,6 +1,7 @@
-import { Drawer } from "antd";
+import { Drawer, message } from "antd";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { Execution } from "../api";
+import { api, type Execution } from "../api";
 import { Readout, Waterfall, toRunStatus } from "../ui";
 import { AssertionResults } from "./AssertionEditor";
 import { HookOutcome } from "./PreRequestHookEditor";
@@ -9,16 +10,64 @@ import { CopyButton } from "./CopyButton";
 import { ResponseScriptResults } from "./ResponseScriptEditor";
 
 /**
+ * 「下载完整响应」（P10-1）：仅当这次执行的全量正文确实转存过时才出现。
+ *
+ * 拆成独立组件是因为两处渲染器都要用它——证据抽屉（ExecutionDetail）与接口工作台的
+ * 实时响应面板（EndpointWorkspace 的 ResponsePanel）。两份实现会让「什么时候有入口」
+ * 漂移，而这正是用户判断「有没有全量」的唯一线索。
+ *
+ * 完整正文不随执行详情下发（key 是存储细节，直链短活且会泄进分享载荷），所以一次点
+ * 一次换：拿到短活 URL 后由浏览器直打对象存储 / fs 直链端点，平台不经手字节。用隐藏
+ * <a> 触发而不是 window.open——下载是导航而不是新开页，也躲开弹窗拦截。
+ *
+ * `publicView`（公开分享页）不渲染：那条通路要登录态的项目端点，分享页两者都没有。
+ */
+export function DownloadFullResponseButton({ execution, publicView }: {
+  execution: Execution;
+  publicView?: boolean;
+}) {
+  const { t } = useTranslation();
+  const [fetching, setFetching] = useState(false);
+  if (!execution.responseBodyStored || publicView) return null;
+
+  async function download() {
+    setFetching(true);
+    try {
+      const { downloadUrl } = await api.executionResponseBodyUrl(execution.projectId, execution.id);
+      const anchor = document.createElement("a");
+      anchor.href = downloadUrl;
+      anchor.rel = "noopener";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    } catch {
+      /* 直链换不到最常见的两个原因：对象已不在（换过驱动 / 被清理）、行上没有全量。
+         两者都不是页面崩溃，说一句就够。 */
+      message.error(t("history.fullResponseFailed"));
+    } finally { setFetching(false); }
+  }
+
+  return <button className="btn btn-small" disabled={fetching} onClick={() => void download()}>
+    {t("history.downloadFullResponse")}
+  </button>;
+}
+
+/**
  * The evidence itself, without a container.
  *
  * Split out so a run can also be read in place — the batch result list expands
  * a row rather than stacking a second drawer over the first.
+ *
+ * `publicView`（P10-1）：公开分享页复用同一个渲染器，但下载完整响应要走登录态的项目
+ * 端点（`/projects/:id/executions/:id/response-body`），分享页没有登录态也没有项目上下文
+ * ——那里不渲染下载入口，公开证据闭包保持只读。
  */
-export function ExecutionDetail({ result, onRerun, onLoadRequest, busy }: {
+export function ExecutionDetail({ result, onRerun, onLoadRequest, busy, publicView }: {
   result: Execution;
   onRerun?: () => void;
   onLoadRequest?: () => void;
   busy?: boolean;
+  publicView?: boolean;
 }) {
   const { t } = useTranslation();
 
@@ -112,7 +161,11 @@ export function ExecutionDetail({ result, onRerun, onLoadRequest, busy }: {
         {/* The truncation notice stays on the label: what is copied is what was
             stored, and the tail is genuinely not here to copy. */}
         <span className="label">{t("snapshot.responseBody")}{result.responseTruncated ? ` · ${t("status.truncated")}` : ""}</span>
-        <CopyButton value={() => result.responseBody ?? ""} />
+        <div className="code-block-tools">
+          {/* 全量已转存时才给入口（P10-1）：预览仍是那 10KB，下载拿到的是完整正文。 */}
+          <DownloadFullResponseButton execution={result} publicView={publicView} />
+          <CopyButton value={() => result.responseBody ?? ""} />
+        </div>
       </div>
       <pre className="code">{result.responseBody ?? ""}</pre>
     </div>

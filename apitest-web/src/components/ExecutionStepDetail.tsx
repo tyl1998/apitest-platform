@@ -12,14 +12,16 @@ import { ScriptChecks } from "./AssertionEditor";
  * their own result shape. Shared by the run drawer and nested lists so a
  * loop body step reads the same wherever it is opened.
  */
-export function ExecutionStepDetail({ step, execution }: {
+export function ExecutionStepDetail({ step, execution, publicView }: {
   step: ExecutionStep;
   execution?: Execution;
+  /** 公开分享页（P10-1）：透传给 ExecutionDetail，那里据此收起下载完整响应入口。 */
+  publicView?: boolean;
 }) {
   const { t } = useTranslation();
 
   /* HTTP step: the request/response snapshot is the whole story. */
-  if (execution) return <ExecutionDetail result={execution} />;
+  if (execution) return <ExecutionDetail result={execution} publicView={publicView} />;
 
   if (step.stepType === "database") {
     const output = step.output as { rows?: Record<string, unknown>[]; rowCount?: number; truncated?: boolean };

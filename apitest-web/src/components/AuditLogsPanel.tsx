@@ -3,7 +3,7 @@ import { Drawer, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 import { api, type AuditLog } from "../api";
-import { Empty } from "../ui";
+import { Empty, PageToolbar } from "../ui";
 
 /**
  * 审计日志（P6-2，计划 10.0 边界 11「从只写到可读」；系统管理员）。
@@ -46,16 +46,18 @@ export function AuditDetail({ detail }: { detail: Record<string, unknown> }) {
 }
 
 /**
- * 审计表（系统作用域与项目作用域共用）。
+ * 审计表的数据与筛选状态（系统作用域与项目作用域共用）。
+ *
+ * 抽成控制器而不是把整块渲染塞进一个组件：项目页要把提示行与筛选条放进工具卡，而系统页
+ * 的标签里没有独立工具卡、需要它们跟表待在一起——同一份状态两处摆放，只能是「状态在
+ * 控制器、摆放交给调用方」。
  *
  * `projectId` 存在时走项目路由，并且：
  * - 不再需要「项目」这一列（每一行都属于当前项目），第二行改标 target_id 短前缀；
  * - 提示文案换成项目口径；
  * - `targetType` 过滤可用（资源「变更历史」是这一路的单目标特例）。
- *
- * 系统作用域下行为与 P6-2 完全一致（`/system/audit-logs`，含项目列）。
  */
-export function AuditLogsPanel({ projectId }: { projectId?: string } = {}) {
+function useAuditLogs(projectId?: string) {
   const { t } = useTranslation();
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [total, setTotal] = useState(0);
@@ -63,7 +65,8 @@ export function AuditLogsPanel({ projectId }: { projectId?: string } = {}) {
   const [pageSize, setPageSize] = useState(20);
   const [action, setAction] = useState<string | undefined>();
   const [targetType, setTargetType] = useState<string | undefined>();
-  const [loading, setLoading] = useState(false);
+  /* 初值 true（P10-7 纪律）：首帧取数尚未发出，false 会让有数据的审计列表先闪一帧空态。 */
+  const [loading, setLoading] = useState(true);
 
   const load = useCallback(async (next: { page: number; pageSize: number; action?: string; targetType?: string }) => {
     setLoading(true);
@@ -85,30 +88,45 @@ export function AuditLogsPanel({ projectId }: { projectId?: string } = {}) {
   const actionOptions = [...new Set(logs.map((log) => log.action))].sort().map((value) => ({ value, label: value }));
   const targetTypeOptions = [...new Set(logs.map((log) => log.targetType))].sort().map((value) => ({ value, label: value }));
 
+  return {
+    projectId, logs, total, loading, page, pageSize, setPage, setPageSize,
+    action, setAction, targetType, setTargetType, actionOptions, targetTypeOptions,
+  };
+}
+
+type AuditLogsController = ReturnType<typeof useAuditLogs>;
+
+/** action / targetType 两个筛选 + 总数（P6-2 的头部，项目页把它放进工具卡）。 */
+function AuditLogsFilters({ controller }: { controller: AuditLogsController }) {
+  const { t } = useTranslation();
+  const { action, setAction, targetType, setTargetType, actionOptions, targetTypeOptions, total, setPage } = controller;
+  return <div className="filter-bar">
+    <Select
+      allowClear
+      value={action}
+      onChange={(value) => { setAction(value); setPage(1); }}
+      options={actionOptions}
+      placeholder={t("audit.actionFilter")}
+      style={{ width: 240 }}
+    />
+    <Select
+      allowClear
+      value={targetType}
+      onChange={(value) => { setTargetType(value); setPage(1); }}
+      options={targetTypeOptions}
+      placeholder={t("audit.targetTypeFilter")}
+      style={{ width: 200 }}
+    />
+    <span className="filter-spacer" />
+    <span className="muted mono">{t("audit.totalCount", { count: total })}</span>
+  </div>;
+}
+
+/** 表格 + 分页（两个作用域共用；系统作用域多一列项目归属）。 */
+function AuditLogsTable({ controller }: { controller: AuditLogsController }) {
+  const { t } = useTranslation();
+  const { projectId, logs, total, loading, page, pageSize, setPage, setPageSize } = controller;
   return <>
-    <p className="form-note">{projectId ? t("audit.projectHint") : t("audit.hint")}</p>
-
-    <div className="filter-bar">
-      <Select
-        allowClear
-        value={action}
-        onChange={(value) => { setAction(value); setPage(1); }}
-        options={actionOptions}
-        placeholder={t("audit.actionFilter")}
-        style={{ width: 240 }}
-      />
-      <Select
-        allowClear
-        value={targetType}
-        onChange={(value) => { setTargetType(value); setPage(1); }}
-        options={targetTypeOptions}
-        placeholder={t("audit.targetTypeFilter")}
-        style={{ width: 200 }}
-      />
-      <span className="filter-spacer" />
-      <span className="muted mono">{t("audit.totalCount", { count: total })}</span>
-    </div>
-
     {logs.length ? <div className="table-scroll"><table className="grid">
       <thead><tr>
         <th>{t("audit.action")}</th>
@@ -150,16 +168,47 @@ export function AuditLogsPanel({ projectId }: { projectId?: string } = {}) {
 }
 
 /**
+ * 审计表（系统作用域与项目作用域共用）。
+ *
+ * `projectId` 存在时走项目路由，并且：
+ * - 不再需要「项目」这一列（每一行都属于当前项目），第二行改标 target_id 短前缀；
+ * - 提示文案换成项目口径；
+ * - `targetType` 过滤可用（资源「变更历史」是这一路的单目标特例）。
+ *
+ * 系统作用域下行为与 P6-2 完全一致（`/system/audit-logs`，含项目列）：它是一个自带
+ * 提示行与筛选条的自足面板；项目页（`ProjectAuditPage`）则用同一个控制器把这两样搬进
+ * 工具卡——那里有独立的标题卡，重复一份只会让页头与卡内各说一遍同样的话。
+ */
+export function AuditLogsPanel({ projectId }: { projectId?: string } = {}) {
+  const { t } = useTranslation();
+  const controller = useAuditLogs(projectId);
+  return <>
+    <p className="form-note">{projectId ? t("audit.projectHint") : t("audit.hint")}</p>
+    <AuditLogsFilters controller={controller} />
+    <AuditLogsTable controller={controller} />
+  </>;
+}
+
+/**
  * 项目审计页（P11-10 边界 7）：项目配置 → 审计日志。页面不做角色判断——入口在
  * `ProjectShell` 里对 viewer 隐藏，路由不藏（P6-4 边界 6：后端守卫才是权限的单一事实，
  * viewer 直达时后端照拒）。
+ *
+ * 描述与筛选项在工具卡（2026-09-19）：下面那张卡只放表，卡片形态才读得成「上面是这一页
+ * 的抬头与范围，下面是范围里的行」。
  */
 export function ProjectAuditPage() {
   const { t } = useTranslation();
   const { projectId } = useParams();
-  return <main className="content">
-    <div className="page-head"><div><h1>{t("audit.title")}</h1></div></div>
-    {projectId && <AuditLogsPanel projectId={projectId} />}
+  const controller = useAuditLogs(projectId);
+  return <main className="content content-split">
+    <PageToolbar>
+    <div className="page-head"><div><h1>{t("audit.title")}</h1><p>{t("audit.projectHint")}</p></div></div>
+    <AuditLogsFilters controller={controller} />
+    </PageToolbar>
+    <div className="list-card">
+    <AuditLogsTable controller={controller} />
+    </div>
   </main>;
 }
 

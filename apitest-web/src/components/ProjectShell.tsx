@@ -188,11 +188,11 @@ export function ProjectShell() {
                   aria-expanded={open}
                   onClick={() => toggleGroup(section.group)}
                 >
-                  <span className="batch-caret" aria-hidden>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
                   <GroupIcon size={12} />
                   {section.label}
+                  <span className="batch-caret" aria-hidden>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
                 </button>
-              : <span className="nav-section" aria-hidden>{section.label}</span>}
+              : <span className="nav-section" title={section.label}><GroupIcon size={12} />{section.label}</span>}
             {(!accordionOn || open) && section.items.filter(([key]) => key !== "audit" || canReadAudit).map(([key, label]) => {
               const Icon = NAV_ICONS[key];
               /* 收起态：标签交给 Tooltip（0.1s，与 Tip 同档）；展开态是普通按钮，
@@ -255,7 +255,9 @@ export function ProjectShell() {
           />
         </div>
       </header>
-        <Outlet context={{ setDetailTitle } satisfies DetailCrumbContext} />
+        {/* key={projectId}：切项目时重挂页面正文（壳保持挂载，不闪），页面本地列表状态
+            随之复位——否则不重挂会显示上一个项目的旧数据（P10-7 同族缺陷）。 */}
+        <Outlet key={projectId} context={{ setDetailTitle } satisfies DetailCrumbContext} />
     </div>
 </div>;
 }

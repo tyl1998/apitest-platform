@@ -8,7 +8,7 @@ import { useDebounced } from "../hooks/useDebounced";
 import { useCanManageProject, useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty } from "../ui";
+import { Empty, PageToolbar } from "../ui";
 import { CopyButton } from "./CopyButton";
 import { ChangeHistoryDrawer } from "./AuditLogsPanel";
 import { IconButton } from "./IconButton";
@@ -88,7 +88,7 @@ const PAGE_SIZES = [20, 50, 100];
 export function Environments() {
   const { t } = useTranslation();
   const { projectId } = useParams();
-  const { environments, defaultEnvironmentId, storePlaintext, reloadEnvironments, updateDefaultEnvironment, updateStorePlaintext } = useProjectStore();
+  const { environments, defaultEnvironmentId, storePlaintext, offloadLargeResponse, reloadEnvironments, updateDefaultEnvironment, updateStorePlaintext, updateOffloadLargeResponse } = useProjectStore();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get("tab") === "scripts" ? "scripts" : "envs";
   /* viewer：环境/脚本的写入口全藏；默认环境与明文开关另按项目管理员收（上面注释）。 */
@@ -106,7 +106,8 @@ export function Environments() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [loading, setLoading] = useState(false);
+  /* 初值 true：首帧取数尚未发出，false 会让有数据的列表先闪一帧空态（P10-7）。 */
+  const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     if (!projectId || tab !== "envs") return;
@@ -141,6 +142,8 @@ export function Environments() {
   const [duplicating, setDuplicating] = useState<string>();
   const [savingDefault, setSavingDefault] = useState(false);
   const [savingPlaintext, setSavingPlaintext] = useState(false);
+  /* 转存开关同款互斥（P10-1）：请求在途时锁复选框，防连点出两次 PUT。 */
+  const [savingOffload, setSavingOffload] = useState(false);
 
   /* 分区目录（worker 上报的 ∪ 环境配置的）。拉取失败时静默降级成「只用本项目标签做
      建议」——建议列表缺席不该挡住编辑环境这件事本身。 */
@@ -322,6 +325,16 @@ export function Environments() {
     } finally { setSavingPlaintext(false); }
   }
 
+  async function changeOffload(checked: boolean) {
+    setSavingOffload(true);
+    try {
+      await updateOffloadLargeResponse(checked);
+      message.success(checked ? t("environments.offloadOn") : t("environments.offloadOff"));
+    } catch {
+      message.error(t("environments.offloadUpdateFailed"));
+    } finally { setSavingOffload(false); }
+  }
+
   /* ── Delete ───────────────────────────────────────────────────── */
 
   async function confirmDelete(env: Environment) {
@@ -394,7 +407,7 @@ export function Environments() {
 
   /* ── Render ───────────────────────────────────────────────────── */
 
-  return <main className="content">
+  return <main className="content content-split">
     {/**
      * One page head above the tabs, then the tabs, matching系统设置.
      *
@@ -404,6 +417,7 @@ export function Environments() {
      * `.tabs` carries its own horizontal padding for panel use, so it is
      * cancelled here — inside `.content` it would indent past the heading.
      */}
+    <PageToolbar>
     <div className="page-head">
       <div>
         <h1>{tab === "scripts" ? t("scripts.manageTitle") : t("environments.title")}</h1>
@@ -437,6 +451,16 @@ export function Environments() {
                 />
                 {t("environments.storePlaintext")}
               </label>}
+              {/* P10-1 转存开关与上面两个同属项目设置写（requireProjectAdmin），入口同收。 */}
+              {canManage && <label className="check-field" title={t("environments.offloadHint")}>
+                <input
+                  type="checkbox"
+                  checked={offloadLargeResponse}
+                  disabled={savingOffload}
+                  onChange={(event) => void changeOffload(event.target.checked)}
+                />
+                {t("environments.offload")}
+              </label>}
               {canWrite && <button className="btn btn-primary" onClick={openCreate}>{t("action.createEnvironment")}</button>}
             </>}
       </div>
@@ -457,11 +481,10 @@ export function Environments() {
       >{t("scripts.tabScripts")}</button>
     </div>
 
-    {tab === "scripts"
-      ? <PublicScripts create={createScript} onCreateHandled={() => setCreateScript(false)} />
-      : <>
-    {/* 搜索在 SQL 里命中全量：列表分页后，按当前页过滤会让人以为某个环境不存在。 */}
-    <div className="filter-bar">
+    {/* 搜索是常操作项，随 page-head+tabs 一起吸附（不留在可滚动区，否则滚动时输入框
+        顶部被吸附条盖住）。搜索在 SQL 里命中全量：列表分页后按当前页过滤会让人以为
+        某个环境不存在。 */}
+    {tab === "envs" && <div className="filter-bar">
       <input
         className="input"
         value={keyword}
@@ -469,9 +492,13 @@ export function Environments() {
         placeholder={t("environments.searchPlaceholder")}
         style={{ width: 260 }}
       />
-      {loading && <span className="muted">{t("filter.searching")}</span>}
-    </div>
+    </div>}
+    </PageToolbar>
 
+    {tab === "scripts"
+      ? <PublicScripts create={createScript} onCreateHandled={() => setCreateScript(false)} />
+      : <>
+    <div className="list-card">
     {list.length ? <div className="table-scroll"><table className="grid env-grid">
       <thead>
         <tr>
@@ -533,6 +560,7 @@ export function Environments() {
         onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }}
       />
     </div>}
+    </div>
 
     <Drawer
       title={drawerEnv === "new" ? t("action.createEnvironment") : t("environments.editTitle")}

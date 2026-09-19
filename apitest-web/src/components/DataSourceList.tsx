@@ -5,7 +5,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Cable, Pencil, Plus, Trash2 } from "lucide-react";
 import { api, type DataSource, type DataSourceConfig, type DataSourceInput, type DataSourceType, type DataSourceUsage } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
-import { Empty } from "../ui";
+import { Empty, PageToolbar } from "../ui";
 import { IconButton } from "./IconButton";
 import { OwnerCell } from "./OwnerCell";
 
@@ -89,12 +89,15 @@ export function DataSourceList() {
     });
   }
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div><h1>{t("dataSources.title")}</h1><p>{t("dataSources.hint")}</p></div>
       {canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => setEditing("new")}><Plus size={14} />{t("dataSources.create")}</button>}
     </div>
-    {loading ? <p className="muted">{t("common.loading")}</p> : items.length ? <div className="table-scroll"><table className="grid data-source-grid">
+    </PageToolbar>
+
+    <div className="list-card">    {items.length ? <div className="table-scroll"><table className="grid data-source-grid">
       <thead><tr><th>{t("dataSources.name")}</th><th>{t("dataSources.host")}</th><th>{t("dataSources.database")}</th><th>{t("dataSources.user")}</th><th className="col-ssl">{t("dataSources.ssl")}</th><th className="col-owner">{t("common.createdBy")}</th><th className="col-owner">{t("common.updatedBy")}</th><th className="col-actions" /></tr></thead>
       <tbody>{items.map((item) => <tr key={item.id} data-clickable onClick={() => navigate(`/projects/${projectId}/data-sources/${item.id}`)}>
         <td><strong>{item.name}</strong><span className="resource-type mono">{item.type}</span></td>
@@ -112,7 +115,7 @@ export function DataSourceList() {
           <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => void remove(item)} />
         </div>}</td>
       </tr>)}</tbody>
-    </table></div> : <Empty title={t("dataSources.emptyTitle")} hint={t("dataSources.emptyHint")} action={canWrite ? <button className="btn btn-primary" onClick={() => setEditing("new")}>{t("dataSources.create")}</button> : undefined} />}
+    </table></div> : !loading && <Empty title={t("dataSources.emptyTitle")} hint={t("dataSources.emptyHint")} action={canWrite ? <button className="btn btn-primary" onClick={() => setEditing("new")}>{t("dataSources.create")}</button> : undefined} />}
 
     {items.length > 0 && <div className="pager">
       <Pagination
@@ -127,6 +130,7 @@ export function DataSourceList() {
     </div>}
 
     <DataSourceDrawer projectId={projectId!} source={editing} onClose={() => setEditing(undefined)} onSaved={async (saved) => { setEditing(undefined); await load(); if (editing === "new") navigate(`/projects/${projectId}/data-sources/${saved.id}`); }} />
+    </div>
   </main>;
 }
 

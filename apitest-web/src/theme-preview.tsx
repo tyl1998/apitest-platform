@@ -72,8 +72,8 @@ function Reference() {
         <nav>
           <div className="nav-group">
             <button type="button" className="nav-section" aria-expanded="true">
-              <span className="batch-caret" aria-hidden><ChevronDown size={12} /></span>
               <Plug size={12} />{t("nav.interfaceAssets")}
+              <span className="batch-caret" aria-hidden><ChevronDown size={12} /></span>
             </button>
             {collapsed
               ? <IconNavButton className="nav-item is-active" icon={<Plug size={14} />} label={t("nav.endpoints")} ariaCurrent="page" />
@@ -84,8 +84,8 @@ function Reference() {
           </div>
           <div className="nav-group">
             <button type="button" className="nav-section" aria-expanded="false">
-              <span className="batch-caret" aria-hidden><ChevronRight size={12} /></span>
               <History size={12} />{t("nav.common")}
+              <span className="batch-caret" aria-hidden><ChevronRight size={12} /></span>
             </button>
           </div>
         </nav>

@@ -8,7 +8,7 @@ import { api, type DataSource, type DataSourceOperation, type DataSourceType, ty
 import { defaultOperationText, formatOperation, operationLabelFromText, operationTemplates } from "../operationTemplates";
 import { useThemeMode } from "../theme";
 import { useCanWrite } from "../hooks/useMyRole";
-import { Empty } from "../ui";
+import { Empty, PageToolbar } from "../ui";
 import { DataSourceDrawer, apiMessage } from "./DataSourceList";
 import { ChangeHistoryDrawer } from "./AuditLogsPanel";
 import { DatabaseResult } from "./DatabaseResult";
@@ -88,7 +88,8 @@ export function DataSourceDetail() {
   if (loading) return <main className="content"><p className="muted">{t("common.loading")}</p></main>;
   if (!source) return <main className="content"><Empty title={t("dataSources.missingTitle")} hint={t("dataSources.missingHint")} action={<button className="btn btn-primary" onClick={() => navigate(`/projects/${projectId}/data-sources`)}>{t("dataSources.backToList")}</button>} /></main>;
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div><div className="title-row"><h1>{source.name}</h1><span className="chip mono">{source.type}</span></div><p className="mono">{source.config.host}:{source.config.port}/{source.config.database}</p></div>
       <div className="topbar-actions">
@@ -101,7 +102,10 @@ export function DataSourceDetail() {
       <button role="tab" aria-selected={tab === "config"} className={`tab${tab === "config" ? " is-active" : ""}`} onClick={() => setUrl({ tab: "config" })}>{t("dataSources.connectionTab")}</button>
       <button role="tab" aria-selected={tab === "sql"} className={`tab${tab === "sql" ? " is-active" : ""}`} onClick={() => setUrl({ tab: "sql" })}>{t("dataSources.sqlTab")}<span className="tab-count mono">{definitions.length}</span></button>
     </div>
+    </PageToolbar>
 
+    <div className="list-card">
+    <div className="list-scroll">
     {tab === "config" ? <section className="panel detail-panel"><div className="panel-head"><strong>{t("dataSources.connectionConfig")}</strong><span className="mono muted">{source.passwordConfigured ? t("dataSources.passwordConfigured") : t("dataSources.passwordMissing")}</span></div><div className="panel-body"><dl className="definition-grid data-source-definition">
       <Row label={t("dataSources.host")} value={`${source.config.host}:${source.config.port}`} mono />
       <Row label={t("dataSources.database")} value={source.config.database} mono />
@@ -121,6 +125,8 @@ export function DataSourceDetail() {
         </tr>)}
       </tbody></table></div> : <Empty title={t("dataSources.sqlEmptyTitle")} hint={t("dataSources.sqlEmptyHint")} action={canWrite ? <button className="btn btn-primary" onClick={() => setUrl({ tab: "sql", editSql: "new" })}>{t("dataSources.createSql")}</button> : undefined} />}
     </section>}
+    </div>
+    </div>
 
     <DataSourceDrawer projectId={projectId!} source={editingSource ? source : undefined} onClose={() => setEditingSource(false)} onSaved={(saved) => { setSource(saved); setEditingSource(false); }} />
     <SqlDefinitionDrawer projectId={projectId!} dataSourceId={dataSourceId!} sourceType={source.type} source={editSql === "new" ? "new" : definitions.find((item) => item.id === editSql)} open={Boolean(editSql)} onClose={() => setUrl({ tab: "sql" })} onSaved={async () => { setUrl({ tab: "sql" }); await load(); }} />

@@ -7,7 +7,7 @@ import { api, type TestPlan, type TestPlanDetail, type TestPlanItem, type TestPl
 import { useCanWrite } from "../hooks/useMyRole";
 import { useDebounced } from "../hooks/useDebounced";
 import { saveBlob } from "../lib/download";
-import { Empty, Readout, Status, Tip, type RunStatus } from "../ui";
+import { Empty, PageToolbar, Readout, Status, Tip, type RunStatus } from "../ui";
 import { IconButton } from "./IconButton";
 import { apiMessage } from "./DataSourceList";
 import { SpecCaseDrawer } from "./SpecCases";
@@ -109,7 +109,8 @@ export function TestPlans() {
 
   const filtered = Boolean(debouncedKeyword || status !== "all");
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div><h1>{t("testPlans.title")}</h1><p>{t("testPlans.hint")}</p></div>
       <div className="topbar-actions">
@@ -130,8 +131,10 @@ export function TestPlans() {
         ]}
       />
     </div>
+    </PageToolbar>
 
-    {loading ? <p className="muted">{t("common.loading")}…</p> : plans.length ? <div className="table-scroll"><table className="grid plan-grid">
+    <div className="list-card">
+    {plans.length ? <div className="table-scroll"><table className="grid plan-grid">
       <thead><tr>
         <th>{t("testPlans.title")}</th>
         <th className="col-status">{t("endpoints.status")}</th>
@@ -177,6 +180,7 @@ export function TestPlans() {
     />}
 
     {plans.length > 0 && <div className="pager"><Pagination current={page} pageSize={pageSize} total={total} pageSizeOptions={PAGE_SIZES} showSizeChanger showQuickJumper={total > pageSize * 5} onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }} /></div>}
+    </div>
 
     {projectId && <PlanCreateModal
       projectId={projectId}
@@ -430,7 +434,8 @@ function TestPlanDetailBody({ projectId, plan, t, onPlanChanged }: {
     return [...buckets.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [plan.items]);
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div>
         <h1>{plan.name}</h1>
@@ -477,7 +482,9 @@ function TestPlanDetailBody({ projectId, plan, t, onPlanChanged }: {
       />
       <Readout label={t("testPlans.owner")} value={plan.ownerName ?? t("testPlans.unassigned")} />
     </div>
+    </PageToolbar>
 
+    <div className="list-card">
     {/* 项表（不分页——通读「哪些没跑」不该翻页，套件成员明细同一纪律）。 */}
     {plan.items.length ? <div className="table-scroll"><table className="grid plan-item-grid">
       <thead><tr>
@@ -523,6 +530,7 @@ function TestPlanDetailBody({ projectId, plan, t, onPlanChanged }: {
       hint={t("testPlans.noItemsHint")}
       action={<button className="btn btn-primary" onClick={() => navigate(`/projects/${projectId}/spec-cases`)}>{t("specCases.title")}</button>}
     />}
+    </div>
 
     {canWrite && <PlanCreateModal
       projectId={projectId}

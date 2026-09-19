@@ -12,7 +12,7 @@ import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 import { KeyValueEditor, fromPairs, toPairs, type Pair } from "./KeyValueEditor";
 import { ChangeHistoryDrawer } from "./AuditLogsPanel";
-import { ExecutionSnapshot } from "./ExecutionSnapshot";
+import { ExecutionSnapshot, DownloadFullResponseButton } from "./ExecutionSnapshot";
 import { HistorySidebar } from "./HistorySidebar";
 import { IconButton } from "./IconButton";
 import { RunStatusTag } from "./RunStatusTag";
@@ -23,7 +23,7 @@ import { SidebarPager, SIDEBAR_PAGE_SIZES } from "./SidebarPager";
 import { CopyButton } from "./CopyButton";
 import { VariableField } from "./VariableField";
 import type { VariableOption } from "./VariablePicker";
-import { toRunStatus } from "../ui";
+import { PageToolbar, toRunStatus } from "../ui";
 import { PreRequestHookEditor } from "./PreRequestHookEditor";
 import { ResponseScriptEditor, ResponseScriptResults } from "./ResponseScriptEditor";
 import { JsonPathPicker } from "./JsonPathPicker";
@@ -855,7 +855,8 @@ export function EndpointWorkspace() {
   const previous = index > 0 ? endpoints[index - 1] : undefined;
   const next = index >= 0 && index < endpoints.length - 1 ? endpoints[index + 1] : undefined;
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div className="page-head-main">
         <div className="title-row">
@@ -946,7 +947,10 @@ export function EndpointWorkspace() {
       <span className="filter-spacer" />
       <button className="btn btn-small" onClick={returnToDebug}>{t("cases.returnToDebug")}</button>
     </div>}
+    </PageToolbar>
 
+    <div className="list-card">
+    <div className="list-scroll">
     <div className={`workbench${historyOpen && !isNew ? "" : " is-solo"}`}>
       <div className="workbench-main">
         <section className="panel">
@@ -1206,6 +1210,8 @@ export function EndpointWorkspace() {
         /> : undefined}
       />}
     </div>
+    </div>
+    </div>
 
     {/* Snapshot of one run: either a history record or the expanded inline response. */}
     <ExecutionSnapshot
@@ -1315,7 +1321,12 @@ function ResponsePanel({ result, running, pending, canceling, onCancel, tab, onT
             <div className="code-block">
               <div className="code-block-head">
                 <span className="label">{tabs.find(([key]) => key === tab)?.[1]}</span>
-                <CopyButton value={() => responseText(result, tab, pretty)} />
+                {/* 全量已转存时（P10-1）给下载入口。只在 body 页签下出现——下载的是响应
+                    正文，放在 headers/request 页签旁边会指向错的东西。 */}
+                <div className="code-block-tools">
+                  {tab === "body" && <DownloadFullResponseButton execution={result} />}
+                  <CopyButton value={() => responseText(result, tab, pretty)} />
+                </div>
               </div>
               <pre className="code response-body">{responseText(result, tab, pretty)}</pre>
             </div>

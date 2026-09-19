@@ -6,7 +6,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { api, type Endpoint, type IngestPathRule, type UnmatchedPath } from "../api";
 import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty, Method } from "../ui";
+import { Empty, Method, PageToolbar } from "../ui";
 import { IconButton } from "./IconButton";
 import { RepoPageHead, RepoTabs } from "./RepoShell";
 
@@ -51,7 +51,8 @@ export function IngestUnmatched() {
   const [pageSize, setPageSize] = useState(20);
   /** 看被静默的那些：规则写错时这是唯一能查回来的入口。 */
   const [silenced, setSilenced] = useState(false);
-  const [loading, setLoading] = useState(false);
+  /* 初值 true：项目 store 就位前不发请求，false 会让有数据的列表先闪一帧空态（P10-7）。 */
+  const [loading, setLoading] = useState(true);
 
   const [rules, setRules] = useState<IngestPathRule[]>([]);
   const [rulePrefix, setRulePrefix] = useState("");
@@ -151,7 +152,8 @@ export function IngestUnmatched() {
     setRuleNote(t("repoCases.ruleNoteFrom", { method: item.method, path: item.path }));
   }
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <RepoPageHead title={t("repoCases.unmatchedTitle")} hint={t("repoCases.unmatchedHint")} />
     <RepoTabs active="unmatched" />
 
@@ -166,9 +168,10 @@ export function IngestUnmatched() {
       <span className="filter-spacer" />
       <span className="muted mono">{t("repoCases.pathTotal", { total })}</span>
     </div>
+    </PageToolbar>
 
-    {loading && <p className="muted">{t("common.loading")}</p>}
-
+    <div className="list-card">
+    <div className="list-scroll">
     {items.length ? <div className="table-scroll"><table className="grid">
       <thead><tr>
         <th>{t("repoCases.path")}</th>
@@ -255,6 +258,8 @@ export function IngestUnmatched() {
         </table> : <p className="form-note">{t("repoCases.rulesEmpty")}</p>}
       </div>
     </section>
+    </div>
+    </div>
 
     <Modal
       title={t("repoCases.linkTitle")}

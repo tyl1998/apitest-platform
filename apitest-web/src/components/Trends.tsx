@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, isStatsTimeoutError, type AttributionSourceFilter, type SampleScope, type StatsFailures, type StatsFlaky, type StatsOverview, type StatsTopNDim, type StatsTrendBucket, type TriggerSource } from "../api";
 import { useProjectStore } from "../stores/projectStore";
-import { Delta, Empty, Readout } from "../ui";
+import { Delta, Empty, PageToolbar, Readout } from "../ui";
 import { Donut, LineChart, StackedBars } from "./charts";
 
 /**
@@ -265,7 +265,8 @@ export function Trends() {
     ci: t("suiteReports.triggerCi"),
   };
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div><h1>{t("trends.title")}</h1><p>{t("trends.hint")}</p></div>
       <div className="tabs" role="tablist" style={{ paddingInline: 0, marginBottom: 0 }}>
@@ -315,6 +316,10 @@ export function Trends() {
       <span className="filter-spacer" />
       <button className="btn" onClick={() => setRevision((current) => current + 1)}>{t("trends.refresh")}</button>
     </div>
+    </PageToolbar>
+
+    <div className="list-card">
+    <div className="list-scroll">
     <p className="form-note">{t(`trends.scopeHint.${scope}`)}{triggerSource !== "all" ? ` ${t("trends.triggerNote")}` : ""}</p>
 
     {/* ── 段一：Readout 行（执行面四读数 + delta，overview 独立请求） ── */}
@@ -622,6 +627,8 @@ export function Trends() {
         </>}
       </div>
     </section>
+    </div>
+    </div>
   </main>;
 }
 

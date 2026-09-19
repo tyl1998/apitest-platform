@@ -7,7 +7,7 @@ import { api, type AlertComparator, type AlertMetric, type AlertRule, type Notif
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty } from "../ui";
+import { Empty, PageToolbar } from "../ui";
 import { IconButton } from "./IconButton";
 import { OwnerCell } from "./OwnerCell";
 import { ChangeHistoryDrawer } from "./AuditLogsPanel";
@@ -67,7 +67,8 @@ export function Alerts() {
 
   const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
-  const [loading, setLoading] = useState(false);
+  /* 初值 true：项目 store 就位前不发请求，false 会让有数据的列表先闪一帧空态（P10-7）。 */
+  const [loading, setLoading] = useState(true);
 
   /* 渠道编辑。secret 三态：留空 = 不动（编辑）/ 不配（新建），勾选清除 = 删。 */
   const [channelEditing, setChannelEditing] = useState<NotificationChannel | "new">();
@@ -276,7 +277,8 @@ export function Alerts() {
     ? t("alerts.thresholdUnitPercent")
     : metric === "avg_duration" ? t("alerts.thresholdUnitMs") : t("alerts.thresholdUnitCount");
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div><h1>{t("alerts.title")}</h1><p>{t("alerts.hint")}</p></div>
       <div className="topbar-actions">
@@ -293,9 +295,25 @@ export function Alerts() {
         </button>
       ))}
     </div>
+    {/* 派发记录的筛选项跟着所属标签进工具卡（2026-09-19）：它只筛这一段的表，
+        放到列表卡里会被当成整页的三个筛选各管一段。 */}
+    {tab === "deliveries" && <div className="filter-bar">
+      <Select
+        value={deliveryChannel}
+        onChange={(value) => { setDeliveryChannel(value); setDeliveryPage(1); }}
+        style={{ width: 200 }}
+        options={[{ value: "all", label: t("alerts.channels") }, ...channels.map((channel) => ({ value: channel.id, label: channel.name }))]}
+      />
+      <Select
+        value={deliveryStatus}
+        onChange={(value) => { setDeliveryStatus(value); setDeliveryPage(1); }}
+        style={{ width: 148 }}
+        options={[{ value: "all", label: t("filter.runStatusAll") }, { value: "sent", label: t("alerts.deliveryStatusSent") }, { value: "failed", label: t("alerts.deliveryStatusFailed") }]}
+      />
+    </div>}
+    </PageToolbar>
 
-    {loading && <p className="muted">{t("common.loading")}</p>}
-
+    <div className="list-card">
     {/* ── 渠道 ── */}
     {tab === "channels" && (channels.length ? <div className="table-scroll"><table className="grid">
       <thead><tr>
@@ -383,21 +401,7 @@ export function Alerts() {
 
     {/* ── 派发记录 ── */}
     {tab === "deliveries" && <>
-      <div className="filter-bar">
-        <Select
-          value={deliveryChannel}
-          onChange={(value) => { setDeliveryChannel(value); setDeliveryPage(1); }}
-          style={{ width: 200 }}
-          options={[{ value: "all", label: t("alerts.channels") }, ...channels.map((channel) => ({ value: channel.id, label: channel.name }))]}
-        />
-        <Select
-          value={deliveryStatus}
-          onChange={(value) => { setDeliveryStatus(value); setDeliveryPage(1); }}
-          style={{ width: 148 }}
-          options={[{ value: "all", label: t("filter.runStatusAll") }, { value: "sent", label: t("alerts.deliveryStatusSent") }, { value: "failed", label: t("alerts.deliveryStatusFailed") }]}
-        />
-      </div>
-      {deliveries.length ? <table className="grid">
+      {deliveries.length ? <div className="table-scroll"><table className="grid">
         <thead><tr>
           <th className="mono">{t("endpoints.duration")}</th>
           <th className="col-status">{t("endpoints.status")}</th>
@@ -428,7 +432,7 @@ export function Alerts() {
             </Fragment>;
           })}
         </tbody>
-      </table> : <Empty title={t("alerts.deliveries")} hint={t("alerts.deliveriesEmpty")} />}
+      </table></div> : <Empty title={t("alerts.deliveries")} hint={t("alerts.deliveriesEmpty")} />}
       {deliveryTotal > 20 && <div className="pager">
         <Pagination current={deliveryPage} pageSize={20} total={deliveryTotal} onChange={setDeliveryPage} pageSizeOptions={PAGE_SIZES} showSizeChanger={false} />
       </div>}
@@ -577,5 +581,6 @@ export function Alerts() {
       open={ruleHistoryOpen}
       onClose={() => setRuleHistoryOpen(false)}
     />}
+    </div>
   </main>;
 }

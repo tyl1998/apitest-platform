@@ -6,7 +6,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { api, type GitCredential, type IngestToken, type Repository } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty } from "../ui";
+import { Empty, PageToolbar } from "../ui";
 import { CopyButton } from "./CopyButton";
 import { GitCredentialModal } from "./GitCredentialModal";
 import { IconButton } from "./IconButton";
@@ -145,10 +145,14 @@ export function RepoCredentials() {
     { code: "pytest", note: t("repoCases.stepRunNote") },
   ];
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <RepoPageHead title={t("repoCases.credentialsTitle")} hint={t("repoCases.credentialsHint")} />
     <RepoTabs active="credentials" />
+    </PageToolbar>
 
+    <div className="list-card">
+    <div className="list-scroll">
     {/* ── 一、Git 拉取凭据（给平台的 Runner） ─────────────────────────────── */}
     <section className="panel">
       <div className="panel-head">
@@ -298,6 +302,7 @@ export function RepoCredentials() {
           </>}
       </div>
     </section>
+    </div>
 
     {/* 凭据弹窗：共享组件（任务编辑页空池时就地创建用的就是同一个）。 */}
     {projectId && <GitCredentialModal
@@ -306,5 +311,6 @@ export function RepoCredentials() {
       onClose={() => setCredentialEditing(undefined)}
       onSaved={() => load()}
     />}
+    </div>
   </main>;
 }

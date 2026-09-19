@@ -25,7 +25,7 @@ import { usePageContext } from "../hooks/usePageContext";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useLimitsStore } from "../stores/limitsStore";
 import { useProjectStore } from "../stores/projectStore";
-import { toRunStatus } from "../ui";
+import { PageToolbar, toRunStatus } from "../ui";
 import { HistorySidebar } from "./HistorySidebar";
 import { IconButton } from "./IconButton";
 import { ResourceSchedules } from "./ResourceSchedules";
@@ -502,7 +502,8 @@ export function SuiteWorkspace() {
     finally { setCanceling(false); }
   }
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div className="page-head-main">
         <div className="title-row">
@@ -534,7 +535,10 @@ export function SuiteWorkspace() {
       <span className="filter-spacer" />
       <button className="btn btn-small" onClick={() => setDrawerOpen(true)}>{t("suites.viewMembers")}</button>
     </div>}
+    </PageToolbar>
 
+    <div className="list-card">
+    <div className="list-scroll">
     <div className={`workbench${historyOpen ? "" : " is-solo"}`}>
       <div className="workbench-main">
         <section className="panel">
@@ -810,6 +814,8 @@ export function SuiteWorkspace() {
           onPageSize={(size) => { setHistoryPageSize(size); setHistoryPage(1); }}
         />}
       />
+    </div>
+    </div>
     </div>
 
     <SuiteMemberPicker

@@ -7,7 +7,7 @@ import { api, noRunnerLabel, type CiTask, type CiTaskRecommendation, type RepoCa
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty, Method, Readout, Tip, toRunStatus } from "../ui";
+import { Empty, Method, PageToolbar, Readout, Tip, toRunStatus } from "../ui";
 import { RepoPageHead, RepoTabs } from "./RepoShell";
 import { RunStatusTag } from "./RunStatusTag";
 import { StepTree, formatDuration } from "./PipelineRunPage";
@@ -455,7 +455,8 @@ export function RepoCaseTreePage() {
     }
   }
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <RepoPageHead title={t("repoCases.title")} hint={t("repoCases.hint")} />
     <RepoTabs active="tree" />
 
@@ -489,7 +490,9 @@ export function RepoCaseTreePage() {
       <span className="filter-spacer" />
       {coverage && <span className="muted mono">{t("repoCases.removedTotal", { count: coverage.removedCaseTotal })}</span>}
     </div>
+    </PageToolbar>
 
+    <div className="list-card">
     {/* 勾选执行的操作条（§8.3，照 EndpointList 的 bulk-bar 形状）。**不是接口模式批量
         调试的等价物**：平台不持有测试代码，只传 case_filter + 收结果 + 对账，所以文案
         与那边不同，且必须把「快不快取决于仓库脚本」说出来（§8.3 落地点末条）。 */}
@@ -501,7 +504,7 @@ export function RepoCaseTreePage() {
       <button className="btn btn-icon" title={t("action.cancel")} onClick={() => setSelected(new Set())}><X size={15} /></button>
     </div>}
 
-    {loading && <p className="muted">{t("common.loading")}</p>}
+    <div className="list-scroll">
 
     {tree && tree.endpoints.length > 0 && <div className="table-scroll"><table className="grid grid-fixed">
       {/* 列宽固定（grid-fixed）：auto 布局下展开一组用例行会让列宽随全部行内容重新
@@ -643,6 +646,8 @@ export function RepoCaseTreePage() {
         {unplacedOpen && unplacedTotal > unplaced.length && <p className="form-note">{t("repoCases.unplacedTruncated", { shown: unplaced.length, total: unplacedTotal })}</p>}
       </div>
     </section>}
+    </div>
+    </div>
 
     {/* ── 勾选执行的任务选择弹窗（§8.3） ────────────────────────────────── */}
     <Modal

@@ -10,6 +10,7 @@ import { ResourceSchedules } from "./ResourceSchedules";
 import { GitCredentialModal } from "./GitCredentialModal";
 import { apiMessage } from "./DataSourceList";
 import { RepoPageHead, RepoTabs } from "./RepoShell";
+import { PageToolbar } from "../ui";
 import { useThemeMode } from "../theme";
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
@@ -373,7 +374,8 @@ export function CiTaskEditor() {
 
   if (loading && !isNew) return <main className="content"><p className="muted">{t("common.loading")}</p></main>;
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <RepoPageHead
       title={<span className="title-row">
         {isNew ? t("ciTasks.create") : (name || t("ciTasks.editTitle"))}
@@ -389,7 +391,10 @@ export function CiTaskEditor() {
       </>}
     />
     <RepoTabs active="tasks" />
+    </PageToolbar>
 
+    <div className="list-card">
+    <div className="list-scroll">
     <div>
       <section className="panel" style={{ marginTop: 0 }}>
         <div className="panel-head"><strong>{t("ciTasks.basics")}</strong></div>
@@ -615,6 +620,8 @@ export function CiTaskEditor() {
         </label>
       </div>
     </section>
+    </div>
+    </div>
 
     {projectId && <GitCredentialModal
       projectId={projectId}

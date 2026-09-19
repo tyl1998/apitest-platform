@@ -35,6 +35,10 @@
   --shell-rail-w: 56px;
   --measure: 1680px;
 
+  /* 吸附操作条层级（P10-8）：在表格（无 z-index）之上、正文浮层之下
+     （var-picker-scrim 10 / var-picker-pop 11 / *-pop 30 / antd 门户 1000+）。 */
+  --z-page-toolbar: 5;
+
   --t: .12s;
 }
 
@@ -228,27 +232,29 @@ body {
 /* 返回主页 / 收起-展开：图标化（IconNavButton 已带 Tooltip 与 aria-label） */
 .console[data-collapsed] .nav-back { justify-content: center; padding: 6px 0; }
 
+/* 收起 rail 的组分隔（2026-09-19 反馈）：原来是一根匿名 4px 短横，收起后
+   分不清「这是哪一组」。改成把组图标居中当分隔——同一个图标在展开态领读组名，
+   收起态就成了这一组的标记，用户不用展开也能认组。组名文字仍留在 DOM（font-size: 0
+   视觉让位）交给读屏，并挂 title 作原生提示；rail 里没有手风琴，caret 不渲染。 */
 .console[data-collapsed] .nav-section {
-  height: 4px;
-  width: 10px;
-  padding: 0;
-  margin: var(--s2) auto var(--s1);
-  border-radius: 2px;
-  background: var(--line-strong);
-  /* 组名仍交给读屏（sr-only 的思路：视觉让位、语义保留）。手风琴化后标题是
-     button 且内含 caret/图标：font-size: 0 挡不住 SVG，子元素整体隐藏；rail
-     里没有手风琴（组内条目恒平铺），指针穿透不误触。 */
-  color: transparent;
+  height: auto;
+  width: auto;
+  padding: 6px 0 2px;
+  margin: var(--s2) 0 0;
+  border-radius: 0;
+  background: none;
+  justify-content: center;
+  color: var(--ink-3);
   font-size: 0;
   text-indent: 0;
-  overflow: hidden;
+  overflow: visible;
   white-space: nowrap;
   cursor: default;
 }
 
-.console[data-collapsed] .nav-section:hover { background: var(--line-strong); }
+.console[data-collapsed] .nav-section:hover { background: none; color: var(--ink-3); }
 
-.console[data-collapsed] .nav-section svg { display: none; }
+.console[data-collapsed] .nav-section svg { display: block; }
 
 .console[data-collapsed] .nav-item {
   justify-content: center;
@@ -363,7 +369,10 @@ body {
 
 .nav-section svg { flex: 0 0 auto; }
 
-.nav-section .batch-caret { margin-left: -2px; }
+/* Caret moved to the right edge (V3): the group icon + name lead, the fold
+   affordance sits far right and reads one step fainter so it does not compete
+   with the label. */
+.nav-section .batch-caret { margin-left: auto; color: var(--line-strong); }
 
 .nav-back {
   color: var(--ink-3);
@@ -405,6 +414,14 @@ body {
   color: var(--accent);
   font-weight: 600;
 }
+
+/* V3 rail active: in the vertical sidebar (expanded rail, collapsed rail, and
+   the ≤940px bar) the selection drops the accent-soft fill for a neutral one,
+   so hover and selection share a surface. The accent then lives only in the
+   left tick and the icon — that pairing is what tells the current page apart
+   from a merely hovered one. The global dashboard nav (.topbar-nav) keeps its
+   own accent-soft mark and is intentionally untouched. */
+.sidebar .nav-item.is-active { background: var(--hover); color: var(--ink); }
 
 .nav-item.is-active::before {
   content: "";
@@ -541,13 +558,39 @@ body {
 
 /* 卡内先放 .page-head 的页面：卡片自带 padding，头部的下边距不再需要
    额外的顶部呼吸（原 .content 26px 顶距由卡片 padding 接管）。 */
-.console[data-topnav] .content { padding: var(--s5) var(--s6) var(--s8); }
+.console[data-topnav] .content { --content-pad-top: var(--s5); padding: var(--content-pad-top) var(--content-pad-x) var(--s8); }
 
 /* KPI 区在页面卡内凹进一格（第五轮走查「沉闷」）：surface-on-surface 只靠
    边框读不出层次，换 --bg 底——与加深后的页底同色，视觉上是「卡片上开出的
    仪表槽」。分隔线（.readout 的 border-left）在 bg 底上照常成立。仅全局层；
    项目壳的 readouts 仍在 --bg 页底上、自带对比，不受影响。 */
 .console[data-topnav] .readouts { background: var(--bg); }
+
+/* 全局层改为「卡内滚动」（P10-8，与项目页同构）：`.content` 不再滚动，页面卡自己撑满
+   视口高度，操作区固定在卡顶（flex 布局、不再是 sticky），正文在 `.page-card-body`
+   里滚动——正文只会被操作区裁掉，不会滑到它上面/下面，也就不会出现两层的重叠。 */
+.console[data-topnav] .content { overflow: hidden; }
+
+.console[data-topnav] .page-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.page-card-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+
+/* 操作区：卡自带 --s5 内边距，用等值负外边距把底色铺到卡的边框盒，与卡的顶边/圆角
+   对齐，读起来仍是同一张卡。 */
+.console[data-topnav] .page-card-toolbar {
+  flex: 0 0 auto;
+  margin: calc((var(--s5) + 1px) * -1) calc((var(--s5) + 1px) * -1) var(--s4);
+  padding: var(--s5) var(--s5) var(--s4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+}
 
 .filter-bar {
   display: flex;
@@ -589,10 +632,14 @@ body {
 
 /* The only scroll container in the app. */
 .content {
+  /* 内边距抽成变量（P10-8）：`.page-toolbar` 用它把吸附条的背景铺过 .content
+     的顶/侧留白，切换顶栏壳时只改这里一处，吸附条自动跟随。 */
+  --content-pad-top: 26px;
+  --content-pad-x: var(--s6);
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  padding: 26px var(--s6) var(--s8);
+  padding: var(--content-pad-top) var(--content-pad-x) var(--s8);
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
@@ -600,6 +647,120 @@ body {
 
 /* Cap the reading measure without letting the shell go letterboxed */
 .content > * { max-width: var(--measure); }
+
+/* ── 顶部操作区吸附条（P10-8）──────────────────────────────────────
+   规则 5 不变：唯一滚动容器仍是 .content，吸附条是它内部的 sticky（不是
+   position:fixed 的第二壳层）。承载 page-head + 搜索/新建/筛选行，下滑时保持
+   可见、正文从其下方穿过。背景用不透明中性底（--bg，与 body 同色），靠负外边距
+   把底色铺过 .content 的顶/侧留白与超宽屏右侧——正文透不上来、超宽屏右缘不露字。
+   视觉只用 --line 分界，无阴影/语义色/动效（契约）。 */
+.page-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-page-toolbar);
+  /* 越过 .content > * 的 measure 上限，让底色铺满整条滚动视口宽度 */
+  max-width: none;
+  margin: calc(var(--content-pad-top) * -1) calc(var(--content-pad-x) * -1) var(--s5);
+  padding: var(--content-pad-top) var(--content-pad-x) var(--s4);
+  /* 吸附条底色抬一档到 --surface（正文区是 --bg 页底）：滚动时正文从其下方穿过，
+     两档中性底就把「上面固定 / 下面滚动」分开——不再加分界线（下方可滚动内容如
+     table-scroll 自带边框，再画线会与它的顶边打架）。契约禁止阴影/浮起感。 */
+  background: var(--surface);
+}
+
+/* 条内内容仍守阅读测量、左对齐（与下方表格同一左缘）；纵向间距在这里统一
+   接管，避免被包进来的 page-head / filter-bar 各自的 margin-bottom 叠加。 */
+.page-toolbar > * { max-width: var(--measure); margin-bottom: 0; }
+.page-toolbar > :not(:last-child) { margin-bottom: var(--s5); }
+
+/* 卡片化布局（P10-8 验收反馈）：`.content-split` 把正文分成上下两张同宽卡片——
+   上面 `.page-toolbar`（标题/描述/操作/筛选）固定不滚，下面 `.list-card` 自己滚动、
+   自带固定表头；两卡之间留 --s4 间隙。高度由 flex 分配，不需要写死视口高度，
+   标题行高变化也不会裁切列表。 */
+.content-split {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 卡片形态只在 `.content-split` 下启用：工具卡同宽、有边框圆角、不吸附（列表卡自己
+   滚动，没有内容从它下面穿过，因此不需要负外边距铺底，也不需要 sticky）。 */
+.content-split > .page-toolbar {
+  position: static;
+  flex: 0 0 auto;
+  max-width: var(--measure);
+  margin: 0 0 var(--s4);
+  padding: var(--s5) var(--s6) var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+
+/* 列表卡：内部滚动，滚动条在卡内。
+   ⚠ 滚动必须落在 `.table-scroll` 上（不是 `.list-card`）——它本身 `overflow-x:auto`
+   已形成滚动包含块，若由外层滚动，吸附表头会贴到不滚动的 `.table-scroll` 上而失效。 */
+.list-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+}
+
+.list-card > .table-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border-radius: 0;
+  overscroll-behavior: contain;
+}
+
+/* 非表格内容（统计读数、图表、分区面板、树）在卡内的滚动容器（P10-8）。
+   表格页不能用它——表头吸附的滚动祖先必须是 `.table-scroll` 自己；非表格页把整块
+   内容交给它，纵向滚动落在这里，卡本身仍是 overflow:hidden 的静框。内容按普通块流
+   排（不再是卡的 flex 子项），不会被当成可伸缩项压扁，也不会像无滚动容器那样被整块
+   裁掉。 */
+.list-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--s5) var(--s6) var(--s6);
+  overscroll-behavior: contain;
+}
+
+/* 卡内首尾元素不再自带外边距（`.panel` 的 margin-top 会与滚动容器的 padding 叠成
+   双倍空隙）。 */
+.list-scroll > :first-child { margin-top: 0; }
+.list-scroll > :last-child { margin-bottom: 0; }
+
+/* 空态在滚动容器里也要居中：这时它不是卡的 flex 子项（不参与卡的高度分配），用
+   100% 最小高度把滚动视口撑满，对齐交给 `.list-card .empty` 那组规则。 */
+.list-scroll > .empty { min-height: 100%; }
+
+.list-card .grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--raised);
+}
+
+/* 卡片内的空态不再自起一个框（否则「卡中卡」）：去掉 `.empty` 自带的底与边框，
+   它已经在列表卡里，卡本身就是容器。 */
+.list-card .empty {
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background: none;
+  border: 0;
+  border-radius: 0;
+}
+
+/* 卡内子项不得溢出卡边：flex 子项默认 `min-width: auto`，宽内容（长 pre、固定宽网格、
+   表头）会把卡撑破——一律收到 0，交给卡内滚动处理。 */
+.list-card > * { min-width: 0; }
 
 .page-head {
   display: flex;
@@ -1311,6 +1472,9 @@ button.readout-click {
 /* Puts the copy action on the label's line so it never displaces the data. */
 .code-block-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); min-width: 0; }
 .code-block-head .label { min-width: 0; }
+/* 两个动作（下载完整响应 + 复制）时收成一组，避免被 space-between 摊到两端：
+   动作贴着右缘、彼此 --s2 间距，与 .script-editor-actions 同款。 */
+.code-block-tools { display: flex; align-items: center; gap: var(--s2); flex: 0 0 auto; }
 .code[data-tone="fail"] { color: var(--fail); }
 pre.code { max-height: 340px; }
 
@@ -1539,6 +1703,10 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 
   .page-head { flex-direction: column; align-items: flex-start; gap: var(--s3); }
   .page-head h1 { font-size: 19px; }
+  /* 小屏卡片化降级（P10-8）：上下两卡的内距收紧，给下卡留出滚动高度。 */
+  .content-split > .page-toolbar { padding: var(--s4) var(--s5) var(--s3); }
+  .list-scroll { padding: var(--s4) var(--s5); }
+  .console[data-topnav] .page-card-toolbar { padding: var(--s4) var(--s5) var(--s3); }
   .project-grid { grid-template-columns: 1fr; }
   .setting-row { align-items: flex-start; flex-direction: column; gap: var(--s3); }
 
@@ -1703,6 +1871,15 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
   padding: var(--s2);
 }
 .spec-split { display: grid; grid-template-columns: 264px minmax(0, 1fr); gap: var(--s4); align-items: start; }
+
+/* 用例库进列表卡（P10-8）：卡给高度，左右两栏各自滚——左树不再按视口写死高度
+   （`100dvh - 150px` 是吸附带时代的口径），右栏（bulk-bar + 表格 / 脑图）自己滚。
+   ≤940px 的堆叠降级仍由下方媒体查询接管。 */
+@media (min-width: 941px) {
+  .list-card .spec-split { height: 100%; align-items: stretch; }
+  .list-card .spec-tree { position: static; height: auto; min-height: 0; }
+}
+.spec-main { min-width: 0; min-height: 0; overflow-y: auto; }
 .spec-tree-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 3px var(--s2) var(--s2);
@@ -2432,6 +2609,12 @@ button.chip-action:hover { border-color: var(--accent); color: var(--ink); }
 .workbench-side { min-width: 0; position: sticky; top: var(--s4); }
 
 .history-card { display: flex; flex-direction: column; max-height: calc(100vh - 210px); }
+
+/* 工作台进列表卡（P10-8）：历史卡高度按「卡高」重算——原 `100vh - 210px` 是
+   `.content` 整页滚动时代的口径，现在上方多了一张工具栏卡，收 90px 留余量。 */
+.list-scroll .history-card { max-height: calc(100dvh - 300px); }
+/* 用例库脑图在卡内填满右栏（原 `100dvh - 205px` 同上）。 */
+.list-card .mindmap-canvas { height: 100%; min-height: 320px; }
 .history-tools { display: flex; align-items: center; gap: 6px; }
 .history-list { overflow-y: auto; padding: var(--s2); display: flex; flex-direction: column; gap: 4px; }
 

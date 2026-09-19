@@ -5,7 +5,7 @@ import { useParams } from "react-router-dom";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { api, type IngestRun, type IngestRunDetail } from "../api";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty, Method, Tip } from "../ui";
+import { Empty, Method, PageToolbar, Tip } from "../ui";
 import { RepoPageHead, RepoTabs } from "./RepoShell";
 
 /**
@@ -39,7 +39,8 @@ export function IngestRuns() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [loading, setLoading] = useState(false);
+  /* 初值 true：项目 store 就位前不发请求，false 会让有数据的列表先闪一帧空态（P10-7）。 */
+  const [loading, setLoading] = useState(true);
   /* 降噪过滤（2026-08-30）：大多数 run 是逐字相同的全量快照，diff 全 0；勾上后只看
      「用例有变动」或「有未匹配」的 run。两个都勾是**或**——要的是需要关注的都给我。 */
   const [changedOnly, setChangedOnly] = useState(false);
@@ -72,10 +73,10 @@ export function IngestRuns() {
     return () => { alive = false; };
   }, [projectId, expanded, changesOnly]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <RepoPageHead title={t("repoCases.runsTitle")} hint={t("repoCases.runsHint")} />
     <RepoTabs active="runs" />
-
     <div className="filter-bar">
       <label className="check-field">
         <input type="checkbox" checked={changedOnly} onChange={(event) => { setChangedOnly(event.target.checked); setPage(1); }} />
@@ -88,9 +89,9 @@ export function IngestRuns() {
       <span className="filter-spacer" />
       <span className="muted mono">{t("repoCases.runsTotal", { count: total })}</span>
     </div>
+    </PageToolbar>
 
-    {loading && <p className="muted">{t("common.loading")}</p>}
-
+    <div className="list-card">
     {runs.length ? <div className="table-scroll"><table className="grid">
       <thead><tr>
         <th>{t("repoCases.commit")}</th>
@@ -153,7 +154,7 @@ export function IngestRuns() {
                 {/* 记录明细不列 状态码/耗时/状态（2026-09-03 用户确认）：这张表回答的是
                     「哪条用例的哪个请求打到了哪条路径」，执行结论属于仓库侧的报告视图
                     （run 详情页），在这里重复一遍只是噪声。 */}
-                {!detail ? <p className="muted">{t("common.loading")}</p> : detail.records.length ? <table className="grid">
+                {detail && (detail.records.length ? <table className="grid">
                   <thead><tr>
                     <th className="col-num">#</th>
                     <th>{t("repoCases.request")}</th>
@@ -182,7 +183,7 @@ export function IngestRuns() {
                       <Tip text={record.paramId ?? undefined}><td className="mono muted truncate">{record.paramId ? `[${record.paramId}]` : "—"}</td></Tip>
                     </tr>)}
                   </tbody>
-                </table> : <p className="form-note">{changesOnly ? t("repoCases.noChangedRecords") : t("repoCases.noRecords")}</p>}
+                </table> : <p className="form-note">{changesOnly ? t("repoCases.noChangedRecords") : t("repoCases.noRecords")}</p>)}
                 {detail && detail.records.length < detailTotal && <p className="form-note">
                   {t("repoCases.recordsTruncated", { shown: detail.records.length, total: detailTotal })}
                 </p>}
@@ -205,5 +206,6 @@ export function IngestRuns() {
         onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }}
       />
     </div>}
+    </div>
   </main>;
 }

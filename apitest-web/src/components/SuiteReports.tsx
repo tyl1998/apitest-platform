@@ -8,7 +8,7 @@ import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
 import { triggerLabel } from "../lib/trigger";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty, Readout, Tip, toRunStatus } from "../ui";
+import { Empty, PageToolbar, Readout, Tip, toRunStatus } from "../ui";
 import { AttributionDrawer, AttributionTag, type AttributionRequest, type AttributionTarget } from "./AttributionDrawer";
 import { type DetailCrumbContext } from "./ProjectShell";
 import { MemberEvidence, type MemberRow } from "./SuiteRunDrawer";
@@ -132,7 +132,8 @@ export function SuiteReports() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [loading, setLoading] = useState(false);
+  /* 初值 true：项目 store 就位前不发请求，false 会让有数据的列表先闪一帧空态（P10-7）。 */
+  const [loading, setLoading] = useState(true);
   /* 归因打标后按 key 重拉列表（聚合读数随行跟上）。 */
   const [refreshKey, setRefreshKey] = useState(0);
   /* 列表行打开的归因抽屉 + 取目标中的报告 id（防连点重复拉取）。 */
@@ -218,7 +219,8 @@ export function SuiteReports() {
     }
   }
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div><h1>{t("suiteReports.title")}</h1><p>{t("suiteReports.hint")}</p></div>
     </div>
@@ -270,10 +272,10 @@ export function SuiteReports() {
         ]}
       />
     </div>
+    </PageToolbar>
 
-    {loading && <p className="muted">{t("filter.searching")}</p>}
-
-    {reports.length ? <table className="grid report-grid">
+    <div className="list-card">
+    {reports.length ? <div className="table-scroll"><table className="grid report-grid">
       <colgroup>
         {/* 报告列吃剩余宽度；固定列合计 ~800px，1050px 内容宽下报告名仍有 ~250px。
             名称/通过/失败三列已删（验收反馈②）：报告名兜底读 targetName，通过/失败
@@ -323,7 +325,7 @@ export function SuiteReports() {
           <td className="mono muted">{new Date(report.createdAt).toLocaleString()}</td>
         </tr>)}
       </tbody>
-    </table> : !loading && <Empty
+    </table></div> : !loading && <Empty
       title={debouncedKeyword || triggerSource !== "all" || status !== "all" || source !== "all" ? t("suiteReports.emptyFiltered") : t("suiteReports.emptyTitle")}
       hint={debouncedKeyword || triggerSource !== "all" || status !== "all" || source !== "all" ? t("suites.emptyFilteredHint") : t("suiteReports.emptyHint")}
     />}
@@ -350,6 +352,7 @@ export function SuiteReports() {
         onDone={() => setRefreshKey((key) => key + 1)}
       />
     )}
+    </div>
   </main>;
 }
 
@@ -487,7 +490,7 @@ export function SuiteReportDetail({ projectId, report, t, publicView, shareToken
   /** 有证据可看的成员：httpExecutionId / childIndexId / error 三者之一。 */
   const hasEvidence = (step: SuiteReport["members"][number]) => Boolean(step.httpExecutionId || step.childIndexId || step.error);
 
-  const body = <>
+  const head = <>
     {/* 返回入口由外壳的面包屑（{项目}/报告列表/{报告名}）承担，页面不再自带返回按钮。 */}
     <div className="page-head">
       <div>
@@ -509,7 +512,9 @@ export function SuiteReportDetail({ projectId, report, t, publicView, shareToken
           也让每个项目的概览卡片文案都不一样。 */}
       <Readout label={t("suiteReports.memberPass")} value={`${report.successCount}/${report.total}`} />
     </div>
+  </>;
 
+  const body = <>
     <section className="panel">
       <div className="panel-head"><strong>{t("suiteReports.identity")}</strong></div>
       <div className="panel-body">
@@ -627,6 +632,12 @@ export function SuiteReportDetail({ projectId, report, t, publicView, shareToken
     )}
   </>;
 
-  /* 公开视图被嵌进分享页的外壳里，不再自带 <main>（嵌套 main 不合法）。 */
-  return publicView ? body : <main className="content">{body}</main>;
+  /* 公开视图被嵌进分享页的外壳里，不再自带 <main>（嵌套 main 不合法）。站内视图
+     拆成上下两张卡：上卡是标题 + 读数（不滚），下卡是身份/成员明细（卡内滚动）。 */
+  return publicView ? <>{head}{body}</> : <main className="content content-split">
+    <PageToolbar>{head}</PageToolbar>
+    <div className="list-card">
+    <div className="list-scroll">{body}</div>
+    </div>
+  </main>;
 }

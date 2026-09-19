@@ -8,7 +8,7 @@ import { useDebounced } from "../hooks/useDebounced";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty, toRunStatus } from "../ui";
+import { Empty, PageToolbar, toRunStatus } from "../ui";
 import { IconButton } from "./IconButton";
 import { OwnerCell } from "./OwnerCell";
 import { RunStatusTag } from "./RunStatusTag";
@@ -39,7 +39,8 @@ export function FlowList() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [loading, setLoading] = useState(false);
+  /* 初值 true：项目 store 就位前不发请求，false 会让有数据的列表先闪一帧空态（P10-7）。 */
+  const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState<string>();
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
@@ -188,7 +189,8 @@ export function FlowList() {
     });
   }
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div><h1>{t("flows.title")}</h1><p>{t("flows.hint")}</p></div>
       <div className="topbar-actions">
@@ -201,9 +203,9 @@ export function FlowList() {
     <div className="filter-bar">
       <input className="input" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder={t("flows.searchPlaceholder")} />
     </div>
+    </PageToolbar>
 
-    {loading && <p className="muted">{t("filter.searching")}</p>}
-
+    <div className="list-card">
     {flows.length ? <div className="table-scroll"><table className="grid flow-grid">
       <colgroup>
         <col />
@@ -305,5 +307,6 @@ export function FlowList() {
           halfway has no answer for whether the token it just got still works. */}
       <p className="form-note">{t("flows.environmentHint")}</p>
     </Modal>
+    </div>
   </main>;
 }

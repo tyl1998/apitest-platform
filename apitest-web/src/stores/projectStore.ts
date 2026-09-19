@@ -17,6 +17,8 @@ type ProjectState = {
   storePlaintext: boolean;
   /** P5：项目级 MCP 开关（关掉 = /mcp 对本项目 404，已签发 Token 立即不可用）。 */
   mcpEnabled: boolean;
+  /** P10-1：项目级大响应体转存开关（关掉 = 超过内联阈值的正文只留行内截断预览）。 */
+  offloadLargeResponse: boolean;
   endpoints: Endpoint[];
   loading: boolean;
   refresh: () => Promise<void>;
@@ -26,14 +28,16 @@ type ProjectState = {
   updateDefaultEnvironment: (environmentId: string | null) => Promise<void>;
   updateStorePlaintext: (storePlaintext: boolean) => Promise<void>;
   updateMcpEnabled: (mcpEnabled: boolean) => Promise<void>;
+  updateOffloadLargeResponse: (offloadLargeResponse: boolean) => Promise<void>;
 };
 
-/** settings 响应的整份回写（三个 update 共用）：一处开关滞后 = 给下一次 PUT 喂旧值。 */
+/** settings 响应的整份回写（四个 update 共用）：一处开关滞后 = 给下一次 PUT 喂旧值。 */
 function applySettings(state: ProjectState, settings: ProjectSettings): Partial<ProjectState> {
   return {
     defaultEnvironmentId: settings.defaultEnvironmentId ?? null,
     storePlaintext: settings.storePlaintext,
     mcpEnabled: settings.mcpEnabled,
+    offloadLargeResponse: settings.offloadLargeResponse,
   };
 }
 
@@ -42,7 +46,7 @@ function applySettings(state: ProjectState, settings: ProjectSettings): Partial<
  * per page and must not be capped by a shared prefetch.
  */
 export const useProjectStore = create<ProjectState>((set, get) => ({
-  projects: [], projectId: null, project: null, myRole: null, environments: [], defaultEnvironmentId: null, storePlaintext: false, mcpEnabled: false, endpoints: [], loading: false,
+  projects: [], projectId: null, project: null, myRole: null, environments: [], defaultEnvironmentId: null, storePlaintext: false, mcpEnabled: false, offloadLargeResponse: true, endpoints: [], loading: false,
 
   refresh: async () => {
     const projects = await api.projects();
@@ -51,8 +55,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   loadProject: async (id) => {
-    if (get().projectId !== id) set({ projectId: id, environments: [], defaultEnvironmentId: null, storePlaintext: false, mcpEnabled: false, endpoints: [], project: null, myRole: null });
+    /* 先 loading:true 再清数据（P10-7）：依赖 store 的筛选下拉据此显示「加载中」而不是
+       在清空到重新取数之间闪一帧空列表。 */
     set({ loading: true });
+    if (get().projectId !== id) set({ projectId: id, environments: [], defaultEnvironmentId: null, storePlaintext: false, mcpEnabled: false, offloadLargeResponse: true, endpoints: [], project: null, myRole: null });
     try {
       const [environments, endpoints, settings] = await Promise.all([api.environments(id), api.endpoints(id), api.projectSettings(id)]);
       if (get().projectId !== id) return;
@@ -84,6 +90,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     /* 只带要改的字段：其余开关缺省由服务端 COALESCE 保留，defaultEnvironmentId
        则必须随行当前值（缺省 = 清空默认环境）。 */
     const settings = await api.updateProjectSettings(id, { defaultEnvironmentId: get().defaultEnvironmentId, mcpEnabled });
+    set(applySettings(get(), settings));
+  },
+  updateOffloadLargeResponse: async (offloadLargeResponse) => {
+    const id = get().projectId; if (!id) return;
+    /* 同 updateMcpEnabled：只带要改的字段，其余由服务端保留。 */
+    const settings = await api.updateProjectSettings(id, { defaultEnvironmentId: get().defaultEnvironmentId, offloadLargeResponse });
     set(applySettings(get(), settings));
   },
 }));

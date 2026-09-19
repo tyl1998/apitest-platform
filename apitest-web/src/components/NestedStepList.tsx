@@ -77,7 +77,7 @@ export function NestedStepList({ projectId, parentStepId, iterations, shareToken
         {/* 容器再套容器：递归展示下一层，各自按迭代/步骤逐层点开。 */}
         {isContainer
           ? <NestedStepList projectId={projectId} parentStepId={step.id} iterations={stepIterations} shareToken={shareToken} />
-          : <ExecutionStepDetail step={step} execution={step.httpExecutionId ? httpById.get(step.httpExecutionId) : undefined} />}
+          : <ExecutionStepDetail step={step} execution={step.httpExecutionId ? httpById.get(step.httpExecutionId) : undefined} publicView={Boolean(shareToken)} />}
       </div>}
     </div>;
   };

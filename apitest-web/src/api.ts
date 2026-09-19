@@ -49,7 +49,7 @@ export type Environment = {
    */
   defaultHeaders: Record<string, string>;
 } & Ownership;
-export type ProjectSettings = { defaultEnvironmentId?: string; storePlaintext: boolean; mcpEnabled: boolean };
+export type ProjectSettings = { defaultEnvironmentId?: string; storePlaintext: boolean; mcpEnabled: boolean; offloadLargeResponse: boolean };
 
 /**
  * Secrets are patched, never replaced: `null` removes a key, a string sets it,
@@ -509,6 +509,8 @@ export type EndpointFilters = { keyword?: string; method?: string; environmentId
 
 export type Execution = {
   id: string;
+  /** Server-mapped `executions.project_id`；下载完整响应（P10-1）按它拼项目端点。 */
+  projectId: string;
   endpointId: string;
   endpointName: string;
   environmentId?: string;
@@ -539,6 +541,11 @@ export type Execution = {
   responseSizeBytes: number;
   responseTruncated: boolean;
   responseBody?: string;
+  /**
+   * 完整正文已转存对象存储（P10-1）：true 时详情页可拉「下载完整响应」直链；false
+   * 覆盖 历史行 / 项目关闭转存 / 超落盘上限 / 写入失败 四种情况，都是合法的「无全量」。
+   */
+  responseBodyStored: boolean;
   /** Empty for a debug send; a case run records every assertion it evaluated. */
   assertionResults: AssertionResult[];
   /** Per-extract outcomes for a flow step or single-step debug (P1-2). */
@@ -3071,9 +3078,10 @@ export const api = {
   environmentList: (projectId: string, filters?: { keyword?: string; page?: number; pageSize?: number }) =>
     client.get(`/projects/${projectId}/environments`, { params: { keyword: filters?.keyword?.trim() || undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<Environment>),
   projectSettings: (projectId: string) => client.get(`/projects/${projectId}/settings`).then(data<ProjectSettings>),
-  /* storePlaintext / mcpEnabled 都可缺省：服务端 COALESCE 保留原值（9.1 防的就是「只改
-     一个开关把另一个顺手清掉」）；defaultEnvironmentId 例外——缺省等于清空，必须随行当前值。 */
-  updateProjectSettings: (projectId: string, input: { defaultEnvironmentId: string | null; storePlaintext?: boolean; mcpEnabled?: boolean }) => client.put(`/projects/${projectId}/settings`, input).then(data<ProjectSettings>),
+  /* storePlaintext / mcpEnabled / offloadLargeResponse 都可缺省：服务端 COALESCE 保留原值
+      （9.1 防的就是「只改一个开关把另一个顺手清掉」）；defaultEnvironmentId 例外——缺省
+      等于清空，必须随行当前值。 */
+  updateProjectSettings: (projectId: string, input: { defaultEnvironmentId: string | null; storePlaintext?: boolean; mcpEnabled?: boolean; offloadLargeResponse?: boolean }) => client.put(`/projects/${projectId}/settings`, input).then(data<ProjectSettings>),
   createEnvironment: (projectId: string, input: EnvironmentInput) => client.post(`/projects/${projectId}/environments`, input).then(data<Environment>),
   updateEnvironment: (projectId: string, id: string, input: EnvironmentInput) => client.patch(`/projects/${projectId}/environments/${id}`, input).then(data<Environment>),
   /* Server-side duplicate: the client never holds secret plaintext, so a client-side copy would lose every secret. */
@@ -3149,6 +3157,12 @@ export const api = {
   batchExecution: (projectId: string, batchId: string) => client.get(`/projects/${projectId}/batch-executions/${batchId}`).then(data<BatchDebugResult>),
   /** Single run, used to fetch the full result once the stream says it settled. */
   execution: (projectId: string, executionId: string) => client.get(`/projects/${projectId}/executions/${executionId}`).then(data<Execution>),
+  /**
+   * 完整响应体的下载直链（P10-1）：短活 5 分钟，浏览器随后直打对象存储 / fs 直链端点，
+   * 平台不代理字节流。直链按需签，不随执行详情下发——详情被列表 / 分享 / MCP 复用。
+   */
+  executionResponseBodyUrl: (projectId: string, executionId: string) =>
+    client.get(`/projects/${projectId}/executions/${executionId}/response-body`).then(data<{ downloadUrl: string; expiresIn: number }>),
   /** Stops a queued run before it starts, or aborts one already in flight. */
   cancelExecution: (projectId: string, executionId: string) => client.post(`/projects/${projectId}/executions/${executionId}/cancel`).then(data<Execution>),
   cancelBatch: (projectId: string, batchId: string) => client.post(`/projects/${projectId}/batch-executions/${batchId}/cancel`).then(data<BatchDebugSummary & { canceled: number }>),

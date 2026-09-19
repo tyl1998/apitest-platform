@@ -53,16 +53,21 @@ export function MePage() {
   ];
 
   return <>
+    <div className="page-card-toolbar">
     <div className="page-head"><div><h1>{t("me.title")}</h1><p>{t("me.hint")}</p></div></div>
     <div className="tabs" role="tablist">
       {tabs.map(([key, label, path]) => (
         <button key={key} role="tab" aria-selected={tab === key} className={`tab${tab === key ? " is-active" : ""}`} onClick={() => navigate(path)}>{label}</button>
       ))}
     </div>
+    </div>
+
+    <div className="page-card-body">
     {tab === "profile" && <ProfileTab />}
     {tab === "notifications" && <NotificationsPage />}
     {tab === "mcp" && <McpTokensTab />}
     {tab === "credentials" && <CredentialsTab />}
+    </div>
   </>;
 }
 

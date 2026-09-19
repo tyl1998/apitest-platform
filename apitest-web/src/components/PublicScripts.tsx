@@ -223,9 +223,8 @@ export function PublicScripts({ create, onCreateHandled }: {
   }
 
   return <>
-    {loading
-      ? <p className="muted">{t("common.loading")}</p>
-      : scripts.length ? <div className="table-scroll"><table className="grid script-grid">
+    <div className="list-card">
+    {scripts.length ? <div className="table-scroll"><table className="grid script-grid">
         {/* Explicit widths: without them the name column shares space evenly
             with the timestamp and the four columns bunch up in the middle. */}
         <colgroup>
@@ -271,7 +270,7 @@ export function PublicScripts({ create, onCreateHandled }: {
             </td>
           </tr>)}
         </tbody>
-      </table></div> : <Empty title={t("scripts.emptyTitle")} hint={t("scripts.emptyHint")} />}
+      </table></div> : !loading && <Empty title={t("scripts.emptyTitle")} hint={t("scripts.emptyHint")} />}
 
     {/* 有内容才放分页器：空态下它只是另一个「这里什么都没有」的提示。 */}
     {scripts.length > 0 && <div className="pager">
@@ -285,6 +284,7 @@ export function PublicScripts({ create, onCreateHandled }: {
         onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }}
       />
     </div>}
+    </div>
 
     <Drawer
       title={draft ? (draft.script === "new" ? t("scripts.createPublic") : t("scripts.editPublicTitle", { name: draft.script.name ?? "" })) : ""}

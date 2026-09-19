@@ -7,7 +7,7 @@ import { useExecutionStream } from "../hooks/useExecutionStream";
 import { usePageContext } from "../hooks/usePageContext";
 import { triggerPersonLabel } from "../lib/trigger";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty, toRunStatus } from "../ui";
+import { Empty, PageToolbar, toRunStatus } from "../ui";
 import { BatchResultList } from "./BatchResultList";
 import { ExecutionSnapshot } from "./ExecutionSnapshot";
 import { FlowRunDrawer } from "./FlowRunDrawer";
@@ -98,7 +98,8 @@ export function ExecutionRecords() {
   const [data, setData] = useState<Paged<Execution>>({ items: [], page: 1, pageSize: 20, total: 0 });
   const [batches, setBatches] = useState<Paged<BatchDebugSummary>>({ items: [], page: 1, pageSize: 20, total: 0 });
   const [parents, setParents] = useState<Paged<ExecutionIndex>>({ items: [], page: 1, pageSize: 20, total: 0 });
-  const [loading, setLoading] = useState(false);
+  /* 初值 true：首帧取数尚未发出，false 会让有数据的列表先闪一帧空态（P10-7）。 */
+  const [loading, setLoading] = useState(true);
   const [result, setResult] = useState<Execution>();
   const [batchResult, setBatchResult] = useState<BatchDebugResult>();
   /** 一条父执行的抽屉：流程与套件各有自己的那一款，但入口只有一个 index id。 */
@@ -390,7 +391,8 @@ export function ExecutionRecords() {
       ? status !== "all" || source !== "all" || Boolean(endpointId) || Boolean(caseId) || timeFiltered
       : status !== "all" || kind !== "all" || caseFilterOnly || Boolean(keyword.trim()) || timeFiltered;
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div><h1>{t("reports.title")}</h1><p>{t("reports.hint")}</p></div>
     </div>
@@ -544,9 +546,12 @@ export function ExecutionRecords() {
       <span className="filter-spacer" />
       <span className="muted mono">{t("reports.total", { total })}</span>
     </div>
+    </PageToolbar>
 
-    {loading && <p className="muted">{t("common.loading")}</p>}
-
+    {/* 列表卡：三种记录类型各成一张表，但同一时刻只有一条分支渲染（batch / parent /
+        single 是按 recordType 二选一），所以卡内始终只有一个 `.table-scroll`，不会出现
+        多个 flex:1 子项互相争抢高度。 */}
+    <div className="list-card">
     {recordType === "batch" && batches.items.length ? <>
       <div className="table-scroll"><table className="grid">
         <thead><tr>
@@ -663,6 +668,7 @@ export function ExecutionRecords() {
       title={filtered ? t("reports.emptyFilterTitle") : t("reports.emptyTitle")}
       hint={filtered ? t("reports.emptyFilterHint") : recordType === "parent" ? t("reports.emptyParentHint") : t("reports.emptyHint")}
     />}
+    </div>
 
     <ExecutionSnapshot result={result} onClose={closeResult} />
     <Drawer title={t("endpoints.batchResult")} open={Boolean(batchResult)} onClose={closeBatch} width={720} extra={batchResult && <span className="mono muted">{t("endpoints.batchSummary", { total: batchResult.total, success: batchResult.successCount, failed: batchResult.failedCount })}</span>}>

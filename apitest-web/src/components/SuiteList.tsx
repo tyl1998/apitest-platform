@@ -8,7 +8,7 @@ import { useDebounced } from "../hooks/useDebounced";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty, toRunStatus } from "../ui";
+import { Empty, PageToolbar, toRunStatus } from "../ui";
 import { IconButton } from "./IconButton";
 import { OwnerCell } from "./OwnerCell";
 import { RunStatusTag } from "./RunStatusTag";
@@ -49,7 +49,8 @@ export function SuiteList() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [loading, setLoading] = useState(false);
+  /* 初值 true：项目 store 就位前不发请求，false 会让有数据的列表先闪一帧空态（P10-7）。 */
+  const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [selectionType, setSelectionType] = useState<SuiteSelection["type"]>("manual");
@@ -156,7 +157,8 @@ export function SuiteList() {
     });
   }
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div><h1>{t("suites.title")}</h1><p>{t("suites.hint")}</p></div>
       <div className="topbar-actions">
@@ -169,9 +171,9 @@ export function SuiteList() {
     <div className="filter-bar">
       <input className="input" value={keyword} onChange={(event) => { setKeyword(event.target.value); setPage(1); }} placeholder={t("suites.searchPlaceholder")} />
     </div>
+    </PageToolbar>
 
-    {loading && <p className="muted">{t("filter.searching")}</p>}
-
+    <div className="list-card">
     {suites.length ? <div className="table-scroll"><table className="grid suite-grid">
       <colgroup>
         <col />
@@ -284,5 +286,6 @@ export function SuiteList() {
       onClose={() => setRunModalOpen(undefined)}
       onRun={(variables) => { const suite = runModalOpen; setRunModalOpen(undefined); if (suite) void run(suite, variables); }}
     />
+    </div>
   </main>;
 }

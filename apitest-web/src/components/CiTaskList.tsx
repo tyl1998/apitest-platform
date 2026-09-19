@@ -8,7 +8,7 @@ import { useDebounced } from "../hooks/useDebounced";
 import { useCanWrite } from "../hooks/useMyRole";
 import { triggerLabel } from "../lib/trigger";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty, Readout, Tip } from "../ui";
+import { Empty, PageToolbar, Readout, Tip } from "../ui";
 import { IconButton } from "./IconButton";
 import { RepoPageHead, RepoTabs } from "./RepoShell";
 import { RunStatusTag } from "./RunStatusTag";
@@ -218,7 +218,8 @@ export function CiTaskList() {
   }
   useEffect(() => { expandedRef.current = expanded; }, [expanded]);
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <RepoPageHead
       title={t("ciTasks.title")}
       hint={t("ciTasks.hint")}
@@ -252,9 +253,9 @@ export function CiTaskList() {
         placeholder={t("ciTasks.searchPlaceholder")}
       />
     </div>
+    </PageToolbar>
 
-    {loading && <p className="muted">{t("common.loading")}</p>}
-
+    <div className="list-card">
     {!loading && (items.length ? <div className="table-scroll"><table className="grid">
       <thead><tr>
         <th className="col-expand" />
@@ -304,6 +305,7 @@ export function CiTaskList() {
         onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }}
       />
     </div>}
+    </div>
   </main>;
 }
 

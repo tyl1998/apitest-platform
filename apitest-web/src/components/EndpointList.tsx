@@ -9,7 +9,7 @@ import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty, Method, toRunStatus, type RunStatus } from "../ui";
+import { Empty, Method, PageToolbar, toRunStatus, type RunStatus } from "../ui";
 import { BatchResultList } from "./BatchResultList";
 import { ExecutionSnapshot } from "./ExecutionSnapshot";
 import { IconButton } from "./IconButton";
@@ -43,7 +43,8 @@ export function EndpointList() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [loading, setLoading] = useState(false);
+  /* 初值 true：项目 store 就位前不发请求，false 会让有数据的列表先闪一帧空态（P10-7）。 */
+  const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState<string>();
   const [duplicating, setDuplicating] = useState<string>();
   const [result, setResult] = useState<Execution>();
@@ -284,7 +285,8 @@ export function EndpointList() {
 
   const filtering = Boolean(debouncedKeyword) || method !== "all" || environmentFilter !== "all" || coverage !== "all";
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     <div className="page-head">
       <div><h1>{t("endpoints.title")}</h1><p>{t("endpoints.hint")}</p></div>
       {/* Page-level primary actions keep their wording; icon-only is for
@@ -333,7 +335,9 @@ export function EndpointList() {
         <ListChecks size={14} />{t("endpoints.lastBatchResult", { total: batchResult.total, failed: batchResult.failedCount })}
       </button>}
     </div>
+    </PageToolbar>
 
+    <div className="list-card">
     {canWrite && selected.size > 0 && <div className="bulk-bar">
       <strong>{t("endpoints.selectedCount", { count: selected.size })}</strong>
       <button className="btn btn-primary btn-with-icon" disabled={batchRunning} onClick={() => setBatchOpen(true)}>
@@ -344,8 +348,6 @@ export function EndpointList() {
       </button>
       <button className="btn btn-icon" title={t("action.cancel")} onClick={() => setSelected(new Set())}><X size={15} /></button>
     </div>}
-
-    {loading && <p className="muted">{t("filter.searching")}</p>}
 
     {endpoints.length ? <div className="table-scroll"><table className="grid endpoint-grid">
       <thead><tr>
@@ -505,5 +507,6 @@ export function EndpointList() {
       onRerun={() => { const endpoint = endpoints.find((item) => item.id === result?.endpointId); if (endpoint) void execute(endpoint); }}
       busy={Boolean(running)}
     />
+    </div>
   </main>;
 }

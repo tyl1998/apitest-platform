@@ -10,7 +10,7 @@ import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
 import { triggerLabel } from "../lib/trigger";
-import { Empty, Readout, Status, Tip, type RunStatus } from "../ui";
+import { Empty, PageToolbar, Readout, Status, Tip, type RunStatus } from "../ui";
 import { AttributionDrawer, AttributionTag, type AttributionRequest } from "./AttributionDrawer";
 import { formatMsTick, niceMsStep } from "./charts";
 import { RepoPageHead } from "./RepoShell";
@@ -361,7 +361,8 @@ export function PipelineRunPage() {
   const status = statusOf(run);
   const stageIndex = run.stage === "done" ? STAGES.length : STAGES.indexOf(run.stage);
 
-  return <main className="content">
+  return <main className="content content-split">
+    <PageToolbar>
     {/* 页头与面包屑同一个身份（P8-6 验收反馈四轮②）：任务名 #序号——「仓库执行」
         只在任务已删除、名字拿不到时兜底（LEFT JOIN 落空），历史链接不断。 */}
     <RepoPageHead
@@ -375,7 +376,10 @@ export function PipelineRunPage() {
         )}
       </>}
     />
+    </PageToolbar>
 
+    <div className="list-card">
+    <div className="list-scroll">
     {/* 概要事实块（2026-09-02 验收反馈 ②）：状态 / 阶段 / 提交 / 触发 / 结果各占一格，
         带标签、竖线分隔。原先是一整行纯文本混排——阶段词、commit 与三个计数挤在同一条
         基线上，读的人得先分辨「哪几个字是一组」才能开始读内容。 */}
@@ -458,6 +462,8 @@ export function PipelineRunPage() {
       />
     )}
     {tab === "artifacts" && <PipelineArtifactsTab artifacts={artifacts} />}
+    </div>
+    </div>
   </main>;
 }
 

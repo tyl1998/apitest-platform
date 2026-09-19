@@ -116,8 +116,8 @@ export function flowStepRows(run: FlowExecutionDetail): StepRow[] {
 export function StepEvidence({ projectId, row, shareToken }: { projectId?: string; row: StepRow; shareToken?: string }) {
   /* HTTP step: the request/response snapshot is the whole story. */
   if (row.execution) return row.step
-    ? <ExecutionStepDetail step={row.step} execution={row.execution} />
-    : <ExecutionDetail result={row.execution} />;
+    ? <ExecutionStepDetail step={row.step} execution={row.execution} publicView={Boolean(shareToken)} />
+    : <ExecutionDetail result={row.execution} publicView={Boolean(shareToken)} />;
 
   /* Container steps (loop / subflow / request 并发) carry a summary and hang
       their children off them. 只要 output 里带了 iterations，就需要展开成嵌套列表。 */

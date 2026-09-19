@@ -286,6 +286,7 @@ function DashboardPage() {
   const deltaTip = t("trends.deltaTip");
   const settled = (buckets ?? []).filter((bucket) => bucket.total > 0);
   return <>
+    <div className="page-card-toolbar">
     <div className="page-head">
       <div><h1>{t("dashboard.title")}</h1><p>{t("dashboard.hint")}</p></div>
       <div className="topbar-actions">
@@ -309,7 +310,9 @@ function DashboardPage() {
       </div>
     </div>
     {filtered && <p className="form-note">{t("dashboard.filteredHint")}</p>}
+    </div>
 
+    <div className="page-card-body">
     {overviewState === "timeout" && <Empty title={t("trends.timeoutTitle")} hint={t("trends.timeoutHint")} action={<button className="btn" onClick={() => setRevision((current) => current + 1)}>{t("trends.refresh")}</button>} />}
     {overviewState === "error" && <p className="form-error">{t("dashboard.loadFailed")}</p>}
     {overviewState === "loading" && <p className="muted">{t("filter.searching")}</p>}
@@ -596,6 +599,7 @@ function DashboardPage() {
         </>}
       </div>
     </section>}
+    </div>
   </>;
 }
 
@@ -612,7 +616,8 @@ function ProjectsPage() {
   const pageSize = Math.min(100, Math.max(1, Number(searchParams.get("pageSize") ?? 10) || 10));
   const [projects, setProjects] = useState<ProjectMetric[]>([]);
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
+  /* 初值 true：首帧取数尚未发出，false 会让有数据的列表先闪一帧空态（P10-7）。 */
+  const [loading, setLoading] = useState(true);
   const [projectDialog, setProjectDialog] = useState<"create" | "edit">();
   const [editing, setEditing] = useState<ProjectMetric>();
   const [form] = Form.useForm();
@@ -665,6 +670,7 @@ function ProjectsPage() {
   function remove(project: ProjectMetric) { Modal.confirm({ title: t("projects.deleteTitle", { name: project.name }), content: t("projects.deleteHint"), okText: t("action.delete"), okButtonProps: { danger: true }, onOk: async () => { await api.deleteProject(project.id); await load(); } }); }
 
   return <>
+    <div className="page-card-toolbar">
     <div className="page-head">
       <div><h1>{t("projects.title")}</h1><p>{t("projects.hint")}</p></div>
       <button className="btn btn-primary" onClick={openCreate}>{t("action.createProject")}</button>
@@ -675,6 +681,9 @@ function ProjectsPage() {
       <span className="filter-spacer" />
       <span className="muted mono">{t("projects.totalCount", { count: total })}</span>
     </div>
+    </div>
+
+    <div className="page-card-body">
     {loading && <p className="muted">{t("filter.searching")}</p>}
     {projects.length ? <div className="project-grid">{projects.map((project) => <article className="project-card" key={project.id}>
       <div className="project-card-head"><div><h2>{project.name}</h2></div><p>{project.description || t("projects.noDescription")}</p></div>
@@ -703,6 +712,8 @@ function ProjectsPage() {
         onChange={(nextPage, nextSize) => patchParams({ page: nextPage === 1 ? undefined : String(nextPage), pageSize: nextSize === 10 ? undefined : String(nextSize) })}
       />
     </div>}
+    </div>
+
     <Modal title={editing ? t("projects.editTitle") : t("action.createProject")} open={Boolean(projectDialog)} onCancel={() => setProjectDialog(undefined)} onOk={() => void save()} okText={t("action.save")} cancelText={t("action.cancel")}>
       <Form form={form} layout="vertical"><Form.Item name="name" label={t("projects.name")} rules={[{ required: true, message: t("projects.nameRequired") }]}><Input /></Form.Item><Form.Item name="description" label={t("projects.description")}><Input.TextArea rows={4} /></Form.Item></Form>
     </Modal>
@@ -761,6 +772,7 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
 
   return <>
     {/* topbar 让位给全局导航后，页面标题回到页内（与数据看板/项目管理两页同款）。 */}
+    <div className="page-card-toolbar">
     <div className="page-head"><div><h1>{t("system.title")}</h1><p>{t("system.hint")}</p></div></div>
 
     {tabs.length > 1 && <div className="tabs" role="tablist">
@@ -768,7 +780,9 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
         <button key={key} role="tab" aria-selected={tab === key} className={`tab${tab === key ? " is-active" : ""}`} onClick={() => setTab(key)}>{label}</button>
       ))}
     </div>}
+    </div>
 
+    <div className="page-card-body">
     {tab === "preferences" && <section className="settings-list">
       <SettingRow title={t("system.theme")} hint={t("system.themeHint")} control={<Select value={preferences.theme} onChange={(theme) => void update({ theme })} options={[{ value: "system", label: t("system.themeSystem") }, { value: "light", label: t("system.themeLight") }, { value: "dark", label: t("system.themeDark") }]} style={{ width: 150 }} />} />
       <SettingRow title={t("system.language")} hint={t("system.languageHint")} control={<Select value={preferences.language} onChange={(nextLanguage) => void update({ language: nextLanguage })} options={[{ value: "zh-CN", label: "简体中文" }, { value: "en", label: "English" }]} style={{ width: 150 }} />} />
@@ -781,6 +795,7 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
     {tab === "assistantProviders" && isAdmin && <AssistantProvidersPanel />}
     {tab === "failureCategories" && isAdmin && <FailureCategoriesPanel />}
     {tab === "auditLogs" && isAdmin && <AuditLogsPanel />}
+    </div>
   </>;
 }
 
