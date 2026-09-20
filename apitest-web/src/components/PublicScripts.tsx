@@ -10,7 +10,7 @@ import { Empty } from "../ui";
 import { IconButton } from "./IconButton";
 import { OwnerCell } from "./OwnerCell";
 import { ScriptCodeEditor } from "./ScriptCodeEditor";
-import { ChangeHistoryDrawer } from "./AuditLogsPanel";
+import { VersionHistoryDrawer } from "./VersionHistoryDrawer";
 
 /**
  * 具名公共脚本 management (计划 4.0.1: follow / copy).
@@ -82,7 +82,7 @@ export function PublicScripts({ create, onCreateHandled }: {
    */
   const [libraries, setLibraries] = useState<Script[]>([]);
   const [draft, setDraft] = useState<Draft>();
-  /* 「变更历史」抽屉（P11-10 边界 8）：新建时还没有 target_id。 */
+  /* 版本历史抽屉（P10-6）：新建时还没有 assetId，保存后才有版本。 */
   const [scriptHistoryOpen, setScriptHistoryOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState<string>();
@@ -291,7 +291,7 @@ export function PublicScripts({ create, onCreateHandled }: {
       open={Boolean(draft)}
       onClose={() => { setScriptHistoryOpen(false); setDraft(undefined); }}
       width={640}
-      extra={canWrite && draft && draft.script !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setScriptHistoryOpen(true)}><History size={14} />{t("audit.history")}</button> : undefined}
+      extra={canWrite && draft && draft.script !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setScriptHistoryOpen(true)}><History size={14} />{t("version.history")}</button> : undefined}
       footer={
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="btn" onClick={() => setDraft(undefined)}>{t("action.cancel")}</button>
@@ -368,15 +368,16 @@ export function PublicScripts({ create, onCreateHandled }: {
       </>}
     </Drawer>
 
-    {/* 公共脚本的变更历史（P11-10 边界 8）：detail 只有字段名，脚本正文绝不进。
-        匿名（用例私有）脚本没有独立生命周期，也没有这里的入口。 */}
-    {canWrite && draft && draft.script !== "new" && <ChangeHistoryDrawer
+    {/* 公共脚本的版本历史（P10-6）：含 script_deps 依赖，回滚会连依赖一起写回。
+        匿名（用例私有）脚本没有独立生命周期，也没有这里的入口。回滚后关闭并重拉列表。 */}
+    {canWrite && draft && draft.script !== "new" && <VersionHistoryDrawer
       projectId={projectId!}
-      targetType="script"
-      targetId={draft.script.id}
+      assetType="script"
+      assetId={draft.script.id}
       name={draft.script.name ?? draft.name}
       open={scriptHistoryOpen}
       onClose={() => setScriptHistoryOpen(false)}
+      onRolledBack={() => { setScriptHistoryOpen(false); setDraft(undefined); void load(); }}
     />}
   </>;
 }

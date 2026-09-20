@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { bucketTimeLabel, edgeIndices, nearestBucket } from "./core";
+import { useState } from "react";
+import { axisIndices, bucketTimeLabel, nearestBucket } from "./core";
 
 /**
  * 堆叠柱（P8-5 从 Trends.tsx 的 VolumeBars 提成底座）。
@@ -8,6 +8,9 @@ import { bucketTimeLabel, edgeIndices, nearestBucket } from "./core";
  * pass 垫底 + fail 叠顶——失败量是「先修哪个」的读数，放最上面离网格线最近）。
  * total=0 的桶画一粒 1px 灰线：空桶是「没有执行」，与「跑了一两个」在柱高上
  * 几乎不可分。
+ *
+ * 绘图区同样走 `.chart-plot`（让出左侧刻度栏）：统计页里折线在上、柱图在下，
+ * 共用同一条时间轴——左缘对齐了，两张图的桶才读得到同一列。
  */
 
 const CHART_W = 720;
@@ -38,7 +41,6 @@ export type StackedBarsProps = {
 };
 
 export function StackedBars({ buckets, layers, hourly, labels, hourlyLabels, onBucketClick, ariaLabel }: StackedBarsProps) {
-  const plotRef = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState<number>();
 
   const innerH = BAR_H - PAD_B;
@@ -46,17 +48,17 @@ export function StackedBars({ buckets, layers, hourly, labels, hourlyLabels, onB
   const gap = GAP;
   const barW = Math.max(2, (CHART_W - PAD_X * 2 - gap * Math.max(0, buckets.length - 1)) / buckets.length);
   const barX = (index: number) => PAD_X + index * (barW + gap);
-  const labelAt = edgeIndices(buckets.length);
+  const labelAt = axisIndices(buckets.length);
   /* 与 LineChart 同款：不传 hourlyLabels 时直接用 hourly（趋势页两种图共用同一档）。 */
   const labelHourly = hourlyLabels ? hourlyLabels(buckets.length) : hourly;
   const at = hovered ?? buckets.length - 1;
 
   if (buckets.length === 0) return <div className="chart" />;
 
-  return <div className="chart" style={{ position: "relative" }}>
-    <div ref={plotRef} style={{ position: "relative" }}>
-      {/* preserveAspectRatio="none"：宽度 100% 拉伸（hover 反查按容器宽算比值，
-          默认的居中留白会让柱区与反查坐标系错开——见 LineChart 同款注释）。 */}
+  return <div className="chart">
+    <div className="chart-plot">
+      {/* preserveAspectRatio="none"：宽度 100% 拉伸（hover 反查量柱区 rect 自己的
+          像素矩形，默认的居中留白会让柱区与反查坐标系错开——见 LineChart 同款注释）。 */}
       <svg viewBox={`0 0 ${CHART_W} ${BAR_H}`} width="100%" height={BAR_H} preserveAspectRatio="none" role="img" aria-label={ariaLabel}>
         {buckets.map((bucket, index) => {
           /* 从柱底往上叠：每层的高度按各自 value/max 算（不是按 total 比例再切分——
@@ -88,12 +90,11 @@ export function StackedBars({ buckets, layers, hourly, labels, hourlyLabels, onB
           </g>;
         })}
         <rect
-          x={0} y={0} width={CHART_W} height={BAR_H - PAD_B + 2}
+          x={PAD_X} y={0} width={CHART_W - PAD_X * 2} height={BAR_H - PAD_B + 2}
           fill="transparent"
           style={{ cursor: onBucketClick ? "pointer" : undefined }}
           onPointerMove={(event) => {
-            const width = plotRef.current?.getBoundingClientRect().width ?? 0;
-            setHovered(nearestBucket(event, width, buckets.length)?.index);
+            setHovered(nearestBucket(event, event.currentTarget.getBoundingClientRect(), buckets.length)?.index);
           }}
           onPointerLeave={() => setHovered(undefined)}
           onPointerDown={() => { if (hovered !== undefined && onBucketClick) onBucketClick(hovered); }}

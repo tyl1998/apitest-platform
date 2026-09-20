@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Drawer, Modal, Select, message } from "antd";
 import Editor from "@monaco-editor/react";
 import { useTranslation } from "react-i18next";
@@ -10,7 +10,7 @@ import { useThemeMode } from "../theme";
 import { useCanWrite } from "../hooks/useMyRole";
 import { Empty, PageToolbar } from "../ui";
 import { DataSourceDrawer, apiMessage } from "./DataSourceList";
-import { ChangeHistoryDrawer } from "./AuditLogsPanel";
+import { VersionHistoryDrawer } from "./VersionHistoryDrawer";
 import { DatabaseResult } from "./DatabaseResult";
 import { IconButton } from "./IconButton";
 
@@ -30,8 +30,8 @@ export function DataSourceDetail() {
   const [loading, setLoading] = useState(true);
   const [editingSource, setEditingSource] = useState(false);
   const [testing, setTesting] = useState(false);
-  /* 「变更历史」抽屉（P11-10 边界 8）：数据源本体的建/改/删。SQL 定义有自己的入口
-     （编辑抽屉的 extra），因为它是另一张表的另一行资源。 */
+  /* 版本历史抽屉（P10-6）：数据源本体的连接配置快照（密文只记键名、绝不含值）。SQL
+     定义有自己的入口（编辑抽屉的 extra），因为它是另一张表的另一行资源。 */
   const [changeHistoryOpen, setChangeHistoryOpen] = useState(false);
 
   async function load() {
@@ -95,7 +95,7 @@ export function DataSourceDetail() {
       <div className="topbar-actions">
         {canWrite && <button className="btn btn-with-icon" disabled={testing} onClick={() => void testConnection()}><Cable size={14} />{testing ? t("action.running") : t("dataSources.testConnection")}</button>}
         {canWrite && <button className="btn btn-with-icon" onClick={() => setEditingSource(true)}><Pencil size={14} />{t("action.edit")}</button>}
-        {canWrite && <button className="btn btn-with-icon" onClick={() => setChangeHistoryOpen(true)}><History size={14} />{t("audit.history")}</button>}
+        {canWrite && <button className="btn btn-with-icon" onClick={() => setChangeHistoryOpen(true)}><History size={14} />{t("version.history")}</button>}
       </div>
     </div>
     <div className="tabs detail-tabs" role="tablist">
@@ -130,14 +130,15 @@ export function DataSourceDetail() {
 
     <DataSourceDrawer projectId={projectId!} source={editingSource ? source : undefined} onClose={() => setEditingSource(false)} onSaved={(saved) => { setSource(saved); setEditingSource(false); }} />
     <SqlDefinitionDrawer projectId={projectId!} dataSourceId={dataSourceId!} sourceType={source.type} source={editSql === "new" ? "new" : definitions.find((item) => item.id === editSql)} open={Boolean(editSql)} onClose={() => setUrl({ tab: "sql" })} onSaved={async () => { setUrl({ tab: "sql" }); await load(); }} />
-    {/* 变更历史（P11-10 边界 8）：数据源本体的 create/update/delete。 */}
-    <ChangeHistoryDrawer
+    {/* 版本历史（P10-6）：数据源连接配置快照，密文绝不含值；回滚不动密文列。回滚后重拉。 */}
+    <VersionHistoryDrawer
       projectId={projectId!}
-      targetType="data_source"
-      targetId={dataSourceId!}
+      assetType="data_source"
+      assetId={dataSourceId!}
       name={source.name}
       open={changeHistoryOpen}
       onClose={() => setChangeHistoryOpen(false)}
+      onRolledBack={() => void load()}
     />
   </main>;
 }
@@ -153,24 +154,34 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<SqlExecutionResult>();
   const [error, setError] = useState<string>();
-  /* SQL 定义的变更历史入口（P11-10 边界 8）：与数据源本体分开的另一个 target。 */
+  /* SQL 定义的版本历史入口（P10-6）：与数据源本体分开的另一个资产。 */
   const [sqlHistoryOpen, setSqlHistoryOpen] = useState(false);
 
-  useEffect(() => {
-    if (!open) return;
+  /* 把一条定义（或 "new"）灌进草稿。首次打开与「版本回滚后重拉这一条」（P10-6）复用它，
+     好让回滚只刷新当前抽屉的表单、不连累外层数据源详情页。 */
+  const resetFrom = useCallback((from: SqlDefinition | "new" | undefined) => {
     if (kind !== "sql") {
-      const operation = source && source !== "new" ? source.operation : undefined;
-      setDraft({ name: source && source !== "new" ? source.name : "", description: source && source !== "new" ? source.description : "", params: source && source !== "new" ? source.params : [] });
+      const operation = from && from !== "new" ? from.operation : undefined;
+      setDraft({ name: from && from !== "new" ? from.name : "", description: from && from !== "new" ? from.description : "", params: from && from !== "new" ? from.params : [] });
       setOperationText(operation ? formatOperation(operation) : defaultOperationText(sourceType));
-      setValues(Object.fromEntries((source && source !== "new" ? source.params : []).map((param) => [param.name, param.defaultValue === undefined ? "" : stringifyValue(param.defaultValue)])));
+      setValues(Object.fromEntries((from && from !== "new" ? from.params : []).map((param) => [param.name, param.defaultValue === undefined ? "" : stringifyValue(param.defaultValue)])));
       setResult(undefined); setError(undefined);
       return;
     }
-    const next = source && source !== "new" ? { name: source.name, description: source.description, statementType: source.statementType ?? "query", sql: source.sql ?? "", params: source.params } : { name: "", description: "", statementType: "query" as const, sql: "", params: [] };
+    const next = from && from !== "new" ? { name: from.name, description: from.description, statementType: from.statementType ?? "query", sql: from.sql ?? "", params: from.params } : { name: "", description: "", statementType: "query" as const, sql: "", params: [] };
     setDraft(next);
     setValues(Object.fromEntries(next.params.map((param) => [param.name, param.defaultValue === undefined ? "" : stringifyValue(param.defaultValue)])));
     setResult(undefined); setError(undefined);
-  }, [open, source, kind]);
+  }, [kind, sourceType]);
+
+  useEffect(() => { if (open) resetFrom(source); }, [open, source, resetFrom]);
+
+  /* 回滚后只重拉这一条定义并回灌表单，抽屉保持打开（不走 onSaved，那会关抽屉退回清单）。 */
+  async function reloadDefinition() {
+    if (!source || source === "new") return;
+    try { resetFrom(await api.sqlDefinition(projectId, source.id)); }
+    catch { message.error(t("dataSources.loadFailed")); }
+  }
 
   function patchParam(index: number, patch: Partial<SqlParameter>) { setDraft((current) => ({ ...current, params: current.params.map((param, at) => at === index ? { ...param, ...patch } : param) })); }
 
@@ -233,7 +244,7 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open
      跟着编辑器文本走，所以手改 JSON 也会同步。 */
   const currentOperation = operationLabelFromText(operationText);
 
-  return <Drawer title={source === "new" ? t("dataSources.createSql") : t("dataSources.editSql")} open={open} onClose={() => { setSqlHistoryOpen(false); onClose(); }} width={820} extra={source && source !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setSqlHistoryOpen(true)}><History size={14} />{t("audit.history")}</button> : undefined} footer={<div className="drawer-actions"><button className="btn" onClick={onClose}>{t("action.cancel")}</button><button className="btn btn-primary" disabled={saving || !source} onClick={() => void save()}>{saving ? "…" : t("action.save")}</button></div>}>
+  return <Drawer title={source === "new" ? t("dataSources.createSql") : t("dataSources.editSql")} open={open} onClose={() => { setSqlHistoryOpen(false); onClose(); }} width={820} extra={source && source !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setSqlHistoryOpen(true)}><History size={14} />{t("version.history")}</button> : undefined} footer={<div className="drawer-actions"><button className="btn" onClick={onClose}>{t("action.cancel")}</button><button className="btn btn-primary" disabled={saving || !source} onClick={() => void save()}>{saving ? "…" : t("action.save")}</button></div>}>
     {!source && open ? <p className="muted">{t("common.loading")}</p> : <>
       <div className="form-grid">
         <label className="field"><span>{t("dataSources.sqlName")}</span><input className="input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} autoFocus /></label>
@@ -265,14 +276,15 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open
         <DatabaseResult result={result} error={error} />
       </div></section>
     </>}
-    {/* SQL 定义的变更历史（P11-10 边界 8）：已保存的定义才有 target_id。 */}
-    {source && source !== "new" && <ChangeHistoryDrawer
+    {/* SQL 定义的版本历史（P10-6）：已保存的定义才有 assetId。回滚后关闭编辑抽屉并重拉清单。 */}
+    {source && source !== "new" && <VersionHistoryDrawer
       projectId={projectId}
-      targetType="sql_definition"
-      targetId={source.id}
+      assetType="sql_definition"
+      assetId={source.id}
       name={source.name}
       open={sqlHistoryOpen}
       onClose={() => setSqlHistoryOpen(false)}
+      onRolledBack={() => void reloadDefinition()}
     />}
   </Drawer>;
 }

@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { bucketTimeLabel, edgeIndices, isolatedIndices, nearestBucket, pathSegments, singleValueIndex } from "./core";
+import { useState } from "react";
+import { axisIndices, bucketTimeLabel, gapSegments, isolatedIndices, nearestBucket, pathSegments } from "./core";
 
 /**
  * 手写 SVG 折线（P8-5 从 Trends.tsx 的私有实现提成底座，P3-9 边界 12 的姿态不变：
@@ -7,20 +7,27 @@ import { bucketTimeLabel, edgeIndices, isolatedIndices, nearestBucket, pathSegme
  * 和四个语义色）。
  *
  * hover 层（12.6 参考形态，uPlot 的「透明 overlay + 最近点吸附」）：图上盖一层透明
- * rect 捕指针，`offsetX / plotWidth` 反查最近桶，画**竖直参考线 + active 点放大**，
- * 读数常驻在图下方的读数条里（Grafana 面板的形态）——不用 SVG `<text>` 做悬浮
- * tooltip：viewBox 拉伸下 SVG 文本会发虚，读数条也不需要跟着指针跑。
+ * rect 捕指针，按指针在**该 rect 实测像素范围**内的横向比例反查最近桶，画**竖直参考
+ * 线 + active 点放大**，读数常驻在图下方的读数条里（Grafana 面板的形态）——不用
+ * SVG `<text>` 做悬浮 tooltip：viewBox 拉伸下 SVG 文本会发虚，读数条也不需要跟着
+ * 指针跑。
  *
  * 布局约定：viewBox 固定、宽度 100% 拉伸，**必须显式写
  * `preserveAspectRatio="none"`**——SVG 默认是「保持比例 + 居中留白」，容器比
  * viewBox 宽时绘图区只在中间一段，而 hover 反查按「指针 / 容器宽」算比值，分母
  * 就系统性偏大，指针在 A、吸附点落在 B（2026-09-10 用户实测报告的错位）。
- * 轴标签是 HTML 绝对定位，百分比落位；hover 用 `getBoundingClientRect` 实测
- * 像素宽，不用 viewBox 换算。
+ * 轴标签是 HTML 绝对定位，百分比落位；y 轴刻度在绘图区左侧的刻度栏里（固定像素
+ * 宽，不随容器缩放），hover 反查量的是 rect 自己的像素矩形，不随刻度栏漂移。
+ *
+ * 空桶（null）不画实线，但两侧最近的实样本之间补一条**虚线**（`gapSegments`）：
+ * 「这段是推断」由线型表达，读数条的「—」保留「没样本」的事实。
  */
 
 const CHART_W = 720;
 const CHART_H = 170;
+/* 绘图区两侧的 viewBox 内留白：y 轴刻度不在其中——它落在绘图区**外面**的刻度栏里
+   （`.chart-plot` 的 margin-left，固定像素，见 design-system.css）。留白只用来让
+   折线两端不贴着框。 */
 const PAD_L = 6;
 const PAD_R = 6;
 const PAD_T = 10;
@@ -46,16 +53,11 @@ export type LineChartProps = {
   labels?: string[];
   /** 点桶 → 调用方（P8-6 的下钻接线：URL 表进 12.2）。 */
   onBucketClick?: (index: number) => void;
-  /** null 桶是否连线跨过：耗时分位这类「每桶独立结论」的序列跨线可读性更高
-      （稀疏窗口下断线只剩碎段）；通过率这类「趋势」序列保持断线——「没执行」
-      跨过去会读成「维持不变」。默认 false（断线）。 */
-  bridgeGaps?: boolean;
   /** 无障碍标签（role="img" 的 aria-label）。 */
   ariaLabel?: string;
 };
 
-export function LineChart({ buckets, series, yMax, yFormat, hourly, yTicks, labels, onBucketClick, bridgeGaps, ariaLabel }: LineChartProps) {
-  const plotRef = useRef<HTMLDivElement>(null);
+export function LineChart({ buckets, series, yMax, yFormat, hourly, yTicks, labels, onBucketClick, ariaLabel }: LineChartProps) {
   const [hovered, setHovered] = useState<number>();
 
   const innerW = CHART_W - PAD_L - PAD_R;
@@ -63,12 +65,15 @@ export function LineChart({ buckets, series, yMax, yFormat, hourly, yTicks, labe
   const n = buckets.length;
   const x = (i: number) => PAD_L + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
   const y = (v: number) => PAD_T + innerH - (Math.min(v, yMax) / yMax) * innerH;
-  const labelAt = edgeIndices(n);
+  const labelAt = axisIndices(n);
   /* 空数据画空壳（占住图表高度）：P8-6 的分段渲染里，一段没数据不等于页面崩。 */
   if (n === 0) return <div className="chart" style={{ height: CHART_H + 20 }} />;
 
-  return <div className="chart" style={{ position: "relative" }}>
-    <div ref={plotRef} style={{ position: "relative" }}>
+  return <div className="chart">
+    {/* 绘图区让出左侧的刻度栏（`.chart-plot` 的 margin-left）：刻度是 HTML 浮层，
+        不能压进绘图区，也不能把绘图区挤成一条（宽度由 CSS 变量定，固定像素，
+        和刻度字号一样不随容器缩放）。 */}
+    <div className="chart-plot">
       <svg viewBox={`0 0 ${CHART_W} ${CHART_H}`} width="100%" height={CHART_H} preserveAspectRatio="none" role="img" aria-label={ariaLabel}>
         {yTicks.map((tick) => <line
           key={tick}
@@ -76,9 +81,19 @@ export function LineChart({ buckets, series, yMax, yFormat, hourly, yTicks, labe
           style={{ stroke: "var(--line)" }}
           strokeWidth={1}
         />)}
+        {/* 空档虚线先画、实线后画：跨 null 的推断段在被实样本覆盖处不露头。 */}
+        {series.map((each, index) => <path
+          key={`gap:${index}`}
+          d={gapSegments(each.values, x, y)}
+          fill="none"
+          style={{ stroke: each.color }}
+          strokeWidth={each.width ?? 1.5}
+          strokeDasharray="3 3"
+          strokeLinecap="round"
+        />)}
         {series.map((each, index) => <path
           key={index}
-          d={pathSegments(each.values, x, y, { bridgeGaps })}
+          d={pathSegments(each.values, x, y)}
           fill="none"
           style={{ stroke: each.color }}
           strokeWidth={each.width ?? 1.5}
@@ -88,18 +103,15 @@ export function LineChart({ buckets, series, yMax, yFormat, hourly, yTicks, labe
         />)}
         {/* 孤立点显式画 circle：单点段只是 `M x,y`，round linecap 下只有线宽那么
             大、dasharray（p99 虚线）下什么都不画——「只有一个点根本看不见」
-            （2026-09-10 复验）。断线模式画所有孤立点；桥接模式点都在线上，只在
-            全序列恰好一个点时画。半径与 active 点一致，hover 时两层重合不闪。 */}
-        {series.map((each, index) => {
-          const markers = bridgeGaps ? singleValueIndex(each.values) : isolatedIndices(each.values);
-          return markers.map((i) => <circle
-            key={`${index}:${i}`}
-            cx={x(i)}
-            cy={y(each.values[i]!)}
-            r={2.5}
-            style={{ fill: each.color }}
-          />);
-        })}
+            （2026-09-10 复验）。空档由虚线跨过去，所以只有「左右都没有实邻居」的
+            点需要这枚 circle。半径与 active 点一致，hover 时两层重合不闪。 */}
+        {series.map((each, index) => isolatedIndices(each.values).map((i) => <circle
+          key={`${index}:${i}`}
+          cx={x(i)}
+          cy={y(each.values[i]!)}
+          r={2.5}
+          style={{ fill: each.color }}
+        />))}
         {/* active 点放大（Recharts ActiveDot 的形态）：吸附到的桶上每个 series 画
             一个 2.5px 半径的实心点，线宽 1.5 的线指上去时肉眼对不上位置的痛点就
             是它解的。null 的 series 不画点。 */}
@@ -126,17 +138,26 @@ export function LineChart({ buckets, series, yMax, yFormat, hourly, yTicks, labe
           fill="transparent"
           style={{ cursor: onBucketClick ? "pointer" : undefined }}
           onPointerMove={(event) => {
-            const width = plotRef.current?.getBoundingClientRect().width ?? 0;
-            setHovered(nearestBucket(event, width, n)?.index);
+            setHovered(nearestBucket(event, event.currentTarget.getBoundingClientRect(), n)?.index);
           }}
           onPointerLeave={() => setHovered(undefined)}
           onPointerDown={() => { if (hovered !== undefined && onBucketClick) onBucketClick(hovered); }}
         />
       </svg>
-      {/* 轴标签浮在 SVG 上：左端是 y 轴刻度，底下一排是桶时间。 */}
+      {/* 轴标签浮在 SVG 上：左端是 y 轴刻度（落在绘图区外的刻度栏里），底下一排是桶时间。 */}
       <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+        {/* `right: 100%` + 固定像素宽：刻度右对齐贴住绘图区左缘、整块落在绘图区之外
+            （`.chart-y` 的样式定了宽度与对齐）。 */}
         {yTicks.map((tick) => <span key={tick} className="mono chart-y" style={{ top: y(tick) - 7 }}>{yFormat(tick)}</span>)}
-        {labelAt.map((index) => <span key={index} className="mono chart-x" style={{ left: `${(x(index) / CHART_W) * 100}%` }}>
+        {/* 首/尾桶的标签向图内对齐：居中会让首桶标签的左半截回头压在刻度栏上
+            （尾桶同理会探出面板右缘）。只有一个桶时维持居中。 */}
+        {labelAt.map((index, position) => <span key={index} className="mono chart-x" style={{
+          left: `${(x(index) / CHART_W) * 100}%`,
+          transform: labelAt.length === 1 ? undefined
+            : position === 0 ? "translateX(0)"
+            : position === labelAt.length - 1 ? "translateX(-100%)"
+            : undefined,
+        }}>
           {bucketTimeLabel(buckets[index], hourly)}
         </span>)}
       </div>

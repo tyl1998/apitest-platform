@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Drawer, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { CalendarClock, History, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { CalendarClock, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import {
   api, noRunnerLabel,
   type Schedule, type SchedulePreview, type ScheduleRun, type ScheduleTargetType,
@@ -12,7 +12,6 @@ import { useCanWrite } from "../hooks/useMyRole";
 import type { RunStatus } from "../ui";
 import { IconButton } from "./IconButton";
 import { OwnerCell } from "./OwnerCell";
-import { ChangeHistoryDrawer } from "./AuditLogsPanel";
 import { RunStatusTag } from "./RunStatusTag";
 import { fromPairs, toPairs, type Pair } from "./KeyValueEditor";
 import { VariableRowsEditor } from "./VariableRowsEditor";
@@ -75,9 +74,6 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
   const [loading, setLoading] = useState(true);
 
   const [editing, setEditing] = useState<Schedule | "new">();
-  /* 「变更历史」抽屉（P11-10 边界 8）：新建时还没有 target_id。调度器改的
-     next_run_at / last_run_at 不进审计（边界 3），这里只会有配置类改动。 */
-  const [scheduleHistoryOpen, setScheduleHistoryOpen] = useState(false);
   const [form, setForm] = useState<ScheduleForm>(emptyForm());
   const [variables, setVariables] = useState<Pair[]>([]);
   const [saving, setSaving] = useState(false);
@@ -356,9 +352,8 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
     <Drawer
       title={editing === "new" ? t("schedules.createTitle") : t("schedules.editTitle")}
       open={Boolean(editing)}
-      onClose={() => { setScheduleHistoryOpen(false); setEditing(undefined); }}
+      onClose={() => setEditing(undefined)}
       width={560}
-      extra={canWrite && editing && editing !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setScheduleHistoryOpen(true)}><History size={14} />{t("audit.history")}</button> : undefined}
       footer={
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="btn" onClick={() => setEditing(undefined)}>{t("action.cancel")}</button>
@@ -419,16 +414,6 @@ export function ResourceSchedules({ projectId, targetType, targetId, autoOpenCre
         {t("schedules.enabled")}
       </label>
     </Drawer>
-
-    {/* 调度的变更历史（P11-10 边界 8）：入口挂在编辑抽屉的 extra，目标就是这一条。 */}
-    {canWrite && editing && editing !== "new" && <ChangeHistoryDrawer
-      projectId={projectId}
-      targetType="schedule"
-      targetId={editing.id}
-      name={editing.name}
-      open={scheduleHistoryOpen}
-      onClose={() => setScheduleHistoryOpen(false)}
-    />}
 
     {/* 触发历史：一个到期时刻一行，skipped/failed 没有「点进执行」一说。 */}
     <Drawer

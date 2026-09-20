@@ -1182,6 +1182,70 @@ export type WorkerFleet = {
 };
 
 /**
+ * 执行历史的一个**存储**分区（P10-2，`/system/execution-partitions`）。
+ *
+ * 命名刻意带上 `Storage`：与上面的 `ExecutionPartition` 撞名的只有中文「分区」二字，
+ * 两者是无关的东西——那个是 P2-8 的网段标签（`runner_label`，决定一次执行从哪个网段
+ * 发出），这个是 `executions` 表按季切出来的物理分区。类型名分开，读代码时不必再猜。
+ */
+export type ExecutionStoragePartition = {
+  /** `executions_YYYYqN`；兜底分区是 `executions_default`。 */
+  name: string;
+  /** `2026q1`；兜底分区没有季，为 null。 */
+  quarter: string | null;
+  rangeStart: string | null;
+  rangeEnd: string | null;
+  /** 兜底分区：维护拍停摆时行落到这里，正常应当恒空。 */
+  isDefault: boolean;
+  /** 规划器**估算**行数（reltuples）；从未 ANALYZE 过的新分区为 null（不是 0）。 */
+  approxRows: number | null;
+  bytes: number;
+};
+
+/**
+ * 一张已脱离的归档分区（P10-2）。表名既是台账主键，也是清理端点的目标标识。
+ *
+ * `present=false` 表示表已清除而**台账行保留**——「哪一季、多少条、何时脱离、被谁清掉」
+ * 是一条永久事实，也是表没了之后唯一还说得出清掉多少的地方。
+ */
+export type ArchivedExecutionPartition = {
+  tableName: string;
+  quarterStart: string;
+  quarterEnd: string;
+  /** 脱离那一刻的精确行数。 */
+  rowCount: number;
+  detachedAt: string;
+  droppedAt: string | null;
+  droppedBy: string | null;
+  present: boolean;
+  /** 表还在时的占用；已清除为 null。 */
+  bytes: number | null;
+};
+
+export type ExecutionPartitionView = {
+  /** 0 = 自动归档关闭（默认），维护拍只预建分区。 */
+  retentionMonths: number;
+  maintenanceIntervalHours: number;
+  /** 清理时驱动对不上的大响应体会被跳过，所以 `objectsSkipped` 要配上这个字段才读得懂。 */
+  storageDriver: "fs" | "s3";
+  /** 兜底分区里的滞留行数，正常恒为 0；非 0 = 维护拍停过，需人工搬行。 */
+  strandedRows: number | null;
+  partitions: ExecutionStoragePartition[];
+  archives: ArchivedExecutionPartition[];
+};
+
+/** 清理一张归档分区的结果（不可逆）。 */
+export type ExecutionPartitionDropResult = {
+  tableName: string;
+  rowCount: number;
+  objectsDeleted: number;
+  /** 驱动对不上而**没有**删的对象数——不假装删干净了。 */
+  objectsSkipped: number;
+  /** 被置空的悬垂指针数（execution_steps + mocks）。 */
+  pointersCleared: number;
+};
+
+/**
  * A status change pushed over the project event stream (P1-3).
  *
  * Deliberately without a response body: the stream is project-wide, so putting
@@ -2454,6 +2518,49 @@ export type AuditLog = {
   createdAt: string;
 };
 
+/* ── P10-5：资产版本（读侧）——版本列表 / 两版 diff / 回滚 ───────────────────── */
+
+/** 版本覆盖的资产类型（与后端 AssetVersionType / 迁移 067/068 的 CHECK 同步）。P10-6 扩面到
+    7 类用户编写型内容资产（Mock/脚本/流程/套件/数据源/SQL 定义/仓库任务）。 */
+export type AssetVersionType =
+  | "endpoint" | "test_case" | "spec_case" | "environment"
+  | "mock" | "script" | "flow" | "test_suite" | "data_source" | "sql_definition" | "ci_task";
+
+/**
+ * 一个资产的一版内容快照。`snapshot` 是与该资产 API 出参同形的内容子集（环境的
+ * secrets 只含键名，绝不含值）。`createdByEmail` = 谁在何时存的（读侧 JOIN users 带出）。
+ */
+export type AssetVersion = {
+  id: string;
+  projectId: string;
+  assetType: AssetVersionType;
+  assetId: string;
+  versionNo: number;
+  snapshot: Record<string, unknown>;
+  /** 动作标签：创建 / 更新 / 复制 / 回滚至 vN。 */
+  changeSummary: string;
+  createdByEmail?: string | null;
+  createdAt: string;
+};
+
+/** 逐行 diff 的一行（服务端算好，前端只上色）。 */
+export type LineDiff = { kind: "add" | "del" | "same"; text: string };
+
+/** 一个顶层字段的 diff：kind + 逐行着色。环境 secret 只在 secretKeys 字段上显示键名增删。 */
+export type FieldDiff = {
+  field: string;
+  kind: "added" | "removed" | "changed";
+  before?: unknown;
+  after?: unknown;
+  lines: LineDiff[];
+};
+
+/** 两版 diff 结果：有改动的字段 + 「一处未改」标记。 */
+export type SnapshotDiff = { fields: FieldDiff[]; identical: boolean };
+
+/** diff 接口响应：比对的两版号（from 可为 null，表示只有一版、与空比）+ diff。 */
+export type AssetVersionDiff = { from: number | null; to: number; diff: SnapshotDiff };
+
 /* ── P6-3: 邀请码 + 注册 + 强制改密 ─────────────────────────────────────────── */
 
 /**
@@ -2876,6 +2983,19 @@ export const api = {
   /** 分区标签目录：环境编辑器的分区建议与「无在线执行器」提示用。任何登录用户可读。 */
   runnerLabels: () => client.get("/system/runner-labels").then(data<RunnerLabelStatus[]>),
   /**
+   * 执行历史的存储分区与归档现状（P10-2）。系统管理员，纯读。
+   *
+   * 与 `workers().partitions` 无关（那里是 P2-8 的网段标签），见 `ExecutionStoragePartition`。
+   */
+  executionPartitions: () => client.get("/system/execution-partitions").then(data<ExecutionPartitionView>),
+  /**
+   * 清理一张已脱离的归档分区：**删对象 → 断指针 → DROP**，不可逆。
+   *
+   * 这是平台里唯一会删除大响应体对象的通路。绕过它直接在 psql 里 DROP 会留下永久孤儿对象。
+   */
+  dropExecutionPartition: (name: string) =>
+    client.delete(`/system/execution-partitions/${encodeURIComponent(name)}`).then(data<ExecutionPartitionDropResult>),
+  /**
    * 自托管 Runner 池的**聚合**状态（P4.5-11）。任何登录用户可读——CI 任务列表顶部要
    * 显示「在线 / 槽位 / 空闲 / 排队 N 个」，而 Runner 清单（`runnerFleet`）只给系统
    * 管理员。与 `runnerLabels` 不是一回事：那是平台内部 BullMQ 执行器。
@@ -2924,6 +3044,28 @@ export const api = {
         targetId: filters?.targetId || undefined,
       },
     }).then(paged<AuditLog>),
+
+  /* ── P10-5：资产版本（读侧）── */
+  /**
+   * 某资产的版本列表（viewer 可读，倒序、最新在前，带 snapshot 与「谁在何时存的」）。
+   * `assetType` 走枚举，四类资产共用一条路由（后端统一版本模型）。
+   */
+  assetVersions: (projectId: string, assetType: AssetVersionType, assetId: string) =>
+    client.get(`/projects/${projectId}/assets/${assetType}/${assetId}/versions`).then(data<AssetVersion[]>),
+  /** 相邻两版 diff（最新与次新）；不足两版时 diff.identical 为 true。 */
+  assetVersionLatestDiff: (projectId: string, assetType: AssetVersionType, assetId: string) =>
+    client.get(`/projects/${projectId}/assets/${assetType}/${assetId}/versions/diff`).then(data<AssetVersionDiff>),
+  /** 任意两版 diff（`a` 旧、`b` 新，与前端「左旧右新」一致）；服务端逐字段 + 逐行算。 */
+  assetVersionDiff: (projectId: string, assetType: AssetVersionType, assetId: string, a: number, b: number) =>
+    client.get(`/projects/${projectId}/assets/${assetType}/${assetId}/versions/${a}/diff/${b}`).then(data<AssetVersionDiff>),
+  /**
+   * 回滚到某一版（写权限）：把该版快照写回资产 → 再产一个新版本（不删历史）。
+   * 环境回滚不复原 secret 值（快照只有键名），响应 `secretsPreserved` 为 true 时前端提示。
+   * 环境重名等当下库状态冲突回 409，调用方按 apiMessage 展示。
+   */
+  rollbackAssetVersion: (projectId: string, assetType: AssetVersionType, assetId: string, versionNo: number) =>
+    client.post(`/projects/${projectId}/assets/${assetType}/${assetId}/versions/${versionNo}/rollback`)
+      .then(data<{ asset: unknown; rolledBackTo: number; secretsPreserved: boolean }>),
 
   /* ── P6-4：项目成员 ── */
   /** 成员表（viewer 可读；total = 成员数）。 */

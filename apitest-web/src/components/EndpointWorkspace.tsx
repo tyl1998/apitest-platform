@@ -11,7 +11,7 @@ import { variableOptions } from "../lib/flowVariables";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 import { KeyValueEditor, fromPairs, toPairs, type Pair } from "./KeyValueEditor";
-import { ChangeHistoryDrawer } from "./AuditLogsPanel";
+import { VersionHistoryDrawer } from "./VersionHistoryDrawer";
 import { ExecutionSnapshot, DownloadFullResponseButton } from "./ExecutionSnapshot";
 import { HistorySidebar } from "./HistorySidebar";
 import { IconButton } from "./IconButton";
@@ -227,7 +227,7 @@ export function EndpointWorkspace() {
   const [debugDraft, setDebugDraft] = useState<Draft>();
   /* 「变更历史」抽屉（P11-10 边界 8）：跟屏幕上正在编辑的东西走——加载了用例就查用例，
      否则查接口。与 runs 侧栏的 `historyOpen` 是两个东西，名字分开。 */
-  const [changeHistoryOpen, setChangeHistoryOpen] = useState(false);
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   /**
    * Comparison point while a case is loaded, kept separate from `baseline`.
    *
@@ -573,6 +573,40 @@ export function EndpointWorkspace() {
   }
 
   /**
+   * P10-5 回滚后重拉屏幕上正在编辑的对象——用例就重拉用例并把快照写回草稿，否则重拉接口
+   * 定义。回滚已在服务端产了新版本（不可逆动作），本地未保存的编辑按「以服务端为准」丢弃。
+   */
+  async function reloadAfterRollback() {
+    if (!projectId || !endpointId) return;
+    if (activeCase) {
+      const rows = await api.cases(projectId, endpointId);
+      setCases(rows);
+      const fresh = rows.find((item) => item.id === activeCase.id);
+      if (!fresh) { returnToDebug(); return; }
+      const next = snapshotToDraft(draft, fresh.request);
+      setDraft(next);
+      setUrlText(composeUrl(next.url, next.queryParams));
+      setCaseBaseline(JSON.stringify(next));
+      setCaseAssertions(fresh.assertions);
+      const hooks = fresh.preRequestHooks ?? [];
+      const extracts = fresh.extracts ?? [];
+      const responseScripts = fresh.responseScripts ?? [];
+      setCaseHooks(hooks);
+      setCaseExtracts(extracts);
+      setCaseResponseScripts(responseScripts);
+      setLifecycleBaseline(JSON.stringify({ assertions: fresh.assertions, preRequestHooks: hooks, extracts, responseScripts }));
+      setActiveCase(fresh);
+      return;
+    }
+    const endpoint = await api.endpoint(projectId, endpointId);
+    const next = toDraft(endpoint);
+    setBaseline(JSON.stringify(next));
+    setDraft(next);
+    setUrlText(composeUrl(next.url, next.queryParams));
+    await reloadEndpoints();
+  }
+
+  /**
    * Saves the loaded case: request snapshot and assertions in one write.
    *
    * Splitting these into two buttons meant a request edit had nowhere to go —
@@ -911,7 +945,7 @@ export function EndpointWorkspace() {
             endpoint-level writes are withheld: saving would overwrite the
             endpoint with case content, and duplicating would copy the wrong
             definition. The case's own save takes their place. */}
-        {!isNew && canWrite && <IconButton icon={<History size={15} />} label={t("audit.history")} onClick={() => setChangeHistoryOpen(true)} />}
+        {!isNew && <IconButton icon={<History size={15} />} label={t("version.history")} onClick={() => setVersionHistoryOpen(true)} />}
         {!isNew && !activeCase && canWrite && <IconButton icon={<CopyPlus size={15} />} label={t("action.duplicate")} disabled={duplicating} onClick={() => void duplicate()} />}
         {!isNew && !activeCase && canWrite && <IconButton icon={<Trash2 size={15} />} label={t("action.delete")} tone="danger" onClick={remove} />}
         {canWrite && (activeCase
@@ -1235,14 +1269,16 @@ export function EndpointWorkspace() {
       />
       <JsonPathPicker open={pickExtractBody !== undefined} body={result?.responseBody} onClose={() => setPickExtractBody(undefined)} onPick={(paths) => { if (pickExtractBody === undefined || !paths.length) return; const made = paths.map((path) => ({ name: path.split(/[.[\]]/).filter(Boolean).at(-1) ?? "value", from: "body" as const, path })); setCaseExtracts((current) => current.map((item, at) => at === pickExtractBody ? { ...made[0], name: item.name || made[0].name } : item).concat(made.slice(1))); setPickExtractBody(undefined); }} />
       <HeaderPicker open={pickExtractHeader !== undefined} headers={result?.responseHeaders} onClose={() => setPickExtractHeader(undefined)} onPick={(names) => { if (pickExtractHeader === undefined || !names.length) return; const made = names.map((name) => ({ name: name.toLowerCase().replace(/[^a-z0-9]+(.)/g, (_, next: string) => next.toUpperCase()), from: "header" as const, path: name })); setCaseExtracts((current) => current.map((item, at) => at === pickExtractHeader ? { ...made[0], name: item.name || made[0].name } : item).concat(made.slice(1))); setPickExtractHeader(undefined); }} />
-      {/* 变更历史（P11-10 边界 8）：屏幕上是用例就查用例、否则查接口，与编辑对象一致。 */}
-      {!isNew && <ChangeHistoryDrawer
+      {/* P10-5 版本历史（替换旧「变更历史」）：屏幕上是用例就查用例、否则查接口，与编辑对象
+          一致。viewer 也能看列表与 diff，回滚按钮内部按写权限渲染；回滚后重拉当前对象。 */}
+      {!isNew && <VersionHistoryDrawer
         projectId={projectId!}
-        targetType={activeCase ? "test_case" : "endpoint"}
-        targetId={activeCase ? activeCase.id : endpointId!}
+        assetType={activeCase ? "test_case" : "endpoint"}
+        assetId={activeCase ? activeCase.id : endpointId!}
         name={activeCase ? activeCase.name : draft.name}
-        open={changeHistoryOpen}
-        onClose={() => setChangeHistoryOpen(false)}
+        open={versionHistoryOpen}
+        onClose={() => setVersionHistoryOpen(false)}
+        onRolledBack={() => void reloadAfterRollback()}
       />}
   </main>;
 }

@@ -455,11 +455,9 @@ export function Trends() {
                 yFormat={(value) => (value >= 1000 ? `${(value / 1000).toFixed(0)}s` : `${Math.round(value)}ms`)}
                 hourly={hourly}
                 yTicks={[0, Math.round(Math.max(1, ...buckets.map((bucket) => bucket.p99 ?? 0)) / 2), Math.round(Math.max(1, ...buckets.map((bucket) => bucket.p99 ?? 0)))]}
-                /* 分位数跨空桶连线：每桶是独立结论，断线在稀疏窗口里只剩碎段
-                   （2026-09-10 用户反馈「折线没有连续性」）；「这个桶没样本」仍由
-                   读数条的「—」表达。通过率图保持断线——那是趋势序列，「没执行」
-                   跨过去会读成「维持不变」。 */
-                bridgeGaps
+                /* 空桶两侧由底座补虚线（2026-09-20 走查：没数据的段要能看出趋势，
+                   用线型表达「推断」而不是断成碎段）；「这个桶没样本」仍由读数条
+                   的「—」表达。 */
                 onBucketClick={drillBucket}
                 ariaLabel={t("trends.durationTitle")}
               />

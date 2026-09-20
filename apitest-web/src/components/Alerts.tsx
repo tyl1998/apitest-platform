@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { Drawer, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams, useSearchParams } from "react-router-dom";
-import { History, Pencil, Plus, Send, Trash2 } from "lucide-react";
+import { Pencil, Plus, Send, Trash2 } from "lucide-react";
 import { api, type AlertComparator, type AlertMetric, type AlertRule, type NotificationChannel, type NotificationChannelType } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
@@ -10,7 +10,6 @@ import { useProjectStore } from "../stores/projectStore";
 import { Empty, PageToolbar } from "../ui";
 import { IconButton } from "./IconButton";
 import { OwnerCell } from "./OwnerCell";
-import { ChangeHistoryDrawer } from "./AuditLogsPanel";
 
 /**
  * 告警通知（P3-9，边界 8~10）。一个页面三段：渠道 → 规则 → 派发记录。
@@ -72,9 +71,6 @@ export function Alerts() {
 
   /* 渠道编辑。secret 三态：留空 = 不动（编辑）/ 不配（新建），勾选清除 = 删。 */
   const [channelEditing, setChannelEditing] = useState<NotificationChannel | "new">();
-  /* 「变更历史」抽屉（P11-10 边界 8）：渠道与规则是两张表两行资源，入口各挂各的编辑
-     抽屉；新建时还没有 target_id。 */
-  const [channelHistoryOpen, setChannelHistoryOpen] = useState(false);
   const [channelForm, setChannelForm] = useState<ChannelForm>(emptyChannelForm());
   const [channelSaving, setChannelSaving] = useState(false);
   const [testing, setTesting] = useState<string>();
@@ -82,7 +78,6 @@ export function Alerts() {
   /* 规则编辑。threshold/window 存字符串：输入框里清空重填是常态，数字态会拦住删完
      最后一位的那次按键。 */
   const [ruleEditing, setRuleEditing] = useState<AlertRule | "new">();
-  const [ruleHistoryOpen, setRuleHistoryOpen] = useState(false);
   const [ruleForm, setRuleForm] = useState<RuleForm>(emptyRuleForm());
   const [ruleSaving, setRuleSaving] = useState(false);
 
@@ -442,9 +437,8 @@ export function Alerts() {
     <Drawer
       title={channelEditing === "new" ? t("alerts.createChannel") : t("action.edit")}
       open={Boolean(channelEditing)}
-      onClose={() => { setChannelHistoryOpen(false); setChannelEditing(undefined); }}
+      onClose={() => setChannelEditing(undefined)}
       width={520}
-      extra={canWrite && channelEditing && channelEditing !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setChannelHistoryOpen(true)}><History size={14} />{t("audit.history")}</button> : undefined}
       footer={<div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
         <button className="btn" onClick={() => setChannelEditing(undefined)}>{t("action.cancel")}</button>
         {canWrite && <button className="btn btn-primary" disabled={channelSaving} onClick={() => void saveChannel()}>{channelSaving ? "…" : t("action.save")}</button>}
@@ -498,9 +492,8 @@ export function Alerts() {
     <Drawer
       title={ruleEditing === "new" ? t("alerts.createRule") : t("action.edit")}
       open={Boolean(ruleEditing)}
-      onClose={() => { setRuleHistoryOpen(false); setRuleEditing(undefined); }}
+      onClose={() => setRuleEditing(undefined)}
       width={520}
-      extra={canWrite && ruleEditing && ruleEditing !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setRuleHistoryOpen(true)}><History size={14} />{t("audit.history")}</button> : undefined}
       footer={<div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
         <button className="btn" onClick={() => setRuleEditing(undefined)}>{t("action.cancel")}</button>
         {canWrite && <button className="btn btn-primary" disabled={ruleSaving} onClick={() => void saveRule()}>{ruleSaving ? "…" : t("action.save")}</button>}
@@ -561,26 +554,6 @@ export function Alerts() {
       </label>
     </Drawer>
 
-    {/* 渠道的变更历史（P11-10 边界 8）：detail 只有字段名，url 与 secret 的值绝不进；
-        删渠道时对规则的连带摘除也只是 alert_rule.update 一行，同样在这里看得到。 */}
-    {canWrite && channelEditing && channelEditing !== "new" && <ChangeHistoryDrawer
-      projectId={projectId!}
-      targetType="notification_channel"
-      targetId={channelEditing.id}
-      name={channelEditing.name}
-      open={channelHistoryOpen}
-      onClose={() => setChannelHistoryOpen(false)}
-    />}
-
-    {/* 规则的变更历史（P11-10 边界 8）。 */}
-    {canWrite && ruleEditing && ruleEditing !== "new" && <ChangeHistoryDrawer
-      projectId={projectId!}
-      targetType="alert_rule"
-      targetId={ruleEditing.id}
-      name={ruleEditing.name}
-      open={ruleHistoryOpen}
-      onClose={() => setRuleHistoryOpen(false)}
-    />}
     </div>
   </main>;
 }

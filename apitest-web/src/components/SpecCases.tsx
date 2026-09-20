@@ -3,7 +3,7 @@ import { Drawer, Modal, Pagination, Select, TreeSelect, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Dropdown, type MenuProps } from "antd";
-import { ChevronDown, ChevronRight, Download, FileDown, Folder, FolderPlus, ListTree, Network, Pencil, Plus, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, FileDown, Folder, FolderPlus, History, ListTree, Network, Pencil, Plus, Trash2, X } from "lucide-react";
 import { api, type Paged, type SpecCase, type SpecCaseInput, type SpecCaseLink, type SpecCasePriority, type SpecCaseStatus, type SpecCaseStep, type SpecExportFormat, type SpecModule, type TestPlan } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
@@ -15,6 +15,7 @@ import { OwnerCell } from "./OwnerCell";
 import { SpecImportModal } from "./SpecImportModal";
 import { SpecLinkPicker } from "./SpecLinkPicker";
 import { SpecMindMap } from "./SpecMindMap";
+import { VersionHistoryDrawer } from "./VersionHistoryDrawer";
 import { apiMessage } from "./DataSourceList";
 
 const PAGE_SIZES = [20, 50, 100];
@@ -1209,6 +1210,7 @@ export function SpecCaseDrawer({ projectId, caseId, modules, canWrite, readOnly,
      重取列表 linkCount / 树计数 / 看板覆盖率三处读数。 */
   const [links, setLinks] = useState<SpecCaseLink[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   /* 可编辑 = 角色可写 且 不是只读视角：抽屉里所有输入禁用态、保存/加绑定/删绑定
      按这一把尺（readOnly 时 canWrite 再真也全灰——计划详情点开只读）。 */
   const editable = Boolean(canWrite) && !readOnly;
@@ -1301,6 +1303,19 @@ export function SpecCaseDrawer({ projectId, caseId, modules, canWrite, readOnly,
     }
   }
 
+  /* P10-5 回滚后重拉详情：setItem 触发 useLayoutEffect 重新回填表单/绑定，再推 revision
+     让父列表刷新。回滚已在服务端产新版本，本地未保存草稿按「以服务端为准」丢弃。 */
+  async function reloadAfterRollback() {
+    if (!caseId || caseId === "new") return;
+    try {
+      const detail = await api.specCase(projectId, caseId);
+      setItem(detail);
+      await onSaved?.();
+    } catch {
+      message.error(t("specCases.loadFailed"));
+    }
+  }
+
   /* 渲染行 = 已有步骤 + 一条尾随空行（只读视角不需要空行的邀约）。 */
   const stepRows = editable ? [...steps, { step: "", expected: "" }] : steps;
 
@@ -1313,7 +1328,9 @@ export function SpecCaseDrawer({ projectId, caseId, modules, canWrite, readOnly,
       可见时量。 */
   return <Drawer
     title={item === "new" ? t("specCases.createTitle") : readOnly ? t("specCases.viewTitle") : t("specCases.editTitle")}
-    open={Boolean(item)} onClose={onClose} width="70%" destroyOnHidden footer={<div className="drawer-actions">
+    open={Boolean(item)} onClose={onClose} width="70%" destroyOnHidden
+    extra={typeof item === "object" ? <button className="btn btn-small btn-with-icon" onClick={() => setVersionHistoryOpen(true)}><History size={14} />{t("version.history")}</button> : undefined}
+    footer={<div className="drawer-actions">
     {/* 只读视角页脚只剩关闭（「取消」暗示有可放弃的编辑，这里没有）。 */}
     <button className="btn" onClick={onClose}>{readOnly ? t("action.close") : t("action.cancel")}</button>
     {editable && item !== "loading" && <button className="btn btn-primary" onClick={() => void save()} disabled={saving}>{saving ? "…" : t("action.save")}</button>}
@@ -1463,6 +1480,18 @@ export function SpecCaseDrawer({ projectId, caseId, modules, canWrite, readOnly,
         setLinks((current) => [...current, link]);
         onSaved?.();
       }}
+    />}
+
+    {/* P10-5 版本历史：只对已存在的用例开放（新建先保存拿 id）。viewer 也能看列表与
+        diff，回滚按钮内部按写权限渲染；回滚后重拉详情。 */}
+    {typeof item === "object" && <VersionHistoryDrawer
+      projectId={projectId}
+      assetType="spec_case"
+      assetId={item.id}
+      name={item.title}
+      open={versionHistoryOpen}
+      onClose={() => setVersionHistoryOpen(false)}
+      onRolledBack={() => void reloadAfterRollback()}
     />}
     </>}
   </Drawer>;

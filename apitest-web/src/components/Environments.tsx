@@ -10,7 +10,7 @@ import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, PageToolbar } from "../ui";
 import { CopyButton } from "./CopyButton";
-import { ChangeHistoryDrawer } from "./AuditLogsPanel";
+import { VersionHistoryDrawer } from "./VersionHistoryDrawer";
 import { IconButton } from "./IconButton";
 import { OwnerCell } from "./OwnerCell";
 import { fromPairs, toPairs } from "./KeyValueEditor";
@@ -129,7 +129,8 @@ export function Environments() {
 
   const [drawerEnv, setDrawerEnv] = useState<Environment | "new">();
   /* 「变更历史」抽屉（P11-10 边界 8）：编辑已有环境时才有 target_id。 */
-  const [changeHistoryOpen, setChangeHistoryOpen] = useState(false);
+  /* P10-5 版本历史（diff + 回滚 + 变更人）：资源里唯一的「历史」入口。审计留在项目级审计页。 */
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
 
   /* 助手页面上下文（P9-4c）：「把当前环境的 baseUrl 换成 stg」指向抽屉里正在编辑的
      环境——只带 id 与名字，secret 值绝不进上下文。 */
@@ -565,9 +566,9 @@ export function Environments() {
     <Drawer
       title={drawerEnv === "new" ? t("action.createEnvironment") : t("environments.editTitle")}
       open={Boolean(drawerEnv)}
-      onClose={() => { setChangeHistoryOpen(false); closeDrawer(); }}
+      onClose={() => { setVersionHistoryOpen(false); closeDrawer(); }}
       width={560}
-      extra={canWrite && drawerEnv && drawerEnv !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setChangeHistoryOpen(true)}><History size={14} />{t("audit.history")}</button> : undefined}
+      extra={drawerEnv && drawerEnv !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setVersionHistoryOpen(true)}><History size={14} />{t("version.history")}</button> : undefined}
       footer={
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button className="btn" onClick={closeDrawer}>{t("action.cancel")}</button>
@@ -666,13 +667,15 @@ export function Environments() {
     </Drawer>
 
     {/* 环境的变更历史（P11-10 边界 8）：detail 只有字段名，variables / secrets 的值绝不进。 */}
-    {canWrite && drawerEnv && drawerEnv !== "new" && <ChangeHistoryDrawer
+    {/* P10-5 版本历史：viewer 也能看历史与 diff，回滚按钮内部按写权限渲染。回滚后重拉列表。 */}
+    {drawerEnv && drawerEnv !== "new" && <VersionHistoryDrawer
       projectId={projectId!}
-      targetType="environment"
-      targetId={drawerEnv.id}
+      assetType="environment"
+      assetId={drawerEnv.id}
       name={drawerEnv.name}
-      open={changeHistoryOpen}
-      onClose={() => setChangeHistoryOpen(false)}
+      open={versionHistoryOpen}
+      onClose={() => setVersionHistoryOpen(false)}
+      onRolledBack={() => void load()}
     />}
       </>}
   </main>;

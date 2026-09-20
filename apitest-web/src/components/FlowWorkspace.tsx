@@ -14,7 +14,7 @@ import { variableOptions } from "../lib/flowVariables";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Method, toRunStatus, type RunStatus } from "../ui";
-import { ChangeHistoryDrawer } from "./AuditLogsPanel";
+import { VersionHistoryDrawer } from "./VersionHistoryDrawer";
 import { DEFAULT_SCRIPT_NODE_TEMPLATE, FlowNodeDrawer } from "./FlowNodeDrawer";
 import { FlowRunDrawer } from "./FlowRunDrawer";
 import { FlowStepList } from "./FlowStepList";
@@ -216,7 +216,7 @@ function FlowCanvas() {
 
   const [flow, setFlow] = useState<Flow>();
   const [loading, setLoading] = useState(true);
-  /* 「变更历史」抽屉（P11-10 边界 8）：流程工作台按 target_type=flow 下钻。 */
+  /* 版本历史抽屉（P10-6）：流程整图快照，选中两版看改动、可回滚。 */
   const [changeHistoryOpen, setChangeHistoryOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<StepData>>([]);
@@ -358,26 +358,27 @@ function FlowCanvas() {
 
   const stream = useExecutionStream(projectId);
 
-  useEffect(() => {
+  /* 把流程整图拉回并重置编辑态。初次进入与「版本回滚后重拉」（P10-6）复用同一条路径。 */
+  const loadFlow = useCallback(async () => {
     if (!projectId || !flowId) return;
     setLoading(true);
-    void (async () => {
-      try {
-        const loaded = await api.flow(projectId, flowId);
-        setFlow(loaded);
-        setSteps(loaded.nodes);
-        setName(loaded.name);
-        setTags(loaded.tags);
-        setVariables(loaded.variables);
-        setVariablePairs(toPairs(loaded.variables));
-        setEnvironmentId(loaded.environmentId ?? "none");
-        /* 画布要画的连线是顶层的加上每个循环体内的——框内的连线也在画布上。 */
-        setEdges(collectEdges(loaded.nodes, loaded.edges).map((edge) => toCanvasEdge(edge, t)));
-        setBaseline(snapshot(loaded.name, loaded.environmentId ?? "none", loaded.nodes, loaded.edges, loaded.variables, loaded.tags));
-      } catch { message.error(t("flows.loadFailed")); }
-      finally { setLoading(false); }
-    })();
-  }, [projectId, flowId]); // eslint-disable-line react-hooks/exhaustive-deps
+    try {
+      const loaded = await api.flow(projectId, flowId);
+      setFlow(loaded);
+      setSteps(loaded.nodes);
+      setName(loaded.name);
+      setTags(loaded.tags);
+      setVariables(loaded.variables);
+      setVariablePairs(toPairs(loaded.variables));
+      setEnvironmentId(loaded.environmentId ?? "none");
+      /* 画布要画的连线是顶层的加上每个循环体内的——框内的连线也在画布上。 */
+      setEdges(collectEdges(loaded.nodes, loaded.edges).map((edge) => toCanvasEdge(edge, t)));
+      setBaseline(snapshot(loaded.name, loaded.environmentId ?? "none", loaded.nodes, loaded.edges, loaded.variables, loaded.tags));
+    } catch { message.error(t("flows.loadFailed")); }
+    finally { setLoading(false); }
+  }, [projectId, flowId, t]);
+
+  useEffect(() => { void loadFlow(); }, [projectId, flowId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!projectId) return;
@@ -1031,7 +1032,7 @@ function FlowCanvas() {
         </button>}
           <IconButton icon={<Undo2 size={15} />} label={t("action.undo")} disabled={!historyDepth.past} onClick={undo} />
           <IconButton icon={<Redo2 size={15} />} label={t("action.redo")} disabled={!historyDepth.future} onClick={redo} />
-          {canWrite && <IconButton icon={<History size={15} />} label={t("audit.history")} onClick={() => setChangeHistoryOpen(true)} />}
+          {canWrite && <IconButton icon={<History size={15} />} label={t("version.history")} onClick={() => setChangeHistoryOpen(true)} />}
           {/* 列表模式的新增接在所选行后面（画布保持无锚点、自由摆放的原语义）。 */}
           {canWrite && <button className="btn btn-with-icon" onClick={() => (viewMode === "list" ? addFromList() : setNodePickerOpen(true))}><Plus size={14} />{t("flows.addNode")}</button>}
         {canWrite && (busy
@@ -1328,14 +1329,15 @@ function FlowCanvas() {
         title={t("flows.variables")}
       />
     </Modal>
-    {/* 变更历史（P11-10 边界 8）：流程的建/改/删与「从用例同步」都在这里。 */}
-    <ChangeHistoryDrawer
+    {/* 版本历史（P10-6）：流程整图快照，选中两版看改动内容、可回滚；回滚后重拉整图。 */}
+    <VersionHistoryDrawer
       projectId={projectId!}
-      targetType="flow"
-      targetId={flowId!}
+      assetType="flow"
+      assetId={flowId!}
       name={flow?.name ?? name}
       open={changeHistoryOpen}
       onClose={() => setChangeHistoryOpen(false)}
+      onRolledBack={() => void loadFlow()}
     />
   </main>;
 }

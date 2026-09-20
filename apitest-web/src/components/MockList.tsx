@@ -7,7 +7,7 @@ import { api, type Endpoint, type Execution, type Mock, type MockInput, type Moc
 import { useCanWrite } from "../hooks/useMyRole";
 import { Empty, PageToolbar } from "../ui";
 import { IconButton } from "./IconButton";
-import { ChangeHistoryDrawer } from "./AuditLogsPanel";
+import { VersionHistoryDrawer } from "./VersionHistoryDrawer";
 import { OwnerCell } from "./OwnerCell";
 import { apiMessage } from "./DataSourceList";
 
@@ -70,7 +70,7 @@ function MockDrawer({ projectId, item, onClose, onSaved }: { projectId: string; 
   /* viewer 打开抽屉只是看配置：保存按钮不渲染（P6-4）。 */
   const canWrite = useCanWrite();
   const { t } = useTranslation();
-  /* 「变更历史」抽屉（P11-10 边界 8）：新建时还没有 target_id。 */
+  /* 版本历史抽屉（P10-6）：新建时还没有 assetId，保存后才有版本。 */
   const [historyOpen, setHistoryOpen] = useState(false);
   const [input, setInput] = useState<MockInput>(initial); const [responseText, setResponseText] = useState(JSON.stringify(initial.response.body, null, 2)); const [saving, setSaving] = useState(false);
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
@@ -84,7 +84,7 @@ function MockDrawer({ projectId, item, onClose, onSaved }: { projectId: string; 
     patch("proxyConfig", { ...current, [key]: value });
   }
   async function save() { if (!input.name.trim()) { message.error("请输入规则名称"); return; } if (input.mode !== "proxy" && input.mode !== "auto") { try { setInput((current) => ({ ...current, response: { ...current.response, body: JSON.parse(responseText) } })); } catch { message.error("响应体必须是有效 JSON"); return; } } setSaving(true); try { const payload = input.mode !== "proxy" && input.mode !== "auto" ? { ...input, response: { ...input.response, body: JSON.parse(responseText) } } : input; item === "new" ? await api.createMock(projectId, payload) : await api.updateMock(projectId, item!.id, payload); message.success(item === "new" ? "Mock 创建成功" : "Mock 保存成功"); await onSaved(); } catch (error) { message.error(apiMessage(error) ?? "保存 Mock 失败"); } finally { setSaving(false); } }
-  return <Drawer title={item === "new" ? "新建 Mock" : "编辑 Mock"} open={Boolean(item)} onClose={() => { setHistoryOpen(false); onClose(); }} width={640} extra={canWrite && item && item !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setHistoryOpen(true)}><History size={14} />{t("audit.history")}</button> : undefined} footer={<div className="drawer-actions"><button className="btn" onClick={onClose}>取消</button>{canWrite && <button className="btn btn-primary" onClick={() => void save()} disabled={saving}>{saving ? "…" : "保存"}</button>}</div>}><div className="form-grid">
+  return <Drawer title={item === "new" ? "新建 Mock" : "编辑 Mock"} open={Boolean(item)} onClose={() => { setHistoryOpen(false); onClose(); }} width={640} extra={canWrite && item && item !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setHistoryOpen(true)}><History size={14} />{t("version.history")}</button> : undefined} footer={<div className="drawer-actions"><button className="btn" onClick={onClose}>取消</button>{canWrite && <button className="btn btn-primary" onClick={() => void save()} disabled={saving}>{saving ? "…" : "保存"}</button>}</div>}><div className="form-grid">
     <label className="field field-wide"><span>规则名称</span><input autoFocus className="input" value={input.name} onChange={(event) => patch("name", event.target.value)} /></label>
     <label className="field"><span>模式</span><Select value={input.mode} onChange={(value) => patch("mode", value as MockMode)} options={[{ value: "fixed", label: "固定响应" }, { value: "template", label: "模板响应" }, { value: "auto", label: "自动快照" }, { value: "proxy", label: "代理" }]} style={{ width: "100%" }} /></label>
     {input.mode === "auto" && <><label className="field field-wide"><span>快照来源接口</span><Select value={input.endpointId ?? undefined} placeholder="请选择接口" onChange={(value) => { patch("endpointId", value || null); patch("executionId", null); }} options={endpoints.map((endpoint) => ({ value: endpoint.id, label: `${endpoint.method} ${endpoint.name}` }))} style={{ width: "100%" }} /><small className="form-note">先选接口，再选择该接口某一次成功执行。来源可以是调试、用例或流程请求。</small></label><label className="field field-wide"><span>具体快照</span><Select value={input.executionId ?? undefined} placeholder={input.endpointId ? "请选择成功执行记录" : "请先选择接口"} disabled={!input.endpointId} onChange={(value) => patch("executionId", value || null)} options={executions.map((execution) => ({ value: execution.id, label: `${new Date(execution.createdAt).toLocaleString()} · ${execution.statusCode ?? "无状态码"} · ${execution.source}` }))} style={{ width: "100%" }} /><small className="form-note">保存时复制这一条记录的状态码、响应头和响应 Body，之后与原执行记录独立。</small></label></>}
@@ -104,14 +104,15 @@ function MockDrawer({ projectId, item, onClose, onSaved }: { projectId: string; 
     <label className="field"><span>保护性超时 ms</span><input className="input mono" type="number" value={input.proxyConfig?.timeoutMs ?? 5000} onChange={(event) => patchProxy("timeoutMs", Number(event.target.value))} /></label>
     <label className="field"><span>响应上限 bytes</span><input className="input mono" type="number" value={input.proxyConfig?.maxResponseBytes ?? 1048576} onChange={(event) => patchProxy("maxResponseBytes", Number(event.target.value))} /></label>
   </div></>}
-  {/* Mock 的变更历史（P11-10 边界 8）：detail 只有字段名，响应体绝不进。 */}
-  {canWrite && item && item !== "new" && <ChangeHistoryDrawer
+  {/* Mock 的版本历史（P10-6）：选中两版看改动内容、可回滚。回滚后关闭并重拉列表。 */}
+  {canWrite && item && item !== "new" && <VersionHistoryDrawer
     projectId={projectId}
-    targetType="mock"
-    targetId={item.id}
+    assetType="mock"
+    assetId={item.id}
     name={item.name}
     open={historyOpen}
     onClose={() => setHistoryOpen(false)}
+    onRolledBack={() => void onSaved()}
   />}
 </Drawer>;
 }

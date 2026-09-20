@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Drawer, Pagination, Select, message } from "antd";
+import { Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 import { api, type AuditLog } from "../api";
@@ -16,9 +16,12 @@ import { Empty, PageToolbar } from "../ui";
  * （≤4KB、无 secret），但仍然可能只是个 `{}`——空 detail 显示「—」而不是空括号。
  *
  * P11-10（边界 7/8）：同一份面板多了**项目作用域**（`projectId` 属性）——项目审计路由
- * 从 project_admin 放宽到 developer（viewer 仍 403），项目内入口在项目配置 → 审计日志页；
- * 另外多了 `targetType` 过滤与 `ChangeHistoryDrawer`（资源详情的「变更历史」，按
- * `target_type + target_id` 下钻，只列动作/时间/操作者/字段名，不做 diff）。
+ * 从 project_admin 放宽到 developer（viewer 仍 403），项目内入口在项目配置 → 审计日志页，
+ * 另外多了 `targetType` 过滤。
+ *
+ * P10-6（2026-09-20）：资源详情里按 `target_type + target_id` 下钻的「变更历史」抽屉
+ * （原 `ChangeHistoryDrawer`）已整体下线——用户编写型资产改看 `VersionHistoryDrawer`
+ * 的版本历史（含 diff + 回滚），调度/通知渠道/告警规则回看本项目级审计页即可。
  */
 
 const PAGE_SIZES = [20, 50, 100];
@@ -55,7 +58,7 @@ export function AuditDetail({ detail }: { detail: Record<string, unknown> }) {
  * `projectId` 存在时走项目路由，并且：
  * - 不再需要「项目」这一列（每一行都属于当前项目），第二行改标 target_id 短前缀；
  * - 提示文案换成项目口径；
- * - `targetType` 过滤可用（资源「变更历史」是这一路的单目标特例）。
+ * - `targetType` 过滤可用。
  */
 function useAuditLogs(projectId?: string) {
   const { t } = useTranslation();
@@ -173,7 +176,7 @@ function AuditLogsTable({ controller }: { controller: AuditLogsController }) {
  * `projectId` 存在时走项目路由，并且：
  * - 不再需要「项目」这一列（每一行都属于当前项目），第二行改标 target_id 短前缀；
  * - 提示文案换成项目口径；
- * - `targetType` 过滤可用（资源「变更历史」是这一路的单目标特例）。
+ * - `targetType` 过滤可用。
  *
  * 系统作用域下行为与 P6-2 完全一致（`/system/audit-logs`，含项目列）：它是一个自带
  * 提示行与筛选条的自足面板；项目页（`ProjectAuditPage`）则用同一个控制器把这两样搬进
@@ -210,65 +213,6 @@ export function ProjectAuditPage() {
     <AuditLogsTable controller={controller} />
     </div>
   </main>;
-}
-
-/**
- * 资源「变更历史」抽屉（P11-10 边界 8）：按 `target_type + target_id` 拉该资源的审计行。
- *
- * **不做 diff 视图**：只列动作、时间、操作者与字段名列表——「改成什么」是 P10 14.3
- * （接口变更追踪）的范围，本抽屉回答的是「谁在什么时候动过它、动了哪些键」。
- * 不分页：单条资源的变更行是「建 + 改 + 删」量级，50 条封顶足够；真的改到 50 次以上，
- * 列表本身也早就说明问题了。
- */
-export function ChangeHistoryDrawer({ projectId, targetType, targetId, name, open, onClose }: {
-  projectId: string;
-  targetType: string;
-  targetId: string;
-  /** 资源名（标题用）；缺省回落到动作类型。 */
-  name?: string;
-  open: boolean;
-  onClose: () => void;
-}) {
-  const { t } = useTranslation();
-  const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    let aborted = false;
-    setLoading(true);
-    api.projectAuditLogs(projectId, { targetType, targetId, pageSize: 50 })
-      .then((result) => { if (!aborted) setLogs(result.items); })
-      .catch(() => { if (!aborted) message.error(t("audit.loadFailed")); })
-      .finally(() => { if (!aborted) setLoading(false); });
-    return () => { aborted = true; };
-  }, [open, projectId, targetType, targetId, t]);
-
-  return <Drawer
-    title={name ? t("audit.historyTitle", { name }) : t("audit.history")}
-    open={open}
-    onClose={onClose}
-    width={720}
-  >
-    <p className="form-note">{t("audit.historyHint")}</p>
-    {logs.length ? <div className="table-scroll"><table className="grid">
-      <thead><tr>
-        <th>{t("audit.action")}</th>
-        <th>{t("audit.operator")}</th>
-        <th>{t("audit.fields")}</th>
-        <th>{t("audit.time")}</th>
-      </tr></thead>
-      <tbody>
-        {logs.map((log) => <tr key={log.id}>
-          <td><span className="mono">{log.action}</span></td>
-          <td className="mono muted">{log.userEmail ?? t("audit.nonUser")}</td>
-          {/* 证据块（含 `fields` 字段名列表）：删除类动作没有字段，显示「—」。 */}
-          <td><AuditDetail detail={log.detail} /></td>
-          <td className="mono muted">{new Date(log.createdAt).toLocaleString()}</td>
-        </tr>)}
-      </tbody>
-    </table></div> : !loading && <Empty title={t("audit.historyEmptyTitle")} hint={t("audit.historyEmptyHint")} />}
-  </Drawer>;
 }
 
 /** detail 值的展示：数组拍平、对象递归一层、null/undefined 显示 —。 */

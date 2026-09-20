@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AutoComplete, Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router-dom";
-import { Plus } from "lucide-react";
+import { History, Plus } from "lucide-react";
 import { api, type CiTask, type CiTaskInput, type GitCredential, type NotificationChannel, type RunnerPool, type SuiteNotifyConfig } from "../api";
 import { KeyValueEditor, fromPairs, toPairs, type Pair } from "./KeyValueEditor";
 import { ShellCodeEditor } from "./ShellCodeEditor";
 import { ResourceSchedules } from "./ResourceSchedules";
 import { GitCredentialModal } from "./GitCredentialModal";
+import { VersionHistoryDrawer } from "./VersionHistoryDrawer";
 import { apiMessage } from "./DataSourceList";
 import { RepoPageHead, RepoTabs } from "./RepoShell";
 import { PageToolbar } from "../ui";
@@ -147,6 +148,8 @@ export function CiTaskEditor() {
    * 挂载时读它一次并自动打开新建抽屉（挂载后即被清掉，见下方的 effect）。
    */
   const [armScheduleCreate, setArmScheduleCreate] = useState(false);
+  /* 版本历史抽屉（P10-6）：仓库任务的建/改快照，选中两版看改动、可回滚。新建页还没有 taskId。 */
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
 
   /* 既有任务：加载后铺表单。列表页 `location.state.task` 不带也行——路由要能刷新、能被
      分享，真实数据源永远是接口。 */
@@ -386,6 +389,7 @@ export function CiTaskEditor() {
       hint={t("ciTasks.hint")}
       actions={<>
         <button className="btn" onClick={() => navigate(`/projects/${projectId}/repo`)}>{t("action.cancel")}</button>
+        {!isNew && taskId && <button className="btn btn-with-icon" onClick={() => setVersionHistoryOpen(true)}><History size={14} />{t("version.history")}</button>}
         {canWrite && <button className="btn" disabled={saving} onClick={() => void save(true)}>{t("ciTasks.saveAndRun")}</button>}
         {canWrite && <button className="btn btn-primary" disabled={saving} onClick={() => void save(false)}>{saving ? "…" : t("action.save")}</button>}
       </>}
@@ -633,6 +637,17 @@ export function CiTaskEditor() {
         setCredentials((current) => [...current, saved]);
         setGitCredentialId(saved.id);
       }}
+    />}
+
+    {/* 版本历史（P10-6）：仓库任务快照，选中两版看改动内容、可回滚；回滚后重拉任务重铺表单。 */}
+    {projectId && !isNew && taskId && <VersionHistoryDrawer
+      projectId={projectId}
+      assetType="ci_task"
+      assetId={taskId}
+      name={name || task?.name}
+      open={versionHistoryOpen}
+      onClose={() => setVersionHistoryOpen(false)}
+      onRolledBack={() => void load()}
     />}
   </main>;
 }

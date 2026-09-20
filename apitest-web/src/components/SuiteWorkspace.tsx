@@ -18,7 +18,7 @@ import {
   type TestSuite,
 } from "../api";
 import { useExecutionStream } from "../hooks/useExecutionStream";
-import { ChangeHistoryDrawer } from "./AuditLogsPanel";
+import { VersionHistoryDrawer } from "./VersionHistoryDrawer";
 import { useDebounced } from "../hooks/useDebounced";
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
@@ -123,7 +123,7 @@ export function SuiteWorkspace() {
 
   const [suite, setSuite] = useState<TestSuite>();
   const [draft, setDraft] = useState<Draft>();
-  /* 「变更历史」抽屉（P11-10 边界 8）：套件的建/改/删与被摘成员都在这里。 */
+  /* 版本历史抽屉（P10-6）：套件配置快照，选中两版看改动、可回滚。 */
   const [changeHistoryOpen, setChangeHistoryOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [picking, setPicking] = useState(false);
@@ -172,7 +172,8 @@ export function SuiteWorkspace() {
     void api.projectTags(projectId, "suites").then(setSuiteTags).catch(() => setSuiteTags([]));
   }, [projectId]);
 
-  useEffect(() => {
+  /* 拉套件并解析成员，重置草稿。初次进入与「版本回滚后重拉」（P10-6）复用同一条路径。 */
+  const loadSuite = useCallback(() => {
     if (!projectId || !suiteId) return;
     void api.testSuite(projectId, suiteId)
       .then(async (loaded) => {
@@ -215,6 +216,8 @@ export function SuiteWorkspace() {
       })
       .catch(() => message.error(t("suites.loadFailed")));
   }, [projectId, suiteId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { loadSuite(); }, [projectId, suiteId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dirty = useMemo(() => {
     if (!suite || !draft) return false;
@@ -517,7 +520,7 @@ export function SuiteWorkspace() {
       <div className="topbar-actions">
         {/* 「解析成员」放在选择条件旁边，不放这里：它回答的是那几个条件命中了谁，
             离开条件就没有语境。手动选择根本不需要它——成员清单就在下面。 */}
-        {canWrite && <button className="btn btn-with-icon" onClick={() => setChangeHistoryOpen(true)}><History size={14} />{t("audit.history")}</button>}
+        {canWrite && <button className="btn btn-with-icon" onClick={() => setChangeHistoryOpen(true)}><History size={14} />{t("version.history")}</button>}
         {canWrite && (busy
           ? <button className="btn btn-with-icon" disabled={canceling} onClick={() => void stop()}><Square size={14} />{t("run.cancel")}</button>
           : <button className="btn btn-with-icon" disabled={includeInvalid} onClick={() => setRunOpen(true)}><Play size={14} />{t("suites.run")}</button>)}
@@ -843,15 +846,15 @@ export function SuiteWorkspace() {
       canceling={canceling}
     />
 
-    {/* 变更历史（P11-10 边界 8）：套件自身的 create/update/delete，以及删用例/流程时
-        「从套件摘成员」的连带 suite.update 都在这里。 */}
-    <ChangeHistoryDrawer
+    {/* 版本历史（P10-6）：套件配置快照，选中两版看改动内容、可回滚；回滚后重拉套件。 */}
+    <VersionHistoryDrawer
       projectId={projectId!}
-      targetType="test_suite"
-      targetId={suiteId!}
+      assetType="test_suite"
+      assetId={suiteId!}
       name={draft?.name ?? suite?.name}
       open={changeHistoryOpen}
       onClose={() => setChangeHistoryOpen(false)}
+      onRolledBack={() => loadSuite()}
     />
   </main>;
 }

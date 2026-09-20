@@ -5,7 +5,7 @@
  * sparkline 也从这里长，不再新写私有 SVG。
  */
 export {
-  niceMsStep, niceValueTicks, pathSegments, bucketTimeLabel, edgeIndices,
+  niceMsStep, niceValueTicks, pathSegments, gapSegments, bucketTimeLabel, axisIndices,
   nearestBucket, formatMsTick, type HoverPoint,
 } from "./core";
 export { LineChart, type LineChartProps, type LineSeries } from "./LineChart";

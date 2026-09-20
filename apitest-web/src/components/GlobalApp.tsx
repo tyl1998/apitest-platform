@@ -12,6 +12,7 @@ import { Delta, Empty, Readout, Status } from "../ui";
 import { Donut, LineChart, Sparkline, StackedBars } from "./charts";
 import { RunnerPoolPanel } from "./RunnerPoolPanel";
 import { AssistantProvidersPanel } from "./AssistantProvidersPanel";
+import { ExecutionArchivePanel } from "./ExecutionArchivePanel";
 import { UsersPanel } from "./UsersPanel";
 import { AuditLogsPanel } from "./AuditLogsPanel";
 import { FailureCategoriesPanel } from "./FailureCategoriesPanel";
@@ -475,7 +476,6 @@ function DashboardPage() {
                 yFormat={(value) => (value >= 1000 ? `${(value / 1000).toFixed(0)}s` : `${Math.round(value)}ms`)}
                 hourly={false}
                 yTicks={[0, Math.round(Math.max(1, ...buckets.map((bucket) => bucket.p99 ?? 0)) / 2), Math.round(Math.max(1, ...buckets.map((bucket) => bucket.p99 ?? 0)))]}
-                bridgeGaps
                 onBucketClick={filtered ? drillBucket : undefined}
                 ariaLabel={t("trends.durationTitle")}
               />
@@ -720,7 +720,7 @@ function ProjectsPage() {
   </>;
 }
 
-type SystemTab = "preferences" | "users" | "workers" | "runners" | "assistantProviders" | "failureCategories" | "auditLogs";
+type SystemTab = "preferences" | "users" | "workers" | "runners" | "assistantProviders" | "failureCategories" | "auditLogs" | "executionArchive";
 
 function SystemPage({ themePreference, onThemeChange, language }: { themePreference: ModePreference; onThemeChange: (mode: ModePreference) => void; language: "zh-CN" | "en" }) {
   const { t, i18n } = useTranslation();
@@ -765,9 +765,14 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
    * 助手 provider（P9-3）排在 Runner 与归因类型之间：同是「平台依赖的外部系统」
    * （agent 平台之于 agent-vendor，如 Runner 之于执行机），读者与处置动作（运维配置）
    * 与 workers/runners 一类。
+   *
+   * 执行历史归档（P10-2）排在审计之后：它是**数据本身**的存储面板（哪一季还在、
+   * 哪一季已脱离、清掉能回收多少），读者与处置动作（清理不可逆的历史分区）属于系统
+   * 管理员里最谨慎的那一类，放最后一位。与「执行器」tab 里的「执行分区」表**不是一回事**
+   * （那是 P2-8 的网段标签），面板首行会点明。
    */
   const tabs: [SystemTab, string][] = isAdmin
-    ? [["preferences", t("system.tabPreferences")], ["users", t("users.title")], ["workers", t("workers.title")], ["runners", t("runners.title")], ["assistantProviders", t("assistantProviders.title")], ["failureCategories", t("failureCategories.title")], ["auditLogs", t("audit.title")]]
+    ? [["preferences", t("system.tabPreferences")], ["users", t("users.title")], ["workers", t("workers.title")], ["runners", t("runners.title")], ["assistantProviders", t("assistantProviders.title")], ["failureCategories", t("failureCategories.title")], ["auditLogs", t("audit.title")], ["executionArchive", t("executionArchive.title")]]
     : [["preferences", t("system.tabPreferences")]];
 
   return <>
@@ -795,6 +800,7 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
     {tab === "assistantProviders" && isAdmin && <AssistantProvidersPanel />}
     {tab === "failureCategories" && isAdmin && <FailureCategoriesPanel />}
     {tab === "auditLogs" && isAdmin && <AuditLogsPanel />}
+    {tab === "executionArchive" && isAdmin && <ExecutionArchivePanel />}
     </div>
   </>;
 }
