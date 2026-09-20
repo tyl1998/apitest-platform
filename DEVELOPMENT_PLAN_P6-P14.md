@@ -3135,7 +3135,7 @@ token 只发 read scope，delete 类工具不进 agent 工具面，被要求删�
 
 > 以下两条「现状」中，前两条已被 **P10-1（2026-09-19 实现）** 改写，保留原文作为该批次
 > 的提出依据；迁移起号已由 064 → **065**。第 4 条已被 **P10-2（2026-09-20 实现）** 改写；
-> 第 3 条仍成立（P10-3 未做）。
+> 第 3 条已被 **P10-3（2026-09-20 实现）** 改写（进程内 stats 缓存 → Redis 共享缓存 + 扩面 + 写失效）。
 
 - **大响应体是硬砍丢弃，不是转存**：`lib/run.ts:311-315` 在 `RESPONSE_LIMIT = 10_000`
   处 `slice`，超出部分直接消失；`executions.response_body` 从未存过完整正文，只留
@@ -3146,6 +3146,8 @@ token 只发 read scope，delete 类工具不进 agent 工具面，被要求删�
   一字未用。**（P10-1 已改：新增 `putObject` 服务端写入，执行正文成为第二个消费者。）**
 - **没有查询缓存**：ioredis 只用于 BullMQ 队列 / 取消广播 / 告警订阅；唯一缓存是 P8-4
   给 `/stats/*` 的 **30s 进程内存 TTL**，多 API 实例不共享，也不覆盖其它热点读路径。
+  **（P10-3 已改：新增 `lib/queryCache.ts` Redis 共享缓存，stats 换掉进程内 Map 并扩到
+  /dashboard、GET /projects，写失效不靠纯 TTL。）**
 - **`executions` 未分区**；最新迁移 **064**，本阶段起号 **065 / 066**（**065 已用于
   P10-1**，P10-2 起号 066）。**（P10-2 已改：`executions` 按季范围分区，066 落地。）**
 
@@ -3262,6 +3264,33 @@ token 只发 read scope，delete 类工具不进 agent 工具面，被要求删�
 
 **批次顺序**见 **14.4 实施顺序**（本节局部次序：065 → 066 → 缓存）。**依赖零新增**（objectStore、
 ioredis 均在）。里程碑挂 M7。
+
+> **P10-3 实现状态（2026-09-20，已实现，零迁移零新依赖）**：
+> - **新模块 `lib/queryCache.ts`**（写侧半边全在这一处）：复用 `createRedis()` 懒建单例，
+>   `cacheGet` / `cacheSet(key, scope, data)` / `invalidateProjects(ids)` + 共享的
+>   `scopeHash(scope)`。缓存条目按其依赖的项目集打「标签」——每个项目一个 Redis SET
+>   （`qcache:tag:<projectId>`），系统管理员全量聚合挂 `qcache:tag:__all__`；失效时读标签
+>   集、一次性 `DEL` 其中全部 key + 标签本身。TTL 30s 仅作兜底。每个 Redis 操作用
+>   `safe()` 包一层 **try/catch + 200ms 超时**——`createRedis()` 的 `maxRetriesPerRequest:null`
+>   断连会无限等重连，对缓存是灾难，故超时兜底而非依赖 ioredis 重试；Redis 不可达时读
+>   当 miss、写/失效当 no-op，请求照走数据库。
+> - **P8-4 的进程内 30s Map 换成共享缓存**：`stats.ts` 六条只读路由（overview / trend /
+>   failures / flaky / coverage / projects）删掉本地 `Map` + `scopeCacheKey`，改走
+>   `cacheGet`/`cacheSet`，键里的可见集哈希改用共享 `scopeHash`（与 dashboard/projects 同
+>   一实现，同一集合两侧产出同一分片键 / 同一标签）。多 API 实例读数不再随命中哪个实例漂移。
+> - **扩到两条热点只读路径**：`/dashboard`（`queryProjectMetrics` 七表聚合，P8-8 实测大头）
+>   与 `GET /projects`（`queryProjectList`）各挂 30s 缓存，键 = 路由 + 可见集哈希 + 过滤/分页
+>   维度。新增 `dashboard.ts:visibleScope(user)`（系统管理员 = `all`，否则读
+>   `user_project_roles` 得可见集）供两处共用。
+> - **失效策略（不靠纯 TTL）两个钩子**：① **执行落终态** —— `lib/events.ts` 的
+>   `publishEvent` 在事件状态非「运行中」枚举时 `void invalidateProjects([projectId])`（worker
+>   进程、无 HTTP 请求，跨进程失效同一份 Redis 缓存）；② **API 侧项目级写** ——
+>   `index.ts` 一个 `onResponse` 全局钩子：`/api/v1/projects[/:id]` 下的成功变更方法
+>   （资产 CRUD / 归因 / 成员 / 项目改名删）按 `:id` 失效相关缓存，胜过在几十个写路由里各撒
+>   一句 DEL；`POST /api/v1/projects`（建项目、无 id）只清 `ALL_TAG`。
+> - **越权对齐（验收门槛 6 的缓存侧）**：键带可见集哈希，可见集不同的用户读不到同一份
+>   聚合缓存；成员增删改变用户可见集哈希，天然 miss + onResponse 一并失效。
+> - **未跑类型校验/构建**：按 `AGENTS.md`「校验类命令需用户明确要求」，本轮未执行 `pnpm check`。
 
 ### 14.2 插件机制 —— **整项删除**（2026-09-18 用户确认）
 
@@ -3489,7 +3518,7 @@ ioredis 均在）。里程碑挂 M7。
 | 2 | **P10-2** 执行历史归档（分区表） | 066 | P10-1 | 对象生命周期必须先由 P10-1 定义 —— **已实现**（2026-09-20，按季分区；见 14.1 实现状态） |
 | 3 | **P10-4** 统一版本模型 + 资产接入 | 067 | —（与性能线解耦） | 承接 065/066 之后，独占本迁移号 —— **已实现**（2026-09-20，见 14.3 实现状态） |
 | 4 | **P10-5** 版本列表 + diff 展示 + 回滚 | 无 | P10-4 | ★diff 改动内容是硬验收项 —— **已实现**（2026-09-20，四类入口全接完；见 14.3 实现状态） |
-| 5 | **P10-3** 查询缓存补齐 | 无 | P10-1 / P10-2 收口后 | 失效策略依赖写路径最终形状；可与 4 并行 |
+| 5 | **P10-3** 查询缓存补齐 | 无 | P10-1 / P10-2 收口后 | 失效策略依赖写路径最终形状；可与 4 并行 —— **已实现**（2026-09-20，`lib/queryCache.ts` Redis 共享缓存 + stats/dashboard/projects 接入 + 双失效钩子；见 14.1 实现状态） |
 | 6 | **P10-6** 版本历史扩面（6 类资源 + SQL 定义）+ 变更历史下线 | 068（扩 CHECK 枚举） | P10-4 / P10-5 | 原「执行结果回放」已删除（2026-09-20）；见 14.3 的 P10-6 小节 —— **已实现**（2026-09-20，后端 11 类快照/回滚 + 前端 7 类接线，`ChangeHistoryDrawer` 及其 i18n 全下线；见 14.3 的 P10-6 小节） |
 | 7 | **P10-7** 前端列表首屏闪空态修复 **[x] 已实现 2026-09-19** | 无 | —（零迁移、纯前端） | 见 14.5「实现状态」 |
 | 8 | **P10-8** 顶层操作区不随内容滚动 **[x] 已实现 2026-09-19** | 无 | P10-7（`ui.tsx` 与列表页重叠） | 改动面大、分三步；见 14.6 |
