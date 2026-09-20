@@ -3,7 +3,9 @@ import jwt from "@fastify/jwt";
 import Fastify, { type FastifyInstance } from "fastify";
 import { seedAdmin } from "./lib/auth.js";
 import { seedAssistantProvider } from "./lib/assistant/providers.js";
+import { invalidateProjects } from "./lib/queryCache.js";
 import { success } from "./lib/response.js";
+import { isUuid } from "./lib/uuid.js";
 import { authRoutes } from "./routes/auth.js";
 import { projectRoutes } from "./routes/projects.js";
 import { environmentRoutes } from "./routes/environments.js";
@@ -71,6 +73,31 @@ export async function buildApp(): Promise<FastifyInstance> {
        token 永不过期，泄露后只能靠禁用账号才能作废。只影响 auth 路由的 jwtSign；
        产物直传的一性 token 是 objectStore 自己的 HMAC，不走这里。 */
     sign: { expiresIn: process.env.JWT_EXPIRES_IN?.trim() || "7d" },
+  });
+  /**
+   * 查询缓存的 API 侧写失效（P10-3，计划 14.1）。项目级的任何成功写（资产 CRUD /
+   * 归因 / 成员 / 项目改名删除）都可能改动 dashboard、/projects、/stats 的聚合读数，
+   * 在这一个 onResponse 钩子里按项目失效相关缓存，胜过在几十个写路由里各撒一句 DEL。
+   *
+   * - 只认 `/api/v1/projects[/:id]` 下的变更方法且响应成功（<400）——`:id` 按仓库约定
+   *   恒等于项目 id（server-contract 规则 3）；非项目级写（auth / me / system）不进这三
+   *   份聚合，跳过。
+   * - `POST /api/v1/projects`（建项目，无 id）只可能让系统管理员的全量分片变旧，传空
+   *   数组即只清 `ALL_TAG`；建项目人自己的可见集哈希此刻已变，天然 miss。
+   * - 执行「落终态」的失效不在这里（那发生在 worker 进程、无 HTTP 请求）——由
+   *   lib/events.ts 的 publishEvent 跨进程触发。
+   * - `invalidateProjects` 自带 try/catch + 超时兜底；onResponse 在响应发出之后跑，
+   *   fire-and-forget 既不拖慢客户端，也不会因缓存故障影响请求结果。
+   */
+  app.addHook("onResponse", async (request, reply) => {
+    if (!["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return;
+    if (reply.statusCode >= 400) return;
+    const match = /^\/api\/v1\/projects(?:\/([0-9a-fA-F-]+))?(?:[/?]|$)/.exec(request.url);
+    if (!match) return;
+    const projectId = match[1];
+    if (projectId === undefined) { void invalidateProjects([]); return; }
+    if (!isUuid(projectId)) return;
+    void invalidateProjects([projectId]);
   });
   app.get("/health", async () => success({ status: "ok" }));
   await app.register(authRoutes); await app.register(projectRoutes); await app.register(environmentRoutes); await app.register(dataSourceRoutes); await app.register(endpointRoutes); await app.register(caseRoutes); await app.register(scriptRoutes); await app.register(flowRoutes); await app.register(suiteRoutes); await app.register(mockRoutes); await app.register(executionIndexRoutes); await app.register(dashboardRoutes); await app.register(streamRoutes); await app.register(systemRoutes);

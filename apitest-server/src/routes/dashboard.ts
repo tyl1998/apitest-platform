@@ -1,11 +1,25 @@
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
 import { currentUser } from "../lib/auth.js";
+import { cacheGet, cacheSet, scopeHash, type CacheScope } from "../lib/queryCache.js";
 import { success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
 import type { MyRole, User } from "../models/types.js";
 
 export type ProjectFilters = { keyword?: string; projectIds?: string };
+
+/**
+ * 缓存分片维度（P10-3）：这次请求的聚合依赖哪些项目。系统管理员 = `all`（依赖全部
+ * 项目，任一项目写入都失效）；否则 = 该用户的可见集（user_project_roles）。缓存键按
+ * 它哈希、失效标签按它挂——与 stats.ts 的 resolveScope 同一条「可见集」概念，只是这里
+ * 不接受显式收窄（/dashboard、/projects 的收窄靠 keyword/projectIds 进 key，标签仍挂
+ * 在整份可见集上：过滤只是缩小命中，可见的任一项目变动都该让这份缓存失效）。
+ */
+export async function visibleScope(user: User): Promise<CacheScope> {
+  if (user.isSystemAdmin) return { all: true, ids: [] };
+  const result = await pool.query("SELECT project_id FROM user_project_roles WHERE user_id = $1", [user.id]);
+  return { all: false, ids: result.rows.map((row) => String(row.project_id)) };
+}
 
 /**
  * One aggregation per project, filtered in SQL.
@@ -314,6 +328,14 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const user = await currentUser(request, reply);
     if (!user) return;
 
+    /* 共享缓存（P10-3）：dashboard 的执行面七表聚合是 P8-8 实测的大头，读远多于写，
+       挂 30s Redis 缓存 + 写失效。键带可见集哈希 + 过滤词，越权命中他人聚合在键层面
+       就不可能；失效由 events.ts（执行落终态）与 index.ts onResponse（项目级写）触发。 */
+    const scope = await visibleScope(user);
+    const cacheKey = `dashboard|${scopeHash(scope)}|${request.query.keyword?.trim() ?? ""}|${request.query.projectIds ?? ""}`;
+    const cached = await cacheGet<Record<string, unknown>>(cacheKey);
+    if (cached) return success(cached);
+
     /* 聚合页永远全量（见 queryProjectMetrics 的 paging 注释），不透传分页参数。 */
     const { projects } = await queryProjectMetrics(user, request.query);
     const endpointCount = projects.reduce((sum, item) => sum + item.endpointCount, 0);
@@ -326,7 +348,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const specCaseTotal = projects.reduce((sum, item) => sum + item.specCaseTotal, 0);
     const specAutomatedCount = projects.reduce((sum, item) => sum + item.specAutomatedCount, 0);
 
-    return success({
+    const payload = {
       projectCount: projects.length,
       endpointCount,
       environmentCount: projects.reduce((sum, item) => sum + item.environmentCount, 0),
@@ -341,11 +363,13 @@ export async function dashboardRoutes(app: FastifyInstance) {
       /* Real numbers now that schedules exist (P3-6). */
       scheduleCount: projects.reduce((sum, item) => sum + item.scheduleCount, 0),
       /* 自动化覆盖率（P7-6，边界 11）：与项目行同一公式，跨项目先合分子分母再除
-         （不是各项目百分比的均值——那是另一种口径）。 */
+         (不是各项目百分比的均值——那是另一种口径）。 */
       specCaseTotal,
       specAutomatedCount,
       automationRate: specCaseTotal ? (specAutomatedCount / specCaseTotal) * 100 : null,
       projects,
-    });
+    };
+    await cacheSet(cacheKey, scope, payload);
+    return success(payload);
   });
 }

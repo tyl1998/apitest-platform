@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { PoolClient } from "pg";
 import { pool } from "../db.js";
 import { currentUser } from "../lib/auth.js";
 import { coverageShapeKey, endpointPath } from "../lib/ingestPath.js";
 import { FLAKY, NOT_SELF_DEBUG, passRateOf, sampleKinds, type SampleScope } from "../lib/metrics.js";
+import { cacheGet, cacheSet, scopeHash } from "../lib/queryCache.js";
 import { fail, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
 import type { User } from "../models/types.js";
@@ -17,9 +17,13 @@ import type { User } from "../models/types.js";
  * 兜底，显式请求不可见项目直接 403（验收门槛 6：URL 直访别人的项目数据 403）。
  *
  * 三条既定防线（边界 16 / 17 / 23）全部落在这一个文件里：
- * - **30s TTL 内存缓存**（边界 16）：进程内 Map，键 = 路由 + 可见集哈希 + 窗口参数，
- *   可见集相同的用户共享同一份（Readout 缓存命中 < 300ms 的预算靠它）。不进 Redis、
- *   不落表，重启重建；失效逻辑只有 TTL 一条，不做写失效。
+ * - **30s 共享缓存**（边界 16；P10-3 升级）：从进程内 Map 换成 Redis 共享缓存
+ *   （`lib/queryCache.ts`，复用 `createRedis()`），多 API 实例读同一份、数字不再随命中
+ *   哪个实例漂移。键 = 路由 + 可见集哈希 + 窗口参数，可见集相同的用户共享同一份
+ *   （Readout 缓存命中 < 300ms 的预算靠它）。**不再是纯 TTL**：写操作（执行落终态 /
+ *   资产 CRUD / 归因变更 / 成员变更）主动按项目失效相关 key，TTL 仅作兜底。失效钩子在
+ *   `lib/events.ts`（worker 侧执行落终态）与 `index.ts` 的 onResponse 全局钩子（API 侧
+ *   项目级写），本文件只管按可见集打分片键（`cacheSet` 的 scope 参数）。
  * - **statement_timeout 5s**（边界 23 故障线）：`/stats/*` 每条路由的查询跑在
  *   `BEGIN + SET LOCAL` 的事务里，超时（SQLSTATE 57014）返回 503 + 2005，绝不挂起
  *   等数据库慢慢算。5s 不是性能预算——1.5s 是 90d 出图的验收线（边界 17），超它
@@ -45,8 +49,6 @@ import type { User } from "../models/types.js";
 const MAX_WINDOW_DAYS = 180;
 /** 默认窗口 30d（边界 17：90d/180d 是显式深挖，不拿最坏情况当默认体验）。 */
 const DEFAULT_WINDOW_DAYS = 30;
-/** 缓存 TTL（边界 16）。 */
-const STATS_CACHE_TTL_MS = 30_000;
 /** 统计超时错误码：前端（P8-6）按它给空态 + 缩窗建议，不白屏。 */
 const STATS_TIMEOUT_CODE = 2005;
 /** 榜单固定长度：找一个坏接口/坏用例不需要看完 200 行（summary byEndpoint 同款）。 */
@@ -120,12 +122,6 @@ async function resolveScope(user: User, requestedParam: string | undefined, repl
   return { all: false, ids: requested };
 }
 
-/** 缓存键里的可见集哈希：排序后哈希，顺序不同、集合相同的两个请求命中同一份。 */
-function scopeCacheKey(scope: ProjectScope): string {
-  if (scope.all) return "all";
-  return createHash("sha1").update([...scope.ids].sort().join(",")).digest("hex").slice(0, 16);
-}
-
 /** 窗口天数：整数 1..180，超上限 400（边界 23）；缺省/空串回落默认 30d。 */
 function readDays(raw: string | undefined, reply: FastifyReply): number | undefined {
   if (raw === undefined || raw === "") return DEFAULT_WINDOW_DAYS;
@@ -166,26 +162,11 @@ function daysAgo(days: number): Date {
   return new Date(Date.now() - days * 86_400_000);
 }
 
-/* ─────────────────────────── TTL 缓存（边界 16） ─────────────────────────── */
-
-const statsCache = new Map<string, { expiresAt: number; data: unknown }>();
-
-function statsCacheGet<T>(key: string): T | undefined {
-  const entry = statsCache.get(key);
-  if (!entry) return undefined;
-  if (Date.now() > entry.expiresAt) { statsCache.delete(key); return undefined; }
-  return entry.data as T;
-}
-
-function statsCacheSet(key: string, data: unknown): void {
-  /* 失效逻辑只有 TTL 一条（边界 16 原话）。写前顺手清一遍过期条目只是防长期驻留的
-     卫生动作，不是第二套失效机制；键空间本身有界（枚举参数 × 可见集组合）。 */
-  if (statsCache.size > 512) {
-    const now = Date.now();
-    for (const [key, entry] of statsCache) if (now > entry.expiresAt) statsCache.delete(key);
-  }
-  statsCache.set(key, { expiresAt: Date.now() + STATS_CACHE_TTL_MS, data });
-}
+/* ───────────────────── 共享缓存读写（边界 16；P10-3 升级） ─────────────────────
+   缓存本体与失效策略在 `lib/queryCache.ts`：读走 `cacheGet(key)`，写走
+   `cacheSet(key, scope, data)`——`scope`（有效项目集）决定这条缓存挂哪些项目的失效
+   标签，写某项目时才能定位并 DEL 它（不再靠纯 TTL 兜脏读）。`scopeHash(scope)` 与
+   dashboard/projects 共用同一实现，保证同一可见集两侧产出同一分片键与同一标签。 */
 
 /* ─────────────────────────── 5s 超时护栏（边界 23） ─────────────────────────── */
 
@@ -295,8 +276,8 @@ export async function statsRoutes(app: FastifyInstance) {
     const scope = await resolveScope(user, request.query.projectIds, reply);
     if (!scope) return;
 
-    const cacheKey = `overview|${scopeCacheKey(scope)}|${days}|${sampleScope}`;
-    const cached = statsCacheGet<Record<string, unknown>>(cacheKey);
+    const cacheKey = `overview|${scopeHash(scope)}|${days}|${sampleScope}`;
+    const cached = await cacheGet<Record<string, unknown>>(cacheKey);
     if (cached) return success(cached);
 
     const data = await withStatsTimeout(reply, async (client) => {
@@ -435,7 +416,7 @@ export async function statsRoutes(app: FastifyInstance) {
       };
     });
     if (!data) return;
-    statsCacheSet(cacheKey, data);
+    await cacheSet(cacheKey, scope, data);
     return success(data);
   });
 
@@ -460,8 +441,8 @@ export async function statsRoutes(app: FastifyInstance) {
     const scope = await resolveScope(user, request.query.projectIds, reply);
     if (!scope) return;
 
-    const cacheKey = `trend|${scopeCacheKey(scope)}|${days}|${metric}|${sampleScope}|${triggerSource ?? ""}`;
-    const cached = statsCacheGet<Record<string, unknown>>(cacheKey);
+    const cacheKey = `trend|${scopeHash(scope)}|${days}|${metric}|${sampleScope}|${triggerSource ?? ""}`;
+    const cached = await cacheGet<Record<string, unknown>>(cacheKey);
     if (cached) return success(cached);
 
     const data = await withStatsTimeout(reply, async (client) => {
@@ -563,7 +544,7 @@ export async function statsRoutes(app: FastifyInstance) {
       };
     });
     if (!data) return;
-    statsCacheSet(cacheKey, data);
+    await cacheSet(cacheKey, scope, data);
     return success(data);
   });
 
@@ -594,8 +575,8 @@ export async function statsRoutes(app: FastifyInstance) {
     const scope = await resolveScope(user, request.query.projectIds, reply);
     if (!scope) return;
 
-    const cacheKey = `failures|${scopeCacheKey(scope)}|${days}|${topN}|${attributionSource ?? ""}`;
-    const cached = statsCacheGet<Record<string, unknown>>(cacheKey);
+    const cacheKey = `failures|${scopeHash(scope)}|${days}|${topN}|${attributionSource ?? ""}`;
+    const cached = await cacheGet<Record<string, unknown>>(cacheKey);
     if (cached) return success(cached);
 
     const data = await withStatsTimeout(reply, async (client) => {
@@ -746,7 +727,7 @@ export async function statsRoutes(app: FastifyInstance) {
       };
     });
     if (!data) return;
-    statsCacheSet(cacheKey, data);
+    await cacheSet(cacheKey, scope, data);
     return success(data);
   });
 
@@ -776,8 +757,8 @@ export async function statsRoutes(app: FastifyInstance) {
     const scope = await resolveScope(user, request.query.projectIds, reply);
     if (!scope) return;
 
-    const cacheKey = `flaky|${scopeCacheKey(scope)}|${days}`;
-    const cached = statsCacheGet<Record<string, unknown>>(cacheKey);
+    const cacheKey = `flaky|${scopeHash(scope)}|${days}`;
+    const cached = await cacheGet<Record<string, unknown>>(cacheKey);
     if (cached) return success(cached);
 
     const data = await withStatsTimeout(reply, async (client) => {
@@ -1040,7 +1021,7 @@ export async function statsRoutes(app: FastifyInstance) {
       };
     });
     if (!data) return;
-    statsCacheSet(cacheKey, data);
+    await cacheSet(cacheKey, scope, data);
     return success(data);
   });
 
@@ -1063,8 +1044,8 @@ export async function statsRoutes(app: FastifyInstance) {
     const scope = await resolveScope(user, undefined, reply);
     if (!scope) return;
 
-    const cacheKey = `coverage|${scopeCacheKey(scope)}|${days}`;
-    const cached = statsCacheGet<Record<string, unknown>>(cacheKey);
+    const cacheKey = `coverage|${scopeHash(scope)}|${days}`;
+    const cached = await cacheGet<Record<string, unknown>>(cacheKey);
     if (cached) return success(cached);
 
     const data = await withStatsTimeout(reply, async (client) => {
@@ -1143,7 +1124,7 @@ export async function statsRoutes(app: FastifyInstance) {
       return { days, buckets };
     });
     if (!data) return;
-    statsCacheSet(cacheKey, data);
+    await cacheSet(cacheKey, scope, data);
     return success(data);
   });
 
@@ -1172,8 +1153,8 @@ export async function statsRoutes(app: FastifyInstance) {
     const keyword = request.query.keyword?.trim();
     const limit = Math.min(100, Math.max(1, Number(request.query.limit ?? 10) || 10));
 
-    const cacheKey = `projects|${scopeCacheKey(scope)}|${days}|${metric}|${order}|${sampleScope}|${limit}|${keyword ?? ""}`;
-    const cached = statsCacheGet<Record<string, unknown>>(cacheKey);
+    const cacheKey = `projects|${scopeHash(scope)}|${days}|${metric}|${order}|${sampleScope}|${limit}|${keyword ?? ""}`;
+    const cached = await cacheGet<Record<string, unknown>>(cacheKey);
     if (cached) return success(cached);
 
     const data = await withStatsTimeout(reply, async (client) => {
@@ -1282,7 +1263,7 @@ export async function statsRoutes(app: FastifyInstance) {
       };
     });
     if (!data) return;
-    statsCacheSet(cacheKey, data);
+    await cacheSet(cacheKey, scope, data);
     return success(data);
   });
 }

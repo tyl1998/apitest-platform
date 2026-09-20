@@ -1,3 +1,4 @@
+import { invalidateProjects } from "./queryCache.js";
 import { createRedis } from "./queue.js";
 
 /**
@@ -32,10 +33,23 @@ export type ExecutionEvent =
 
 let publisher: ReturnType<typeof createRedis> | undefined;
 
+/**
+ * 非终态：这些状态下执行还没落成 dashboard/stats 数的那种「定局」行，缓存不需要失效。
+ * 只有真正落终态（success/failed/canceled/error/aborted/completed/skipped）才动读数——
+ * 那时才失效该项目的查询缓存（P10-3）。运行中每个 tick 都失效纯属浪费。
+ */
+const NON_TERMINAL_STATUSES = new Set(["queued", "claimed", "running", "cancelling", "pending"]);
+
 /** worker 侧：发布一次状态变更。 */
 export async function publishEvent(event: ExecutionEvent) {
   publisher ??= createRedis();
   await publisher.publish(EVENT_CHANNEL, JSON.stringify(event));
+  /* 执行落终态即失效该项目的查询缓存（dashboard 执行面 / stats）——写失效不靠纯 TTL
+     （P10-3，计划 14.1）。`invalidateProjects` 自带 try/catch + 超时兜底，不 await 也不
+     会让发布路径因缓存故障挂起或报错；pipelineLog 这类无 status 的事件天然跳过。 */
+  if ("status" in event && !NON_TERMINAL_STATUSES.has(event.status)) {
+    void invalidateProjects([event.projectId]);
+  }
 }
 
 type Listener = (event: ExecutionEvent) => void;

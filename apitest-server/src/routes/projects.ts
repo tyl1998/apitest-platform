@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
 import { currentUser } from "../lib/auth.js";
+import { cacheGet, cacheSet, scopeHash } from "../lib/queryCache.js";
 import { requireProjectAccess, requireProjectAdmin } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { mapProject } from "../models/types.js";
-import { queryProjectList, type ProjectFilters } from "./dashboard.js";
+import { queryProjectList, visibleScope, type ProjectFilters } from "./dashboard.js";
 
 export async function projectRoutes(app: FastifyInstance) {
   /**
@@ -22,13 +23,27 @@ export async function projectRoutes(app: FastifyInstance) {
    */
   app.get<{ Querystring: ProjectFilters & { page?: string; pageSize?: string } }>("/api/v1/projects", async (request, reply) => {
     const user = await currentUser(request, reply); if (!user) return;
+    /* 共享缓存（P10-3）：项目卡的资产计数聚合读多写少，挂 30s Redis 缓存 + 写失效。
+       键带可见集哈希（越权不命中）+ 过滤/分页维度；缓存整份 { projects, total } 以便
+       重建 meta。失效由 index.ts onResponse（项目级写）触发——建/删项目、加删成员都
+       会失效相关分片。 */
+    const scope = await visibleScope(user);
+    const filterKey = `${request.query.keyword?.trim() ?? ""}|${request.query.projectIds ?? ""}`;
     if (request.query.pageSize === undefined) {
+      const cacheKey = `projectlist|${scopeHash(scope)}|full|${filterKey}`;
+      const cached = await cacheGet<{ projects: unknown[]; total: number }>(cacheKey);
+      if (cached) return success(cached.projects, { total: cached.total });
       const data = await queryProjectList(user, request.query);
+      await cacheSet(cacheKey, scope, data);
       return success(data.projects, { total: data.total });
     }
     const page = Math.max(1, Number(request.query.page ?? 1));
     const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize)));
+    const cacheKey = `projectlist|${scopeHash(scope)}|${page}|${pageSize}|${filterKey}`;
+    const cached = await cacheGet<{ projects: unknown[]; total: number }>(cacheKey);
+    if (cached) return success(cached.projects, { page, pageSize, total: cached.total });
     const data = await queryProjectList(user, request.query, { page, pageSize });
+    await cacheSet(cacheKey, scope, data);
     return success(data.projects, { page, pageSize, total: data.total });
   });
 
