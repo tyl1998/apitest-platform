@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import type { PoolClient } from "pg";
 import { pool } from "../db.js";
+import { ciTaskSnapshot, recordAssetVersion } from "../lib/assetVersions.js";
 import { AUDIT_ACTIONS, writeAuditLogAsync } from "../lib/audit.js";
 import { normalizeIdempotencyKey } from "../lib/idempotency.js";
 import { notifySerializedQueue } from "../lib/pipelineRun.js";
@@ -40,6 +42,38 @@ const MAX_RECOMMEND_KEYS = 500;
     列表页不用它——它要多带两段 LATERAL 的列，投影不一样（见列表路由的注释）。 */
 const TASK_SELECT = `SELECT t.*, c.name AS git_credential_name, c.method AS git_credential_method
    FROM ci_tasks t LEFT JOIN git_credentials c ON c.id = t.git_credential_id`;
+
+/**
+ * P10-6：把一次任务写与它的版本快照包进一个事务（计划 14.3 边界）。`write` 负责 INSERT/UPDATE
+ * （不必带 RETURNING），随后在同一事务里用 TASK_SELECT 回读一行（带凭据名 join，与读侧同形），
+ * 落一版快照后提交。回读不到（更新未命中）→ 回 `undefined`，调用方回 404。
+ */
+async function writeCiTaskWithVersion(
+  context: { project: { id: string }; user: { id: string } },
+  taskId: string,
+  changeSummary: string,
+  write: (client: PoolClient) => Promise<unknown>,
+) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await write(client);
+    const loaded = await client.query(`${TASK_SELECT} WHERE t.id = $1 AND t.project_id = $2`, [taskId, context.project.id]);
+    if (!loaded.rowCount) { await client.query("ROLLBACK"); return undefined; }
+    const task = mapCiTask(loaded.rows[0]);
+    await recordAssetVersion(client, {
+      projectId: context.project.id, assetType: "ci_task", assetId: task.id,
+      snapshot: ciTaskSnapshot(task), changeSummary, createdBy: context.user.id,
+    });
+    await client.query("COMMIT");
+    return task;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 export async function ciTaskRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string }; Querystring: { page?: string; pageSize?: string; keyword?: string } }>("/api/v1/projects/:id/ci-tasks", async (request, reply) => {
@@ -119,26 +153,26 @@ export async function ciTaskRoutes(app: FastifyInstance) {
     const invalidNotify = await validateCiTaskNotify(context.project.id, request.body?.notify);
     if (invalidNotify) return fail(reply, 400, 1001, invalidNotify);
 
-    const result = await pool.query(
+    const taskId = randomUUID();
+    /* 凭据名要回给客户端（列表列），但 INSERT 的 RETURNING 拿不到 join 列：helper 在同一
+       事务里用 TASK_SELECT 回读一行，顺带落版本快照（P10-6）。 */
+    const task = await writeCiTaskWithVersion(context, taskId, "创建", (client) => client.query(
       `INSERT INTO ci_tasks (
          id, project_id, name, description, git_url, git_credential_id, git_ref, runner_label,
          sandbox_mode, isolation_mode, image, steps, env,
          cache_paths, cache_key_files, sdk_ingest_enabled, notify_config, single_concurrency,
          timeout_seconds, enabled, created_by
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'shared', $10, $11, $12::jsonb, $13, $14, $15, $16::jsonb, $17, $18, $19, $20)
-       RETURNING *`,
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'shared', $10, $11, $12::jsonb, $13, $14, $15, $16::jsonb, $17, $18, $19, $20)`,
       [
-        randomUUID(), context.project.id, draft.name, draft.description,
+        taskId, context.project.id, draft.name, draft.description,
         draft.gitUrl, draft.gitCredentialId, draft.gitRef, draft.runnerLabel,
         draft.sandboxMode, draft.image, draft.steps, JSON.stringify(draft.env),
         draft.cachePaths, draft.cacheKeyFiles, draft.sdkIngestEnabled, JSON.stringify(draft.notify),
         draft.singleConcurrency, draft.timeoutSeconds, draft.enabled, context.user.id,
       ],
-    );
-    /* 凭据名要回给客户端（列表列），但 INSERT 的 RETURNING 拿不到 join 列：单独读一次
-       比在 INSERT 外面套一层 CTE 直白，这是一次创建，多一次查询无关紧要。 */
-    const loaded = await pool.query(`${TASK_SELECT} WHERE t.id = $1`, [String(result.rows[0].id)]);
-    return reply.code(201).send(success(mapCiTask(loaded.rows[0])));
+    ));
+    if (!task) return fail(reply, 404, 2001, "CI task not found");
+    return reply.code(201).send(success(task));
   });
 
   app.get<{ Params: { id: string; taskId: string } }>("/api/v1/projects/:id/ci-tasks/:taskId", async (request, reply) => {
@@ -169,7 +203,7 @@ export async function ciTaskRoutes(app: FastifyInstance) {
     const invalidNotify = await validateCiTaskNotify(context.project.id, request.body?.notify);
     if (invalidNotify) return fail(reply, 400, 1001, invalidNotify);
 
-    await pool.query(
+    const task = await writeCiTaskWithVersion(context, request.params.taskId, "更新", (client) => client.query(
       `UPDATE ci_tasks SET
          name = $3, description = $4, git_url = $5, git_credential_id = $6, git_ref = $7,
          runner_label = $8, sandbox_mode = $9, image = $10, steps = $11, env = $12::jsonb,
@@ -184,12 +218,12 @@ export async function ciTaskRoutes(app: FastifyInstance) {
         draft.cachePaths, draft.cacheKeyFiles, draft.sdkIngestEnabled,
         JSON.stringify(draft.notify), draft.singleConcurrency, draft.timeoutSeconds, draft.enabled,
       ],
-    );
-    const loaded = await pool.query(`${TASK_SELECT} WHERE t.id = $1`, [request.params.taskId]);
+    ));
+    if (!task) return fail(reply, 404, 2001, "CI task not found");
     /* 关掉串行之后，之前被守卫挡住的排队 run 立刻就该可领（P4.5-12）：不补这一发唤醒，
        它要等到下一个轮询窗口。开着串行时这个调用查不到东西，是一次空操作。 */
     await notifySerializedQueue(pool, request.params.taskId).catch(() => {});
-    return success(mapCiTask(loaded.rows[0]));
+    return success(task);
   });
 
   /**

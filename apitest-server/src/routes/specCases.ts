@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import type { PoolClient } from "pg";
 import { pool } from "../db.js";
+import { recordAssetVersion, specCaseSnapshot } from "../lib/assetVersions.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
@@ -20,7 +22,37 @@ import { nextItemKey, normalizeSteps, normalizeTags, validateSpecCase, type Spec
    用到 PRIORITIES/STATUSES，改从提取文件取（同一份，避免第二拷贝漂移）。 */
 import { SPEC_PRIORITIES as PRIORITIES, SPEC_STATUSES as STATUSES } from "../lib/validateSpecCase.js";
 
-
+/**
+ * P10-4：把一次文本用例写（`... RETURNING *`）与它的版本快照包进一个事务。无行（更新未命中）
+ * 回滚并回 `undefined`，调用方据此回 404；命中则映射、落一版快照、提交、回映射后的 SpecCase。
+ */
+async function writeSpecCaseWithVersion(
+  context: { project: { id: string }; user: { id: string } },
+  changeSummary: string,
+  write: (client: PoolClient) => Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>,
+): Promise<ReturnType<typeof mapSpecCase> | undefined> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await write(client);
+    if (!result.rowCount) {
+      await client.query("ROLLBACK");
+      return undefined;
+    }
+    const specCase = mapSpecCase(result.rows[0]);
+    await recordAssetVersion(client, {
+      projectId: context.project.id, assetType: "spec_case", assetId: specCase.id,
+      snapshot: specCaseSnapshot(specCase), changeSummary, createdBy: context.user.id,
+    });
+    await client.query("COMMIT");
+    return specCase;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 /* ── 绑定的读时关联（P7-6，计划 11.2「绝不回写」纪律） ──────────────────────
  *
@@ -335,25 +367,40 @@ export async function specCaseRoutes(app: FastifyInstance) {
     const module = await pool.query("SELECT id FROM spec_modules WHERE id = $1 AND project_id = $2", [input.moduleId, context.project.id]);
     if (!module.rowCount) return fail(reply, 400, 1001, "module not found in this project");
 
-    for (let attempt = 0; ; attempt++) {
-      const itemKey = await nextItemKey(context.project.id);
-      try {
-        const result = await pool.query(
-          `INSERT INTO spec_cases (id, project_id, module_id, item_key, title, preconditions, steps, priority, tags, status, source, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, 'manual', $11) RETURNING *`,
-          [
-            randomUUID(), context.project.id, input.moduleId, itemKey,
-            input.title!.trim(), input.preconditions?.trim() ?? "",
-            JSON.stringify(normalizeSteps(input.steps) ?? []), input.priority ?? "P2",
-            normalizeTags(input.tags) ?? [], input.status ?? "unreviewed", context.user.id,
-          ],
-        );
-        /* 响应不带 module_path：POST RETURNING 里放不了子查询，而前端保存后本来就要重取列表。 */
-        return reply.code(201).send(success(mapSpecCase(result.rows[0])));
-      } catch (error) {
-        if ((error as { code?: string }).code === "23505" && attempt < 2) continue;
-        throw error;
+    /* P10-4：行与首版快照同事务落。取号重试的每一次尝试是一个独立事务——撞号（23505）
+       后 ROLLBACK 再重取号，否则事务已中毒（aborted）无法在同连接上重试。 */
+    const client = await pool.connect();
+    try {
+      for (let attempt = 0; ; attempt++) {
+        const itemKey = await nextItemKey(context.project.id);
+        try {
+          await client.query("BEGIN");
+          const result = await client.query(
+            `INSERT INTO spec_cases (id, project_id, module_id, item_key, title, preconditions, steps, priority, tags, status, source, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, 'manual', $11) RETURNING *`,
+            [
+              randomUUID(), context.project.id, input.moduleId, itemKey,
+              input.title!.trim(), input.preconditions?.trim() ?? "",
+              JSON.stringify(normalizeSteps(input.steps) ?? []), input.priority ?? "P2",
+              normalizeTags(input.tags) ?? [], input.status ?? "unreviewed", context.user.id,
+            ],
+          );
+          const created = mapSpecCase(result.rows[0]);
+          await recordAssetVersion(client, {
+            projectId: context.project.id, assetType: "spec_case", assetId: created.id,
+            snapshot: specCaseSnapshot(created), changeSummary: "创建", createdBy: context.user.id,
+          });
+          await client.query("COMMIT");
+          /* 响应不带 module_path：POST RETURNING 里放不了子查询，而前端保存后本来就要重取列表。 */
+          return reply.code(201).send(success(created));
+        } catch (error) {
+          await client.query("ROLLBACK");
+          if ((error as { code?: string }).code === "23505" && attempt < 2) continue;
+          throw error;
+        }
       }
+    } finally {
+      client.release();
     }
   });
 
@@ -401,7 +448,8 @@ export async function specCaseRoutes(app: FastifyInstance) {
       moduleGiven = true;
     }
 
-    const result = await pool.query(
+    /* P10-4：更新与其版本快照同事务（单条写本不需事务，这里纯为"行与快照一起回滚"）。 */
+    const updated = await writeSpecCaseWithVersion(context, "更新", (client) => client.query(
       `UPDATE spec_cases SET
           module_id = CASE WHEN $1 THEN $2::uuid ELSE module_id END,
           title = COALESCE($3, title),
@@ -422,9 +470,9 @@ export async function specCaseRoutes(app: FastifyInstance) {
         input.status ?? null,
         request.params.caseId, context.project.id,
       ],
-    );
-    if (!result.rowCount) return fail(reply, 404, 2001, "spec case not found");
-    return success(mapSpecCase(result.rows[0]));
+    ));
+    if (!updated) return fail(reply, 404, 2001, "spec case not found");
+    return success(updated);
   });
 
   /**

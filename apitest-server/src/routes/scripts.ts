@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { PoolClient } from "pg";
 import { pool } from "../db.js";
+import { recordAssetVersion, scriptSnapshot } from "../lib/assetVersions.js";
 import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
@@ -189,6 +190,11 @@ export async function scriptRoutes(app: FastifyInstance) {
         return fail(reply, 400, 1001, dependencyError);
       }
       const dependencies = await dependencyIds(created, client);
+      /* P10-6：落一版内容快照（含依赖库序列），与脚本行同事务成败。 */
+      await recordAssetVersion(client, {
+        projectId: context.project.id, assetType: "script", assetId: created,
+        snapshot: scriptSnapshot(mapScript({ ...result.rows[0], dependencies })), changeSummary: "创建", createdBy: context.user.id,
+      });
       await client.query("COMMIT");
       /* P11-9 审计（边界 5/6）：detail 只有字段名，脚本正文绝不进。 */
       writeAuditLogAsync({
@@ -266,6 +272,11 @@ export async function scriptRoutes(app: FastifyInstance) {
         }
       }
       const dependencies = await dependencyIds(request.params.scriptId, client);
+      /* P10-6：落一版内容快照，与脚本行/依赖改动同事务成败。 */
+      await recordAssetVersion(client, {
+        projectId: context.project.id, assetType: "script", assetId: request.params.scriptId,
+        snapshot: scriptSnapshot(mapScript({ ...result.rows[0], dependencies })), changeSummary: "更新", createdBy: context.user.id,
+      });
       await client.query("COMMIT");
 
       writeAuditLogAsync({

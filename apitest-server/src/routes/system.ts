@@ -1,10 +1,21 @@
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, writeAuditLogAsync } from "../lib/audit.js";
 import { currentUser } from "../lib/auth.js";
+import {
+  EXECUTION_RETENTION_MONTHS,
+  PARTITION_MAINTENANCE_TICK_MS,
+  countStrandedRows,
+  dropArchivedPartition,
+  isArchivedPartitionName,
+  listArchivedPartitions,
+  listLivePartitions,
+} from "../lib/executionArchive.js";
 import { FLOW_PARALLELISM, MAX_LOOP_CONCURRENCY, MAX_LOOP_ITERATIONS, MAX_WAIT_MS, SUITE_LEAF_BUDGET } from "../lib/flow.js";
+import { storageDriverName } from "../lib/objectStore.js";
 import { DEFAULT_RUNNER_LABEL, executionQueue } from "../lib/queue.js";
 import { requireSystemAdmin } from "../lib/rbac.js";
-import { success } from "../lib/response.js";
+import { fail, success } from "../lib/response.js";
 import { WORKER_OFFLINE_AFTER_SECONDS, mapWorker, SUITE_MAX_CONCURRENCY, SUITE_MAX_MEMBERS } from "../models/types.js";
 
 /* avatarSeed / avatarNightmare（P9-6 人物生成器）：种子覆盖（无值 = 身份种子
@@ -183,5 +194,68 @@ export async function systemRoutes(app: FastifyInstance) {
          嵌套会逼前端为一个不存在的组合（repository × prod-dmz）准备渲染分支。 */
       partitions,
     });
+  });
+
+  /**
+   * 执行历史的分区与归档现状（P10-2，计划 14.1）。仅系统管理员。
+   *
+   * **与上面 `/system/workers` 里的 `partitions` 不是一回事**：那里的「执行分区」是 P2-8 的
+   * 网段标签（`runner_label`，决定一次执行从哪个网段发出）；这里的分区是 `executions` 表按季
+   * 切出来的**物理存储分区**。两个词在本仓库里撞了名，读代码时以所在路由为准。
+   *
+   * 这条路由存在的理由很具体：归档是「DETACH + 改名保留」，自动维护**永不 DROP**，所以库里
+   * 会持续积累已脱离的表，而「该清哪些」如果只能靠人记，就会变成无人负责的堆积。它把这件事
+   * 变成看得见的清单：哪些分区还在服役、哪些已脱离多久、清掉能回收多少空间。
+   */
+  app.get("/api/v1/system/execution-partitions", async (request, reply) => {
+    const user = await requireSystemAdmin(request, reply); if (!user) return;
+    const [partitions, archives, strandedRows] = await Promise.all([
+      listLivePartitions(),
+      listArchivedPartitions(),
+      countStrandedRows(),
+    ]);
+    return success({
+      /* 0 = 自动归档关闭（默认），维护拍只预建分区。 */
+      retentionMonths: EXECUTION_RETENTION_MONTHS,
+      maintenanceIntervalHours: PARTITION_MAINTENANCE_TICK_MS / 3_600_000,
+      /* 当前对象存储驱动：清理时驱动对不上的大响应体会被跳过（见 DELETE 的 objectsSkipped），
+         没有这个字段，那个数字就没法解释。 */
+      storageDriver: storageDriverName(),
+      /* 兜底分区里的滞留行数，正常恒为 0。非 0 = 维护拍停过，这批行既不会被归档也会挡住
+         该季分区的创建（scheduler 会打出 blocked 告警）。 */
+      strandedRows,
+      partitions,
+      archives,
+    });
+  });
+
+  /**
+   * 清理一张已脱离的分区（P10-2）。仅系统管理员，**不可逆**。
+   *
+   * 这是平台里唯一会删除大响应体对象的通路（2026-09-20 用户拍板：对象与行同生命周期，只在
+   * 表被真正 DROP 时才删）。**绕过它直接在 psql 里 `DROP TABLE` 会留下永久孤儿对象**——
+   * 那正是 14.1 点名要避免的「只归档行、留下孤儿对象」。
+   *
+   * 目标只能是已脱离的归档表（`executions_archived_YYYYqN`）：在役分区不在这条路径上，
+   * 想删必须先等它到期被归档。删在役分区等于绕过保留窗口，那不是「清理」而是事故。
+   */
+  app.delete<{ Params: { name: string } }>("/api/v1/system/execution-partitions/:name", async (request, reply) => {
+    const user = await requireSystemAdmin(request, reply); if (!user) return;
+    const name = request.params.name.trim();
+    /* 形状不对（含在役分区名、任意标识符）与「形状对但查无此表」是两个不同的回答。 */
+    if (!isArchivedPartitionName(name)) return fail(reply, 400, 1001, "not an archived execution partition name");
+
+    const outcome = await dropArchivedPartition(name, user.id);
+    if (!outcome) return fail(reply, 404, 2001, "archived execution partition not found");
+
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.executionPartitionDrop,
+      targetType: "execution_partition",
+      targetId: null,
+      userId: user.id,
+      detail: { partition: name, rows: outcome.rowCount, objectsDeleted: outcome.objectsDeleted, objectsSkipped: outcome.objectsSkipped },
+      ip: request.ip,
+    });
+    return success(outcome);
   });
 }

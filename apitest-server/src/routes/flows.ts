@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { flowSnapshot, recordAssetVersion } from "../lib/assetVersions.js";
 import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { NoRunnerError, enqueueRun, cancelFlowRun } from "../lib/enqueue.js";
 import { MAX_FLOW_NODES, planStages, toFlowNode, topologicalOrder, validateFlowGraph, validateNode } from "../lib/flow.js";
@@ -286,6 +287,11 @@ export async function flowRoutes(app: FastifyInstance) {
       );
       const persisted = await persistFlowScripts(client, context.project.id, flowId, nodes, context.user.id);
       const result = await client.query("UPDATE flows SET nodes = $1::jsonb WHERE id = $2 RETURNING *", [JSON.stringify(persisted), flowId]);
+      /* P10-6：落一版内容快照（整张节点图），与流程行同事务成败。 */
+      await recordAssetVersion(client, {
+        projectId: context.project.id, assetType: "flow", assetId: flowId,
+        snapshot: flowSnapshot(mapFlow(result.rows[0])), changeSummary: "创建", createdBy: context.user.id,
+      });
       await client.query("COMMIT");
       /* P11-9 审计（边界 5/6）：detail 只有字段名。 */
       writeAuditLogAsync({
@@ -362,6 +368,11 @@ export async function flowRoutes(app: FastifyInstance) {
           context.user.id,
         ],
       );
+      /* P10-6：落一版内容快照，与流程行/节点脚本改动同事务成败。 */
+      await recordAssetVersion(client, {
+        projectId: context.project.id, assetType: "flow", assetId: request.params.flowId,
+        snapshot: flowSnapshot(mapFlow(result.rows[0])), changeSummary: "更新", createdBy: context.user.id,
+      });
       await client.query("COMMIT");
       writeAuditLogAsync({
         action: AUDIT_ACTIONS.flowUpdate, targetType: "flow", targetId: request.params.flowId,

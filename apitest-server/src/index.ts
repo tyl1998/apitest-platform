@@ -48,6 +48,7 @@ import { notificationRoutes } from "./routes/notifications.js";
 import { assistantRoutes } from "./routes/assistant.js";
 import { assistantProviderRoutes } from "./routes/assistantProviders.js";
 import { assistantUserRoutes } from "./routes/assistantUser.js";
+import { assetVersionRoutes } from "./routes/assetVersions.js";
 
 declare module "@fastify/jwt" {
   /* pwdEpoch 可选（P6-5）：P6-5 之前签发的存量 token 没有 claim，按 0 对齐库里的缺省值。 */
@@ -145,6 +146,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   /* P9-4b：助手的用户级路由——上游目录 / 我的 agent（用户自配参数，secret 加密）/
      默认切换 / 测试。抽屉「设置」卡的全部后端。 */
   await app.register(assistantUserRoutes);
+  /* P10-5：资产版本读侧——版本列表 / 两版 diff / 回滚。统一路由覆盖接口/接口用例/文本
+     用例/环境四类（`:assetType` 枚举 + `:assetId` 源表归属校验）；读 viewer 可，回滚需写权限。
+     P10-4 已在四条写路径落 asset_versions，本组只读那张表 + 一条事务化回滚写回。 */
+  await app.register(assetVersionRoutes);
   return app;
 }
 

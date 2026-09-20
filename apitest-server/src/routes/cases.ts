@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { recordAssetVersion, testCaseSnapshot } from "../lib/assetVersions.js";
 import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { evaluateAssertions, validateDeclarativeAssertions } from "../lib/assert.js";
 import { applyCaseToFlowNodes, caseFlowBindings, caseSyncPayload, writeFlowNodes } from "../lib/caseSync.js";
@@ -232,10 +233,16 @@ export async function caseRoutes(app: FastifyInstance) {
           JSON.stringify(request.body.extracts ?? []), JSON.stringify(lifecycle.responseScripts), caseId,
         ],
       );
+      /* P10-4：首版快照进本就存在的事务（脚本回写后，用例内容已完整）。 */
+      const created = mapTestCase(result.rows[0]);
+      await recordAssetVersion(client, {
+        projectId: context.project.id, assetType: "test_case", assetId: created.id,
+        snapshot: testCaseSnapshot(created), changeSummary: "创建", createdBy: context.user.id,
+      });
       await client.query("COMMIT");
       /* P11-9 审计（边界 5/6）：成功后 fire-and-forget；detail 只有字段名。 */
       writeAuditLogAsync({
-        action: AUDIT_ACTIONS.testCaseCreate, targetType: "test_case", targetId: String(result.rows[0].id),
+        action: AUDIT_ACTIONS.testCaseCreate, targetType: "test_case", targetId: created.id,
         projectId: context.project.id, userId: context.user.id,
         detail: { fields: auditFields(request.body) }, ip: request.ip,
       });
@@ -321,13 +328,19 @@ export async function caseRoutes(app: FastifyInstance) {
           context.user.id,
         ],
       );
+      /* P10-4：更新后的完整内容落一版快照，进本就存在的事务。 */
+      const updated = mapTestCase(result.rows[0]);
+      await recordAssetVersion(client, {
+        projectId: context.project.id, assetType: "test_case", assetId: updated.id,
+        snapshot: testCaseSnapshot(updated), changeSummary: "更新", createdBy: context.user.id,
+      });
       await client.query("COMMIT");
       writeAuditLogAsync({
         action: AUDIT_ACTIONS.testCaseUpdate, targetType: "test_case", targetId: request.params.caseId,
         projectId: context.project.id, userId: context.user.id,
         detail: { fields: auditFields(request.body) }, ip: request.ip,
       });
-      return success(mapTestCase(result.rows[0]));
+      return success(updated);
     } catch (error) {
       await client.query("ROLLBACK");
       return fail(reply, 400, 1001, error instanceof Error ? error.message : "case could not be saved");

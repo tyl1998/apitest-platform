@@ -532,7 +532,7 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
      * `UNIQUE (kind, detail_id)` 让重投复用同一行索引；`target_id` 留空——上报没有平台
      * 侧的目标对象，`target_name` 用「仓库 @ 分支」把它在列表里说清。
      *
-     * `finished_at` 的两个纪律（2026-09-10 趋势页 p99=3.94 天的教训）：
+     * `finished_at` 的三个纪律（2026-09-10 趋势页 p99=3.94 天的教训）：
      * - **首投兜底 `now()`**：上报没有「进行中」态（收到即终态），列表页读
      *   finished_at 显示完成时刻，NULL 会让该行失去可读的结束时间——兜底是
      *   接收时刻，误差只有网络延迟。但 `started_at` 有真值时**不兜底**：
@@ -543,6 +543,14 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
      *   兜底 now() 的重投不能把已经定局的完成时刻再往后推——9/4 跑完、9/8 重投
      *   一份没带 finishedAt 的 payload，无条件覆盖会让 finished−started 跳到
      *   3.94 天，把整窗 p99 拉爆（dev 库 479ecada 实测）。
+     * - **start/finish 成对采用**：索引行的幂等键是 (kind, detail_id)，detail_id 是
+     *   ingest_run（同 commit 折一行）——同 commit 的每日重跑复用同一行，只更新
+     *   finished_at 会把 start 留在上一次执行上，`finished − started` 变成跨天的
+     *   假耗时（dev 库 479ecada：9/4 启动 + 9/15 完成 = 10.9 天；131d0871 = 21.7 小时，
+     *   全局看板耗时分位数的 p99 被它顶到 7.8 万秒）。所以这次上报**同时**带真
+     *   started_at 与真 finished_at（=一次完整执行的报告）时，两个一起换成本次的；
+     *   只有续投（或完成时刻是兜底 now()）时才只碰 finished_at —— 那种情况下
+     *   start 必须留着，否则「这次没报完成」会被读成一次新执行。
      */
      const indexId = existingIndexId ?? randomUUID();
      const settledAt = data.finishedAt ?? new Date().toISOString();
@@ -554,6 +562,9 @@ export async function ingest(projectId: string, payload: IngestPayload): Promise
        ON CONFLICT (kind, detail_id) DO UPDATE SET
          target_name = EXCLUDED.target_name, status = EXCLUDED.status, total = EXCLUDED.total,
          success_count = EXCLUDED.success_count, failed_count = EXCLUDED.failed_count,
+         started_at = CASE
+           WHEN EXCLUDED.started_at IS NOT NULL AND EXCLUDED.finished_at IS NOT NULL THEN EXCLUDED.started_at
+           ELSE execution_index.started_at END,
          finished_at = COALESCE(EXCLUDED.finished_at, execution_index.finished_at)
        RETURNING id`,
       [

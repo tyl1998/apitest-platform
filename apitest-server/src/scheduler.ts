@@ -2,6 +2,11 @@ import { pool } from "./db.js";
 import type { Redis } from "ioredis";
 import { evaluateAlertEvent, notifyPipelineResult, notifySuiteResult } from "./lib/alerts.js";
 import { EVENT_CHANNEL, publishEvent, type ExecutionEvent } from "./lib/events.js";
+import {
+  EXECUTION_RETENTION_MONTHS,
+  PARTITION_MAINTENANCE_TICK_MS,
+  runPartitionMaintenance,
+} from "./lib/executionArchive.js";
 import { abortPipelineRunAfterLease } from "./lib/pipelineRun.js";
 import { createRedis } from "./lib/queue.js";
 import { runScheduleTick, SCHEDULE_MISS_GRACE_MS, SCHEDULE_TICK_MS } from "./lib/schedule.js";
@@ -18,6 +23,9 @@ import { runScheduleTick, SCHEDULE_MISS_GRACE_MS, SCHEDULE_TICK_MS } from "./lib
  *   **结果通知**共用这一条订阅（P3-11 / P4.5-12）。
  * - **Runner 租约回收**（P4.5-3）：`pipeline_runs.lease_expires_at` 过期的在途 run 判
  *   `aborted`（advisory lock 互斥，多实例安全）。
+ * - **执行分区维护**（P10-2）：预建未来季分区、把到期的冷分区脱离出去（同上，advisory
+ *   lock 互斥）。落在这里而不是第四个进程，理由与租约回收完全一样——形状就是「定时扫一遍
+ *   目录并推进状态」。
  *
  * 刻意不用 BullMQ repeatable jobs（6.0）：队列是「一次执行」的传递通道，调度是
  * 「何时造出一次执行」的决策。去重靠 `schedules.next_run_at` 的行级认领，多实例
@@ -134,6 +142,31 @@ const tick = setInterval(() => {
 /* tick 是维护动作，不该拖住进程退出。 */
 tick.unref();
 
+/*
+ * ── 执行分区维护（P10-2，计划 14.1）────────────────────────────────────────
+ *
+ * 两件事：**预建**当前季与之后两季的分区，**归档**整季都超出保留窗口的冷分区（DETACH +
+ * 改名，永不自动 DROP）。`EXECUTION_RETENTION_MONTHS` 缺省 0 时只做前者。
+ *
+ * 拍频是 6 小时，因为分区是季级的：这一拍存在的唯一意义是「别把建下一季分区这件事拖到
+ * 跨季那一刻」。真跨季时即使拍全挂了也不会写失败——066 建了 DEFAULT 兜底分区。
+ */
+async function partitionMaintenanceTick() {
+  const { created, archived, blocked } = await runPartitionMaintenance();
+  if (created.length) console.log(`[scheduler] created execution partition(s): ${created.join(", ")}`);
+  /* 归档是会改变「哪些历史还查得到」的动作，用 warn：它值得在日志里显眼。 */
+  if (archived.length) console.warn(`[scheduler] archived execution partition(s): ${archived.join(", ")} — 数据仍在库里，清理走 DELETE /api/v1/system/execution-partitions/:name`);
+  /* 不是故障（写入仍落进兜底分区），但这一季永远不会被自动归档，要有人来搬行。 */
+  if (blocked.length) console.error(`[scheduler] execution partition(s) blocked by rows already in executions_default: ${blocked.join(", ")} — 需人工把这批行搬出兜底分区后才建得出来`);
+}
+
+const partitionTick = setInterval(() => {
+  void partitionMaintenanceTick().catch((error) => console.error("[scheduler] partition maintenance failed", error));
+}, PARTITION_MAINTENANCE_TICK_MS);
+partitionTick.unref();
+/* 启动立刻跑一拍：停机跨季时下一季的分区还没建，不该再等 6 小时（虽然 DEFAULT 接得住）。 */
+void partitionMaintenanceTick().catch((error) => console.error("[scheduler] partition maintenance failed", error));
+
 /* 启动立刻跑一拍，而不是先空等 10 秒：刚起来的第一拍往往要处理停机期间积压的
    到期时刻（宽限期内的触发、超期的记 skipped）。 */
 void runScheduleTick().catch((error) => console.error("[scheduler] tick failed", error));
@@ -142,6 +175,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, async () => {
     clearInterval(tick);
     clearInterval(pipelineReapTick);
+    clearInterval(partitionTick);
     alertSubscriber.disconnect();
     await pool.end();
     process.exit(0);
@@ -149,3 +183,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 
 console.log(`[scheduler] ticking every ${SCHEDULE_TICK_MS / 1000}s (miss grace ${SCHEDULE_MISS_GRACE_MS / 1000}s), listening on ${EVENT_CHANNEL}`);
+console.log(
+  EXECUTION_RETENTION_MONTHS > 0
+    ? `[scheduler] execution partition maintenance every ${PARTITION_MAINTENANCE_TICK_MS / 3_600_000}h, archiving quarters older than ${EXECUTION_RETENTION_MONTHS} month(s)`
+    : `[scheduler] execution partition maintenance every ${PARTITION_MAINTENANCE_TICK_MS / 3_600_000}h, archiving disabled (EXECUTION_RETENTION_MONTHS=0)`,
+);

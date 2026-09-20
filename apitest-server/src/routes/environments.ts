@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import type { PoolClient } from "pg";
 import { pool } from "../db.js";
+import { environmentSnapshot, recordAssetVersion } from "../lib/assetVersions.js";
 import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { DEFAULT_RUNNER_LABEL, RUNNER_LABEL_PATTERN } from "../lib/queue.js";
 import { requireProjectAccess } from "../lib/rbac.js";
@@ -30,6 +32,39 @@ const SELECT_ENVIRONMENT = `SELECT ev.*, creator.email AS created_by_email, upda
 type SecretPatch = Record<string, string | null>;
 
 type EnvironmentBody = { name?: string; variables?: VariableInput; secrets?: SecretPatch; runnerLabel?: string; defaultHeaders?: Record<string, string> };
+
+/**
+ * P10-4：把一次环境写（`... RETURNING *`）与它的版本快照包进一个事务。无行回滚并回
+ * `undefined`（调用方回 404）；命中则映射、落一版快照、提交、回映射后的 Environment。
+ * 快照里的 secret **只有键名**（environmentSnapshot 取 mapEnvironment.secretKeys），不含值。
+ */
+async function writeEnvironmentWithVersion(
+  context: { project: { id: string }; user: { id: string } },
+  changeSummary: string,
+  write: (client: PoolClient) => Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>,
+): Promise<ReturnType<typeof mapEnvironment> | undefined> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await write(client);
+    if (!result.rowCount) {
+      await client.query("ROLLBACK");
+      return undefined;
+    }
+    const environment = mapEnvironment(result.rows[0]);
+    await recordAssetVersion(client, {
+      projectId: context.project.id, assetType: "environment", assetId: environment.id,
+      snapshot: environmentSnapshot(environment), changeSummary, createdBy: context.user.id,
+    });
+    await client.query("COMMIT");
+    return environment;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 /**
  * 执行分区标签的校验（P2-8）。
@@ -171,17 +206,19 @@ export async function environmentRoutes(app: FastifyInstance) {
     if (runner.error) return fail(reply, 400, 1001, runner.error);
     const defaults = normalizeDefaultHeaders(request.body.defaultHeaders);
     if (defaults.error) return fail(reply, 400, 1001, defaults.error);
-    const result = await pool.query(
+    /* P10-4：行与首版快照同事务落（快照 secret 只含键名，绝不含值）。 */
+    const environment = await writeEnvironmentWithVersion(context, "创建", (client) => client.query(
       "INSERT INTO environments (id, project_id, name, variables, secrets, runner_label, default_headers, created_by) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7::jsonb, $8) RETURNING *",
       [randomUUID(), context.project.id, name, JSON.stringify(cleanVariables(request.body.variables) ?? {}), JSON.stringify(applySecretPatch({}, request.body.secrets)), runner.label ?? DEFAULT_RUNNER_LABEL, JSON.stringify(defaults.headers ?? {}), context.user.id],
-    );
+    ));
+    if (!environment) return fail(reply, 404, 2001, "environment not found");
     /* P11-9 审计（边界 5/6）：detail 只有字段名，**secret 的键名也不进**——只报 body 的键。 */
     writeAuditLogAsync({
-      action: AUDIT_ACTIONS.environmentCreate, targetType: "environment", targetId: String(result.rows[0].id),
+      action: AUDIT_ACTIONS.environmentCreate, targetType: "environment", targetId: environment.id,
       projectId: context.project.id, userId: context.user.id,
       detail: { fields: auditFields(request.body) }, ip: request.ip,
     });
-    return reply.code(201).send(success(mapEnvironment(result.rows[0])));
+    return reply.code(201).send(success(environment));
   });
 
   app.patch<{ Params: { id: string; environmentId: string }; Body: EnvironmentBody }>("/api/v1/projects/:id/environments/:environmentId", async (request, reply) => {
@@ -215,16 +252,17 @@ export async function environmentRoutes(app: FastifyInstance) {
        updated_at 列（001 起就没有，P11-1 只补了 created_by/updated_by），所以这条
        UPDATE 没有 `updated_at = now()` 可依附，也不能靠「时间新于」判「系统改的」。
        环境只由 REST 人工路径写，NULL 就是「建后未改过」。 */
-    const result = await pool.query(
+    const environment = await writeEnvironmentWithVersion(context, "更新", (client) => client.query(
       "UPDATE environments SET name = COALESCE($1, name), variables = COALESCE($2::jsonb, variables), secrets = $3::jsonb, runner_label = COALESCE($6, runner_label), default_headers = COALESCE($7::jsonb, default_headers), updated_by = $8 WHERE id = $4 AND project_id = $5 RETURNING *",
       [name || null, variables ? JSON.stringify(variables) : null, JSON.stringify(secrets), request.params.environmentId, context.project.id, runner.label ?? null, defaults.headers ? JSON.stringify(defaults.headers) : null, context.user.id],
-    );
+    ));
+    if (!environment) return fail(reply, 404, 2001, "environment not found");
     writeAuditLogAsync({
       action: AUDIT_ACTIONS.environmentUpdate, targetType: "environment", targetId: request.params.environmentId,
       projectId: context.project.id, userId: context.user.id,
       detail: { fields: auditFields(request.body) }, ip: request.ip,
     });
-    return success(mapEnvironment(result.rows[0]));
+    return success(environment);
   });
 
   /**
@@ -251,19 +289,20 @@ export async function environmentRoutes(app: FastifyInstance) {
     let name = requested;
     for (let index = 2; names.has(name.toLowerCase()); index += 1) name = `${requested} ${index}`;
 
-    const result = await pool.query(
+    /* 复制也是创建：副本落一版首快照（changeSummary 记"复制"）。 */
+    const environment = await writeEnvironmentWithVersion(context, "复制", (client) => client.query(
       `INSERT INTO environments (id, project_id, name, variables, secrets, runner_label, default_headers, created_by)
        SELECT $1, project_id, $2, variables, secrets, runner_label, default_headers, $5
        FROM environments WHERE id = $3 AND project_id = $4 RETURNING *`,
       [randomUUID(), name, request.params.environmentId, context.project.id, context.user.id],
-    );
-    if (!result.rowCount) return fail(reply, 404, 2001, "environment not found");
+    ));
+    if (!environment) return fail(reply, 404, 2001, "environment not found");
     writeAuditLogAsync({
-      action: AUDIT_ACTIONS.environmentCreate, targetType: "environment", targetId: String(result.rows[0].id),
+      action: AUDIT_ACTIONS.environmentCreate, targetType: "environment", targetId: environment.id,
       projectId: context.project.id, userId: context.user.id,
       detail: { fields: auditFields(request.body), duplicatedFrom: request.params.environmentId }, ip: request.ip,
     });
-    return reply.code(201).send(success(mapEnvironment(result.rows[0])));
+    return reply.code(201).send(success(environment));
   });
 
   /* Dependency scan, read before the confirm dialog so the user sees what breaks. */

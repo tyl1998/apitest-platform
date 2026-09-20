@@ -65,6 +65,17 @@ export interface ObjectStore {
    * 同 key 重写即覆盖——调用方以此保证幂等。
    */
   putObject(key: string, body: Buffer, opts: { contentType: string }): Promise<void>;
+  /**
+   * 删一个对象（P10-2，归档清理）。
+   *
+   * **只在行被真正删除的那一刻调**（2026-09-20 用户拍板）：已脱离的归档分区里行还在，
+   * 对象就得还在，两者同生命周期；只有 `dropArchivedPartition` 把表 DROP 掉时才删对象。
+   *
+   * **不存在不是错**：清理是可重入的（删到一半崩了要能重跑），而且合法的「无全量」有四种
+   * （历史行 / 项目关闭转存 / 超上限 / 写入失败，见 065），对象本来就可能没写成。所以
+   * 两个驱动都把 404 咽掉，只有真的删不掉才抛。
+   */
+  deleteObject(key: string): Promise<void>;
 }
 
 /* ── fs 驱动 ─────────────────────────────────────────────────────────────────── */
@@ -219,6 +230,18 @@ export async function getObjectStore(baseUrlFallback: string): Promise<ObjectSto
         await mkdir(dirname(file), { recursive: true });
         await writeFile(file, body);
       },
+      async deleteObject(key) {
+        const { rm } = await import("node:fs/promises");
+        const { join, resolve } = await import("node:path");
+        /* 与 putObject 同一条越界防线：删除比写入更不能容忍「key 解析到根目录之外」。 */
+        const root = resolve(fsStorageRoot());
+        const file = resolve(join(root, key));
+        if (!file.startsWith(root + "/") && !file.startsWith(root + "\\")) {
+          throw new Error("object key escapes the storage root");
+        }
+        /* `force` 咽掉 ENOENT（见接口注释）；其它 IO 错误照常抛给调用方。 */
+        await rm(file, { force: true });
+      },
     };
     return store;
   }
@@ -269,6 +292,11 @@ export async function getObjectStore(baseUrlFallback: string): Promise<ObjectSto
         ContentType: opts.contentType,
         ContentLength: body.length,
       }));
+    },
+    async deleteObject(key) {
+      const { DeleteObjectCommand } = await import("@aws-sdk/client-s3");
+      /* S3 的 DeleteObject 对不存在的 key 本来就返回成功，不需要像 fs 那样吞 ENOENT。 */
+      await s3.client.send(new DeleteObjectCommand({ Bucket: s3.bucket, Key: key }));
     },
   };
   return store;

@@ -3107,6 +3107,68 @@ export function mapSpecCase(row: Record<string, unknown>): SpecCase {
   };
 }
 
+/* ── P10-4: 统一版本模型（计划 14.3，迁移 067）。────────────────────────────── */
+
+/**
+ * 版本覆盖的资产类型（与迁移 067/068 的 CHECK 同步）。P10-4 起四类（接口/用例/文本用例/环境）；
+ * P10-6 扩面到 7 类用户编写型内容资产（Mock/脚本/流程/套件/数据源/SQL 定义/仓库任务）。
+ * 后排其它资源时只加枚举值 + 一条扩 CHECK 的 forward-only 迁移，不动表结构。
+ */
+export type AssetVersionType =
+  | "endpoint" | "test_case" | "spec_case" | "environment"
+  | "mock" | "script" | "flow" | "test_suite" | "data_source" | "sql_definition" | "ci_task";
+
+/**
+ * 资产类型 → 源表名（P10-5 读侧）。用于「资产是否属于本项目」的存在性校验：`asset_id`
+ * 不是外键（一列指向多张表，见迁移 067），故版本读侧要拿这张映射回源表确认归属。
+ * 键是代码写死的枚举、不来自请求——可以安全拼进 SQL 的表名位（规则 4 的「固定片段」）。
+ */
+export const ASSET_VERSION_TABLES: Record<AssetVersionType, string> = {
+  endpoint: "endpoints",
+  test_case: "test_cases",
+  spec_case: "spec_cases",
+  environment: "environments",
+  mock: "mocks",
+  script: "scripts",
+  flow: "flows",
+  test_suite: "test_suites",
+  data_source: "data_sources",
+  sql_definition: "sql_definitions",
+  ci_task: "ci_tasks",
+};
+
+/**
+ * 一个资产的一版内容快照。`snapshot` 是 camelCase、与该资产 API 出参同形的内容子集
+ * （环境的 secrets 只含键名，绝不含值——见迁移 067 头「secret 纪律」）。归属/时间带在
+ * 版本行自己身上（源表归属列不齐），`createdByEmail` 由读侧 JOIN users 取，写路径不填。
+ */
+export type AssetVersion = {
+  id: string;
+  projectId: string;
+  assetType: AssetVersionType;
+  assetId: string;
+  versionNo: number;
+  snapshot: Record<string, unknown>;
+  changeSummary: string;
+  createdByEmail?: string | null;
+  createdAt: string;
+};
+
+export function mapAssetVersion(row: Record<string, unknown>): AssetVersion {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    assetType: String(row.asset_type) as AssetVersionType,
+    assetId: String(row.asset_id),
+    versionNo: Number(row.version_no),
+    snapshot: (row.snapshot ?? {}) as Record<string, unknown>,
+    changeSummary: String(row.change_summary ?? ""),
+    /* created_by_email 只在版本列表（P10-5）JOIN users 时存在；写路径 RETURNING 里没有。 */
+    createdByEmail: ownershipEmail(row.created_by_email),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
 /* ── P8: 失败归因（计划十二章 12.1，迁移 054）。──────────────────────────────── */
 
 /** 归因目标三类（边界 4：只在叶子失败上归因，不在父级 run/suite execution 上打标）。 */

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import type { PoolClient } from "pg";
 import { pool } from "../db.js";
+import { recordAssetVersion, testSuiteSnapshot } from "../lib/assetVersions.js";
 import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { cancelSuiteRun } from "../lib/enqueue.js";
 import { requireProjectAccess } from "../lib/rbac.js";
@@ -55,6 +57,35 @@ async function latestRuns(suiteIds: string[]) {
   return new Map(result.rows.map((row) => [String(row.suite_id), mapSuiteExecution(row)]));
 }
 
+/**
+ * P10-6：把一次套件写（`... RETURNING *`）与它的版本快照包进一个事务（计划 14.3 边界）。
+ * 无行时回滚并回 `undefined`，调用方据此回 404。
+ */
+async function writeSuiteWithVersion(
+  context: { project: { id: string }; user: { id: string } },
+  changeSummary: string,
+  write: (client: PoolClient) => Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>,
+) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await write(client);
+    if (!result.rowCount) { await client.query("ROLLBACK"); return undefined; }
+    const suite = mapTestSuite(result.rows[0]);
+    await recordAssetVersion(client, {
+      projectId: context.project.id, assetType: "test_suite", assetId: suite.id,
+      snapshot: testSuiteSnapshot(suite), changeSummary, createdBy: context.user.id,
+    });
+    await client.query("COMMIT");
+    return suite;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function suiteRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string }; Querystring: { keyword?: string; tag?: string; page?: string; pageSize?: string } }>("/api/v1/projects/:id/test-suites", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
@@ -96,7 +127,7 @@ export async function suiteRoutes(app: FastifyInstance) {
     if (invalidNotify) return fail(reply, 400, 1001, invalidNotify);
 
     const suiteId = randomUUID();
-    const result = await pool.query(
+    const suite = await writeSuiteWithVersion(context, "创建", (client) => client.query(
       `INSERT INTO test_suites (id, project_id, name, description, selection_type, selection_config, execution_config, notify_config, tags, created_by)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10) RETURNING *`,
       [
@@ -105,14 +136,15 @@ export async function suiteRoutes(app: FastifyInstance) {
         JSON.stringify(execution), JSON.stringify(normalizeSuiteNotify(request.body?.notify ?? {})), request.body.tags ?? [],
         context.user.id,
       ],
-    );
+    ));
+    if (!suite) return fail(reply, 404, 2001, "test suite not found");
     /* P11-9 审计（边界 5/6）：detail 只有字段名。 */
     writeAuditLogAsync({
-      action: AUDIT_ACTIONS.testSuiteCreate, targetType: "test_suite", targetId: String(result.rows[0].id),
+      action: AUDIT_ACTIONS.testSuiteCreate, targetType: "test_suite", targetId: suite.id,
       projectId: context.project.id, userId: context.user.id,
       detail: { fields: auditFields(request.body) }, ip: request.ip,
     });
-    return reply.code(201).send(success(mapTestSuite(result.rows[0])));
+    return reply.code(201).send(success(suite));
   });
 
   app.put<{ Params: { id: string; suiteId: string }; Body: SuiteInput }>("/api/v1/projects/:id/test-suites/:suiteId", async (request, reply) => {
@@ -134,7 +166,7 @@ export async function suiteRoutes(app: FastifyInstance) {
       execution = JSON.stringify(config);
     }
     const notify = request.body.notify === undefined ? null : JSON.stringify(normalizeSuiteNotify(request.body.notify));
-    const result = await pool.query(
+    const suite = await writeSuiteWithVersion(context, "更新", (client) => client.query(
       `UPDATE test_suites SET
          name = COALESCE($1, name),
          description = COALESCE($2, description),
@@ -154,14 +186,14 @@ export async function suiteRoutes(app: FastifyInstance) {
         request.params.suiteId, context.project.id,
         context.user.id,
       ],
-    );
-    if (!result.rowCount) return fail(reply, 404, 2001, "test suite not found");
+    ));
+    if (!suite) return fail(reply, 404, 2001, "test suite not found");
     writeAuditLogAsync({
       action: AUDIT_ACTIONS.testSuiteUpdate, targetType: "test_suite", targetId: request.params.suiteId,
       projectId: context.project.id, userId: context.user.id,
       detail: { fields: auditFields(request.body) }, ip: request.ip,
     });
-    return success(mapTestSuite(result.rows[0]));
+    return success(suite);
   });
 
   /**

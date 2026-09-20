@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
+import type { PoolClient } from "pg";
 import { pool } from "../db.js";
 import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync, type AuditBatchDetail } from "../lib/audit.js";
 import { NoRunnerError, cancelBatch, cancelRun, enqueueRun } from "../lib/enqueue.js";
 import { getSharedObjectStore, requestBaseUrl, storageDriverName } from "../lib/objectStore.js";
+import { endpointSnapshot, recordAssetVersion } from "../lib/assetVersions.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, failNoRunner, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
@@ -63,6 +65,40 @@ async function validEnvironment(projectId: string, environmentId: string | null 
   if (!environmentId || !isUuid(environmentId)) return !environmentId;
   const result = await pool.query("SELECT 1 FROM environments WHERE id = $1 AND project_id = $2", [environmentId, projectId]);
   return Boolean(result.rowCount);
+}
+
+/**
+ * P10-4：把一次接口写（INSERT / UPDATE / duplicate 的 `... RETURNING *`）与它的版本快照包进
+ * 一个事务。`write` 返回带 `rows` 的查询结果；无行（更新未命中/复制源不存在）时回滚并回
+ * `undefined`，调用方据此回 404。命中则映射、落一版快照（同事务）、提交、回映射后的 Endpoint。
+ * 单条写本不需要事务，这里开事务纯粹是为了让快照与行"一起成功或一起回滚"（计划 14.3 边界）。
+ */
+async function writeEndpointWithVersion(
+  context: { project: { id: string }; user: { id: string } },
+  changeSummary: string,
+  write: (client: PoolClient) => Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>,
+): Promise<Endpoint | undefined> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await write(client);
+    if (!result.rowCount) {
+      await client.query("ROLLBACK");
+      return undefined;
+    }
+    const endpoint = mapEndpoint(result.rows[0]);
+    await recordAssetVersion(client, {
+      projectId: context.project.id, assetType: "endpoint", assetId: endpoint.id,
+      snapshot: endpointSnapshot(endpoint), changeSummary, createdBy: context.user.id,
+    });
+    await client.query("COMMIT");
+    return endpoint;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /** The runnable part of an endpoint, in the shape a case also freezes. */
@@ -233,17 +269,19 @@ export async function endpointRoutes(app: FastifyInstance) {
     const invalid = validateEndpoint(request.body);
     if (invalid) return fail(reply, 400, 1001, invalid);
     if (!await validEnvironment(context.project.id, request.body.defaultEnvironmentId)) return fail(reply, 400, 1001, "default environment must belong to the project");
-    const result = await pool.query(
+    /* P10-4：行与首版快照同事务落 —— 版本是内容的序列，保存即产出一版，失败整体回滚。 */
+    const endpoint = await writeEndpointWithVersion(context, "创建", (client) => client.query(
       `INSERT INTO endpoints (id, project_id, ${WRITE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13::jsonb, $14, $15, $16) RETURNING *`,
       [randomUUID(), context.project.id, ...writeValues(request.body, context.user.id)],
-    );
+    ));
+    if (!endpoint) return fail(reply, 404, 2001, "endpoint not found");
     /* P11-9 审计（边界 5/6）：成功后 fire-and-forget；detail 只有字段名。 */
     writeAuditLogAsync({
-      action: AUDIT_ACTIONS.endpointCreate, targetType: "endpoint", targetId: String(result.rows[0].id),
+      action: AUDIT_ACTIONS.endpointCreate, targetType: "endpoint", targetId: endpoint.id,
       projectId: context.project.id, userId: context.user.id,
       detail: { fields: auditFields(request.body) }, ip: request.ip,
     });
-    return reply.code(201).send(success(mapEndpoint(result.rows[0])));
+    return reply.code(201).send(success(endpoint));
   });
 
   app.patch<{ Params: { id: string; endpointId: string }; Body: EndpointInput }>("/api/v1/projects/:id/endpoints/:endpointId", async (request, reply) => {
@@ -258,7 +296,7 @@ export async function endpointRoutes(app: FastifyInstance) {
      * unchanged" from "clear it". Each is only written when the key is
      * present in the payload.
      */
-    const result = await pool.query(
+    const endpoint = await writeEndpointWithVersion(context, "更新", (client) => client.query(
       `UPDATE endpoints SET
          name = COALESCE($1, name),
          description = COALESCE($2, description),
@@ -293,14 +331,14 @@ export async function endpointRoutes(app: FastifyInstance) {
          request.params.endpointId, context.project.id,
          context.user.id,
       ],
-    );
-    if (!result.rowCount) return fail(reply, 404, 2001, "endpoint not found");
+    ));
+    if (!endpoint) return fail(reply, 404, 2001, "endpoint not found");
     writeAuditLogAsync({
       action: AUDIT_ACTIONS.endpointUpdate, targetType: "endpoint", targetId: request.params.endpointId,
       projectId: context.project.id, userId: context.user.id,
       detail: { fields: auditFields(request.body) }, ip: request.ip,
     });
-    return success(mapEndpoint(result.rows[0]));
+    return success(endpoint);
   });
 
   /**
@@ -325,20 +363,21 @@ export async function endpointRoutes(app: FastifyInstance) {
     let name = requested;
     for (let index = 2; names.has(name); index += 1) name = `${requested} ${index}`;
 
-    const result = await pool.query(
+    /* 复制也是创建：副本落一版首快照（changeSummary 记"复制"，与手工建区分）。 */
+    const endpoint = await writeEndpointWithVersion(context, "复制", (client) => client.query(
       `INSERT INTO endpoints (id, project_id, ${WRITE_COLUMNS})
        SELECT $1, project_id, $2, description, method, url, headers, query_params, path_params, body_type, body, body_text, auth, tags, default_environment_id, $5
        FROM endpoints WHERE id = $3 AND project_id = $4 RETURNING *`,
       [randomUUID(), name, request.params.endpointId, context.project.id, context.user.id],
-    );
-    if (!result.rowCount) return fail(reply, 404, 2001, "endpoint not found");
+    ));
+    if (!endpoint) return fail(reply, 404, 2001, "endpoint not found");
     /* 复制也是创建：动作与普通 create 同一行，detail 记来源（动作证据）与请求体字段名。 */
     writeAuditLogAsync({
-      action: AUDIT_ACTIONS.endpointCreate, targetType: "endpoint", targetId: String(result.rows[0].id),
+      action: AUDIT_ACTIONS.endpointCreate, targetType: "endpoint", targetId: endpoint.id,
       projectId: context.project.id, userId: context.user.id,
       detail: { fields: auditFields(request.body), duplicatedFrom: request.params.endpointId }, ip: request.ip,
     });
-    return reply.code(201).send(success(mapEndpoint(result.rows[0])));
+    return reply.code(201).send(success(endpoint));
   });
 
   app.delete<{ Params: { id: string; endpointId: string } }>("/api/v1/projects/:id/endpoints/:endpointId", async (request, reply) => {

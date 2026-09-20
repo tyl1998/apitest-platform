@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
+import type { PoolClient } from "pg";
 import { pool } from "../db.js";
 import { isSupportedDataSourceType } from "../lib/adapters/index.js";
+import { dataSourceSnapshot, recordAssetVersion, sqlDefinitionSnapshot } from "../lib/assetVersions.js";
 import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { validateOperation } from "../lib/adapters/operations.js";
 import { encryptSecret } from "../lib/crypto.js";
@@ -184,6 +186,61 @@ function sendUsageConflict(reply: FastifyReply, message: string, usage: unknown)
   return reply.code(409).send({ code: 2003, message, data: usage });
 }
 
+/**
+ * P10-6：把一次数据源写（`... RETURNING *`）与它的版本快照包进一个事务（计划 14.3 边界）。
+ * 快照不含密文（mapDataSource 只出 passwordConfigured），与环境 secret 同纪律（Spec 4.6）。
+ */
+async function writeDataSourceWithVersion(
+  context: { project: { id: string }; user: { id: string } },
+  changeSummary: string,
+  write: (client: PoolClient) => Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>,
+) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await write(client);
+    if (!result.rowCount) { await client.query("ROLLBACK"); return undefined; }
+    const source = mapDataSource(result.rows[0]);
+    await recordAssetVersion(client, {
+      projectId: context.project.id, assetType: "data_source", assetId: source.id,
+      snapshot: dataSourceSnapshot(source), changeSummary, createdBy: context.user.id,
+    });
+    await client.query("COMMIT");
+    return source;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** P10-6：SQL 定义写与其版本快照同事务（同上）。 */
+async function writeSqlDefinitionWithVersion(
+  context: { project: { id: string }; user: { id: string } },
+  changeSummary: string,
+  write: (client: PoolClient) => Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>,
+) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await write(client);
+    if (!result.rowCount) { await client.query("ROLLBACK"); return undefined; }
+    const definition = mapSqlDefinition(result.rows[0]);
+    await recordAssetVersion(client, {
+      projectId: context.project.id, assetType: "sql_definition", assetId: definition.id,
+      snapshot: sqlDefinitionSnapshot(definition), changeSummary, createdBy: context.user.id,
+    });
+    await client.query("COMMIT");
+    return definition;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function dataSourceRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string }; Querystring: { page?: string; pageSize?: string } }>("/api/v1/projects/:id/data-sources", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
@@ -214,17 +271,18 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     if (duplicate.rowCount) return fail(reply, 409, 2003, "a data source with this name already exists");
     try {
       const encrypted = typeof request.body.password === "string" ? encryptSecret(request.body.password) : null;
-      const result = await pool.query(
+      const source = await writeDataSourceWithVersion(context, "创建", (client) => client.query(
         "INSERT INTO data_sources (id, project_id, name, type, config, credentials_encrypted, created_by) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7) RETURNING *",
         [randomUUID(), context.project.id, name, type, JSON.stringify(cleanConfig(request.body.config!, undefined, type)), encrypted, context.user.id],
-      );
+      ));
+      if (!source) return fail(reply, 404, 2001, "data source not found");
       /* P11-9 审计（边界 5/6）：detail 只有字段名，password 的值绝不进。 */
       writeAuditLogAsync({
-        action: AUDIT_ACTIONS.dataSourceCreate, targetType: "data_source", targetId: String(result.rows[0].id),
+        action: AUDIT_ACTIONS.dataSourceCreate, targetType: "data_source", targetId: source.id,
         projectId: context.project.id, userId: context.user.id,
         detail: { fields: auditFields(request.body) }, ip: request.ip,
       });
-      return reply.code(201).send(success(mapDataSource(result.rows[0])));
+      return reply.code(201).send(success(source));
     } catch (error) {
       return fail(reply, 500, 5001, error instanceof Error ? error.message : "data source could not be created");
     }
@@ -259,16 +317,17 @@ export async function dataSourceRoutes(app: FastifyInstance) {
       /* Password patch: absent keeps, string replaces, null clears. */
       const passwordGiven = Object.prototype.hasOwnProperty.call(request.body, "password");
       const encrypted = passwordGiven ? (request.body.password === null ? null : encryptSecret(String(request.body.password))) : existing.rows[0].credentials_encrypted;
-      const result = await pool.query(
+      const source = await writeDataSourceWithVersion(context, "更新", (client) => client.query(
         "UPDATE data_sources SET name = COALESCE($1, name), config = $2::jsonb, credentials_encrypted = $3, updated_by = $6, updated_at = now() WHERE id = $4 AND project_id = $5 RETURNING *",
         [name ?? null, JSON.stringify(config), encrypted, request.params.dataSourceId, context.project.id, context.user.id],
-      );
+      ));
+      if (!source) return fail(reply, 404, 2001, "data source not found");
       writeAuditLogAsync({
         action: AUDIT_ACTIONS.dataSourceUpdate, targetType: "data_source", targetId: request.params.dataSourceId,
         projectId: context.project.id, userId: context.user.id,
         detail: { fields: auditFields(request.body) }, ip: request.ip,
       });
-      return success(mapDataSource(result.rows[0]));
+      return success(source);
     } catch (error) {
       return fail(reply, 500, 5001, error instanceof Error ? error.message : "data source could not be updated");
     }
@@ -351,19 +410,20 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     if (kind !== source) return fail(reply, 400, 1001, `a ${source === "sql" ? "relational" : source} data source holds ${source} definitions, not ${kind}`);
     const duplicate = await pool.query("SELECT 1 FROM sql_definitions WHERE data_source_id = $1 AND lower(name) = lower($2)", [request.params.dataSourceId, request.body.name!.trim()]);
     if (duplicate.rowCount) return fail(reply, 409, 2003, "an SQL definition with this name already exists");
-    const result = await pool.query(
+    const definition = await writeSqlDefinitionWithVersion(context, "创建", (client) => client.query(
       `INSERT INTO sql_definitions (id, project_id, data_source_id, name, description, kind, statement_type, sql, operation, params, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11) RETURNING *`,
       [randomUUID(), context.project.id, request.params.dataSourceId, request.body.name!.trim(), request.body.description?.trim() ?? "", kind,
        kind === "sql" ? request.body.statementType : null, kind === "sql" ? request.body.sql!.trim() : null, kind === "sql" ? null : request.body.operation ?? null, JSON.stringify(request.body.params ?? []),
        context.user.id],
-    );
+    ));
+    if (!definition) return fail(reply, 404, 2001, "SQL definition not found");
     writeAuditLogAsync({
-      action: AUDIT_ACTIONS.sqlDefinitionCreate, targetType: "sql_definition", targetId: String(result.rows[0].id),
+      action: AUDIT_ACTIONS.sqlDefinitionCreate, targetType: "sql_definition", targetId: definition.id,
       projectId: context.project.id, userId: context.user.id,
       detail: { fields: auditFields(request.body) }, ip: request.ip,
     });
-    return reply.code(201).send(success(mapSqlDefinition(result.rows[0])));
+    return reply.code(201).send(success(definition));
   });
 
   app.get<{ Params: { id: string; sqlId: string } }>("/api/v1/projects/:id/sql-definitions/:sqlId", async (request, reply) => {
@@ -408,7 +468,7 @@ export async function dataSourceRoutes(app: FastifyInstance) {
       const duplicate = await pool.query("SELECT 1 FROM sql_definitions WHERE data_source_id = $1 AND lower(name) = lower($2) AND id <> $3", [existing.dataSourceId, name, existing.id]);
       if (duplicate.rowCount) return fail(reply, 409, 2003, "an SQL definition with this name already exists");
     }
-    const result = await pool.query(
+    const definition = await writeSqlDefinitionWithVersion(context, "更新", (client) => client.query(
       `UPDATE sql_definitions SET name = COALESCE($1, name), description = COALESCE($2, description), kind = $3,
         statement_type = CASE WHEN $3 = 'sql' THEN COALESCE($4, statement_type) ELSE NULL END,
         sql = CASE WHEN $3 = 'sql' THEN COALESCE($5, sql) ELSE NULL END,
@@ -417,13 +477,14 @@ export async function dataSourceRoutes(app: FastifyInstance) {
       [name ?? null, request.body.description?.trim() ?? null, nextKind, request.body.statementType ?? null, request.body.sql?.trim() ?? null,
        request.body.operation !== undefined ? JSON.stringify(request.body.operation) : null, JSON.stringify(nextParams), existing.id, context.project.id,
        context.user.id],
-    );
+    ));
+    if (!definition) return fail(reply, 404, 2001, "SQL definition not found");
     writeAuditLogAsync({
       action: AUDIT_ACTIONS.sqlDefinitionUpdate, targetType: "sql_definition", targetId: request.params.sqlId,
       projectId: context.project.id, userId: context.user.id,
       detail: { fields: auditFields(request.body) }, ip: request.ip,
     });
-    return success(mapSqlDefinition(result.rows[0]));
+    return success(definition);
   });
 
   app.delete<{ Params: { id: string; sqlId: string }; Querystring: { force?: string } }>("/api/v1/projects/:id/sql-definitions/:sqlId", async (request, reply) => {

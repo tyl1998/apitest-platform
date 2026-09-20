@@ -163,6 +163,16 @@ export const AUDIT_ACTIONS = {
   specModuleCreate: "spec_module.create",
   specModuleUpdate: "spec_module.update",
   specModuleDelete: "spec_module.delete",
+  /**
+   * P10-2：清理一张已脱离的执行历史分区（计划 14.1）。target = execution_partition，
+   * **targetId 为空**——分区的标识是表名而 `audit_logs.target_id` 是 UUID 列，名字进
+   * detail。detail 带表名、清掉的行数与删掉的对象数：这是平台里少数几个真正不可逆的动作，
+   * 「谁在什么时候清掉了哪一季、多少条」必须留痕。
+   *
+   * 自动归档（DETACH）不在这里：它没有人类触发者、也不删任何东西，事实记在
+   * `execution_partition_archives` 台账上。
+   */
+  executionPartitionDrop: "execution_partition.drop",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

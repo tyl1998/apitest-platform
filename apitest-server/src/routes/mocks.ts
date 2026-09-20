@@ -1,6 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import type { PoolClient } from "pg";
 import { pool } from "../db.js";
+import { mockSnapshot, recordAssetVersion } from "../lib/assetVersions.js";
 import { AUDIT_ACTIONS, auditFields, writeAuditLogAsync } from "../lib/audit.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
@@ -137,6 +139,36 @@ async function autoResponse(projectId: string, endpointId: string | null | undef
   return { statusCode: Number(row.status_code ?? 200), headers: (row.response_headers ?? { "content-type": "application/json" }) as Record<string, string>, body: row.response_body ?? "" };
 }
 
+/**
+ * P10-6：把一次 Mock 写（`... RETURNING *`）与它的版本快照包进一个事务。单条写本不需要
+ * 事务，开事务纯粹是为了让快照与行「一起成功或一起回滚」（计划 14.3 边界）。无行时回滚并回
+ * `undefined`，调用方据此回 404。
+ */
+async function writeMockWithVersion(
+  context: { project: { id: string }; user: { id: string } },
+  changeSummary: string,
+  write: (client: PoolClient) => Promise<{ rows: Record<string, unknown>[]; rowCount: number | null }>,
+): Promise<Mock | undefined> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await write(client);
+    if (!result.rowCount) { await client.query("ROLLBACK"); return undefined; }
+    const mock = mapMock(result.rows[0]);
+    await recordAssetVersion(client, {
+      projectId: context.project.id, assetType: "mock", assetId: mock.id,
+      snapshot: mockSnapshot(mock), changeSummary, createdBy: context.user.id,
+    });
+    await client.query("COMMIT");
+    return mock;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function mockRoutes(app: FastifyInstance) {
   /* The public runtime must forward non-JSON bodies (text, form, multipart)
      byte-for-byte. Fastify only parses application/json by default, so any
@@ -188,17 +220,18 @@ export async function mockRoutes(app: FastifyInstance) {
     const snapshot = body.mode === "auto" ? await autoResponse(context.project.id, body.endpointId, body.executionId) : undefined;
     if (body.mode === "auto" && !snapshot) return fail(reply, 400, 1001, "auto mode needs a selected successful execution");
     const response: MockResponse = snapshot ?? body.response ?? { statusCode: 200, headers: { "content-type": "application/json" }, body: "{}" };
-    const result = await pool.query(
+    const mock = await writeMockWithVersion(context, "创建", (client) => client.query(
       "INSERT INTO mocks (id, project_id, endpoint_id, snapshot_execution_id, name, public_id, mode, enabled, priority, request_match, response, proxy_config, delay_ms, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,$14) RETURNING *",
       [randomUUID(), context.project.id, body.endpointId ?? null, body.mode === "auto" ? body.executionId ?? null : null, body.name!.trim(), randomBytes(18).toString("base64url"), body.mode!, body.enabled ?? true, body.priority ?? 0, JSON.stringify(body.requestMatch ?? {}), JSON.stringify(response), cleanProxyConfig(body.proxyConfig) ? JSON.stringify(cleanProxyConfig(body.proxyConfig)) : null, body.delayMs ?? 0, context.user.id],
-    );
+    ));
+    if (!mock) return fail(reply, 404, 2001, "mock not found");
     /* P11-9 审计（边界 5/6）：detail 只有字段名，响应体（可能含业务数据）绝不进。 */
     writeAuditLogAsync({
-      action: AUDIT_ACTIONS.mockCreate, targetType: "mock", targetId: String(result.rows[0].id),
+      action: AUDIT_ACTIONS.mockCreate, targetType: "mock", targetId: mock.id,
       projectId: context.project.id, userId: context.user.id,
       detail: { fields: auditFields(body) }, ip: request.ip,
     });
-    return reply.code(201).send(success(mapMock(result.rows[0])));
+    return reply.code(201).send(success(mock));
   });
 
   app.get<{ Params: { id: string; mockId: string } }>("/api/v1/projects/:id/mocks/:mockId", async (request, reply) => {
@@ -226,16 +259,17 @@ export async function mockRoutes(app: FastifyInstance) {
       : undefined;
     if (nextMode === "auto" && !snapshot) return fail(reply, 400, 1001, "auto mode needs a selected successful execution");
     const nextResponse = snapshot ?? (nextMode === "auto" ? undefined : body.response);
-    const result = await pool.query(
+    const mock = await writeMockWithVersion(context, "更新", (client) => client.query(
       "UPDATE mocks SET endpoint_id = COALESCE($1, endpoint_id), snapshot_execution_id = CASE WHEN $2 = 'auto' THEN $3::uuid WHEN $2 IS NOT NULL THEN NULL ELSE snapshot_execution_id END, name = COALESCE($4, name), mode = COALESCE($2, mode), enabled = COALESCE($5, enabled), priority = COALESCE($6, priority), request_match = COALESCE($7::jsonb, request_match), response = COALESCE($8::jsonb, response), proxy_config = COALESCE($9::jsonb, proxy_config), delay_ms = COALESCE($10, delay_ms), updated_by = $13, updated_at = now() WHERE id = $11 AND project_id = $12 RETURNING *",
       [body.endpointId ?? null, body.mode ?? null, nextMode === "auto" ? body.executionId ?? null : null, body.name?.trim() ?? null, body.enabled ?? null, body.priority ?? null, body.requestMatch === undefined ? null : JSON.stringify(body.requestMatch), nextResponse === undefined ? null : JSON.stringify(nextResponse), body.proxyConfig === undefined ? null : JSON.stringify(cleanProxyConfig(body.proxyConfig)), body.delayMs ?? null, request.params.mockId, context.project.id, context.user.id],
-    );
+    ));
+    if (!mock) return fail(reply, 404, 2001, "mock not found");
     writeAuditLogAsync({
       action: AUDIT_ACTIONS.mockUpdate, targetType: "mock", targetId: request.params.mockId,
       projectId: context.project.id, userId: context.user.id,
       detail: { fields: auditFields(body) }, ip: request.ip,
     });
-    return success(mapMock(result.rows[0]));
+    return success(mock);
   });
 
   app.delete<{ Params: { id: string; mockId: string } }>("/api/v1/projects/:id/mocks/:mockId", async (request, reply) => {
