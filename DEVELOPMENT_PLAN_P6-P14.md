@@ -39,6 +39,11 @@
 > 2026-09-19 **P10-1 已实现**（迁移 065 落地：`executions.response_body_object_key` +
 > `response_body_storage_driver`、`project_settings.offload_large_response` 默认开；口径
 > 三条拍板与实现要点见 14.1 实现状态，下一步为 P10-2 分区表 066）；
+> 2026-09-20 **P10-2 已实现**（迁移 066：`executions` 转**按季**范围分区，主键改
+> `(id, created_at)`、两条入向外键拆除；归档 = DETACH + 改名保留，自动维护永不 DROP；
+> 对象只在真正 DROP 时同步删除；`EXECUTION_RETENTION_MONTHS` 默认 0 = 归档关闭；新增
+> `GET/DELETE /api/v1/system/execution-partitions`。六条拍板与代价见 14.1 实现状态，
+> 下一步为 P10-4 版本模型 067）；
 > 2026-09-19 **P10-8 已实现**（纯前端、零迁移）：三步铺完——统一载体 `PageToolbar` +
 > 后续「上下两张同宽卡片」形态（上卡固定 head/操作/搜索/筛选，下卡 `list-scroll` /
 > `table-scroll` 卡内滚动、表头吸附），覆盖列表页 / tab 页 / repo 页 / 详情页 / 工作台 /
@@ -3129,7 +3134,8 @@ token 只发 read scope，delete 类工具不进 agent 工具面，被要求删�
 **现状核对（2026-09-18，落码前先钉事实）**
 
 > 以下两条「现状」中，前两条已被 **P10-1（2026-09-19 实现）** 改写，保留原文作为该批次
-> 的提出依据；迁移起号已由 064 → **065**。第 3、4 条仍成立（P10-2 / P10-3 未做）。
+> 的提出依据；迁移起号已由 064 → **065**。第 4 条已被 **P10-2（2026-09-20 实现）** 改写；
+> 第 3 条仍成立（P10-3 未做）。
 
 - **大响应体是硬砍丢弃，不是转存**：`lib/run.ts:311-315` 在 `RESPONSE_LIMIT = 10_000`
   处 `slice`，超出部分直接消失；`executions.response_body` 从未存过完整正文，只留
@@ -3141,7 +3147,7 @@ token 只发 read scope，delete 类工具不进 agent 工具面，被要求删�
 - **没有查询缓存**：ioredis 只用于 BullMQ 队列 / 取消广播 / 告警订阅；唯一缓存是 P8-4
   给 `/stats/*` 的 **30s 进程内存 TTL**，多 API 实例不共享，也不覆盖其它热点读路径。
 - **`executions` 未分区**；最新迁移 **064**，本阶段起号 **065 / 066**（**065 已用于
-  P10-1**，P10-2 起号 066）。
+  P10-1**，P10-2 起号 066）。**（P10-2 已改：`executions` 按季范围分区，066 落地。）**
 
 #### P10-1 大响应体口径变更 + 转存对象存储（迁移 065）★口径变更，先定规则再写码
 
@@ -3195,6 +3201,54 @@ token 只发 read scope，delete 类工具不进 agent 工具面，被要求删�
 - 与 P10-1 联动：归档冷分区时，对象存储里的大响应体必须同生命周期处理（保留 / 转冷 /
   清理），不能只归档行、留下孤儿对象。
 - **读侧口径不变**：`/stats/*`、看板、执行记录列表语义一律不动，只是底层分区裁剪加速。
+
+> **P10-2 实现状态（2026-09-20）**：迁移 **066**（`066_p10_executions_partition.sql`）把
+> `executions` 换成了 **`PARTITION BY RANGE (created_at)`、按季**的分区表，并新增归档台账
+> `execution_partition_archives`。
+>
+> **落码前拍板的六条口径（2026-09-20 用户确认）**：① **按季，不按月**——用户先问「这样分
+> 后面维护容易吗」，核对后改的推荐：分区**不会让列表查询变快**（执行记录列表本来就走
+> `executions_project_created_at_idx`），它换来的只有「批量移除从 DELETE 百万行变成 DETACH
+> 一张表」，所以粒度该对齐归档窗口而非查询模式；按月 12 张/年 vs 按季 4 张/年，多出的 3 倍
+> 关系数换不到额外收益。② **到期分区只 DETACH + 改名 `executions_archived_YYYYqN`，自动维护
+> 永不 DROP**——脱离即读侧不可见（API 只查 `executions`），数据仍在库里，何时真删由人决定。
+> ③ **对象只在表被真正 DROP 的那一刻删**：14.1 的「不能只归档行、留下孤儿对象」在这里的正解
+> 是「同生共死」而不是「归档就删」——DETACH 保留期内行还在，对象就得在。④ **保留窗口走
+> `EXECUTION_RETENTION_MONTHS`，默认 0 = 自动归档整个关闭**（删历史是破坏性动作，不开箱即开）。
+> ⑤ 新增只读出口 `GET /api/v1/system/execution-partitions`（平台管理员）。⑥ 最终清理走
+> **`DELETE /api/v1/system/execution-partitions/:name`**（平台管理员）——因为②+③合起来意味着
+> 自动维护永不删对象，若清理只能靠人在 psql 里 `DROP TABLE`，对象必然变成永久孤儿；这条端点
+> 是**唯一**会同步删对象的通路。
+>
+> **三处不可回避的结构变更**：① 主键 `id` → **`(id, created_at)`**（分区键必须进唯一约束；
+> `id` 放前面保住 16 处按 id 单查的索引前缀），代价是 `id` 的**全局**唯一性不再由约束保证，
+> 改由 UUIDv4 保证。② **两条入向外键拆除**——`execution_steps.http_execution_id` /
+> `mocks.snapshot_execution_id` 无 `created_at`，组不成合法外键；列保留、`ON DELETE SET NULL`
+> 语义消失，降级为「悬垂即证据已消失」（现有读法都是 LEFT JOIN / 取回再查，可降级），
+> **DROP 时由清理例程显式置空**，DETACH 时刻意不置空（脱离可逆）。③ **DEFAULT 兜底分区**：
+> 维护拍停了也绝不能写失败。
+>
+> **唯一的净损失项**：`WHERE id = $1`（worker 认领 / 取消 / 详情 / 下载直链，16 处）无
+> `created_at` 不能裁剪，**逐分区探索引**，成本随分区数单调增长——这也正是不选按月的理由。
+>
+> **实现要点**：`lib/executionArchive.ts` 是运行时那一半（预建当前季 + 两季、到期 DETACH +
+> 改名 + 记台账、列现状、清理）；维护拍挂在既有 scheduler 进程上（6 小时一拍，事务级
+> advisory lock `8_013_501`，多实例安全），不起第四个进程。`ObjectStore` 补 `deleteObject`
+> （fs 吞 ENOENT、s3 天然幂等），清理时**驱动对不上的对象不删**并如实回报 `objectsSkipped`
+> （与 P10-1 下载直链的驱动校验同一判断）。清理顺序是**先删对象 → 再断指针 → 最后 DROP**：
+> 对象存储没有事务，反过来做一旦中途失败，key 会随表一起消失、谁也不知道还剩哪些孤儿。
+> 唯一的静默失败面是**兜底分区滞留行**（维护拍长期停摆时行落进 `executions_default`，既不会
+> 被归档又会挡住该季分区的创建）——维护拍**先查后建**并把这一季报为 `blocked`（事务里报错会
+> 毒化整个事务，`try/catch` 救不了后面几季），状态接口另给一个精确的 `strandedRows`。
+> **读侧零改动**：61 处涉及 `executions` 的 SQL、`mapExecution` 一字未动。
+>
+> **前端（2026-09-20 追加）**：系统管理新增「执行归档」tab（`ExecutionArchivePanel.tsx`，
+> 第 8 个管理员 tab），消费上面两条端点——在役分区表 + 已归档分区表 + 保留期/驱动/兜底滞留
+> 读数，清理按钮走 danger 二次确认并回报 `objectsDeleted` / `objectsSkipped`。
+> **命名撞车的处置**：tab 内的「分区」是存储分区，与「执行器」tab 里的「分区」（P2-8 网段
+> 标签）无关，面板首行与 `ExecutionStoragePartition` 的类型注释都点明了；状态用中性 `.chip`
+> 而非语义色（`--pass/--fail/--skip/--busy` 是运行状态的保留词，见 quiet-console 规则 2）。
+> `droppedBy`（用户 id）**不在界面回显**——裸 uuid 无可读含义，「谁清的」由审计流回答。
 
 #### P10-3 查询缓存补齐（复用 ioredis，零新依赖，无迁移）
 
@@ -3264,6 +3318,40 @@ ioredis 均在）。里程碑挂 M7。
 - **边界**：不引入「评审流 / 审批状态机」（P6 边界 16 已排除）；版本是**内容的序列**，
   不是流程状态。快照写入与资产写入**同事务**，失败整体回滚。
 
+> **P10-4 实现状态（2026-09-20）**：迁移 **067**（`067_p10_asset_versions.sql`）建
+> `asset_versions` 单表——`(id, project_id, asset_type, asset_id, version_no, snapshot JSONB,
+> change_summary, created_by, created_at)`，唯一键 `(asset_type, asset_id, version_no)` +
+> 倒序读索引 `(asset_type, asset_id, version_no DESC)`。**四类资产写路径已接入**：接口
+> （`routes/endpoints.ts` 建/改/复制）、接口用例（`routes/cases.ts` 建/改）、文本用例
+> （`routes/specCases.ts` 建/改）、环境（`routes/environments.ts` 建/改/复制）。
+>
+> **落码前拍板的四条口径（2026-09-20）**：① **保留策略 = 每资产保留最近 N 版**，N 走环境变量
+> `ASSET_VERSION_RETENTION`（默认 **50**，`0` = 不裁剪）；裁剪在落新版的**同一事务**里做，按
+> `version_no` 保留最高的 N 个、删更早的。`version_no` 单调递增、永不复用——裁剪删掉早期版本后
+> 编号不回头，「回滚到第 N 版」的编号永远指向同一份内容。② **`asset_id` 不建外键**：一列指向四张
+> 不同的表，组不成单一外键。只对 `project_id` `ON DELETE CASCADE`（删项目连版本一起消散）；删单个
+> 资产时版本历史留存为孤儿行（版本是「曾经存在过的内容」的证据，与执行历史「谁改的」同一取向，
+> 只随项目删除清理）。③ **归属/时间带在版本行自己身上**：四张源表归属列不齐（`spec_cases` 没
+> `updated_by`，`environments` 连 created_at/updated_at 都没有），故「谁在何时存了这一版」由写路径
+> 写入版本行的 `created_by`（= `context.user.id`，NULL = 系统写入）与 `created_at`，不从源行取。
+> ④ **secret 纪律**：环境快照的 `secrets` **只存键名**（取自 `mapEnvironment.secretKeys`），绝不存值
+> ——diff（P10-5）只显示「某 secret 已变更」，靠比较键集合，不回显明文（与全站脱敏口径 Spec 4.6 一致）。
+>
+> **实现要点**：`lib/assetVersions.ts` 是写侧半边——`recordAssetVersion(client, ...)` 只接
+> `PoolClient`（**不自己 connect / BEGIN**，进调用方已开好的事务，保证「快照与资产行一起成功或一起
+> 回滚」计划 14.3 边界），取 `MAX(version_no)+1`、插入、按 `RETENTION` 裁剪；四个快照构造器
+> （`endpointSnapshot` / `testCaseSnapshot` / `specCaseSnapshot` / `environmentSnapshot`）都从
+> `map*()` 出参（camelCase、已脱敏）取字段，天然避开 `created_by_email` / `updated_at` 这类派生/
+> 会话性字段（不是「内容」，进快照只会让相邻两版看起来改过其实没改）。`change_summary` 只记动作
+> 标签（`创建` / `更新` / `复制`）；改动内容的 diff 由 **P10-5** 服务端算，不落这张表。**写路径事务化改造**：
+> `cases.ts` 建/改本就有事务，只在 COMMIT 前加一句 `recordAssetVersion`；`endpoints.ts` /
+> `environments.ts` / `specCases.ts` 的单条写原是 `pool.query`，各自包了一个 `withVersion` 事务壳
+> （`writeEndpointWithVersion` / `writeEnvironmentWithVersion` / `writeSpecCaseWithVersion`，无行即
+> ROLLBACK 回 `undefined`→404）。spec case 建的取号重试循环改为**每次尝试一个独立事务**：撞号
+> （23505）后 ROLLBACK 再重取号，否则事务中毒无法在同连接续跑。②**未接入 bulk 路径**（import /
+> batch-update）——本批只覆盖单条人工写；导入/批改的资产在首次手工保存前无版本行（可后排补）。
+> **读侧（版本列表 / diff / 回滚）是 P10-5，本批不含**。
+
 #### P10-5 读侧：版本列表 + 改动内容展示（diff）+ 回滚（零新迁移）
 
 - 后端：`GET .../versions`（版本列表）+ `GET .../versions/:a/diff/:b`（默认相邻两版），
@@ -3274,16 +3362,108 @@ ioredis 均在）。里程碑挂 M7。
   的不可逆动作确认语义（对齐 `delete` 的 MRTR / 二次确认）。
 - **边界**：diff 只读，不改内容；回滚不改变「历史不可变」这一条。
 
-#### P10-6 执行结果回放（提案，边界待用户确认）
+> **P10-5 实现状态 + 入口决策（2026-09-20）**：
+>
+> **读侧已实现**（`routes/assetVersions.ts`，零新迁移，统一一条路由覆盖四类资产，`:assetType`
+> 枚举 + `:assetId` 源表归属校验——版本模型本就是一张表，读侧不再拆四份）：
+> - `GET .../assets/:assetType/:assetId/versions`：倒序版本列表，带「谁在何时存的」
+>   （`created_by_email` 由读侧 JOIN users 带出）与每版 snapshot；
+> - `GET .../assets/:assetType/:assetId/versions/diff`：默认相邻两版（最新 vs 次新）；
+> - `GET .../assets/:assetType/:assetId/versions/:a/diff/:b`：任意两版 diff；
+> - `POST .../assets/:assetType/:assetId/versions/:versionNo/rollback`：把该版快照写回资产 →
+>   再产一个新版本（`changeSummary` 记「回滚至 vN」，不删历史），走二次确认；环境回滚不复原
+>   secret 值（快照只有键名），响应 `secretsPreserved` 明示。
+>
+> **diff 由服务端算**（`lib/assetDiff.ts`）：逐顶层字段比对 → 深相等跳过的跳过；一边缺 =
+> 新增/删除；两边都有且不等 = 修改。任一差异都产一份**逐行 LCS diff**（字符串用原文、结构化
+> 值用缩进 JSON 规范串），前端只上色。环境 `secretKeys` 是键名数组，diff 天然只显示「哪个键名
+> 增/删」，永不回显明文（Spec 4.6）。★ 硬验收项（改成什么可见）由此满足。
+>
+> **回滚写回**（`lib/assetVersions.ts` 的 `restore*` + `restoreAssetSnapshot`）：复用写侧同
+> 一条事务纪律（只接 PoolClient，快照与写回一起成功或一起回滚）。三条跨时间边界自己扛：引用
+> 失效落 NULL（接口/用例的失效默认环境）、唯一冲突抛 409（环境旧名被占）、secret 列不动。
+>
+> **入口决策（用户拍板，2026-09-20）**：对这四类有版本历史的资产，**版本历史是资源里唯一的
+> 「历史」入口**——变更历史（审计那套：动作码 / 字段名 / IP）对普通用户不可读，且版本历史已
+> 带「谁/何时/动作」。故这四类 UI 用「版本历史」按钮替换原「变更历史」，变更历史只留在项目级
+> 审计页。审计本身是给管理员排查用的，不是资源详情的历史（建议作为独立方向再审 UI 可读性）。
+>
+> **前端收口（2026-09-20，四类全接完）**：通用组件 `VersionHistoryDrawer.tsx`（列表 + diff
+> 上色 + 回滚二次确认，viewer 可看、回滚按写权限渲染，环境 secret 只显键名）。四处入口：
+> ① 环境 `Environments.tsx`（抽屉 `extra` 按钮，`assetType="environment"`）——早前已接，本轮
+> 修掉重命名漏改的 `setChangeHistoryOpen`→`setVersionHistoryOpen`（`onClose` 崩溃）；
+> ② 接口 + 接口用例 `EndpointWorkspace.tsx`——**移除旧 `ChangeHistoryDrawer`**，改挂
+> `VersionHistoryDrawer`，`assetType` 随屏上编辑对象在 `endpoint` / `test_case` 间切，回滚后
+> `reloadAfterRollback` 重拉接口草稿或当前用例；③ 文本用例 `SpecCases.tsx` 的 `SpecCaseDrawer`
+> ——新增 `extra` 版本历史按钮（`assetType="spec_case"`，仅已存在用例），回滚后重拉详情并推
+> 列表 revision。旧 `ChangeHistoryDrawer` 现只剩 `AuditLogsPanel` 项目级审计页在用。
+>
+> **后续项（新窗口解决，超出本批范围）**：Mock / 脚本 / 流程 / 套件 / 数据源 / SQL 定义 /
+> 调度 / Webhook / 通知渠道 / 告警规则等资源**没有版本历史**（它们不在 P10-4 的
+> `asset_versions` 写路径范围，只有审计变更历史）。用户要求这些资源**也要做版本历史**——
+> 先扩 P10-4 写路径（为这些资源逐一接 `recordAssetVersion` 快照钩子），再做与 P10-5 同款读侧。
+> 当前它们保留现有「变更历史」入口，不属本批改动。
 
-- **现状限制**：`run_spec` 已清空，只能基于 `executions.request_snapshot` 重放；默认
-  脱敏 → secret 字段需从**当前环境**重新解析，即回放**不保证复现当次密文与结果**。
-- **两种解释需二选一**：(a) **实时重跑**历史请求快照（结果可能不同，须明确用当前环境
-  还是历史环境）；(b) **纯回看**已有证据（不重跑，只做结果可视化）。**建议先做 (b)**。
-- 若要真正的「复现」，须在本批新增一份**回放专用快照**（插值前定义 + 环境变量*引用*，
-  不含明文），**不能依赖已清空的 `run_spec`**。
+#### P10-6 版本历史扩面 + 变更历史下线（2026-09-20 重定义）
 
-**批次顺序**：067 → 读侧（P10-5）→ 回放（P10-6，待边界确认）。**依赖零新增**，里程碑挂 M7。
+> **原「执行结果回放」提案已删除**（2026-09-20 用户拍板）：`run_spec` 已清空，回放要么只做
+> 纯回看（价值低、执行详情页已能看证据），要么得新增一份回放专用快照才能复现——投入与收益
+> 不匹配，用户判定「没什么大作用」，整项砍除，不再占里程碑。
+
+**本批两件事**（承接 P10-5 的入口决策：版本历史是资源详情里唯一的「历史」入口）：
+
+**① 版本历史扩面到 6 类用户编写型资源**（+ SQL 定义随数据源）——Mock / 脚本 / 流程 /
+套件 / 数据源（含其 SQL 定义）/ 仓库任务。这些和接口/用例同属「用户编写、值得看改了什么
++ 回滚」的内容资产。做法完全复用 P10-4/P10-5 已铺好的地基（一张 `asset_versions` 表、
+服务端通用 diff `lib/assetDiff.ts`、通用读侧路由 `routes/assetVersions.ts`、通用回滚分派
+`restoreAssetSnapshot`、前端通用 `VersionHistoryDrawer`），**每类只是重复同一套接线**：
+> - **迁移**：一条新迁移把 `asset_versions.asset_type` 的 CHECK 扩出 7 个新枚举值
+>   （`mock` / `script` / `flow` / `test_suite` / `data_source` / `sql_definition` / `ci_task`），
+>   forward-only，不动表结构。
+> - **`AssetVersionType` 联合**（models/types.ts）+ 每类一个 `*Snapshot` 构造器（从现成
+>   `mapMock` / `mapScript` / `mapFlow` / `mapTestSuite` / `mapDataSource` / `mapSqlDefinition` /
+>   `mapCiTask` 出参取，天然脱敏）+ 每类一个 `restore*` + `restoreAssetSnapshot` 加 case。
+> - **写路径事务化**：各资源的建/改包进事务后 COMMIT 前调 `recordAssetVersion`（`scripts` /
+>   `flows` / `ci_tasks(删)` / `suites(删)` 已有事务壳，`mocks` / `suites(写)` / `dataSources` /
+>   `sql_definitions` / `ci_tasks(写)` 需补事务壳，与 P10-4 的 `writeXWithVersion` 同款）。
+> - **读侧路由**：`routes/assetVersions.ts` 的 `:assetType` 校验与 `:assetId` 源表归属校验
+>   各扩 7 类（各自的源表 + project 归属）。
+> - **前端**：`AssetVersionType` 加 7 类；在 MockList / PublicScripts / FlowWorkspace /
+>   SuiteWorkspace / DataSourceDetail（data_source + sql_definition）/ CiTaskEditor 各挂一个
+>   `VersionHistoryDrawer` + 回滚后重拉，替换原 `ChangeHistoryDrawer`。
+>
+> **三处 per-resource 皱褶**（其余都是纯机械接线）：`scripts` 有 `script_deps` 子表，回滚要
+> 连依赖一起写回；`data_source` 的 `credentials_encrypted` 是密文，快照绝不含（`mapDataSource`
+> 只出 `passwordConfigured` 布尔，回滚不动该列，与环境 secret 同纪律）；`flow` 快照是整张
+> 节点图、体积偏大，但每资产版本数由 `ASSET_VERSION_RETENTION`（默认 50）封顶、可裁剪。
+>
+> **成本判断（2026-09-20，用户委托计算后拍板「全做」）**：地基已成型，边际成本是**中等且
+> 机械**（非高风险）。运行期开销可忽略——每次保存在既有事务里多一条 `MAX+1` 查询 + 一条
+> INSERT + 一条裁剪 DELETE；存储被 retention 封顶。故按推荐**全做**，不走「只删不建」的回退。
+
+**② 变更历史（ChangeHistoryDrawer）资源详情入口全下线**——审计日志已能回答「谁在何时触发」，
+资源详情不再各挂一个变更历史抽屉。**移除全部 10 处 per-resource 入口**：group-1 的 7 处
+（mock / script / flow / test_suite / data_source / sql_definition / ci_task，被版本历史取代）
++ group-2 的 3 处（`schedule` / `notification_channel` / `alert_rule`，直接去掉，不接版本历史
+——调度 / 通知渠道 / 告警规则不属「用户编写内容资产」，回看审计即可）。**保留**项目级审计页
+（`AuditLogsPanel` 本体）给管理员排查；`ChangeHistoryDrawer` 组件在所有 per-resource 入口摘除
+后可一并删除。
+
+**批次顺序**：068（扩 CHECK 枚举）→ 后端写路径 + 读侧 + 回滚逐类接 → 前端逐资源接线 + 摘
+变更历史入口。**依赖**：P10-4/P10-5（地基）。里程碑挂 M7。
+
+> **实现状态（2026-09-20，已实现）**：
+> - **迁移**：`068_p10_asset_versions_expand.sql` 把 `asset_versions.asset_type` 的 CHECK 扩到 11 类。
+> - **后端**：`lib/assetVersions.ts` 补齐 7 类 `*Snapshot` 构造器与 `restoreAssetSnapshot` 分派
+>   （脚本连 `script_deps` 一起写回；`data_source` 快照只出 `passwordConfigured`、回滚不动密文列）；
+>   各资源写路径在事务里调 `recordAssetVersion`；`routes/assetVersions.ts` 的 `:assetType`/`:assetId`
+>   校验扩 7 类。
+> - **前端**：`AssetVersionType` 扩 11 类；`VersionHistoryDrawer` 挂到 MockList / PublicScripts /
+>   FlowWorkspace / SuiteWorkspace / DataSourceDetail（`data_source` + `sql_definition`）/ CiTaskEditor，
+>   回滚后各自重拉（SQL 定义只重拉当前一条、抽屉保持打开）。**变更历史入口 10 处全下线**：group-1
+>   的 6 处（mock/script/flow/test_suite/data_source/sql_definition）改挂版本历史、ci_task 新挂版本历史；
+>   group-2 的 3 处（schedule/notification_channel/alert_rule）直接摘除，回看项目级审计页。
+>   `ChangeHistoryDrawer` 组件与其专属 i18n（`audit.history*` / `audit.fields`）一并删除。
 
 ### 14.4 实施顺序（2026-09-18 用户确认）
 
@@ -3298,18 +3478,19 @@ ioredis 均在）。里程碑挂 M7。
    依赖，理论可并行；但两条线都要动 schema，按原则 2 排成先后，不并行开两张迁移。
 4. **零迁移批次并行收口**：P10-3（缓存）与 P10-5（diff 读侧）无迁移，可并行推进；缓存的
    失效策略要知道写路径最终形状，故排在 P10-1/P10-2 之后。
-5. **回放最后**：P10-6 依赖 P10-1（大响应体对象化）与边界拍板（(a) 重跑 / (b) 回看）。
+5. **P10-6 重定义为版本历史扩面 + 变更历史下线**（2026-09-20）：原「执行结果回放」已砍除。
+   依赖 P10-4/P10-5 地基，独占一条 CHECK 扩枚举迁移（068）。
 
 **执行序列**
 
 | 序 | 批次 | 迁移 | 前置 | 说明 |
 | --- | --- | --- | --- | --- |
 | 1 | **P10-1** 大响应体口径变更 + 转存对象存储 | 065 | — | 风险最高、口径变更，最先做、最先暴露问题 —— **已实现**（2026-09-19，见 14.1 实现状态） |
-| 2 | **P10-2** 执行历史归档（分区表） | 066 | P10-1 | 对象生命周期必须先由 P10-1 定义 |
-| 3 | **P10-4** 统一版本模型 + 资产接入 | 067 | —（与性能线解耦） | 承接 065/066 之后，独占本迁移号 |
-| 4 | **P10-5** 版本列表 + diff 展示 + 回滚 | 无 | P10-4 | ★diff 改动内容是硬验收项 |
+| 2 | **P10-2** 执行历史归档（分区表） | 066 | P10-1 | 对象生命周期必须先由 P10-1 定义 —— **已实现**（2026-09-20，按季分区；见 14.1 实现状态） |
+| 3 | **P10-4** 统一版本模型 + 资产接入 | 067 | —（与性能线解耦） | 承接 065/066 之后，独占本迁移号 —— **已实现**（2026-09-20，见 14.3 实现状态） |
+| 4 | **P10-5** 版本列表 + diff 展示 + 回滚 | 无 | P10-4 | ★diff 改动内容是硬验收项 —— **已实现**（2026-09-20，四类入口全接完；见 14.3 实现状态） |
 | 5 | **P10-3** 查询缓存补齐 | 无 | P10-1 / P10-2 收口后 | 失效策略依赖写路径最终形状；可与 4 并行 |
-| 6 | **P10-6** 执行结果回放 | 待定 | P10-1 + 边界确认 | (a)/(b) 二选一后再排期 |
+| 6 | **P10-6** 版本历史扩面（6 类资源 + SQL 定义）+ 变更历史下线 | 068（扩 CHECK 枚举） | P10-4 / P10-5 | 原「执行结果回放」已删除（2026-09-20）；见 14.3 的 P10-6 小节 —— **已实现**（2026-09-20，后端 11 类快照/回滚 + 前端 7 类接线，`ChangeHistoryDrawer` 及其 i18n 全下线；见 14.3 的 P10-6 小节） |
 | 7 | **P10-7** 前端列表首屏闪空态修复 **[x] 已实现 2026-09-19** | 无 | —（零迁移、纯前端） | 见 14.5「实现状态」 |
 | 8 | **P10-8** 顶层操作区不随内容滚动 **[x] 已实现 2026-09-19** | 无 | P10-7（`ui.tsx` 与列表页重叠） | 改动面大、分三步；见 14.6 |
 
