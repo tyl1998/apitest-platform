@@ -12,6 +12,7 @@ apitest-runner/
 .dev-certs/
 .playwright-mcp/
 .vscode/
+.workbuddy/
 # 含 MCP Token 明文，不入库
 kilo.json
 

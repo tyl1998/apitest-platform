@@ -3759,7 +3759,7 @@ ioredis 均在）。里程碑挂 M7。
     （成员表与「最近审计」表同卡两张 `.table-scroll` 抢 `flex:1`，改为整块 `list-scroll`）。
   - **已知待办**：`IngestUnmatched` 的末尾「判定规则」面板与主表同卡（主表 `table-scroll`
     占 `flex:1`，面板作静态页脚，展开较高时会被裁）；过高 `filter-bar` 在小屏仍占较多高度
-    （限高留待后续）。
+    （限高留待后续，小屏的「装不下」已由本节末的小屏兜底解决）。
 
 - **剩余页面收口（2026-09-19 续做）**：
   - **详情页转卡片**（`content-split` + 上卡 head/读数 + 下卡 `list-scroll`）：`TestPlanPage`
@@ -3799,6 +3799,22 @@ ioredis 均在）。里程碑挂 M7。
 - **[x] 第三步（碰撞收口，已实现 2026-09-19）**：`top` 与写死 `calc(100dvh - N)` 已在卡片化页面按卡高重算
   （见上）；`≤560px` 卡片内距降级已加。**残留小尾（不阻塞本阶段）**：过高 `filter-bar` 限高、
   `.flow-canvas` 族若日后进卡片模型需再算。
+
+- **[x] 小屏兜底补做（2026-09-21，纯 CSS，用户实测后补）**：卡片模型的隐性前提是「高度
+  充裕」——矮视口/窄屏下工具卡换行变高会把下卡压扁。补三件事：① `.content-split` 装不下时
+  自己滚（滚动仍落在规则 5 的 `.content` 上，不再 `overflow: hidden` 裁掉工具卡下缘）；
+  ② `.list-card` 保底 `min-height: 240px`，不再被 flex 压成一条缝；③ **≤560px 走「紧凑档」
+  而不是退回整页滚动**（用户定案 2026-09-21：卡片模型保留——工具卡常驻、列表卡吃到视口底，
+  即本节决策点 1 的「小屏降级」按「收工具卡」而非「让操作区滚走」落地）：标题与操作合并
+  一行（原先纵向堆叠要 100px 上下）、描述收成一行截断、标题 19→17px / 描述 13→12px、
+  壳与两卡内距各收一档；表格正文 13px / 表头 11px / mono 不动。整页滚动降级只留
+  **极端矮视口**（`max-height: 460px`，横屏手机 / 桌面矮窗口）。全局层 `.page-card`
+  同根因同修（`overflow-y: auto` + 正文保底高度，极端矮视口 `height: auto` 交回 `.content` 滚）。
+  ④ **窄/矮窗口的横向收口（同日第二轮，用户截图复核后补）**：行操作列改 `position: sticky;
+  right: 0`（超宽表横向溢出时操作列钉在容器右缘，「看不到操作按钮」不再依赖横滑）；
+  `≤1100px` 收掉创建人/更新人两列（共 296px，详情与审计可查），把宽度还给名称与操作列；
+  紧凑档触发改为 `max-width: 560px` **或** `max-height: 620px`（1000×490 这类半屏窗口同样生效）。
+  缺陷本身的过程记录见 `issue_fix/` 的 P10-8 小屏记录；`filter-bar` 限高仍未做。
 
 ---
 
@@ -4842,8 +4858,8 @@ POST /access-requests/:id/reject     # project_admin：拒绝只记状态（hand
 
 | 步 | 内容 | 产出 | 状态 |
 | --- | --- | --- | --- |
-| P14-1 | 可见性两层 + 无权限落地页（`queryProjectList` 拆层 + 身份级端点 + 前端列表/落地页；**零迁移**，落地页先上「找管理员」降级态） | 发现层可用：看得到、进不去有落地页 | |
-| P14-2 | 审批流（迁移 063 + `access_requests` REST + inbox 定向投递 + 前端申请入口/审批 tab/我的申请） | 自助申请闭环 | |
+| P14-1 | 可见性两层 + 无权限落地页（`queryProjectList` 拆层 + 身份级端点 + 前端列表/落地页；**零迁移**，落地页先上「找管理员」降级态） | 发现层可用：看得到、进不去有落地页 | **已实现**（2026-09-21）：`queryProjectList` 去成员过滤 + 每行 `is_member`，非成员行指标置 null；新 `GET /projects/:id/identity`（登录即读，回身份 + project_admin 姓名/邮箱线索）；前端 `ProjectShell` 身份闸 + 无权限落地页、目录页非成员卡仅「查看」、切换器只列成员项目；管理员线索粒度取姓名 + 邮箱，切换器不列非成员项目 |
+| P14-2 | 审批流（迁移 063 + `access_requests` REST + inbox 定向投递 + 前端申请入口/审批 tab/我的申请） | 自助申请闭环 | **已实现**（2026-09-21）：迁移落 **069**（编号顺延——063 已被 P12 占用，实施时最新空位是 069）；`access_requests` 表（partial unique index 保单 pending + 项目/用户级双索引）+ notifications kind 扩 `access_request`（DROP/ADD `notifications_kind_check`，六值全集）；新 `routes/accessRequests.ts` 五条 REST（提交走 `currentUser` 非 `requireProjectAccess`——非成员正是要用这口子；approve/reject 无项目前缀，自读申请行拿 project_id 再 `myRoleInProject` 把关；带条件 UPDATE 原子消费 pending，并发第二个批准者 409）；批准 = 既有成员 upsert（`granted_by` = 审批人、`member.upsert` 审计 detail.via='access_request'、`member_change` 通知照旧，边界 3）；`lib/inbox.ts` 加 `deliverInboxToRole`（project_admin 定向投递，边界 5），拒绝审计新动作 `access_request.reject`；前端：无权限落地页接申请入口（可带建议角色 + pending/被拒状态条）、成员页拆「成员/权限申请」两 tab（`?tab=requests` 深链，仅 project_admin）、个人中心加「我的申请」tab；i18n 双区。角色建议可空（边界 7，管理员批准时改定）；被拒可再申请（边界 6，不限流） |
 
 ### 20.2 里程碑
 
