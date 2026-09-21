@@ -121,7 +121,9 @@ start_one worker    "$SERVER" env WORKER_LABELS=default pnpm worker
 # 调度器（P3-4）：第三个进程。cron 认领/漏跑判定/告警派发都在它里面；多实例安全但
 # 推荐单实例。改后端调度逻辑后 ./start.sh --restart scheduler 即可单独回收它。
 start_one scheduler "$SERVER" pnpm scheduler
-start_one web       "$WEB" pnpm dev -- --host 0.0.0.0 --port 5173
+# 直接 exec vite：`pnpm dev -- --host ...` 会把字面 `--` 也透传给 vite(cac)，`--` 之后
+# 的 --host 不被解析，vite 只绑 localhost(::1)，局域网访问不到。同 start.ps1。
+start_one web       "$WEB" pnpm exec vite --host 0.0.0.0 --port 5173
 
 # 执行分区（P2-8）：上面这个 worker 只服务 default 分区（本机所在网段）。指向别的网段的
 # 环境需要在**那个网段的机器上**另起一个 worker，本脚本不自动拉起 —— 那台机器不在本地：
