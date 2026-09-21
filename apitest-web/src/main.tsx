@@ -43,6 +43,7 @@ import { ProjectAuditPage } from "./components/AuditLogsPanel";
 import { SpecCases } from "./components/SpecCases";
 import { TestPlans, TestPlanPage } from "./components/TestPlans";
 import { AssistantDock } from "./components/AssistantDock";
+import { DocsPage } from "./components/DocsPage";
 import { antdTheme, useMode } from "./theme";
 import { useAuthStore } from "./stores/authStore";
 import { useLimitsStore } from "./stores/limitsStore";
@@ -122,6 +123,11 @@ function Root() {
     <Route element={<Protected />}>
       <Route path="/change-password" element={<ChangePassword />} />
 
+      {/* P13-3：应用内功能说明文档。头像旁入口 `_blank` 打开——独立轻壳，不挂
+          DockedShell（无站内助手），也在 PasswordGate 之外（只读文档不受改密闸限制，
+          且新标签打开时不该被弹去改密页）。登录仍是前提（在 Protected 内）。 */}
+      <Route path="/docs" element={<DocsPage />} />
+
       <Route element={<PasswordGate />}>
         {/* 受保护层共用壳（2026-09-16）：全局页与项目层都在壳内——站内助手圆钮
             全局常驻（对话用户级化，见 DockedShell 注释）。 */}
@@ -129,11 +135,10 @@ function Root() {
         <Route path="/dashboard" element={<GlobalApp page="dashboard" themePreference={preference} onThemeChange={setPreference} />} />
         <Route path="/projects" element={<GlobalApp page="projects" themePreference={preference} onThemeChange={setPreference} />} />
         <Route path="/system" element={<GlobalApp page="system" themePreference={preference} onThemeChange={setPreference} />} />
-        {/* P12-2：个人中心（全局层 `/me`，四个 tab）。通知整页迁为其 `/me/notifications`
-            tab；旧 `/notifications` 路由删除——未发布无包袱，不留兼容跳转。`/me/:tab`
-            覆盖 notifications / mcp / credentials（未知段由 MePage 回落基本信息）。 */}
-        <Route path="/me" element={<GlobalApp page="me" themePreference={preference} onThemeChange={setPreference} />} />
-        <Route path="/me/:tab" element={<GlobalApp page="me" themePreference={preference} onThemeChange={setPreference} />} />
+        {/* P13-1：个人中心不再有独立路由——原 `/me` / `/me/:tab` 五-tab 页整体并入
+            站内助手抽屉的 me 视图（基本信息 / 通知 / 我的申请 / MCP Token / agent
+            凭据），入口在助手头像旁的「个人中心」钮与铃铛。旧 `/me...` 链接不再存在，
+            `*` 兜底重定向到 /dashboard，不留死路由。 */}
 
       {/* One shell for the whole project layer, so child navigation never rebuilds it. */}
       <Route path="/projects/:projectId" element={<ProjectShell />}>

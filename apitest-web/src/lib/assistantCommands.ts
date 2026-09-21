@@ -16,8 +16,9 @@ export type LanguageValue = "zh-CN" | "en";
 
 /** `/打开` 的目标页：labelKey 走 i18n（导航同名键；Mock/MCP 导航本身就是字面量，
  *  没有 i18n 键，用 label 直给），别名中英双语都收——切了语言也能用旧语言唤出
- *  页面。global = 全局层路由（不含项目段）。`path` 只在目标路由与 key 不同时写
- *  （P12-2 起通知挂在个人中心的 tab 上：`/me/notifications`）。 */
+ *  页面。global = 全局层路由（不含项目段）。`path` 只在目标路由与 key 不同时写。
+ *  P13-1 起个人中心（`me`）与通知（`notifications`）不再是路由——`/打开` 命中这两个
+ *  key 时由 AssistantDock 就地切抽屉的 me 视图分区，不走导航（见 runLocalCommand）。 */
 export type CommandPage = {
   key: string;
   /** 全局层目标路由；缺省 = `/${key}`。 */
@@ -48,8 +49,10 @@ export const COMMAND_PAGES: CommandPage[] = [
   { key: "dashboard", global: true, labelKey: "nav.dashboard", aliases: ["看板", "数据看板", "dashboard"] },
   { key: "projects", global: true, labelKey: "nav.projects", aliases: ["项目", "项目管理", "projects"] },
   { key: "system", global: true, labelKey: "nav.system", aliases: ["系统", "系统管理", "system"] },
+  /* P13-1：me / notifications 不再有路由（并入抽屉 me 视图），global 仅表「全局层
+     可用」——命中后 AssistantDock 就地切分区，不拼 path。 */
   { key: "me", global: true, labelKey: "me.title", aliases: ["个人中心", "我的", "账号", "me", "profile", "account"] },
-  { key: "notifications", path: "me/notifications", global: true, labelKey: "notifications.title", aliases: ["通知", "通知中心", "notifications"] },
+  { key: "notifications", global: true, labelKey: "notifications.title", aliases: ["通知", "通知中心", "notifications"] },
 ];
 
 /** 指令名（中英双语）。解析按前缀：`/主` 命中 主题；`/p` 同时是 project/password

@@ -1700,6 +1700,129 @@ pre.code { max-height: 340px; }
 }
 .share-topbar .muted { font-size: 12px; }
 
+/*
+ * 功能说明文档（P13-3）：与分享页同族的轻壳——外壳占满视口、只有正文列滚动。
+ * 顶栏 + 左目录 + 右正文的双栏读法；目录固定不滚，正文列独立滚动并做 scroll-spy。
+ */
+.docs-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg);
+}
+.docs-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s3) var(--s6);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.docs-topbar .lockup { text-decoration: none; color: inherit; }
+.docs-topbar-title { font-size: 12px; color: var(--ink-3); }
+
+/* 双栏：目录列固定宽、正文列吃满剩余并独立滚。min-height:0 让内层滚动生效
+   （flex 子项默认 min-height:auto，不压会把整壳撑出视口）。 */
+.docs-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.docs-toc {
+  flex: 0 0 auto;
+  width: 240px;
+  padding: var(--s5) var(--s3) var(--s5) var(--s6);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+  background: var(--surface);
+}
+.docs-toc-head {
+  margin: 0 0 var(--s2);
+  padding: 0 var(--s2);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.docs-toc ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.docs-toc-link {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 5px var(--s2);
+  border: none;
+  border-left: 2px solid transparent;
+  background: none;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  transition: color var(--t), background var(--t), border-color var(--t);
+}
+.docs-toc-link:hover { color: var(--ink); background: var(--raised); }
+/* 当前章节：accent 左缘 + 加重文字（active 指示是交互态，强调色用在这里合规）。 */
+.docs-toc-link.is-active { color: var(--accent); border-left-color: var(--accent); font-weight: 600; }
+
+.docs-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--s6);
+}
+/* 阅读测量宽：正文不铺满宽屏（长行难读），但外壳仍是满幅（左目录贴边）。 */
+.docs-measure { max-width: var(--measure); }
+.docs-doc-title { margin: 0 0 var(--s1); font-size: 22px; font-weight: 600; letter-spacing: -.01em; }
+.docs-tagline { margin: 0 0 var(--s6); color: var(--ink-3); font-size: 14px; line-height: 1.6; }
+/* scroll-margin-top 让锚点跳转后标题不贴顶（留出上边距，读着不憋）。 */
+.docs-section { margin-bottom: var(--s7); scroll-margin-top: var(--s5); }
+.docs-section-title {
+  margin: 0 0 var(--s3);
+  padding-bottom: var(--s2);
+  border-bottom: 1px solid var(--line);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+
+/* 正文 markdown：与助手气泡同一套渲染纪律，但读物尺寸放大（气泡是 13px，文档是
+   14px 且行距更松）；机器数据 / 代码走 mono + raised，颜色归语义不引高亮色。 */
+.docs-md { font-size: 14px; line-height: 1.7; color: var(--ink); }
+.docs-md > :first-child { margin-top: 0; }
+.docs-md > :last-child { margin-bottom: 0; }
+.docs-md p { margin: 0 0 var(--s3); }
+.docs-md h3, .docs-md h4, .docs-md h5, .docs-md h6 { margin: var(--s4) 0 var(--s2); font-size: 14px; font-weight: 600; line-height: 1.4; }
+.docs-md ul, .docs-md ol { margin: 0 0 var(--s3); padding-left: var(--s5); display: flex; flex-direction: column; gap: 4px; }
+.docs-md li > p { margin: 0; }
+.docs-md code { font-family: var(--mono); font-size: 12.5px; background: var(--raised); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 0 4px; }
+.docs-md pre { margin: 0 0 var(--s3); padding: var(--s2) var(--s3); background: var(--raised); border: 1px solid var(--line); border-radius: var(--r); overflow-x: auto; }
+.docs-md pre code { background: none; border: none; padding: 0; }
+.docs-md a { color: var(--accent); text-decoration: underline; }
+.docs-md strong { font-weight: 600; }
+.docs-md blockquote { margin: 0 0 var(--s3); padding: 2px var(--s3); border-left: 2px solid var(--line-strong); color: var(--ink-2); }
+
+/* 窄屏（<760px）：目录折到正文之上，成横向可滚条；正文列不再与之并排。 */
+@media (max-width: 760px) {
+  .docs-body { flex-direction: column; }
+  .docs-toc {
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    padding: var(--s2) var(--s4);
+    overflow-x: auto;
+  }
+  .docs-toc-head { display: none; }
+  .docs-toc ul { flex-direction: row; gap: var(--s1); flex-wrap: nowrap; }
+  .docs-toc-link { white-space: nowrap; border-left: none; border-bottom: 2px solid transparent; border-radius: 0; }
+  .docs-toc-link.is-active { border-left: none; border-bottom-color: var(--accent); }
+  .docs-content { padding: var(--s4); }
+}
+
 /* 分享控件（报告详情页顶栏）：链接框占满剩余宽度，动作按钮不换行。 */
 .share-controls {
   display: flex;
@@ -4759,31 +4882,33 @@ button.step-row:hover { background: var(--hover); }
 .me-password-form .field { margin-bottom: 0; }
 .me-password-form .btn { justify-self: start; }
 
-/* 我的 Token：一把 Token 一块（身份行 + 绑定表），而不是「Token 表里塞一张绑定表」的
-   嵌套表格——两层信息各自成表，扫读时不会混行。 */
-.me-token-list { display: grid; gap: var(--s5); }
-.me-token { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; min-width: 0; }
-.me-token-head {
+/* 助手抽屉里的个人中心外壳（P13-1；2026-09-21 用户反馈）：返回键、tab 条与正文三层
+   纵向排，**只有正文本体滚动**——顶部两行是「我在哪、能去哪」的定位与切换控件，
+   长内容（MCP Token 两张表）滚到底也不该把它们带走。宽度不再吃设置卡的 640 上限：
+   Token / 绑定是按列读的表格，窄了要横向扫。 */
+.assistant-me {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--s2) var(--s4);
-  padding: var(--s3) var(--s4);
-  border-bottom: 1px solid var(--line);
-  background: var(--raised);
+  flex-direction: column;
+  width: 100%;
+  max-width: 960px;
+  align-self: center;
+  background: var(--surface);
 }
-.me-token-identity { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: var(--s2); }
-.me-token-identity strong { font-size: 13px; }
-/* 时间与动作排在右侧；动作永远贴着右缘（与表格的 col-actions 同款落点）。 */
-.me-token-head .row-actions { margin-left: auto; }
-/* 绑定表嵌在 Token 块里：去掉 .grid 的外框（外层 .me-token 已有边框），min-width 归零
-   ——窄屏时由这个容器自己横向滚动，而不是把整页撑宽（.table-scroll 的 720px 起步是给
-   全宽列表的，套在小卡里会无谓地常驻滚动条）。 */
-.me-binding-table { overflow-x: auto; }
-.me-binding-table > .grid { min-width: 0; border: 0; }
-/* 未绑定不是错误，但它是「这把钥匙现在开不了任何门」——用注脚而不是空态卡片说明，
-   保持一块 Token 的视觉连续。 */
-.me-token > .form-note { padding: var(--s3) var(--s4); margin: 0; }
+.assistant-me-head { flex: 0 0 auto; padding: var(--s4) var(--s4) var(--s2); }
+/* tab 条固定在正文之上（不参与滚动）：flex 0 0 auto 保证它不被挤压。 */
+.assistant-me .tabs { flex: 0 0 auto; }
+/* 正文滚动体：面板之间留一档间距，底部留白让最后一张表不贴边。 */
+.me-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
 
 /* ── 账号动作的常红标记（P12-2 修订：个人中心 / 登出移进助手抽屉头）───────────── */
 
@@ -4803,6 +4928,13 @@ button.step-row:hover { background: var(--hover); }
    的头像按钮 portal 进来——组件本体单挂载，切壳不断流。空槽不占宽（按钮落地前
    topbar 不闪跳）。 */
 .assistant-topbar-slot:empty { display: none; }
+/* 槽位现在装两枚入口（P13-3 文档钮 + 助手钮）：inline-flex 让它们并排、留一档间距。 */
+.assistant-topbar-slot { display: inline-flex; align-items: center; gap: var(--s2); }
+
+/* 文档入口（P13-3）：与助手入口同族的 34px 圆钮，装的是图标不是头像——ink-3 描线，
+   悬浮才走 accent（强调色只上交互态）。 */
+.assistant-entry.docs-entry { color: var(--ink-3); }
+.assistant-entry.docs-entry:hover { color: var(--accent); }
 
 /* 顶栏入口按钮：34px 圆面装 30px 半身头像——比 .icon-btn（30px 方）大一圈是
    有意的：头像是身份图像不是图标，与 antd 头像钮同族；未读徽标挂右上。 */

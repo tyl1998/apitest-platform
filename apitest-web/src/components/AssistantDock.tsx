@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Drawer, Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, ArrowRight, Bell, Dices, KeyRound, Languages, LogOut, MapPin, Moon, Plus, Send, Settings, Square, Sun, SunMoon, Trash2, UserRound } from "lucide-react";
+import { ArrowLeft, Bell, BookOpen, Dices, KeyRound, Languages, LogOut, MapPin, Moon, Plus, Send, Settings, Square, Sun, SunMoon, Trash2, UserRound } from "lucide-react";
 import {
   api,
   classifyAssistantError,
@@ -43,13 +43,15 @@ import { AssistantElicitationCard, type ElicitSettled } from "./AssistantElicita
 import { AssistantMarkdown } from "./AssistantMarkdown";
 import { AssistantProposalCard, splitProposalSegments, type ProposalSettled } from "./AssistantProposalCard";
 import { IconButton } from "./IconButton";
+import { MeCenter, type MeTab } from "./MePage";
 import { newAvatarSeed } from "../lib/avatar";
 
 /**
  * 站内助手抽屉（P9-4 起家、P9-4b 用户级凭据、P9-5 本地指令与 proposal 卡）：顶栏
  * 入口（原通知铃铛位，2026-09-16 第二轮反馈改位）→ 抽屉（会话切换 + 消息流 +
- * 快捷 chips + 输入），外加三个页内视图——「设置」（个性化 + 我的 agent）、「改密码」
- * （受控表单卡）与「最近通知」（2026-09-16 通知入口随铃铛移入助手）。链路是哑管道：
+ * 快捷 chips + 输入），外加四个页内视图——「设置」（个性化 + 我的 agent）、「改密码」
+ * （受控表单卡）、「最近通知」（2026-09-16 通知入口随铃铛移入助手）与「个人中心」
+ * （P13-1：原 `/me` 页并入）。链路是哑管道：
  * 发消息走 `streamAssistantMessage`（引擎按 provider 的通用协议配置调上游），历史走
  * 上游代理——对话正文不落库，本组件的消息桶只是「这一次打开期间的显示态」。
  *
@@ -79,10 +81,11 @@ import { newAvatarSeed } from "../lib/avatar";
  *   跳页面）/ 登出（确认卡）；
  * - 未配置引导分两味（P9-4b）：平台没有上游 → 找系统管理员；有上游但我没配 → 直接
  *   进「设置」卡（这就是 503/2005 在用户级的落点）；
- * - **最近通知（2026-09-16）**：顶栏铃铛（P9-1）撤掉，通知的常驻入口 = 顶栏助手
- *   钮的未读徽标 + 抽屉头 Bell 钮 + 通知视图（点行标已读深链 / 全部已读 / 查看
- *   全部进 /me/notifications 整页——通知页 P12-2 起是个人中心的一个 tab）；antd
- *   弹窗（即时感）与 Root 轮询照旧；
+ * - **最近通知（2026-09-16；2026-09-21 收口）**：顶栏铃铛（P9-1）撤掉，通知的常驻
+ *   入口 = 顶栏助手钮的未读徽标 + 抽屉头 Bell 钮 + 抽屉内通知视图（点行标已读深链 /
+ *   全部已读）——P13-1 曾把它借道个人中心的「通知」分区，2026-09-21 用户反馈收回为
+ *   抽屉自己的视图（个人中心不再有通知格，也没有「查看全部」整页）；antd 弹窗
+ *   （即时感）与 Root 轮询照旧；
  * - 人物头像（P9-6 已落地）：`Avatar` 按种子确定性画人物——顶栏入口 30px 半身、
  *   抽屉头 96px 全身；种子 = preferences.avatarSeed 覆盖 > users.id（头像不
  *   落库，前端每次画），「换一个形象」写新 avatarSeed；眨眼只在抽屉打开且无
@@ -250,6 +253,10 @@ export function AssistantDock() {
   /** 身份种子兜底（P9-6）：preferences.avatarSeed 未覆盖时用它——同一账号永远
       同一张脸，改名≠换人（种子是 id 不是名字）。 */
   const userId = useAuthStore((state) => state.user?.id);
+  /** 卡片空态问候 `HI, {{用户名}}`（P13-2）：取当前登录用户 name，缺失回退 email 前缀。 */
+  const userName = useAuthStore((state) => state.user?.name);
+  const userEmail = useAuthStore((state) => state.user?.email);
+  const greetingName = (userName?.trim() || userEmail?.split("@")[0] || "").trim();
   /* 项目资产卡（proposal / MRTR 确认）的写资格：对话用户级化（2026-09-16）后聊天
      面不再看项目角色（会话是「人」的），但卡片落库走项目 REST——viewer 照旧只读、
      全局页（无项目上下文）一律只读（后端守卫仍是单一事实）。 */
@@ -257,9 +264,16 @@ export function AssistantDock() {
   const { project } = useProjectStore();
 
   const [open, setOpen] = useState(false);
-  /** 抽屉内容视图（P9-4b 设置在抽屉里；P9-5 增改密码表单卡；2026-09-16 增最近
-   *  通知——通知入口随铃铛移进助手（个性化 + 我的 agent）/ 改密码 / 通知）。 */
-  const [view, setView] = useState<"chat" | "settings" | "password" | "notifications">("chat");
+  /** 抽屉内容视图（P9-4b 设置在抽屉里；P9-5 增改密码表单卡；P13-1 通知视图并入
+   *  「个人中心」me 视图，原「近 10 条」缩略视图删除）：chat / settings / password /
+   *  me（个人中心五分区：基本信息 / 通知 / 我的申请 / MCP Token / agent 凭据）。 */
+  const [view, setView] = useState<"chat" | "settings" | "password" | "notifications" | "me">("chat");
+  /** 个人中心当前分区（P13-1）：抽屉头「个人中心」钮落 profile；me 视图内的 tab 条
+   *  也切它。视图切走再切回停在上次的分区。通知不是分区（2026-09-21 用户反馈：
+   *  通知留在助手自己的 `notifications` 视图，个人中心不再有第二个入口）。 */
+  const [meTab, setMeTab] = useState<MeTab>("profile");
+  /** 打开个人中心到指定分区（抽屉头「个人中心」钮、/打开 指令共用）。 */
+  function openMe(tab: MeTab) { setMeTab(tab); setView("me"); }
   /** 闸门语义快照（probeAssistantAvailability）：unconfigured 时入口降级、抽屉给引导。 */
   const [availability, setAvailability] = useState<"ready" | "unconfigured" | "disabled" | undefined>();
   /** 未配置引导的判别（P9-4b）：503 只说明「我的 agent 没配好」，还得知道平台有没有
@@ -901,8 +915,12 @@ export function AssistantDock() {
       appendLocalEntries([{ role: "system", text: i18n.t("assistantCmd.openNeedsProject") }]);
       return;
     }
-    /* 全局页目标是 `/${path}`（缺省 = key）：P12-2 起通知不在根上，而是个人中心的
-       一个 tab（`/me/notifications`），靠 CommandPage.path 表达。 */
+    /* 个人中心不再是独立路由（P13-1：`/me` 删除，分区并入抽屉）：`/打开 个人中心`
+       就地切 me 视图，不导航、不关抽屉——「打开个人中心」= 抽屉里翻到那一页。
+       通知同理（2026-09-21）：`/打开 通知` 落抽屉自己的通知视图。 */
+    if (command.page.key === "me") { openMe("profile"); return; }
+    if (command.page.key === "notifications") { setView("notifications"); return; }
+    /* 其余全局页目标是 `/${path}`（缺省 = key）；项目页带项目段。 */
     const to = command.page.global
       ? `/${command.page.path ?? command.page.key}`
       : `/projects/${projectId}/${command.page.key}`;
@@ -966,7 +984,9 @@ export function AssistantDock() {
     });
   }
 
-  /* ── 最近通知（2026-09-16 通知入口移入助手）：行为与原铃铛下拉一致 ───────────── */
+  /* ── 最近通知（2026-09-16 通知入口移入助手；2026-09-21 收回为唯一落点）─────────
+     用户反馈「个人信息内删除通知跳转」：通知不再借道个人中心的分区，就在抽屉自己的
+     `notifications` 视图里，行为与更早的铃铛下拉一致。 */
 
   /** 点通知 = 标已读 + 深链跳转（边界 10）：跳转走 navGuard 的 confirmLeave——从
       编辑页经通知深链离开时，未保存守卫照常拦截；标记失败不拦跳转（已读态是
@@ -982,8 +1002,8 @@ export function AssistantDock() {
     if (row.link) navigate(row.link);
   }
 
-  /** 全部已读（列表页还有整页按钮）：点了就清空，不等跳转；recent 行同步落已读
-      态——计数清零但行还亮着未读点是自相矛盾的。 */
+  /** 全部已读：点了就清空，不等跳转；recent 行同步落已读态——计数清零但行还亮着
+      未读点是自相矛盾的。 */
   function markAllDrawerRead() {
     const now = new Date().toISOString();
     useNotificationsStore.setState({ recent: notificationsRecent.map((row) => (row.readAt ? row : { ...row, readAt: now })) });
@@ -1101,21 +1121,37 @@ export function AssistantDock() {
         状态不清空）。按钮里是 30px 半身头像（静态眨眼只在抽屉打开时跑；登录/
         新通知到达时小跳一下）；未配置态 dashed 边照常表达状态。 */}
     {entrySlot && createPortal(
-      <Tip text={availability === "unconfigured" ? t("assistantDrawer.unconfiguredTip") : undefined}>
-        <button
-          type="button"
-          className={`assistant-entry${availability === "unconfigured" ? " is-unconfigured" : ""}`}
-          aria-label={t("assistantDrawer.open")}
-          onClick={() => setOpen(true)}
-        >
-          <Avatar seed={avatarSeed} size={30} framing="bust" pulse={dockPulse} nightmare={prefs?.avatarNightmare === true} />
-          {/* 未读徽标（2026-09-16 通知入口移入助手）：顶栏铃铛撤掉后的存量未读
-              入口；99+ 封顶——「很多」与「99+」读起来没有差别。 */}
-          {notificationsLoaded && notificationsUnread > 0 && (
-            <span className="assistant-entry-badge">{notificationsUnread > 99 ? "99+" : notificationsUnread}</span>
-          )}
-        </button>
-      </Tip>,
+      <>
+        {/* 功能说明文档入口（P13-3）：头像旁一枚，`_blank` 打开 `/docs`——文档是
+            「离开当前活儿去查」的读物，新标签开才不打断手头的操作。用 <a> 而非
+            按钮：中键 / ⌘+点击能另开标签是 `_blank` 该有的原生行为。 */}
+        <Tip text={t("docs.openTip")}>
+          <a
+            className="assistant-entry docs-entry"
+            href="/docs"
+            target="_blank"
+            rel="noreferrer"
+            aria-label={t("docs.open")}
+          >
+            <BookOpen size={16} />
+          </a>
+        </Tip>
+        <Tip text={availability === "unconfigured" ? t("assistantDrawer.unconfiguredTip") : undefined}>
+          <button
+            type="button"
+            className={`assistant-entry${availability === "unconfigured" ? " is-unconfigured" : ""}`}
+            aria-label={t("assistantDrawer.open")}
+            onClick={() => setOpen(true)}
+          >
+            <Avatar seed={avatarSeed} size={30} framing="bust" pulse={dockPulse} nightmare={prefs?.avatarNightmare === true} />
+            {/* 未读徽标（2026-09-16 通知入口移入助手）：顶栏铃铛撤掉后的存量未读
+                入口；99+ 封顶——「很多」与「99+」读起来没有差别。 */}
+            {notificationsLoaded && notificationsUnread > 0 && (
+              <span className="assistant-entry-badge">{notificationsUnread > 99 ? "99+" : notificationsUnread}</span>
+            )}
+          </button>
+        </Tip>
+      </>,
       entrySlot,
     )}
 
@@ -1140,20 +1176,22 @@ export function AssistantDock() {
           nightmare={prefs?.avatarNightmare === true}
         />
         <div className="assistant-identity-main">
-          <strong>{t(view === "settings" ? "assistantSettings.title" : "assistantDrawer.title")}</strong>
+          <strong>{t(view === "settings" ? "assistantSettings.title" : view === "notifications" ? "notifications.title" : view === "me" ? "me.title" : "assistantDrawer.title")}</strong>
           {!chatReady && view === "chat" && <span className="muted" style={{ fontSize: 12 }}>{t("assistant.stateUnconfigured")}</span>}
         </div>
         {/* 个人中心 / 通知 / 换形象 / 主题 / 语言 / 登出（2026-09-16 通知入口随铃铛
             移入；P12-2 修订：顶栏右上角的「个人中心 + 退出」整对撤掉，改挂这里——
             账号级动作与通知/换形象/主题同属「我自己」的操作，收在头像这一排；抽屉
             全视图常驻，未配置 agent 时也在，登出不会因为没配 agent 就找不到）。
-            已在 /me 时不再重复入栈（2026-09-21）：多压一条同名历史会把页面的回程键
-            （navigate(-1)）变成「回到 /me 自己」，用户读作返回键失灵。 */}
+            P13-1：个人中心不再是独立 `/me` 页——「个人中心」钮就地翻到抽屉的 me 视图。
+            2026-09-21 用户反馈：铃铛回到抽屉自己的通知视图（不再翻 me 的通知分区，
+            个人中心里已没有通知这一格）。 */}
         <span className="assistant-quick-toggle">
           <IconButton
             icon={<UserRound size={14} />}
             label={t("me.title")}
-            onClick={() => { setOpen(false); if (location.pathname === "/me") return; void (async () => { if (await confirmLeave()) navigate("/me"); })(); }}
+            active={view === "me"}
+            onClick={() => (view === "me" ? setView("chat") : openMe("profile"))}
           />
           <span className="assistant-bell">
             <IconButton
@@ -1279,12 +1317,10 @@ export function AssistantDock() {
           <p className="form-note">{t("changePassword.note")}</p>
         </form>
       </div> : view === "notifications" ? <div className="assistant-notifications">
-        {/* 最近通知（2026-09-16 通知入口移入助手）：顶栏铃铛撤掉后的常驻入口。
-            布局走查（同日用户反馈）：上「返回」下「查看全部」两枚重按钮书挡式
-            包住列表是违和来源——导航动作不做表单按钮。头行 = 返回箭头带标题
-            （面包屑式）+ 全部已读轻链接；尾部 = 细线上的「查看全部 →」轻链接；
-            列表吃满剩余高度自滚（不再吃 340px 封顶的下拉遗产）。行样式复用
-            bell-item 家族，行为与原铃铛一致——点行 = 标已读 + 深链。 */}
+        {/* 最近通知（2026-09-16 通知入口移入助手；2026-09-21 用户反馈：个人中心不再
+            有通知跳转，这里就是通知的唯一落点）。布局与 2026-09-16 的走查结论一致：
+            头行 = 返回箭头带标题（面包屑式）+ 全部已读轻链接；列表吃满剩余高度自滚；
+            行样式复用 bell-item 家族，行为与原铃铛一致——点行 = 标已读 + 深链。 */}
         <div className="assistant-notifications-head">
           <button type="button" className="assistant-notifications-back" onClick={() => setView("chat")}>
             <ArrowLeft size={14} />
@@ -1311,13 +1347,16 @@ export function AssistantDock() {
               ))}
             </ul>
             : <div className="assistant-notifications-state"><p className="muted">{t("notifications.empty")}</p></div>}
-        <div className="assistant-notifications-foot">
-          {/* 已在该页时不再重复入栈（与抽屉头个人中心钮同款，2026-09-21）。 */}
-          <button type="button" className="linkish" onClick={() => { setOpen(false); if (location.pathname === "/me/notifications") return; void (async () => { if (await confirmLeave()) navigate("/me/notifications"); })(); }}>
-            {t("notifications.viewAll")}
-            <ArrowRight size={12} />
+      </div> : view === "me" ? <div className="assistant-me">
+        {/* 个人中心（P13-1：原独立 `/me` 页整体并入抽屉）：基本信息 / 我的申请 /
+            MCP Token / agent 凭据。头部返回键与 MeCenter 的 tab 条都在滚动体之外
+            ——长内容（MCP Token）滚到底也不会把切 tab 的钮带走（2026-09-21 反馈）。 */}
+        <div className="assistant-me-head">
+          <button className="btn" onClick={() => setView("chat")}>
+            <ArrowLeft size={14} />{t("assistantSettings.back")}
           </button>
         </div>
+        <MeCenter tab={meTab} onTab={setMeTab} />
       </div> : chatReady ? <>
         <div className="assistant-switcher">
           <Select
@@ -1398,7 +1437,7 @@ export function AssistantDock() {
             </div>
           ) : (
             <div className="assistant-empty">
-              <strong>{t("assistantDrawer.emptyTitle")}</strong>
+              <strong>{t("assistantDrawer.emptyTitle", { name: greetingName })}</strong>
               <p className="muted">{t("assistantDrawer.emptyHint")}</p>
               {/* 本地指令的显式入口（2026-09-15 用户反馈：别让人打字发现指令）——
                   点按钮 = 执行 /帮助，指令表落系统气泡。 */}

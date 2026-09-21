@@ -16,9 +16,8 @@ import { ExecutionArchivePanel } from "./ExecutionArchivePanel";
 import { UsersPanel } from "./UsersPanel";
 import { AuditLogsPanel } from "./AuditLogsPanel";
 import { FailureCategoriesPanel } from "./FailureCategoriesPanel";
-import { MePage } from "./MePage";
 
-type GlobalPage = "dashboard" | "projects" | "system" | "me";
+type GlobalPage = "dashboard" | "projects" | "system";
 
 const PAGE_SIZES = [10, 20, 50, 100];
 
@@ -84,9 +83,8 @@ export function GlobalApp({ page, themePreference, onThemeChange }: { page: Glob
           {page === "dashboard" && <DashboardPage />}
           {page === "projects" && <ProjectsPage />}
           {page === "system" && <SystemPage themePreference={themePreference} onThemeChange={onThemeChange} language={i18n.language === "en" ? "en" : "zh-CN"} />}
-          {/* 个人中心（P12-2）：全局层 `/me`——通知整页迁入其中的一个 tab（旧
-              `/notifications` 路由删除，未发布无包袱），「我的」这个维度由此落点。 */}
-          {page === "me" && <MePage />}
+          {/* 个人中心（P13-1）：原全局层 `/me` 页整体并入站内助手抽屉的 me 视图，
+              路由删除——这里不再有 me 分支（入口在助手头像旁的「个人中心」钮）。 */}
         </div>
       </main>
     </div>

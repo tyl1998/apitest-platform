@@ -2982,6 +2982,27 @@ export type McpProjectBinding = {
 /** 工具清单行（前端展示用，非 MCP 协议面）：description 是给模型读的原文，不翻译。 */
 export type McpToolSummary = { name: string; description: string; scope: McpScope };
 
+/**
+ * MCP 绑定许可申请（2026-09-21，迁移 070）。成员在项目 MCP 页申请角色上限之外的
+ * write / execute 档位；批准行本身就是授权（有效 scope 实时聚合，服务端
+ * `lib/mcpScopes.ts`）——批的是「这个项目里能绑哪几档」，不是角色。
+ */
+export type McpBindingRequest = {
+  id: string;
+  projectId: string;
+  projectName: string | null;
+  userId: string;
+  applicantEmail: string | null;
+  applicantName: string | null;
+  scope: McpScope[];
+  status: "pending" | "approved" | "rejected";
+  handledBy: string | null;
+  handledByEmail: string | null;
+  handledAt: string | null;
+  note: string;
+  createdAt: string;
+};
+
 /** 个人中心基本信息（`GET /me/profile`，`/auth/me` 的聚合别名）。 */
 export type MeProfile = { id: string; email: string; name: string; isSystemAdmin: boolean; mustChangePassword: boolean };
 
@@ -3943,6 +3964,21 @@ export const api = {
   /** 工具清单（展示用非协议面）：与 /mcp 的 tools/list 出自同一个 MCP_TOOLS 注册表。 */
   mcpTools: (projectId: string) => client.get(`/projects/${projectId}/mcp/tools`).then(data<McpToolSummary[]>),
 
+  /* ── MCP 绑定许可申请（2026-09-21）：成员申请 → 通知 project_admin → 批准即授权 ── */
+
+  /** 提交许可证申请（只收角色上限之外的 write / execute；已能绑的档位服务端回 409）。 */
+  createMcpBindingRequest: (projectId: string, input: { scope: McpScope[]; note?: string }) =>
+    client.post(`/projects/${projectId}/mcp/binding-requests`, input).then(data<McpBindingRequest>),
+  /** 本项目的许可证申请（project_admin）。 */
+  mcpBindingRequests: (projectId: string, status?: "pending" | "approved" | "rejected") =>
+    client.get(`/projects/${projectId}/mcp/binding-requests`, { params: { status } }).then(data<McpBindingRequest[]>),
+  /** 本人跨项目的许可证申请（个人中心显示审批中 / 已批准态）。 */
+  myMcpBindingRequests: () => client.get("/me/mcp/binding-requests").then(data<McpBindingRequest[]>),
+  approveMcpBindingRequest: (id: string) =>
+    client.post(`/mcp/binding-requests/${id}/approve`).then(data<McpBindingRequest>),
+  rejectMcpBindingRequest: (id: string, note?: string) =>
+    client.post(`/mcp/binding-requests/${id}/reject`, note ? { note } : {}).then(data<McpBindingRequest>),
+
   /* ── P12：个人中心（全局层，无项目前缀）──────────────────────────────────── */
 
   /** 基本信息（`/auth/me` 的聚合别名；改密仍走既有 change-password）。 */
@@ -4108,7 +4144,7 @@ export type UserNotification = {
   projectId: string | null;
   /** 项目删除后仍可读（那件事发生过）；null = 系统级或项目已删。 */
   projectName: string | null;
-  kind: "member_change" | "plan_assign" | "alert" | "suite_result" | "ci_result" | "access_request";
+  kind: "member_change" | "plan_assign" | "alert" | "suite_result" | "ci_result" | "access_request" | "mcp_binding_request";
   title: string;
   body: string;
   link: string;

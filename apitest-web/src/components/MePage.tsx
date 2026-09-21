@@ -1,113 +1,80 @@
 import { useCallback, useEffect, useState } from "react";
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Link2, Plus, Trash2 } from "lucide-react";
-import { api, type AccessRequest, type BindableProject, type McpScope, type McpToken, type MeProfile } from "../api";
-import { useAuthStore } from "../stores/authStore";
+import { useNavigate } from "react-router-dom";
+import { Link2, Plus, Trash2 } from "lucide-react";
+import { api, type AccessRequest, type BindableProject, type McpBindingRequest, type McpScope, type McpToken, type MeProfile } from "../api";
 import { Empty, Status } from "../ui";
 import { apiMessage } from "./DataSourceList";
 import { CopyButton } from "./CopyButton";
 import { IconButton } from "./IconButton";
-import { NotificationsPage } from "./NotificationsPage";
 import { mcpEndpointUrl } from "./McpPage";
 
 /**
- * 个人中心（P12-2，计划 18.4）：全局层 `/me`，四个 tab。
+ * 个人中心分区（P13-1：并入站内助手抽屉；2026-09-21 用户反馈去掉「通知」分区）：
+ * 原独立 `/me` 页收口进助手卡片。
  *
  * 「我的」这个维度原先散在三处——改密只有助手抽屉里的账号指令、通知查看全部是
- * 一个孤立全局路由、MCP Token 挂在项目侧（P12 起 Token 归人，见 18.0）。本页把它们
- * 收进一个落点：
+ * 一个孤立全局路由、MCP Token 挂在项目侧（P12 起 Token 归人，见 18.0）。P12 把它们
+ * 收进 `/me` 独立页；P13-1 再把这一页整体搬进助手抽屉（`AssistantDock` 的 `me`
+ * 视图），删除 `/me` 路由——个人中心与助手抽屉不再是两套并存的账号面。
  *
- * - **基本信息**：`GET /me/profile` 只读 + 改密表单。改密复用既有
- *   `POST /auth/change-password`，零服务端改动；改密使全部旧 Token 失效（P6-5 的
- *   pwdEpoch），响应里换发的新 token 必须落地（`renewSession`），否则当前会话下一个
- *   请求就 401。
- * - **通知**：`NotificationsPage` 整组件迁入（组件与逻辑一字不动，只换挂载点）。
+ * 本组件是那四个分区的**受控** tab 面板（tab 状态由抽屉持有，无 URL）：
+ *
+ * - **基本信息**：`GET /me/profile` 只读账号块。改密表单已删除（P13-1 边界 2）——
+ *   改密入口仍在抽屉的 password 视图与「改密码」chip，不再重复出现在基本信息里。
+ * - **我的申请**：本人跨项目权限申请与状态（P14）。
  * - **MCP Token**：签发 / 吊销（本人）+ 绑定管理（项目 × scope）。Token 本体没有
  *   scope——`read` / `write` / `execute` 是绑定的属性（边界 2），写权限的爆炸半径
- *   不随绑定数增长。
- * - **agent 凭据**：P9-4b 的落点，本阶段只留占位（边界 9）。
+ *   不随绑定数增长。平铺成两张表（Token / 绑定明细），不做逐 Token 卡片。
+ * - **agent 凭据**：P9-4b 的落点，本阶段只留占位（真正编辑在抽屉 settings）。
  *
- * tab 由地址栏驱动（`/me`、`/me/notifications`、`/me/mcp`、`/me/credentials`）：
- * URL 是唯一事实源——通知 tab 要能被助手抽屉的「查看全部」直接指过来，也要能被贴给
- * 别人（与项目层各页同款纪律）。未知段回落基本信息，不 404。
+ * **通知**分区已删除（2026-09-21 用户反馈「个人信息内删除通知跳转」）：通知只有
+ * 抽屉头的铃铛视图（`.assistant-notifications`，「近 10 条」速览）一个落点，个人
+ * 中心不再有第二个入口——同一种东西两个入口只会让人怀疑看到的是两份数据。
  */
-type MeTab = "profile" | "notifications" | "requests" | "mcp" | "credentials";
+export type MeTab = "profile" | "requests" | "mcp" | "credentials";
 
-const ME_TABS: MeTab[] = ["notifications", "requests", "mcp", "credentials"];
-
-export function MePage() {
+/** 抽屉内的个人中心面板：tab 受控（抽屉头的「个人中心」钮切它）。tab 条与正文分离
+ *  ——tab 条不随正文滚动（`.me-panel` 才是滚动体），长内容（MCP Token）滚到头也
+ *  不会把「基本信息 / 我的申请」这两枚切换钮带走（2026-09-21 用户反馈）。 */
+export function MeCenter({ tab, onTab }: { tab: MeTab; onTab: (tab: MeTab) => void }) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { tab: routeTab } = useParams<{ tab: string }>();
-  /* 回程键（2026-09-21）：个人中心是「从任意页进来的口袋页」（助手抽屉、通知深链、
-     项目页都可能是入口），页面本身不携带来源语义——顶栏又只有三个全局导航，离开
-     这里唯一显式出口就是点它们，于是「退出回到主页面」。回程键走 history back：
-     从哪进来就回哪。`location.key === "default"`（新标签直开 / 刷新后的首条）没有
-     上一条可回，不渲染按钮——此时顶栏导航就是合理出口，别给一个点了会退出应用的键。 */
-  const canGoBack = location.key !== "default";
-  const tab: MeTab = ME_TABS.includes(routeTab as MeTab) ? routeTab as MeTab : "profile";
-  /* 未知段（`/me/xyz`）把地址收回 `/me`：显示基本信息但地址栏留着拼错的段，等于让
-     「URL 是唯一事实源」这条纪律在此失效。 */
-  useEffect(() => {
-    if (routeTab && !ME_TABS.includes(routeTab as MeTab)) navigate("/me", { replace: true });
-  }, [routeTab, navigate]);
-  const tabs: [MeTab, string, string][] = [
-    ["profile", t("me.tabProfile"), "/me"],
-    ["notifications", t("me.tabNotifications"), "/me/notifications"],
-    ["requests", t("me.tabRequests"), "/me/requests"],
-    ["mcp", t("me.tabMcp"), "/me/mcp"],
-    ["credentials", t("me.tabCredentials"), "/me/credentials"],
+  const tabs: [MeTab, string][] = [
+    ["profile", t("me.tabProfile")],
+    ["requests", t("me.tabRequests")],
+    ["mcp", t("me.tabMcp")],
+    ["credentials", t("me.tabCredentials")],
   ];
 
   return <>
-    <div className="page-card-toolbar">
-    <div className="page-head">
-      <div className="me-head">
-        {canGoBack && <IconButton icon={<ArrowLeft size={15} />} label={t("action.back")} onClick={() => navigate(-1)} />}
-        <div><h1>{t("me.title")}</h1><p>{t("me.hint")}</p></div>
-      </div>
-    </div>
     <div className="tabs" role="tablist">
-      {tabs.map(([key, label, path]) => (
-        /* tab 切换用 replace（与筛选参数进地址栏同款纪律）：tab 是页内 URL 状态，
-           push 会把「切 tab」记成一次导航——回程键要多按几次才能回到进入来源，
-           浏览器 back 也在 tab 间打转而不是离页。深链进来的人换 tab 后地址栏仍是
-           当前 tab（URL 唯一事实源不受影响），只是不再产生历史堆积。 */
-        <button key={key} role="tab" aria-selected={tab === key} className={`tab${tab === key ? " is-active" : ""}`} onClick={() => navigate(path, { replace: true })}>{label}</button>
+      {tabs.map(([key, label]) => (
+        <button key={key} role="tab" aria-selected={tab === key} className={`tab${tab === key ? " is-active" : ""}`} onClick={() => onTab(key)}>{label}</button>
       ))}
     </div>
-    </div>
 
-    <div className="page-card-body">
-    {tab === "profile" && <ProfileTab />}
-    {tab === "notifications" && <NotificationsPage />}
-    {tab === "requests" && <MyAccessRequestsTab />}
-    {tab === "mcp" && <McpTokensTab />}
-    {tab === "credentials" && <CredentialsTab />}
+    <div className="me-panel">
+      {tab === "profile" && <ProfileTab />}
+      {tab === "requests" && <MyAccessRequestsTab />}
+      {tab === "mcp" && <McpTokensTab />}
+      {tab === "credentials" && <CredentialsTab />}
     </div>
   </>;
 }
 
 /**
- * 基本信息：只读的账号字段 + 改密表单。
+ * 基本信息：只读的账号字段。
  *
  * 只读项走 `definition-grid`（dt/dd，与执行详情同款只读呈现）——禁用态的 input 看着
  * 像「只是暂时不能改」，而 email / 姓名在个人中心**本就不提供**自助修改（边界 10：
- * 自助改名 / 改邮箱不做，管理面已有）。
+ * 自助改名 / 改邮箱不做，管理面已有）。改密表单已随 P13-1 删除（改密入口仍在抽屉的
+ * password 视图与「改密码」chip）。
  */
 function ProfileTab() {
   const { t } = useTranslation();
-  const renewSession = useAuthStore((state) => state.renewSession);
   const [profile, setProfile] = useState<MeProfile>();
   const [failed, setFailed] = useState(false);
-  const [currentPassword, setCurrent] = useState("");
-  const [newPassword, setNext] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
 
   useEffect(() => {
     let alive = true;
@@ -117,59 +84,18 @@ function ProfileTab() {
     return () => { alive = false; };
   }, []);
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy(true); setError(undefined);
-    if (newPassword !== confirm) { setError(t("changePassword.mismatch")); setBusy(false); return; }
-    try {
-      const result = await api.changePassword(currentPassword, newPassword);
-      /* 换发的新 token 必须落地：旧 epoch 的 token 已经全废。 */
-      renewSession(result);
-      setCurrent(""); setNext(""); setConfirm("");
-      message.success(t("me.passwordChanged"));
-    } catch (cause) {
-      const body = (cause as { response?: { data?: { message?: string } } })?.response?.data;
-      setError(body?.message || t("changePassword.error"));
-    } finally { setBusy(false); }
-  }
-
-  return <>
-    <section className="panel">
-      <div className="panel-head"><strong>{t("me.account")}</strong></div>
-      <div className="panel-body">
-        {failed ? <p className="form-error">{t("me.loadFailed")}</p>
-          : profile === undefined ? <p className="muted">{t("common.loading")}</p>
-            : <dl className="definition-grid">
-              <div><dt>{t("me.email")}</dt><dd className="mono">{profile.email}</dd></div>
-              <div><dt>{t("me.name")}</dt><dd>{profile.name}</dd></div>
-              <div><dt>{t("me.role")}</dt><dd>{profile.isSystemAdmin ? t("me.systemAdmin") : t("me.member")}</dd></div>
-            </dl>}
-      </div>
-    </section>
-
-    <section className="panel">
-      <div className="panel-head"><strong>{t("changePassword.title")}</strong></div>
-      <div className="panel-body">
-        {/* 旧密码必验：挡的是「初始密码还躺在别人聊天记录里」，不是「会话被盗」
-            （后者由 pwdEpoch 收口）。文案与强制改密页同源。 */}
-        <p className="form-note">{t("changePassword.subtitle")}</p>
-        <form className="me-password-form" onSubmit={submit}>
-          <label className="field"><span>{t("changePassword.current")}</span>
-            <input className="input" type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrent(event.target.value)} />
-          </label>
-          <label className="field"><span>{t("changePassword.next")}</span>
-            <input className="input" type="password" autoComplete="new-password" required minLength={8} value={newPassword} onChange={(event) => setNext(event.target.value)} />
-          </label>
-          <label className="field"><span>{t("changePassword.confirm")}</span>
-            <input className="input" type="password" autoComplete="new-password" required value={confirm} onChange={(event) => setConfirm(event.target.value)} />
-          </label>
-          {error && <p className="form-error" role="alert">{error}</p>}
-          <button className="btn btn-primary" type="submit" disabled={busy}>{busy ? "…" : t("changePassword.submit")}</button>
-          <p className="form-note">{t("changePassword.note")}</p>
-        </form>
-      </div>
-    </section>
-  </>;
+  return <section className="panel">
+    <div className="panel-head"><strong>{t("me.account")}</strong></div>
+    <div className="panel-body">
+      {failed ? <p className="form-error">{t("me.loadFailed")}</p>
+        : profile === undefined ? <p className="muted">{t("common.loading")}</p>
+          : <dl className="definition-grid">
+            <div><dt>{t("me.email")}</dt><dd className="mono">{profile.email}</dd></div>
+            <div><dt>{t("me.name")}</dt><dd>{profile.name}</dd></div>
+            <div><dt>{t("me.role")}</dt><dd>{profile.isSystemAdmin ? t("me.systemAdmin") : t("me.member")}</dd></div>
+          </dl>}
+    </div>
+  </section>;
 }
 
 /**
@@ -246,6 +172,8 @@ function McpTokensTab() {
   const { t } = useTranslation();
   const [tokens, setTokens] = useState<McpToken[]>();
   const [projects, setProjects] = useState<BindableProject[]>([]);
+  /** 本人跨项目的 MCP 绑定许可申请：绑定弹窗按选中项目显示「审批中」态。 */
+  const [permRequests, setPermRequests] = useState<McpBindingRequest[]>([]);
   const [failed, setFailed] = useState(false);
 
   /* ── 签发弹窗：表单段可取消，明文段必须显式「我已保存」才能关（一次性凭据不能被
@@ -264,9 +192,10 @@ function McpTokensTab() {
 
   const load = useCallback(async () => {
     try {
-      const [tokenList, bindable] = await Promise.all([api.meMcpTokens(), api.bindableProjects()]);
+      const [tokenList, bindable, requests] = await Promise.all([api.meMcpTokens(), api.bindableProjects(), api.myMcpBindingRequests()]);
       setTokens(tokenList);
       setProjects(bindable.projects);
+      setPermRequests(requests);
       setFailed(false);
     } catch {
       setFailed(true);
@@ -278,6 +207,8 @@ function McpTokensTab() {
   /* 选中的项目已经在绑定集里 = 这次提交改的是那条绑定的 scope（服务端 upsert），
      不是新增一条——按钮文案与提示都跟着换。 */
   const bindOverwrite = Boolean(bindProjectId && bindToken?.bindings.some((binding) => binding.projectId === bindProjectId));
+  /* 选中项目上我的最近一条许可申请：审批中时在弹窗里说清「不是勾错了，是还没批」。 */
+  const bindPermRequest = permRequests.find((request) => request.projectId === bindProjectId);
   /* 角色上限决定勾选框能不能点亮：viewer 只到 read（边界 3）。服务端仍会重判——
      这里禁用只是别让用户点了才知道不行。 */
   const scopeAllowed = (scope: McpScope) => (bindProject?.maxScope ?? ["read"]).includes(scope);
@@ -351,6 +282,9 @@ function McpTokensTab() {
   /* 绑定的项目名走本人可见项目集；绑定到自己已不在的项目（被移出后残留的绑定）
      解析不出名字——显示短 id 而不是空白，那行本身就是「该清理了」的信号。 */
   const projectName = (projectId: string) => projects.find((each) => each.projectId === projectId)?.name ?? projectId.slice(0, 8);
+  /* 绑定明细是 Token 的下钻：每行带上是哪把 Token（名字 + 前缀），否则多把 Token
+     绑同一个项目时分不清是谁的门。 */
+  const bindingRows = (tokens ?? []).flatMap((token) => token.bindings.map((binding) => ({ token, binding })));
 
   if (failed) return <section className="panel"><div className="panel-body"><Empty
     title={t("mcp.loadFailed")}
@@ -382,41 +316,62 @@ function McpTokensTab() {
       </div>
       <div className="panel-body">
         <p className="form-note">{t("mcp.tokensHint")}</p>
+        {/* 平铺：Token 一张表、绑定一张表（2026-09-21 用户反馈——逐 Token 的卡片外壳
+            会在助手抽屉里堆出一层套一层的边框，扫读时先看见框再看见数据）。 */}
         {tokens === undefined ? <p className="muted">{t("common.loading")}</p>
           : tokens.length === 0 ? <Empty title={t("mcp.tokensEmpty")} hint={t("mcp.tokensEmptyHint")} />
-            : <div className="me-token-list">{tokens.map((token) => <article className="me-token" key={token.id}>
-              <div className="me-token-head">
-                <div className="me-token-identity">
-                  <strong className="truncate">{token.name}</strong>
-                  <span className="mono muted">{token.tokenPrefix}…</span>
-                </div>
-                <span className="mono muted">{token.lastUsedAt ? t("me.lastUsedAt", { time: new Date(token.lastUsedAt).toLocaleString() }) : t("mcp.tokenNeverUsed")}</span>
-                <span className="mono muted">{t("me.createdAt", { time: new Date(token.createdAt).toLocaleString() })}</span>
-                <div className="row-actions">
+            : <div className="table-scroll"><table className="grid">
+              <thead><tr>
+                <th>{t("mcp.tokens")}</th>
+                <th>{t("me.tokenBindings")}</th>
+                <th className="mono">{t("mcp.tokenLastUsed")}</th>
+                <th className="mono">{t("mcp.tokenCreatedAt")}</th>
+                <th className="col-actions" />
+              </tr></thead>
+              <tbody>{tokens.map((token) => <tr key={token.id}>
+                <td className="truncate">
+                  <strong>{token.name}</strong>
+                  <div className="mono muted">{token.tokenPrefix}…</div>
+                </td>
+                <td>{token.bindings.length
+                  ? <span className="tag-inline">{token.bindings.map((binding) => <span key={binding.projectId} className="chip">{projectName(binding.projectId)}</span>)}</span>
+                  : <span className="muted">{t("me.bindingsNone")}</span>}</td>
+                <td className="mono muted">{token.lastUsedAt ? new Date(token.lastUsedAt).toLocaleString() : t("mcp.tokenNeverUsed")}</td>
+                <td className="mono muted">{new Date(token.createdAt).toLocaleString()}</td>
+                <td className="col-actions"><div className="row-actions">
                   <button className="btn btn-with-icon" onClick={() => openBind(token)}>
                     <Link2 size={14} />{t("me.bindProject")}
                   </button>
                   <IconButton icon={<Trash2 size={14} />} label={t("mcp.tokenRevoke")} tone="danger" onClick={() => revoke(token)} />
-                </div>
-              </div>
-              {token.bindings.length ? <div className="me-binding-table"><table className="grid">
-                <thead><tr>
-                  <th>{t("me.project")}</th>
-                  <th>{t("mcp.tokenScope")}</th>
-                  <th className="mono">{t("me.boundAt")}</th>
-                  <th className="col-actions" />
-                </tr></thead>
-                <tbody>{token.bindings.map((binding) => <tr key={binding.projectId}>
-                  <td className="truncate"><strong>{projectName(binding.projectId)}</strong></td>
-                  <td><span className="tag-inline">{binding.scope.map((scope) => <span key={scope} className="chip">{scope}</span>)}</span></td>
-                  <td className="mono muted">{binding.boundAt ? new Date(binding.boundAt).toLocaleString() : "—"}</td>
-                  <td className="col-actions"><div className="row-actions">
-                    <button className="btn" onClick={() => openBind(token, binding.projectId, binding.scope)}>{t("me.scopeEdit")}</button>
-                    <button className="btn danger" onClick={() => unbind(token, binding.projectId, projectName(binding.projectId))}>{t("me.unbind")}</button>
-                  </div></td>
-                </tr>)}</tbody>
-              </table></div> : <p className="form-note">{t("me.notBound")}</p>}
-            </article>)}</div>}
+                </div></td>
+              </tr>)}</tbody>
+            </table></div>}
+
+        {bindingRows.length ? <>
+          <h2 className="subhead">{t("me.bindingsTitle")}</h2>
+          <div className="table-scroll"><table className="grid">
+            <thead><tr>
+              <th>{t("mcp.tokenName")}</th>
+              <th>{t("me.project")}</th>
+              <th>{t("mcp.tokenScope")}</th>
+              <th className="mono">{t("me.boundAt")}</th>
+              <th className="col-actions" />
+            </tr></thead>
+            <tbody>{bindingRows.map(({ token, binding }) => <tr key={`${token.id}:${binding.projectId}`}>
+              <td className="truncate">
+                <strong>{token.name}</strong>
+                <div className="mono muted">{token.tokenPrefix}…</div>
+              </td>
+              <td className="truncate">{projectName(binding.projectId)}</td>
+              <td><span className="tag-inline">{binding.scope.map((scope) => <span key={scope} className="chip">{scope}</span>)}</span></td>
+              <td className="mono muted">{binding.boundAt ? new Date(binding.boundAt).toLocaleString() : "—"}</td>
+              <td className="col-actions"><div className="row-actions">
+                <button className="btn" onClick={() => openBind(token, binding.projectId, binding.scope)}>{t("me.scopeEdit")}</button>
+                <button className="btn danger" onClick={() => unbind(token, binding.projectId, projectName(binding.projectId))}>{t("me.unbind")}</button>
+              </div></td>
+            </tr>)}</tbody>
+          </table></div>
+        </> : tokens !== undefined && tokens.length > 0 && <p className="form-note">{t("me.notBound")}</p>}
       </div>
     </section>
 
@@ -518,6 +473,10 @@ function McpTokensTab() {
       {bindProject
         ? <p className="form-note">{t("me.scopeRoleHint", { role: bindProject.role })}</p>
         : <p className="form-note">{t("me.scopePickProject")}</p>}
+      {/* 角色上限之外的档位不是死路（2026-09-21）：项目 MCP 页可以申请，管理员批完这里
+          就能勾——只说「拿不到」会把唯一的出口藏起来。 */}
+      {bindProject && !scopeAllowed("execute") && <p className="form-note">{t("me.scopeBeyondRoleApply")}</p>}
+      {bindPermRequest?.status === "pending" && <p className="form-note">{t("mcp.permPending", { scope: bindPermRequest.scope.join(" / ") })}</p>}
       {bindOverwrite && <p className="form-note">{t("me.bindingOverwriteHint")}</p>}
     </Modal>
   </>;
