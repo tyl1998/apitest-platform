@@ -1,4 +1,4 @@
-# P6–P14 阶段规划 — 用户权限 / 测试管理 / 数据统计 / 站内助手 / 性能·版本 / 资产归属 / 个人中心·用户级 MCP / 新手教程 / 权限申请审批
+# P6–P14 阶段规划 — 用户权限 / 测试管理 / 数据统计 / 站内助手 / 性能·版本 / 资产归属 / 个人中心·用户级 MCP / 个人中心并入助手卡片·功能文档 / 权限申请审批
 
 > 版本: v1.9（2026-09-04 确认范围与边界；2026-09-05 P10 并入；2026-09-07 P6-1~P6-5
 > 实现状态 + P6 暂记验收通过 + 13.6 后置增补「项目可见性两层 + 权限申请审批流」；
@@ -24,6 +24,16 @@
 > 另行规划」在此兑现），见十八章；
 > 2026-09-16 **P13 立项**——新手教程（P9-7「教程骨架 + 主线 5 步 + 双 i18n」自 P9
 > 移出，P9 收窄为人物 + 聊天 + 站内通知），见十九章；
+> 2026-09-21 **P13 改题（用户确认）**——原「新手教程」整项**砍除**，P13 改为
+> ① `/me` 个人中心五 tab 整体并入站内助手抽屉、删 `/me` 路由 + 删基本信息改密表单；
+> ② 助手卡片空态问候改 `HI, {{用户名}}`；③ 新增应用内 `/docs` 功能说明文档
+> （头像旁 `_blank` 入口、左目录 + 右正文、双 i18n）。主体纯前端，见十九章；
+> 2026-09-21 **P13-1 二轮反馈（用户走查）**——三项：① 个人中心删「通知」分区，通知
+> 回到助手抽屉自己的 `notifications` 视图（bell-item 列表样式）；② MCP Token 去卡片、
+> 平铺成 Token / 绑定两张表，且 me 视图顶部返回键与 tab 条不随正文滚动消失；
+> ③ **新增「MCP 绑定许可申请」**（成员申请角色上限之外的 write / execute 档位、
+> 通知 project_admin、批准行即授权）——这项**带后端与迁移**（迁移 070 + 五条 REST +
+> `/mcp` 第 5 道闸门放宽），故 P13 不再是「零后端、零迁移」；见 19.0b 与 19.5；
 > 2026-09-16 **P14 立项**——项目可见性两层 + 权限申请审批流（13.7 后置增补
 > 转正排期），见二十章；
 > 2026-09-18 **P10 范围修订（用户确认）**——**14.2 插件机制整项砍除**（三个候选窄
@@ -3830,7 +3840,7 @@ ioredis 均在）。里程碑挂 M7。
 | P9 | — | — | 零（Canvas 2D 人物、SSE 复用既有） |
 | P10 | — | — | 零（查询缓存复用 P1 已装的 `ioredis`；对象存储抽象已于 P4.5 落地 `lib/objectStore.ts`；版本历史复用既有 JSONB 与审计设施；插件机制 2026-09-18 砍除，不引入插件加载/沙箱依赖） |
 | P12 | — | — | 零（MCP SDK / scrypt / 既有 pg 与 antd 全复用） |
-| P13 | — | — | 零（教程手写 `lib/tour.ts` + `TourCard.tsx`，i18n 复用既有双语机制，完成态走 `preferences` JSONB） |
+| P13 | — | 迁移 070（`mcp_binding_requests` + 通知 kind 扩值；2026-09-21 二轮反馈的 MCP 绑定许可申请） | 信息架构三项零后端；MCP 绑定许可申请为迁移 070 + 五条 REST + `/mcp` 闸门放宽 |
 | P14 | — | — | 零（可见性拆层是既有查询的改写；审批流 REST / 站内信 / 成员 upsert 全复用既有设施） |
 
 ### 15.2 里程碑（并入主计划 12.1 表）
@@ -3844,7 +3854,7 @@ ioredis 均在）。里程碑挂 M7。
 | M7 | P10 | 性能 + 版本历史 + 前端体验（原 P6 顺延；插件机制 2026-09-18 砍除） | 支持 1000+ 并发执行；**变更历史可查看改动内容（diff）**；**有数据的列表首屏不出现空态帧**；**下滑时顶层操作区保持可见** |
 | M12 | P11 | 列级归属 + 资源 CRUD 全审计 | 任意核心资源可查「谁建/谁改」（列表直读 + 审计下钻两路）；系统写入显示「系统」；viewer 无审计读权 |
 | M13 | P12 | 个人中心 + 用户级 MCP Token | 一把 token 跨项目（A 写 B 读同一会话完成）；个人中心集齐改密/通知查看全部/MCP Token/agent 凭据挂点；项目侧绑定可见可踢；吊销/解绑/关闸/降权即时生效 |
-| M14 | P13 | 新手教程（自 P9-7 移出） | 主线教程 5 步全程无「目标元素找不到」的卡死（找不到自动跳步）；首登自动触发且完成态可记（`preferences.onboarding.mainDone`）；双 i18n |
+| M14 | P13 | 个人中心并入助手卡片 + 卡内问候 + `/docs` 文档（2026-09-21 改题，原「新手教程」砍除） | `/me` 路由删除且五 tab 内容在卡片内功能完整；基本信息无改密表单（抽屉改密保留）；卡片空态 `HI, {{用户名}}` 双语；头像旁 `_blank` 打开 `/docs`，左目录 + 右正文双语；无 `/me` 死链 |
 | M15 | P14 | 项目可见性两层 + 权限申请审批流（自 13.7 转正） | 非成员可见项目身份（名称/描述）但任何指标不可见，看板聚合分母不含非成员项目；URL 直达渲染「无权限」落地页而非裸 403；申请→站内信通知 project_admin→批准（走既有成员 upsert）/拒绝→结果通知申请人全程闭环；同一 (project, user) 只有一条 pending |
 
 ### 15.3 主计划与规格已同步的编辑（2026-09-04 全部完成）
@@ -3912,6 +3922,35 @@ ioredis 均在）。里程碑挂 M7。
 - [x] 文件更名 `DEVELOPMENT_PLAN_P6-P12.md` → `DEVELOPMENT_PLAN_P6-P13.md`（随 P13
   立项，同 15.4 / 15.7 更名先例）；全仓活指针同步，历史记录中的旧文件名保留原文
   （15.7 那条纪律沿用）。
+
+### 15.8b P13 改题（2026-09-21 用户确认）
+
+- [x] 十九章改写：原「新手教程」v1.0 整项砍除（存档留档不实现），P13 改为三项——
+  ① `/me` 五 tab 并入 `AssistantDock` + 删 `/me` 路由 + 删基本信息改密表单 +
+  旧回链改跳抽屉；② 助手卡片空态问候改 `HI, {{用户名}}`（双 i18n）；
+  ③ 新增应用内 `/docs`（头像旁 `_blank` 入口、左目录 + 右正文、双 i18n、初稿本方起草）。
+  范围 / 边界 4 条 / 前端改动面 / 验收门槛 5 条 / 实施批次 P13-1~P13-3 / M14 / 明确不做
+  同步重写。
+- [x] 头部说明补 2026-09-21 P13 改题块；15.1 P13 依赖行改为「纯前端信息架构调整，
+  无后端 / 无迁移」；15.2 里程碑 M14 交付物与验收标准改写；M11 行的「教程移出至 P13」
+  措辞保留（历史事实）。
+- [ ] 主计划 `DEVELOPMENT_PLAN.md` 十七章指针 / 头部 P13 说明 / 路线图 ASCII /
+  9.8 段 / 12.1 里程碑 M14 行同步（本轮同步）。
+- 注：文件名 `DEVELOPMENT_PLAN_P6-P14.md` 不变（阶段编号未变，仅 P13 换题）。
+
+### 15.8c P13-1 二轮反馈并入（2026-09-21 完成）
+
+- [x] 新增 19.0b「P13-1 二轮反馈」：三项反馈的范围与边界（通知回收进抽屉 / MCP Token
+  平铺 + tab 常驻 / MCP 绑定许可申请）。
+- [x] 19.0 第 1 项「通知」条加回退标记、范围新增第 4 项；边界 1 由「零后端、零迁移」
+  改为「信息架构零后端，第 4 项带迁移 070 + 五条 REST」；19.2 M14 验收标准扩写；
+  19.3 明确不做补 MCP 申请的边界与「通知全量分页页不再提供」。
+- [x] 19.1 批次表补 P13-4 行（**已实现**）；新增 19.5 实现记录（后端迁移 / lib /
+  五条 REST / 闸门放宽 + 前端申请与审批面板 + 口径说明）。
+- [x] 15.1 P13 依赖行由「零」改为「迁移 070（`mcp_binding_requests`）+ 五条 REST +
+  `/mcp` 闸门放宽」；头部说明补 2026-09-21 二轮反馈块。
+- [x] 主计划 `DEVELOPMENT_PLAN.md` 十七章指针 / 头部 P13 说明 / 路线图 ASCII /
+  12.1 里程碑 M14 行同步（本轮同步）。
 
 ### 15.9 P14 立项并入本文件（2026-09-16 完成）
 
@@ -4673,63 +4712,281 @@ GET    /api/v1/projects/:id/mcp/tools                       # 保留（工具清
 
 ---
 
-## 十九、P13 — 新手教程（自 P9 移出）
+## 十九、P13 — 个人中心并入助手卡片 + 卡内问候 + 功能说明文档
 
-> 版本: v1.0（2026-09-16 立项：P9-7「教程骨架 + 主线 5 步 + 双 i18n」自 P9 整项
-> 移出，用户确认；尚未实现）。
+> 版本: v2.2（2026-09-21 用户确认**改题**：原 v1.0「新手教程（自 P9-7 移出）」
+> 整项**砍除**——用户判定一条主线教程价值不足，不做。P13 改为三件事：① `/me`
+> 个人中心五 tab 整体并入站内助手抽屉、删除 `/me` 路由；② 助手卡片空态问候改为
+> `HI, {{用户名}}`；③ 新增应用内 `/docs` 功能说明文档，头像旁入口 `_blank` 打开、
+> 左侧标题目录 + 右侧正文。
+> **v2.2（2026-09-21，P13-1 走查验收反馈）**：① 个人中心删「通知」分区，通知回到
+> 抽屉自己的 `notifications` 视图（恢复 bell-item 列表样式）；② MCP Token 去卡片、
+> 平铺两张表，me 视图返回键与 tab 条固定不随滚动消失；③ **新增 MCP 绑定许可申请**
+> （成员申请角色上限之外的档位、通知 project_admin、批准行即授权，迁移 070）——
+> P13 因此不再是零后端，边界 1 已改。见 19.0b / 19.5）。
+>
+> **v1.0 存档（已废弃，不实现）**：新手教程——数据驱动骨架
+> （`{ route, selector, i18nKey }[]` JSON + `preferences.onboarding` 完成态）+
+> 一条 5 步主线（登录 → 建项目 → 建接口 → 跑一次 → 看报告）+ 双 i18n。
+> 2026-09-21 用户确认砍除，理由：先不做没被验证有人走完的引导。
 
-### 19.0 P13 范围与边界（口径自 P9 边界 7 / 13.3 / 门槛 10 原样随迁）
+### 19.0 P13 范围与边界（2026-09-21 确认）
 
 **定位**
 
-原 P9 的新手教程项（P9-7），2026-09-16 用户确认移出单独立项。P9 主体（人物 /
-聊天 / 通知）已实现至 P9-6，教程与助手链路无相互依赖，不阻塞 P9 收尾；selector
-的前置——页面定型（当初把它排进 P9 的理由，见主计划 9.8）——在 P7/P8 落地后
-已满足。
+P12 把个人中心做成了独立的 `/me` 五-tab 页，同时站内助手抽屉（`AssistantDock.tsx`）
+已内置 settings（agent 凭据实际编辑处）/ password / notifications（近 10 条）等
+视图——个人中心与助手抽屉是**两套并存的账号面**。P13 收口这个重复：把 `/me`
+整体并入助手卡片，`/me` 路由删除。顺带补两个小项（卡内问候、功能说明文档）。
 
-**范围（原 P9-7 整项）**
+**范围（三项）**
 
-- **教程骨架（数据驱动）**：`{ route, selector, i18nKey }[]` JSON +
-  `preferences.onboarding` 记完成态——零迁移（`preferences` 是 JSONB 合并，
-  `routes/system.ts` 既有机制，加键零成本）。
-- **一条 5 步主线**：登录 → 建项目 → 建接口 → 跑一次 → 看报告。只做这一条。
-- **双 i18n**：步骤文案中英双语，复用既有 i18n 键机制。
+1. **个人中心整体并入助手卡片**：`/me` 现有五个 tab——基本信息（邮箱 / 姓名 /
+   角色只读）、通知、我的申请、MCP Token、agent 凭据——**全部**并入站内助手抽屉，
+   成为卡内视图 / 分区。`/me` 与 `/me/:tab` 路由**删除**；`GlobalApp` 的 `page="me"`
+   分支与相关 `navigate("/me...")` 入口改为「打开助手抽屉并切到对应视图」。
+    - **通知**：~~并入后卡内即完整通知（列表 + 分页 + 未读筛选 + 全部已读），
+      复用 `NotificationsPage.tsx` 能力放进卡片，不再是「近 10 条」的缩略视图。~~
+      **2026-09-21 二轮反馈回退**：通知不进个人中心——个人中心删「通知」分区，
+      通知回到抽屉自己的 `notifications` 视图（见 19.0b）。
 
-**边界（自 P9 边界 7 随迁）**
+   - **agent 凭据**：`/me/credentials` 原本只是占位空态，真正编辑本就在抽屉
+     settings——此项等于把占位收口到卡内正式分区。
+   - **基本信息**：只读账号块（邮箱 / 姓名 / 角色）进卡片。**删除其中的改密码
+     表单**（见边界 2）。
+   - **我的申请 / MCP Token**：随迁进卡片（我的申请 = P14 权限申请列表；
+     MCP Token = 用户级 token 管理）。
+2. **卡片问候语**：助手卡片空态标题由现「开始一段对话 / Start a conversation」
+   改为 `HI, {{用户名}}`（`assistantDrawer.emptyTitle` 键改为插值形态，中英双语；
+   用户名取当前登录用户 name，缺失时回退 email 前缀）。
+3. **功能说明文档 `/docs`**：应用内新增 `/docs` 路由，**头像（助手入口按钮）旁**
+   加一个入口，`target="_blank"` 新标签打开。页面**左侧标题目录**（清晰分节的
+   章节标题，可点击锚点定位）+ **右侧正文**。内容按现有平台功能（项目 / 接口 /
+   流程 / 套件 / 调度 / 报告 / 助手 / 统计 / 权限 / 个人中心等）分节，中英双语。
+    初稿由本方起草覆盖各功能，用户校订。
+4. **MCP 绑定许可申请（2026-09-21 二轮反馈新增，见 19.0b / 19.5）**：项目 MCP 页
+   给成员一条申请出口——申请自己在该项目把 Token 绑到角色上限之外的档位
+   （viewer 只有 read）。提交后站内通知 project_admin，管理员在项目 MCP 页审批；
+   批准行本身就是授权（有效 scope = 角色上限 ∪ 已批准申请），绑定时校验与 `/mcp`
+   第 5 道闸门都读它。**只批单项目的 MCP 通道档位，不改成员角色**（用户选定的口径：
+   不涉及角色变更）。
 
-1. **数据驱动 + 一条主线**：本阶段只做**一条 5 步主线**——selector 只对定型页面
-   写。交互用**侧边卡片 + 目标元素描边**（不用遮罩高亮——那要处理滚动跟随与定位
-   计算，两倍复杂度一倍价值）。`data-tour` 属性标靶点（CSS 类重构不破坏教程）。
-2. **首登自动触发**：`preferences.onboarding.mainDone` 记完成态，完成后不再弹。
+**边界**
 
-**前端改动面（自 P9 13.3 随迁）**
 
-- `lib/tour.ts` + `TourCard.tsx`（侧边卡片 + `data-tour` 描边）+ 一条主线的
-  步骤 JSON（双 i18n）。首登自动触发（`preferences.onboarding.mainDone`）。
+1. **收口而非重造**：agent 凭据 / 通知 / 改密路径的后端 API 一律复用现有
+   （`/me/profile`、`/notifications*`、凭据配置接口、`/auth/change-password`
+   保留给抽屉内既有 password 视图）——**信息架构部分零后端改动、零迁移**。
+   ~~P13 是前端信息架构调整，零后端改动、零迁移。~~ **2026-09-21 修订**：第 4 项
+   （MCP 绑定许可申请）自带后端与迁移（070 + 五条 REST + `/mcp` 闸门放宽），
+   其余仍纯前端。
+2. **改密码删除范围（2026-09-21 确认：只删基本信息里的）**：删除**基本信息分区
+   内**的改密码表单（原 `MePage.tsx` `ProfileTab` 的三输入框表单）。助手抽屉里
+   既有的 password 视图与「改密码」快捷 chip **保留不动**——改密入口仍在，只是
+   不再出现在基本信息分区。
+3. **`/docs` 是应用内路由（2026-09-21 确认）**：走 React 路由 `/docs`（非
+   `public/` 静态页），入口按钮 `target="_blank"`；内容用结构化数据 / markdown
+   维护在前端，双语复用既有 i18n 机制。文档为**只读展示**，不做编辑器 / 后台配置。
+4. **`/me` 删除后的回链**：任何指向 `/me...` 的旧链接（如 P14 站内信里「查看我的
+   申请」、审计 / 通知跳转）改为打开助手抽屉对应视图；不得留死路由。
 
-**验收门槛（自 P9 门槛 10 随迁）**
+**前端改动面**
 
-1. 主线教程 5 步全程无「目标元素找不到」的卡死（找不到自动跳步）。
-2. 首登自动触发；完成后 `preferences.onboarding.mainDone` 置位，二次登录不再弹。
+- `MePage.tsx`：五 tab 内容拆为可复用视图/分区，迁入 `AssistantDock.tsx`；
+  文件删除或退化为薄封装（视迁移落点定）。`ProfileTab` 的改密表单删除。
+- `AssistantDock.tsx`：`view` 状态扩展以容纳 profile / requests / mcp 分区
+  （现有 chat / settings / password / notifications 之外），notifications 视图
+  升级为完整通知能力（复用 `NotificationsPage`）。空态标题改插值问候。
+- `main.tsx`：删除 `/me`、`/me/:tab` 路由；`GlobalApp.tsx` 的 `page="me"`
+  分支移除。新增 `/docs` 路由（`_blank` 目标，独立于 `DockedShell` 壳或轻壳）。
+- 新增 `DocsPage.tsx`（左目录 + 右正文）+ 文档内容源（结构化 JSON / markdown，
+  双 i18n）。头像入口旁加 `/docs` 触发按钮（`GlobalApp.tsx` / `ProjectShell.tsx`
+  的 topbar，或 `AssistantDock` 入口附近）。
+- `i18n.ts`：`assistantDrawer.emptyTitle` 改插值键；新增 `docs.*` 与迁入分区
+  所需键（多数可复用既有 `me.*` / `notifications.* ` 键）。
+
+**验收门槛**
+
+1. `/me` 与 `/me/:tab` 路由不可再访问（直达 404 或重定向到抽屉），原五 tab 内容
+   在助手卡片内均可达且功能完整（通知可分页 / 全部已读；凭据可编辑；MCP Token /
+   我的申请可用）。
+2. 基本信息分区无改密码表单；助手抽屉内既有改密视图仍可用。
+3. 助手卡片空态显示 `HI, {{用户名}}`（中英双语），用户名正确取值。
+4. 头像旁入口点击后 `_blank` 打开 `/docs`；左侧标题目录可点击定位，右侧正文
+   分节展示；中英双语。
+5. 无指向已删 `/me...` 的死链接。
+
+### 19.0b P13-1 二轮反馈（2026-09-21 用户走查，用户确认）
+
+P13-1 交付后用户走查提出三项，本轮全部落地：
+
+1. **个人信息内删除通知跳转**：个人中心（助手抽屉 `me` 视图）删「通知」分区；
+   顶栏铃铛回到抽屉自己的 `notifications` 视图，列表样式用回之前助手内的
+   `bell-item`（点行标已读 + 深链、全部已读轻链接），不再借道个人中心。
+   `NotificationsPage.tsx`（全量分页页）随之无挂载点，**文件删除**。
+2. **MCP Token 不再用卡片**：`McpTokensTab` 的逐 Token 卡片（`.me-token`）换成
+   两张平铺表——「Token」（名字 / 前缀 / 已绑项目 / 最近使用 / 签发时间 / 动作）与
+   「绑定明细」（Token × 项目 × scope × 绑定时间 / 改权限 / 解绑）。
+   同时修「进入 MCP Token 后切 tab 栏消失」：抽屉 `me` 视图改成三层纵向 flex
+   （返回键 / tab 条 / 滚动正文），返回键与 tab 条固定在正文之上（`.assistant-me` /
+   `.me-panel`），正文再长也不把切换钮带走。
+3. **项目内 MCP 增权限申请（新功能，带后端）**：迁移 070 `mcp_binding_requests`
+   + `lib/mcpScopes.ts`（有效 scope = 角色上限 ∪ 已批准申请）+ 五条 REST
+   （`POST/GET /projects/:id/mcp/binding-requests`、`GET /me/mcp/binding-requests`、
+   `POST /mcp/binding-requests/:id/approve|reject`）+ `/mcp` 第 5 道闸门按单档放宽
+   （批了 write 不等于能 execute，缓存键随之从 read/write 两分改为按档）。
+   前端：项目 MCP 页成员视角申请面板（仅 viewer）与管理员视角审批面板；
+   个人中心绑定弹窗显示「审批中」并指向申请入口。见 19.5 实现记录。
 
 ### 19.1 实施批次
 
 | 步 | 内容 | 产出 | 状态 |
 | --- | --- | --- | --- |
-| P13-1 | 教程骨架 + 主线 5 步 + 双 i18n（原 P9-7 整项） | 新用户引导可用 | |
+| P13-1 | `/me` 五 tab 并入助手抽屉 + 删除 `/me` 路由 + 删基本信息改密表单 + 旧回链改跳抽屉 | 个人中心收口进卡片 | **已实现**（2026-09-21，见 19.4；二轮反馈见 19.0b / 19.5） |
+| P13-2 | 助手卡片空态问候改 `HI, {{用户名}}`（双 i18n） | 卡内个性化问候 | **已实现**（2026-09-21，见 19.6） |
+| P13-3 | `/docs` 功能说明文档（左目录 + 右正文 + `_blank` 入口 + 双 i18n + 初稿内容） | 应用内功能文档 | **已实现**（2026-09-21，见 19.7；初稿待用户校订） |
+| P13-4 | MCP 绑定许可申请（迁移 070 + 五条 REST + `/mcp` 闸门放宽 + 项目 MCP 页申请/审批 + 绑定弹窗状态） | 角色上限之外的 MCP 档位自助申请 | **已实现**（2026-09-21，见 19.5） |
 
 ### 19.2 里程碑
 
 | 里程碑 | 阶段 | 交付物 | 验收标准 |
 | --- | --- | --- | --- |
-| M14 | P13 | 新手教程（自 P9-7 移出） | 主线教程 5 步全程无「目标元素找不到」的卡死（找不到自动跳步）；首登自动触发且完成态可记（`preferences.onboarding.mainDone`）；双 i18n |
+| M14 | P13 | 个人中心并入助手卡片 + 卡内问候 + `/docs` 文档 + MCP 绑定许可申请（二轮反馈） | `/me` 路由删除且个人中心分区（基本信息 / 我的申请 / MCP Token / agent 凭据）在卡片内功能完整且 tab 条常驻；基本信息无改密表单（抽屉改密保留）；通知只有抽屉 `notifications` 视图一个落点；卡片空态 `HI, {{用户名}}` 双语；头像旁 `_blank` 打开 `/docs`，左目录 + 右正文双语；MCP 绑定许可申请「成员申请 → project_admin 站内通知 → 批准即授权（角色上限 ∪ 已批准申请）→ 个人中心可绑定」闭环，且不动成员角色；无 `/me` 死链 |
 
 ### 19.3 明确不做
 
-- 多分支教程 / 多主线（先证明一条主线有人走完）。
-- 教程进度落服务端表（`preferences` JSONB 够用）。
-- 教程编辑器 / 后台可配步骤（骨架 JSON 直接改文件）。
-- 遮罩高亮式引导（P9 边界 7 原判：滚动跟随与定位计算，两倍复杂度一倍价值）。
+- ~~新手教程（v1.0 全部内容）~~——2026-09-21 砍除。
+- ~~后端 / 数据库改动（P13 纯前端信息架构调整，零迁移）。~~ **2026-09-21 二轮反馈
+  修订**：MCP 绑定许可申请（P13-4）自带迁移 070 与五条 REST；信息架构三项仍纯前端。
+- 基本信息里的自助改名 / 改邮箱（沿用 P12 只读口径）。
+- 助手抽屉内既有改密视图与 chip 的移除（只删基本信息里的改密表单）。
+- `/docs` 的文档编辑器 / 后台可配 / 版本化（只读展示，内容改前端源文件）。
+- 通知 / 凭据后端接口重构（复用现有 API）。
+- **MCP 绑定许可申请不做的事**：不改成员角色（批的是单项目 MCP 档位，不是
+  `user_project_roles`）；不引入可配置审批人（固定 project_admin）；不做限流 /
+  冷却（被拒可立即再申请）；不做「一次申请批多个项目」（一项目一条）；不做许可的
+  过期 / 撤销 UI（撤销走数据库或后续批次）。**边界**：许可补的是档位不是成员身份
+  ——`/mcp` 第 5 道闸门先判成员（read），被移出项目后历史批准不再放行。
+- 通知全量分页页（`NotificationsPage`）不再提供——通知只保留抽屉的「最近 10 条」
+  速览与「全部已读」（二轮反馈口径）。
+
+### 19.4 P13-1 实现记录（2026-09-21）
+
+个人中心整体并入助手抽屉、`/me` 路由删除、基本信息改密表单删除、旧回链改跳抽屉。
+纯前端、零后端、零迁移（边界 1）。改动面：
+
+- `MePage.tsx`：`MePage`（`page="me"` 独立页）退化为**受控分区** `MeCenter({ tab, onTab })`
+  ——去掉 URL 壳（`useParams`/`useLocation`/`navigate` tab 驱动）、页头与回程键；五分区
+  （基本信息 / 通知 / 我的申请 / MCP Token / agent 凭据）实现原样保留。`ProfileTab`
+  **删除改密表单**（三输入框 + `submit` + `renewSession`，边界 2），只剩只读账号块。
+- `AssistantDock.tsx`：`view` 增 `me`（原 `notifications` 缩略视图删除），新增 `meTab`
+  状态 + `openMe(tab)`。抽屉头「个人中心」钮落 `me/profile`、铃铛落 `me/notifications`
+  （全量分页页，取代「近 10 条」）；两枚钮 active 态跟 `view`/`meTab`，再点回对话。
+  `me` 视图复用 `.assistant-settings` 滚动容器渲染 `<MeCenter>`。删除
+  `openDrawerNotification` / `markAllDrawerRead` / `formatNotificationWhen` 与
+  `notificationsRecent` / `setUnread` 依赖（通知能力回落 `NotificationsPage`）。
+  `/打开 个人中心`、`/打开 通知` 指令改为就地切 `me` 视图分区，不再导航。
+- `main.tsx`：删除 `/me`、`/me/:tab` 路由（`*` 兜底重定向到 `/dashboard`，无死路由）。
+- `GlobalApp.tsx`：删 `MePage` import、`GlobalPage` 的 `"me"`、`page === "me"` 分支。
+- `assistantCommands.ts`：`me` / `notifications` 两个 `CommandPage` 去掉 `path`
+  （不再拼路由），`global` 仅表「全局层可用」。
+
+未做（留后续批次）：~~P13-2 卡片空态问候 `HI, {{用户名}}`、P13-3 `/docs` 文档~~
+（均已实现，见 19.6 / 19.7）。`.assistant-notifications*` CSS 暂留（无引用，不影响；
+后续可清）。验收按 AGENTS.md 交用户手工走查。
+
+### 19.5 P13-1 二轮反馈实现记录（2026-09-21）
+
+三项反馈的落点（1 / 2 纯前端，3 带后端与迁移）：
+
+1. **通知回收进抽屉**
+   - `AssistantDock.tsx`：`view` 重新纳入 `notifications`；恢复
+     `formatNotificationWhen` / `openDrawerNotification` / `markAllDrawerRead` 与
+     `notificationsRecent` / `setUnread` 依赖；抽屉头铃铛 active 跟
+     `view === "notifications"`，`/打开 通知` 就地切该视图。通知视图不再有
+     「查看全部」尾链接（整页已不存在）。
+   - `MePage.tsx`：`MeTab` 去掉 `notifications`，分区条回到四项；删 `NotificationsPage`
+     import 与渲染。`NotificationsPage.tsx` 文件删除（无其他引用）。
+2. **MCP Token 平铺 + 顶部常驻**
+   - `MePage.tsx` `McpTokensTab`：逐 Token 卡片改为「Token」表 + 「绑定明细」表两张
+     平铺表（`bindingRows` = 全部 Token 的绑定展开，行内可改权限 / 解绑）。
+   - `AssistantDock.tsx` + `design-system.css`：`me` 视图由
+     `.assistant-settings assistant-me` 改为 `.assistant-me`（三层纵向 flex：返回键
+     `.assistant-me-head` / tab 条 / 滚动正文 `.me-panel`），宽度上限 960；删
+     `.me-token*` / `.me-binding-table` 旧卡片样式。
+   - `MePage.tsx` 绑定弹窗：`me.scopeBeyondRoleApply` 指出申请入口，选中项目有待审
+     申请时显示「审批中」。
+3. **MCP 绑定许可申请（P13-4）**
+   - 迁移 `070_mcp_binding_requests.sql`：`mcp_binding_requests` 表（project / user /
+     scope[] / status / handled_by / note）+ 单 pending 部分唯一索引 + 两条查询索引
+     + `notifications_kind_check` 扩 `mcp_binding_request`。
+   - `lib/mcpScopes.ts`（新）：`MCP_SCOPES` / `ROLE_MAX_SCOPE` / `grantedMcpScopes` /
+     `grantedMcpScopesByProject` / `effectiveMcpScopes` / `mergeMcpScopes` /
+     `hasMcpScopeGrant`。`routes/me.ts` 与 `lib/mcpToolsMe.ts` 的重复角色表就此归一，
+     两处 scope 上限都改读有效集。
+   - `routes/mcpBindingRequests.ts`（新，五条 REST，注册于 `index.ts`）：
+     `POST/GET /api/v1/projects/:id/mcp/binding-requests`（成员提交 / 管理员列表）、
+     `GET /api/v1/me/mcp/binding-requests`（本人跨项目）、
+     `POST /api/v1/mcp/binding-requests/:id/approve|reject`。提交只落「超出有效上限」
+     的档位（否则 409）；批准带条件 UPDATE 原子消费 pending；审计
+     `mcp_binding_request.approve|reject`；通知走 `deliverInboxToRole`
+     （新申请 → project_admin）与 `deliverInboxToUser`（结果 → 申请人）。
+   - `routes/mcp.ts`：第 5 道闸门 `tokenMayAccess` 按**单档**判——角色判不过时看该档
+     是否被批准；请求内缓存键从 `${project}:${read|write}` 改为 `${project}:${scope}`。
+   - `api.ts` / `McpPage.tsx`：`McpBindingRequest` 类型 + 五条方法；项目 MCP 页新增
+     成员申请面板（仅 viewer，含审批中 / 已批准 / 被拒态与申请弹窗）与管理员审批
+     面板（申请待办表 + 批准 / 拒绝）；`i18n.ts` 增 `mcp.perm*`、
+     `me.scopeBeyondRoleApply`、`notifications.kind_mcp_binding_request`。
+
+**口径说明（与用户选项对齐）**：用户选定「申请 MCP 单项目绑定许可（不涉及角色
+变更）」。因此授权粒度取 **(project, user, 档位)** 而不是「某把 Token」——Token 是
+易变的钥匙、许可说的是「这个人在这扇门上能开到哪一档」，落在人上才能同时约束
+「绑定时的勾选」与「调用时的第 5 道闸门」。批准行即授权、无第二张事实表；撤销只需
+改状态（后续如需要）。
+
+### 19.6 P13-2 实现记录（2026-09-21）
+
+助手卡片空态问候由「开始一段对话 / Start a conversation」改为个性化 `HI, {{用户名}}`。
+纯前端、零后端、零迁移。改动面：
+
+- `i18n.ts`：`assistantDrawer.emptyTitle` 由固定文案改为插值键——中文 `HI，{{name}}`、
+  英文 `HI, {{name}}`（`{{name}}` 走既有 `t(key, { name })` 插值契约）。
+- `AssistantDock.tsx`：新增 `user?.name` / `user?.email` 两个 `useAuthStore` 选择器，
+  算出 `greetingName = name 去空白 || email 前缀 || ""`；空态标题渲染改为
+  `t("assistantDrawer.emptyTitle", { name: greetingName })`。用户名缺失时回退 email
+  `@` 前缀（两者皆空则问候不带名字，不报错）。
+
+验收按 AGENTS.md 交用户手工走查。
+
+### 19.7 P13-3 实现记录（2026-09-21）
+
+应用内 `/docs` 功能说明文档：头像旁入口 `_blank` 打开、左目录 + 右正文、双 i18n、
+初稿内容覆盖各功能。纯前端、零后端、零迁移（边界 3：只读展示，不做编辑器 / 后台
+配置 / 版本化）。改动面：
+
+- **新增 `DocsPage.tsx`**：与报告分享页同族的「轻壳」——`.docs-shell` 占满视口，
+  只有正文列滚。顶栏（lockup 回主页 + 标题）+ 双栏（`.docs-toc` 固定宽左目录 /
+  `.docs-content` 正文独立滚）。章节由 `SECTIONS` 常量维护（intro / projects /
+  endpoints / flows / suites / schedules / reports / stats / assistant /
+  permissions / account 共 11 节），每节标题 / 正文都是 i18n 键；正文用
+  `react-markdown + remark-gfm` 渲染（与助手回复同一套，链接 `_blank` 外开）。
+  `IntersectionObserver` 做 scroll-spy（`rootMargin` 上偏，当前判定落视口上部），
+  点目录项 `scrollIntoView` 平滑定位。`document.title` 打开时设为「功能说明 · 应用名」。
+- **`main.tsx`**：新增 `/docs` 路由，挂在 `Protected` 内、`PasswordGate` 与
+  `DockedShell` 之外——登录仍是前提，但不受改密闸限制（新标签打开不该被弹去改密页），
+  也不挂站内助手（文档是独立读物）。
+- **`AssistantDock.tsx`**：顶栏 portal 由单个助手按钮改为 `<>文档钮 + 助手钮</>`——
+  文档钮是 `<a href="/docs" target="_blank">`（原生中键 / ⌘+点击另开），装 `BookOpen`
+  图标，`.assistant-entry.docs-entry` 复用 34px 圆钮外形（ink-3 描线、悬浮走 accent）。
+- **`design-system.css`**：`.assistant-topbar-slot` 改 inline-flex 容两枚入口；新增
+  `.docs-*` 全套（轻壳 / 顶栏 / 目录 / scroll-spy active 态 / 正文 markdown 读物尺寸 /
+  <760px 窄屏目录折成横向条）。强调色只上 active 目录项与链接（合规）。
+- **`i18n.ts`**：中英各新增 `docs.open` / `docs.openTip` / `docs.title` /
+  `docs.tagline` / `docs.tocLabel` + 11 节 `docs.section.<id>.title|body`。正文为
+  **初稿**，覆盖各功能概述，交用户校订。
+
+验收按 AGENTS.md 交用户手工走查（`/docs` 直达、`_blank` 打开、目录点击定位 +
+滚动高亮、中英双语切换）。
 
 ---
 
