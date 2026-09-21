@@ -931,6 +931,8 @@ export type Execution = {
   responseSizeBytes: number;
   responseTruncated: boolean;
   responseBody?: string;
+  /** 完整正文是否已转存对象存储（P10-1）：布尔而非回传 key（前端拿直链走 presign）。 */
+  responseBodyStored: boolean;
   /** Empty for a debug run; a case run records every assertion it evaluated. */
   assertionResults: AssertionResult[];
   /** Per-extract outcomes for a flow step or single-step debug (P1-2). */
@@ -1555,6 +1557,49 @@ export function mapProjectMember(row: Record<string, unknown>): ProjectMember {
 /** 候选行映射（P6-4）：三列同名的最小投影，单独一个映射保持「行不过映射不出文件」的纪律。 */
 export function mapMemberCandidate(row: Record<string, unknown>): MemberCandidate {
   return { id: String(row.id), email: String(row.email), name: String(row.name) };
+}
+
+/**
+ * 权限申请（P14-2，计划 20）：非成员自助申请加入项目的一条记录。
+ *
+ * `suggestedRole` 可空（NULL = 未带建议，边界 7）——最终授予的角色以批准动作为准。
+ * 读时按视角 JOIN 出快照：`GET /access-requests/me`（本人跨项目）带 `projectName`
+ * 让人认得出「向哪个项目申请」；`GET /projects/:id/access-requests`（管理员）带
+ * 申请人 `applicantEmail` / `applicantName` 与审批人 `handledByEmail`——审批列表
+ * 第一眼要看清「谁在申请、谁批的」。字段按视角可空，映射统一投影、缺列即 null。
+ */
+export type AccessRequest = {
+  id: string;
+  projectId: string;
+  projectName: string | null;
+  userId: string;
+  applicantEmail: string | null;
+  applicantName: string | null;
+  suggestedRole: Role | null;
+  status: "pending" | "approved" | "rejected";
+  handledBy: string | null;
+  handledByEmail: string | null;
+  handledAt: string | null;
+  note: string;
+  createdAt: string;
+};
+
+export function mapAccessRequest(row: Record<string, unknown>): AccessRequest {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    projectName: row.project_name === null || row.project_name === undefined || row.project_name === "" ? null : String(row.project_name),
+    userId: String(row.user_id),
+    applicantEmail: row.applicant_email ? String(row.applicant_email) : null,
+    applicantName: row.applicant_name ? String(row.applicant_name) : null,
+    suggestedRole: row.suggested_role ? String(row.suggested_role) as Role : null,
+    status: String(row.status) as AccessRequest["status"],
+    handledBy: row.handled_by ? String(row.handled_by) : null,
+    handledByEmail: row.handled_by_email ? String(row.handled_by_email) : null,
+    handledAt: row.handled_at === null || row.handled_at === undefined ? null : new Date(String(row.handled_at)).toISOString(),
+    note: String(row.note ?? ""),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
 }
 
 /**
@@ -3277,7 +3322,7 @@ export type UserNotification = {
   id: string;
   projectId: string | null;
   projectName: string | null;
-  kind: "member_change" | "plan_assign" | "alert" | "suite_result" | "ci_result";
+  kind: "member_change" | "plan_assign" | "alert" | "suite_result" | "ci_result" | "access_request";
   title: string;
   body: string;
   /** 站内相对路径（空串 = 无深链）；绝对地址由前端按当前 origin 拼。 */

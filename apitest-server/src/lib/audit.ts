@@ -91,6 +91,11 @@ export const AUDIT_ACTIONS = {
   memberUpsert: "member.upsert",
   /** 移除成员。target = user；detail 带 email 与被移除时的角色。 */
   memberRemove: "member.remove",
+  /* ── P14-2 权限申请审批（计划 20）。批准 = 既有成员 upsert（member.upsert，detail.via
+     = 'access_request'），不另设动作；拒绝只记状态，落这一条。target = user（申请人），
+     detail 只带可选 note（自由文本，不含业务数据）。 ── */
+  /** 拒绝权限申请。target = user（申请人）；detail 带可选 note。批准不在这里（走 member.upsert）。 */
+  accessRequestReject: "access_request.reject",
   /* ── P8-2：失败归因（计划 12.2）。target = failure_attribution（targetId 是被归因
       的叶子失败行 id，不是归因行 id——归因行随打标生灭，「哪条失败被谁归成了什么」
       才是审计要回答的问题）。detail 只带分类码与目标类型，note 自由文本不进

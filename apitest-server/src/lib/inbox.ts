@@ -15,7 +15,7 @@ import { pool } from "../db.js";
  * 同一条取舍——返回 void，错误吞进日志）。
  */
 
-export type InboxKind = "member_change" | "plan_assign" | "alert" | "suite_result" | "ci_result";
+export type InboxKind = "member_change" | "plan_assign" | "alert" | "suite_result" | "ci_result" | "access_request";
 
 /**
  * 全体成员扇出（member_change / plan_assign）。
@@ -72,5 +72,37 @@ export function deliverInboxToUser(input: {
     [randomUUID(), input.userId, input.projectId, input.kind, input.title, input.body ?? "", input.link ?? ""],
   ).catch((error) => {
     console.error("[inbox] notification could not be delivered", error);
+  });
+}
+
+/**
+ * 按角色定向投递（P14-2 边界 5）：只发给项目内某个角色的成员，而不是全体扇出。
+ *
+ * 权限申请通知（access_request 新源）只该到达「能放人进来」的 project_admin——
+ * developer / viewer 收到一条自己处理不了的申请只是噪声（`deliverInbox` 的全体扇出
+ * 在这里是错的受众）。收件人集由角色行决定，行数不能预生成 id：一次 INSERT … SELECT
+ * 命中该角色的全部成员。第一版不引入「可配置审批人」（边界 5 的收窄）——role 固定由
+ * 调用方传 'project_admin'。
+ *
+ * 与 deliverInbox 同款 fire-and-forget：通知写失败不拖垮业务事务。
+ */
+export function deliverInboxToRole(input: {
+  projectId: string;
+  role: "project_admin" | "developer" | "viewer";
+  kind: InboxKind;
+  title: string;
+  body?: string;
+  link?: string;
+  /** 不给这个人发（申请人自己若恰好是管理员，不必收到「有人申请」的回声）。 */
+  excludeUserId?: string;
+}): void {
+  void pool.query(
+    `INSERT INTO notifications (id, user_id, project_id, kind, title, body, link)
+     SELECT gen_random_uuid(), r.user_id, $1, $2, $3, $4, $5
+       FROM user_project_roles r
+      WHERE r.project_id = $1 AND r.role = $6 AND ($7::uuid IS NULL OR r.user_id <> $7)`,
+    [input.projectId, input.kind, input.title, input.body ?? "", input.link ?? "", input.role, input.excludeUserId ?? null],
+  ).catch((error) => {
+    console.error("[inbox] role-directed notification could not be delivered", error);
   });
 }

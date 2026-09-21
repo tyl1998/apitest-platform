@@ -6,7 +6,7 @@ import { cacheGet, cacheSet, scopeHash } from "../lib/queryCache.js";
 import { requireProjectAccess, requireProjectAdmin } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { mapProject } from "../models/types.js";
-import { queryProjectList, visibleScope, type ProjectFilters } from "./dashboard.js";
+import { queryProjectIdentity, queryProjectList, visibleScope, type ProjectFilters } from "./dashboard.js";
 
 export async function projectRoutes(app: FastifyInstance) {
   /**
@@ -64,6 +64,21 @@ export async function projectRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>("/api/v1/projects/:id", async (request, reply) => {
     const context = await requireProjectAccess(request, reply);
     return context && success({ ...context.project, myRole: context.myRole });
+  });
+
+  /**
+   * 项目身份端点（P14-1 边界 2：`requireProjectAccess` 之外唯一开口）。
+   *
+   * 登录即可访问（`currentUser`，不走 `requireProjectAccess`）：非成员 URL 直达项目时，
+   * 前端不再吃裸 403，而是用这一份身份 + 管理员线索渲染「无权限」落地页。只回项目名/
+   * 描述 + project_admin 线索（姓名/邮箱）+ 成员标记，不回任何项目内容；其余全部项目级
+   * 端点维持 403 原样。项目不存在回 404。
+   */
+  app.get<{ Params: { id: string } }>("/api/v1/projects/:id/identity", async (request, reply) => {
+    const user = await currentUser(request, reply); if (!user) return;
+    const identity = await queryProjectIdentity(user, request.params.id);
+    if (!identity) return fail(reply, 404, 2001, "project not found");
+    return success(identity);
   });
 
   /**

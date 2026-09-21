@@ -244,6 +244,14 @@ export async function queryProjectMetrics(
  * 计数口径与 /stats/overview 的资产面完全同款（跨项目合计时两边可对上）：文本用例
  * 总量数非废弃（deprecated 是软删）、仓库用例只数 active（removed 是对账历史，
  * 不是存量资产）、流程/套件/平台用例/接口/环境照行数。
+ *
+ * 2026-09-21 P14-1 可见性两层（边界 1）：项目身份（名称/描述）对全部登录用户可见，
+ * 指标只对成员计算与下发。此前非管理员的 EXISTS 过滤把非成员项目整行滤掉（「看不到」），
+ * 现在拆成两层——WHERE 不再按成员收窄（全部项目出场），但每行带 `is_member` 标记，
+ * 非成员行的资产计数一律置 null（「看得到 ≠ 拿到数据」，取向 1 的红线）。指标计数
+ * 只在成员行有值：非成员付出的是「发现」（项目存在、叫什么），不是资产盘点。
+ * dashboard 的执行面聚合（queryProjectMetrics）不动——它只服务已进项目的看板，
+ * EXISTS 过滤照旧，看板聚合的分母不含非成员项目（验收门槛 1）。
  */
 export async function queryProjectList(
   user: User,
@@ -253,15 +261,11 @@ export async function queryProjectList(
   const params: unknown[] = [];
   const clauses: string[] = [];
 
-  /* myRole 与 queryProjectMetrics 同款（P6 边界 5）。 */
-  let myRoleSelect = "NULL::text AS my_role";
-  if (!user.isSystemAdmin) {
-    params.push(user.id);
-    const userParam = `$${params.length}`;
-    clauses.push(`EXISTS (SELECT 1 FROM user_project_roles upr WHERE upr.project_id = p.id AND upr.user_id = ${userParam})`);
-    myRoleSelect = `(SELECT upr.role FROM user_project_roles upr WHERE upr.project_id = p.id AND upr.user_id = ${userParam}) AS my_role`;
-  }
-
+  /* 过滤参数先压栈（keyword / projectIds），COUNT 只吃这一段——WHERE 只由过滤词构成
+     （P14-1 边界 1：WHERE 不再挂成员 EXISTS，身份对全部登录用户可见）。身份判定用的
+     user.id 只出现在 SELECT 片段，追加在过滤参数之后，绝不进 COUNT 的 bind message
+     （node-pg 对参数个数严格：多喂一个「WHERE 用不到的」参数就是
+     "supplies 1 parameters, but prepared statement requires 0"）。 */
   const keyword = filters.keyword?.trim();
   if (keyword) {
     params.push(`%${keyword}%`);
@@ -275,16 +279,33 @@ export async function queryProjectList(
   }
 
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  /* 过滤参数个数在此刻定格——COUNT 用切片取前 N 个，不带身份/分页参数。 */
+  const filterParamCount = params.length;
   let total: number | undefined;
   if (paging) {
-    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM projects p ${where}`, params);
+    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM projects p ${where}`, params.slice(0, filterParamCount));
     total = Number(count.rows[0].total);
   }
+
+  /* myRole / is_member 与 queryProjectMetrics 同款（P6 边界 5）。系统管理员是全项目
+     成员（短路成 'system_admin'）；其余从角色行读——EXISTS 判成员、子查询取角色。
+     成员判定只决定「这一行给不给指标」，不决定「这一行出不出场」——所以它的参数只进
+     主查询的 SELECT，不进 COUNT。 */
+  let myRoleSelect = "NULL::text AS my_role";
+  let isMemberSelect = "true AS is_member";
+  if (!user.isSystemAdmin) {
+    params.push(user.id);
+    const userParam = `$${params.length}`;
+    isMemberSelect = `EXISTS (SELECT 1 FROM user_project_roles upr WHERE upr.project_id = p.id AND upr.user_id = ${userParam}) AS is_member`;
+    myRoleSelect = `(SELECT upr.role FROM user_project_roles upr WHERE upr.project_id = p.id AND upr.user_id = ${userParam}) AS my_role`;
+  }
+
   const limitFragment = paging ? `LIMIT $${params.length + 1} OFFSET $${params.length + 2}` : "";
   if (paging) params.push(paging.pageSize, (paging.page - 1) * paging.pageSize);
   const result = await pool.query(`
     SELECT p.id, p.name, p.description, p.created_at,
       ${myRoleSelect},
+      ${isMemberSelect},
       COALESCE(ep.endpoint_count, 0)::int    AS endpoint_count,
       COALESCE(env.environment_count, 0)::int AS environment_count,
       COALESCE(tc.case_count, 0)::int        AS case_count,
@@ -306,21 +327,71 @@ export async function queryProjectList(
     ORDER BY p.created_at DESC
     ${limitFragment}`, params);
 
-  const projects = result.rows.map((row) => ({
+  const projects = result.rows.map((row) => {
+    /* P14-1 边界 1：非成员行只带身份，指标一律 null。计数子查询在 SQL 里对全部
+       项目照算（小表、走 project_id 索引），但离开服务端前按 is_member 抹平——
+       「看得到」买到的是发现，任何资产计数只对成员下发。 */
+    const isMember = Boolean(row.is_member);
+    return {
+      id: String(row.id),
+      name: String(row.name),
+      description: String(row.description ?? ""),
+      isMember,
+      myRole: user.isSystemAdmin ? "system_admin" : (row.my_role as MyRole | null),
+      endpointCount: isMember ? Number(row.endpoint_count) : null,
+      environmentCount: isMember ? Number(row.environment_count) : null,
+      caseCount: isMember ? Number(row.case_count) : null,
+      flowCount: isMember ? Number(row.flow_count) : null,
+      suiteCount: isMember ? Number(row.suite_count) : null,
+      repoCaseCount: isMember ? Number(row.repo_case_count) : null,
+      specCaseCount: isMember ? Number(row.spec_case_total) : null,
+    };
+  });
+
+  return { projects, total: total ?? projects.length };
+}
+
+/**
+ * 项目身份 + 管理员线索（P14-1 边界 2：`requireProjectAccess` 之外唯一开口）。
+ *
+ * 登录即可访问（非成员也能读），只回项目身份（名称/描述）与管理员线索（姓名/邮箱，
+ * 边界 7 定的粒度）——不回任何项目内容。无权限落地页据此渲染「找管理员」降级态
+ * （申请入口在 P14-2 接）。项目不存在回 undefined，调用方转 404。
+ *
+ * 管理员线索按角色层级 + 邮箱排序（成员页第一眼同款），只取 project_admin：非成员
+ * 要找的是「谁能放我进来」，developer/viewer 都放不了人。
+ */
+export async function queryProjectIdentity(user: User, projectId: string) {
+  if (!isUuid(projectId)) return undefined;
+  const project = await pool.query("SELECT id, name, description FROM projects WHERE id = $1", [projectId]);
+  if (!project.rowCount) return undefined;
+  const row = project.rows[0];
+
+  const isMember = user.isSystemAdmin
+    ? true
+    : Boolean((await pool.query("SELECT 1 FROM user_project_roles WHERE project_id = $1 AND user_id = $2", [projectId, user.id])).rowCount);
+  const myRole: MyRole | null = user.isSystemAdmin
+    ? "system_admin"
+    : ((await pool.query("SELECT role FROM user_project_roles WHERE project_id = $1 AND user_id = $2", [projectId, user.id])).rows[0]?.role as MyRole | undefined) ?? null;
+
+  const admins = await pool.query(
+    `SELECT u.name, u.email
+       FROM user_project_roles r JOIN users u ON u.id = r.user_id
+      WHERE r.project_id = $1 AND r.role = 'project_admin' AND u.status = 'active'
+      ORDER BY u.email`,
+    [projectId],
+  );
+
+  return {
     id: String(row.id),
     name: String(row.name),
     description: String(row.description ?? ""),
-    myRole: user.isSystemAdmin ? "system_admin" : (row.my_role as MyRole),
-    endpointCount: Number(row.endpoint_count),
-    environmentCount: Number(row.environment_count),
-    caseCount: Number(row.case_count),
-    flowCount: Number(row.flow_count),
-    suiteCount: Number(row.suite_count),
-    repoCaseCount: Number(row.repo_case_count),
-    specCaseCount: Number(row.spec_case_total),
-  }));
-
-  return { projects, total: total ?? projects.length };
+    isMember,
+    myRole,
+    /* 管理员线索（边界 7：姓名 + 邮箱）。非成员照此找人要权限，P14-2 上申请入口前
+       先给这一份降级态。 */
+    admins: admins.rows.map((admin) => ({ name: String(admin.name), email: String(admin.email) })),
+  };
 }
 
 export async function dashboardRoutes(app: FastifyInstance) {

@@ -39,6 +39,7 @@ import { meRoutes } from "./routes/me.js";
 import { systemUserRoutes } from "./routes/systemUsers.js";
 import { invitationRoutes } from "./routes/invitations.js";
 import { memberRoutes } from "./routes/members.js";
+import { accessRequestRoutes } from "./routes/accessRequests.js";
 import { specModuleRoutes } from "./routes/specModules.js";
 import { specCaseRoutes } from "./routes/specCases.js";
 import { specImportRoutes } from "./routes/specImport.js";
@@ -138,6 +139,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   /* P6-4：项目成员 CRUD（读 = viewer 可见，写 = requireProjectAdmin）+ 添加成员的
      候选搜索。审计动作 member.upsert / member.remove 在 lib/audit.ts。 */
   await app.register(memberRoutes);
+  /* P14-2：权限申请审批流（迁移 069）。非成员自助申请（POST 走 currentUser 而非
+     requireProjectAccess）、管理员审批列表、本人跨项目申请、批准（= 既有成员 upsert）/
+     拒绝。批准复用 member.upsert 审计与 member_change 通知；新申请定向投递 project_admin。 */
+  await app.register(accessRequestRoutes);
   /* P7-1：文本用例的模块树 CRUD（迁移 052）。用例 CRUD / 绑定 / 导入 / 计划在
      P7-2…P7-7 逐批落地；树接口先行，前端树视图在 P7-6。 */
   await app.register(specModuleRoutes);
