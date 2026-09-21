@@ -685,22 +685,26 @@ function ProjectsPage() {
 
     <div className="page-card-body">
     {loading && <p className="muted">{t("filter.searching")}</p>}
-    {projects.length ? <div className="project-grid">{projects.map((project) => <article className="project-card" key={project.id}>
-      <div className="project-card-head"><div><h2>{project.name}</h2></div><p>{project.description || t("projects.noDescription")}</p></div>
+    {projects.length ? <div className="project-grid">{projects.map((project) => <article className={`project-card${project.isMember ? "" : " project-card-locked"}`} key={project.id}>
+      <div className="project-card-head"><div><h2>{project.name}{!project.isMember && <span className="project-lock-tag">{t("projects.notMember")}</span>}</h2></div><p>{project.description || t("projects.noDescription")}</p></div>
       {/* 资产计数七格（2026-09-10 用户确认上卡）：通过率这类执行面读数不上卡
           （归数据看板），卡上数的是「这个项目里有什么」——七格全部来自列表响应
           自带的轻计数（服务端 queryProjectList，executions 一次不碰），翻页与
-          渲染都不为它多付一次聚合。 */}
-      <dl className="project-facts">
-        <div><dt>{t("dashboard.environments")}</dt><dd className="mono">{project.environmentCount}</dd></div>
-        <div><dt>{t("dashboard.endpoints")}</dt><dd className="mono">{project.endpointCount}</dd></div>
-        <div><dt>{t("dashboard.testCases")}</dt><dd className="mono">{project.caseCount}</dd></div>
-        <div><dt>{t("dashboard.assetFlowTotal")}</dt><dd className="mono">{project.flowCount}</dd></div>
-        <div><dt>{t("dashboard.assetSuiteTotal")}</dt><dd className="mono">{project.suiteCount}</dd></div>
-        <div><dt>{t("dashboard.assetRepoCaseTotal")}</dt><dd className="mono">{project.repoCaseCount}</dd></div>
-        <div><dt>{t("dashboard.assetSpecTotal")}</dt><dd className="mono">{project.specCaseCount}</dd></div>
-      </dl>
-      <div className="project-actions"><button className="btn btn-primary" onClick={() => navigate(`/projects/${project.id}/endpoints`)}>{t("action.enter")}</button><button className="btn" onClick={() => openEdit(project)}>{t("action.edit")}</button><button className="btn danger" onClick={() => remove(project)}>{t("action.delete")}</button></div>
+          渲染都不为它多付一次聚合。
+          P14-1 边界 1：非成员卡不展示任何计数（服务端下发的计数为 null）——
+          「看得到 ≠ 拿到数据」，卡上只留身份与一个「查看」入口进落地页。 */}
+      {project.isMember ? <>
+        <dl className="project-facts">
+          <div><dt>{t("dashboard.environments")}</dt><dd className="mono">{project.environmentCount}</dd></div>
+          <div><dt>{t("dashboard.endpoints")}</dt><dd className="mono">{project.endpointCount}</dd></div>
+          <div><dt>{t("dashboard.testCases")}</dt><dd className="mono">{project.caseCount}</dd></div>
+          <div><dt>{t("dashboard.assetFlowTotal")}</dt><dd className="mono">{project.flowCount}</dd></div>
+          <div><dt>{t("dashboard.assetSuiteTotal")}</dt><dd className="mono">{project.suiteCount}</dd></div>
+          <div><dt>{t("dashboard.assetRepoCaseTotal")}</dt><dd className="mono">{project.repoCaseCount}</dd></div>
+          <div><dt>{t("dashboard.assetSpecTotal")}</dt><dd className="mono">{project.specCaseCount}</dd></div>
+        </dl>
+        <div className="project-actions"><button className="btn btn-primary" onClick={() => navigate(`/projects/${project.id}/endpoints`)}>{t("action.enter")}</button><button className="btn" onClick={() => openEdit(project)}>{t("action.edit")}</button><button className="btn danger" onClick={() => remove(project)}>{t("action.delete")}</button></div>
+      </> : <div className="project-actions"><button className="btn btn-primary" onClick={() => navigate(`/projects/${project.id}/trends`)}>{t("projects.requestAccess")}</button></div>}
     </article>)}</div> : !loading && <Empty title={keyword ? t("projects.emptySearchTitle") : t("projects.emptyTitle")} hint={keyword ? t("projects.emptySearchHint") : t("projects.emptyHint")} action={!keyword ? <button className="btn btn-primary" onClick={openCreate}>{t("action.createProject")}</button> : undefined} />}
     {projects.length > 0 && <div className="pager">
       <Pagination

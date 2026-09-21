@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { UserPlus } from "lucide-react";
-import { api, type MemberCandidate, type ProjectMember, type ProjectRole } from "../api";
+import { api, type AccessRequest, type MemberCandidate, type ProjectMember, type ProjectRole } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useCanManageProject } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
@@ -33,7 +33,36 @@ const ROLE_OPTIONS: { value: ProjectRole; label: string }[] = [
   { value: "viewer", label: "viewer" },
 ];
 
+/**
+ * 成员与权限（P6-4 + P14-2）：成员表 + 权限申请审批。
+ *
+ * 两个 tab 由地址栏驱动（`?tab=requests`）——权限申请通知的深链要能直接指过来
+ * （站内信 link 写的就是 `?tab=requests`）。申请 tab 只对 project_admin 渲染
+ * （审批是管理动作，边界 6 的藏入口纪律）；非管理员只看到成员 tab，不出现空 tab。
+ */
 export function Members() {
+  const { t } = useTranslation();
+  const canManage = useCanManageProject();
+  const [searchParams, setSearchParams] = useSearchParams();
+  /* 未授权者强制回成员 tab：`?tab=requests` 对 viewer/developer 无意义，也不该让它
+     停在一个渲染不出内容的 tab 上。 */
+  const tab = canManage && searchParams.get("tab") === "requests" ? "requests" : "members";
+
+  return <main className="content content-split">
+    <PageToolbar>
+      <div className="page-head">
+        <div><h1>{t("members.title")}</h1><p>{t("members.hint")}</p></div>
+      </div>
+      {canManage && <div className="tabs" role="tablist">
+        <button role="tab" aria-selected={tab === "members"} className={`tab${tab === "members" ? " is-active" : ""}`} onClick={() => setSearchParams({}, { replace: true })}>{t("members.tabMembers")}</button>
+        <button role="tab" aria-selected={tab === "requests"} className={`tab${tab === "requests" ? " is-active" : ""}`} onClick={() => setSearchParams({ tab: "requests" }, { replace: true })}>{t("members.tabRequests")}</button>
+      </div>}
+    </PageToolbar>
+    {tab === "requests" ? <AccessRequestsTab /> : <MembersTab />}
+  </main>;
+}
+
+function MembersTab() {
   const { t } = useTranslation();
   const { projectId } = useParams();
   const { projectId: loadedProjectId, loading: projectLoading } = useProjectStore();
@@ -128,12 +157,7 @@ export function Members() {
   /* 唯一的 project_admin：改角色/移除必然 409，UI 直接不给这两个入口（文件头注释）。 */
   const adminCount = members.filter((member) => member.role === "project_admin").length;
 
-  return <main className="content content-split">
-    <PageToolbar>
-    <div className="page-head">
-      <div><h1>{t("members.title")}</h1><p>{t("members.hint")}</p></div>
-    </div>
-
+  return <>
     {canManage && <div className="filter-bar">
       <Select
         showSearch
@@ -158,7 +182,6 @@ export function Members() {
         <UserPlus size={14} />{t("members.add")}
       </button>
     </div>}
-    </PageToolbar>
 
     {/* 审计摘要删掉后卡内只剩这一张表，`list-scroll` 那层包装一并去掉：滚动要落在
         `.table-scroll` 自己身上（它是 `overflow-x:auto` 的滚动包含块，表头吸附的祖先
@@ -213,5 +236,124 @@ export function Members() {
       </tbody>
     </table></div> : !loading && <Empty title={t("members.emptyTitle")} hint={t("members.emptyHint")} />}
     </div>
-  </main>;
+  </>;
+}
+
+/**
+ * 权限申请审批 tab（P14-2，project_admin）：本项目的申请列表（pending 置顶），
+ * 每行可批准 / 拒绝。批准 = 既有成员 upsert（角色默认用申请的建议角色，可在批准前
+ * 改定，边界 3/7）；拒绝可带一条 note（回给申请人）。审批即时生效——批准后申请人
+ * 下一次请求就进得来。
+ */
+const ROLE_VALUES: ProjectRole[] = ["viewer", "developer", "project_admin"];
+
+function AccessRequestsTab() {
+  const { t } = useTranslation();
+  const { projectId } = useParams();
+  const { projectId: loadedProjectId, loading: projectLoading } = useProjectStore();
+
+  const [requests, setRequests] = useState<AccessRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  /* 每行选定的授予角色（默认 = 申请建议，未带建议则 developer）；批准前可改。 */
+  const [grantRole, setGrantRole] = useState<Record<string, ProjectRole>>({});
+  const [busy, setBusy] = useState<string>();
+
+  const load = useCallback(async () => {
+    if (!projectId || loadedProjectId !== projectId || projectLoading) return;
+    setLoading(true);
+    try {
+      const list = await api.accessRequests(projectId);
+      setRequests(list);
+      /* 初始化每条 pending 的授予角色（建议角色优先，否则 developer 兜底）。 */
+      setGrantRole(Object.fromEntries(list.filter((request) => request.status === "pending").map((request) => [request.id, request.suggestedRole ?? "developer"])));
+    } catch {
+      message.error(t("access.reqLoadFailed"));
+    } finally { setLoading(false); }
+  }, [projectId, loadedProjectId, projectLoading, t]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function approve(request: AccessRequest) {
+    setBusy(request.id);
+    try {
+      await api.approveAccessRequest(request.id, grantRole[request.id] ?? request.suggestedRole ?? "developer");
+      message.success(t("access.reqApproved", { email: request.applicantEmail ?? "" }));
+      await load();
+    } catch (error) {
+      const code = (error as { response?: { data?: { code?: number } } })?.response?.data?.code;
+      /* 409 = 已被别的管理员处理（并发）：刷新看最新态，不报错。 */
+      if (code === 2003) { message.info(t("access.reqAlreadyHandled")); await load(); }
+      else message.error(t("access.reqApproveFailed"));
+    } finally { setBusy(undefined); }
+  }
+
+  function reject(request: AccessRequest) {
+    let note = "";
+    Modal.confirm({
+      title: t("access.reqRejectTitle", { email: request.applicantEmail ?? "" }),
+      content: <label className="field" style={{ marginTop: "var(--s3)" }}>
+        <span>{t("access.reqRejectNote")}</span>
+        <input className="input" onChange={(event) => { note = event.target.value; }} placeholder={t("access.reqRejectNotePlaceholder")} />
+      </label>,
+      okText: t("access.reqReject"),
+      okButtonProps: { danger: true },
+      cancelText: t("action.cancel"),
+      onOk: async () => {
+        try {
+          await api.rejectAccessRequest(request.id, note.trim() || undefined);
+          message.success(t("access.reqRejected"));
+          await load();
+        } catch (error) {
+          const code = (error as { response?: { data?: { code?: number } } })?.response?.data?.code;
+          if (code === 2003) { message.info(t("access.reqAlreadyHandled")); await load(); }
+          else message.error(t("access.reqRejectFailed"));
+        }
+      },
+    });
+  }
+
+  return <div className="list-card">
+    {requests.length ? <div className="table-scroll"><table className="grid">
+      <thead><tr>
+        <th>{t("access.reqApplicant")}</th>
+        <th>{t("access.reqSuggestedRole")}</th>
+        <th className="col-status">{t("access.reqStatus")}</th>
+        <th>{t("access.reqHandledBy")}</th>
+        <th>{t("access.reqWhen")}</th>
+        <th className="col-actions" />
+      </tr></thead>
+      <tbody>
+        {requests.map((request) => <tr key={request.id}>
+          <td>
+            <strong className="truncate">{request.applicantName ?? request.applicantEmail ?? "—"}</strong>
+            <div className="mono muted">{request.applicantEmail}</div>
+          </td>
+          <td>
+            {request.status === "pending"
+              ? <Select
+                  size="small"
+                  value={grantRole[request.id] ?? request.suggestedRole ?? "developer"}
+                  onChange={(role: ProjectRole) => setGrantRole((current) => ({ ...current, [request.id]: role }))}
+                  options={ROLE_VALUES.map((role) => ({ value: role, label: role }))}
+                  style={{ width: 160 }}
+                />
+              : <span className="mono">{request.suggestedRole ?? "—"}</span>}
+          </td>
+          <td className="col-status">
+            {request.status === "pending" ? <Status status="queued" label={t("access.statusPending")} />
+              : request.status === "approved" ? <Status status="pass" label={t("access.statusApproved")} />
+              : <Status status="fail" label={t("access.statusRejected")} />}
+          </td>
+          <td className="mono muted">{request.handledByEmail ?? "—"}</td>
+          <td className="mono muted">{new Date(request.createdAt).toLocaleDateString()}</td>
+          <td className="col-actions">
+            {request.status === "pending" && <div className="row-actions">
+              <button className="btn btn-primary" disabled={busy === request.id} onClick={() => void approve(request)}>{t("access.reqApprove")}</button>
+              <button className="btn danger" disabled={busy === request.id} onClick={() => reject(request)}>{t("access.reqReject")}</button>
+            </div>}
+          </td>
+        </tr>)}
+      </tbody>
+    </table></div> : !loading && <Empty title={t("access.reqEmptyTitle")} hint={t("access.reqEmptyHint")} />}
+  </div>;
 }

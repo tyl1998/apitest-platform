@@ -1276,15 +1276,34 @@ export type ExecutionEvent =
  * 字段（passRate/executionCount/…）不再随列表下发，那类读数全部来自 `/stats/*`
  * （P8-4 起全局层统计的单一来源）。计数口径与服务端 queryProjectList 同注释：
  * specCaseCount 数非废弃文本用例、repoCaseCount 只数 active 仓库用例。
+ *
+ * P14-1 可见性两层（边界 1）：`isMember` 标记这一行我是不是成员。非成员行只带身份
+ * （名称/描述），全部资产计数为 `null`——「看得到 ≠ 拿到数据」。项目目录页据此对
+ * 非成员卡藏掉计数与管理操作，只留「查看」进落地页。
  */
 export type ProjectMetric = Project & {
-  endpointCount: number;
-  environmentCount: number;
-  caseCount: number;
-  flowCount: number;
-  suiteCount: number;
-  repoCaseCount: number;
-  specCaseCount: number;
+  isMember: boolean;
+  endpointCount: number | null;
+  environmentCount: number | null;
+  caseCount: number | null;
+  flowCount: number | null;
+  suiteCount: number | null;
+  repoCaseCount: number | null;
+  specCaseCount: number | null;
+};
+
+/**
+ * 项目身份 + 管理员线索（P14-1 边界 2）：`GET /projects/:id/identity` 的响应。登录即可
+ * 读（非成员也能拿），无权限落地页用它渲染「找管理员」降级态。`admins` 是 project_admin
+ * 的姓名 + 邮箱（边界 7 粒度），非成员照此找人要权限；申请入口在 P14-2 接。
+ */
+export type ProjectIdentity = {
+  id: string;
+  name: string;
+  description: string;
+  isMember: boolean;
+  myRole: MyRole | null;
+  admins: { name: string; email: string }[];
 };
 
 export type Dashboard = {
@@ -2601,6 +2620,28 @@ export type ProjectMember = {
   grantedAt: string;
 };
 
+/**
+ * 权限申请（P14-2）：非成员自助申请加入项目的一条记录。`suggestedRole` 可空
+ * （未带建议，最终角色以批准动作为准）。按视角带出快照：管理员审批列表看
+ * `applicantEmail` / `applicantName` / `handledByEmail`，本人「我的申请」看
+ * `projectName`——缺列即 null。
+ */
+export type AccessRequest = {
+  id: string;
+  projectId: string;
+  projectName: string | null;
+  userId: string;
+  applicantEmail: string | null;
+  applicantName: string | null;
+  suggestedRole: ProjectRole | null;
+  status: "pending" | "approved" | "rejected";
+  handledBy: string | null;
+  handledByEmail: string | null;
+  handledAt: string | null;
+  note: string;
+  createdAt: string;
+};
+
 /** 添加成员的候选行（project_admin 的收窄目录读：三列、只 active、只非成员）。 */
 export type MemberCandidate = { id: string; email: string; name: string };
 
@@ -3084,6 +3125,23 @@ export const api = {
   removeMember: (projectId: string, userId: string) =>
     client.delete(`/projects/${projectId}/members/${userId}`).then(data<{ userId: string; removed: boolean }>),
 
+  /* ── P14-2：权限申请审批流 ── */
+  /** 提交申请（非成员）。suggestedRole 可选；已是成员 / 已有 pending 回 409。 */
+  createAccessRequest: (projectId: string, input?: { suggestedRole?: ProjectRole }) =>
+    client.post(`/projects/${projectId}/access-requests`, input ?? {}).then(data<AccessRequest>),
+  /** 本项目申请列表（project_admin）；status 过滤可选。pending 置顶。 */
+  accessRequests: (projectId: string, status?: "pending" | "approved" | "rejected") =>
+    client.get(`/projects/${projectId}/access-requests`, { params: { status } }).then(data<AccessRequest[]>),
+  /** 本人跨项目的申请与状态（全局层）。 */
+  myAccessRequests: () =>
+    client.get("/access-requests/me").then(data<AccessRequest[]>),
+  /** 批准（= 既有成员 upsert）：role 可改定申请的建议角色；未给则用建议角色。 */
+  approveAccessRequest: (id: string, role?: ProjectRole) =>
+    client.post(`/access-requests/${id}/approve`, role ? { role } : {}).then(data<AccessRequest>),
+  /** 拒绝（只记状态 + 可选 note）；被拒后可再申请。 */
+  rejectAccessRequest: (id: string, note?: string) =>
+    client.post(`/access-requests/${id}/reject`, note ? { note } : {}).then(data<AccessRequest>),
+
   /* ── P7: 测试管理（文本用例）────────────────────────────────────────────── */
 
   /** 模块树全量（P7-1）：拍平森林 + 直属用例计数，模块选择器与路径筛选共用。 */
@@ -3208,6 +3266,8 @@ export const api = {
   projectList: (filters?: { keyword?: string; page?: number; pageSize?: number }) =>
     client.get("/projects", { params: { keyword: filters?.keyword?.trim() || undefined, page: filters?.page, pageSize: filters?.pageSize } }).then(paged<ProjectMetric>),
   project: (id: string) => client.get(`/projects/${id}`).then(data<Project>),
+  /** 项目身份 + 管理员线索（P14-1 边界 2）：登录即可读，无权限落地页据此渲染。404 = 项目不存在。 */
+  projectIdentity: (id: string) => client.get(`/projects/${id}/identity`).then(data<ProjectIdentity>),
   createProject: (name: string, description: string) => client.post("/projects", { name, description }).then(data<Project>),
   updateProject: (id: string, input: Partial<Pick<Project, "name" | "description">>) => client.patch(`/projects/${id}`, input).then(data<Project>),
   deleteProject: (id: string) => client.delete(`/projects/${id}`).then(data<{ id: string; deleted: boolean }>),
@@ -4048,7 +4108,7 @@ export type UserNotification = {
   projectId: string | null;
   /** 项目删除后仍可读（那件事发生过）；null = 系统级或项目已删。 */
   projectName: string | null;
-  kind: "member_change" | "plan_assign" | "alert" | "suite_result" | "ci_result";
+  kind: "member_change" | "plan_assign" | "alert" | "suite_result" | "ci_result" | "access_request";
   title: string;
   body: string;
   link: string;

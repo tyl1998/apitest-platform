@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
-import { useNavigate, useParams } from "react-router-dom";
-import { Link2, Plus, Trash2 } from "lucide-react";
-import { api, type BindableProject, type McpScope, type McpToken, type MeProfile } from "../api";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, Link2, Plus, Trash2 } from "lucide-react";
+import { api, type AccessRequest, type BindableProject, type McpScope, type McpToken, type MeProfile } from "../api";
 import { useAuthStore } from "../stores/authStore";
-import { Empty } from "../ui";
+import { Empty, Status } from "../ui";
 import { apiMessage } from "./DataSourceList";
 import { CopyButton } from "./CopyButton";
 import { IconButton } from "./IconButton";
@@ -33,31 +33,50 @@ import { mcpEndpointUrl } from "./McpPage";
  * URL 是唯一事实源——通知 tab 要能被助手抽屉的「查看全部」直接指过来，也要能被贴给
  * 别人（与项目层各页同款纪律）。未知段回落基本信息，不 404。
  */
-type MeTab = "profile" | "notifications" | "mcp" | "credentials";
+type MeTab = "profile" | "notifications" | "requests" | "mcp" | "credentials";
+
+const ME_TABS: MeTab[] = ["notifications", "requests", "mcp", "credentials"];
 
 export function MePage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
   const { tab: routeTab } = useParams<{ tab: string }>();
-  const tab: MeTab = routeTab === "notifications" || routeTab === "mcp" || routeTab === "credentials" ? routeTab : "profile";
+  /* 回程键（2026-09-21）：个人中心是「从任意页进来的口袋页」（助手抽屉、通知深链、
+     项目页都可能是入口），页面本身不携带来源语义——顶栏又只有三个全局导航，离开
+     这里唯一显式出口就是点它们，于是「退出回到主页面」。回程键走 history back：
+     从哪进来就回哪。`location.key === "default"`（新标签直开 / 刷新后的首条）没有
+     上一条可回，不渲染按钮——此时顶栏导航就是合理出口，别给一个点了会退出应用的键。 */
+  const canGoBack = location.key !== "default";
+  const tab: MeTab = ME_TABS.includes(routeTab as MeTab) ? routeTab as MeTab : "profile";
   /* 未知段（`/me/xyz`）把地址收回 `/me`：显示基本信息但地址栏留着拼错的段，等于让
      「URL 是唯一事实源」这条纪律在此失效。 */
   useEffect(() => {
-    if (routeTab && routeTab !== "notifications" && routeTab !== "mcp" && routeTab !== "credentials") navigate("/me", { replace: true });
+    if (routeTab && !ME_TABS.includes(routeTab as MeTab)) navigate("/me", { replace: true });
   }, [routeTab, navigate]);
   const tabs: [MeTab, string, string][] = [
     ["profile", t("me.tabProfile"), "/me"],
     ["notifications", t("me.tabNotifications"), "/me/notifications"],
+    ["requests", t("me.tabRequests"), "/me/requests"],
     ["mcp", t("me.tabMcp"), "/me/mcp"],
     ["credentials", t("me.tabCredentials"), "/me/credentials"],
   ];
 
   return <>
     <div className="page-card-toolbar">
-    <div className="page-head"><div><h1>{t("me.title")}</h1><p>{t("me.hint")}</p></div></div>
+    <div className="page-head">
+      <div className="me-head">
+        {canGoBack && <IconButton icon={<ArrowLeft size={15} />} label={t("action.back")} onClick={() => navigate(-1)} />}
+        <div><h1>{t("me.title")}</h1><p>{t("me.hint")}</p></div>
+      </div>
+    </div>
     <div className="tabs" role="tablist">
       {tabs.map(([key, label, path]) => (
-        <button key={key} role="tab" aria-selected={tab === key} className={`tab${tab === key ? " is-active" : ""}`} onClick={() => navigate(path)}>{label}</button>
+        /* tab 切换用 replace（与筛选参数进地址栏同款纪律）：tab 是页内 URL 状态，
+           push 会把「切 tab」记成一次导航——回程键要多按几次才能回到进入来源，
+           浏览器 back 也在 tab 间打转而不是离页。深链进来的人换 tab 后地址栏仍是
+           当前 tab（URL 唯一事实源不受影响），只是不再产生历史堆积。 */
+        <button key={key} role="tab" aria-selected={tab === key} className={`tab${tab === key ? " is-active" : ""}`} onClick={() => navigate(path, { replace: true })}>{label}</button>
       ))}
     </div>
     </div>
@@ -65,6 +84,7 @@ export function MePage() {
     <div className="page-card-body">
     {tab === "profile" && <ProfileTab />}
     {tab === "notifications" && <NotificationsPage />}
+    {tab === "requests" && <MyAccessRequestsTab />}
     {tab === "mcp" && <McpTokensTab />}
     {tab === "credentials" && <CredentialsTab />}
     </div>
@@ -150,6 +170,56 @@ function ProfileTab() {
       </div>
     </section>
   </>;
+}
+
+/**
+ * 我的申请（P14-2）：本人跨项目提交过的权限申请与当前状态。只读——申请入口在项目的
+ * 无权限落地页（那里才是「进不去、想进」的语境）；这里是「我申请过哪些、批了没」的
+ * 汇总，行点击深链回对应项目（批准后进得去，未批仍是落地页）。
+ */
+function MyAccessRequestsTab() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [rows, setRows] = useState<AccessRequest[]>();
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api.myAccessRequests()
+      .then((list) => { if (alive) setRows(list); })
+      .catch(() => { if (alive) setFailed(true); });
+    return () => { alive = false; };
+  }, []);
+
+  if (failed) return <section className="panel"><div className="panel-body"><Empty title={t("access.myLoadFailed")} hint={t("access.myLoadFailedHint")} /></div></section>;
+  if (rows === undefined) return <section className="panel"><div className="panel-body"><p className="muted">{t("common.loading")}</p></div></section>;
+  if (!rows.length) return <section className="panel"><div className="panel-body"><Empty title={t("access.myEmptyTitle")} hint={t("access.myEmptyHint")} /></div></section>;
+
+  return <section className="panel">
+    <div className="panel-head"><strong>{t("me.tabRequests")}</strong></div>
+    <div className="panel-body">
+      <div className="table-scroll"><table className="grid">
+        <thead><tr>
+          <th>{t("access.myProject")}</th>
+          <th>{t("access.reqSuggestedRole")}</th>
+          <th className="col-status">{t("access.reqStatus")}</th>
+          <th>{t("access.reqWhen")}</th>
+        </tr></thead>
+        <tbody>
+          {rows.map((request) => <tr key={request.id} data-clickable onClick={() => navigate(`/projects/${request.projectId}/trends`)}>
+            <td><strong className="truncate">{request.projectName ?? request.projectId.slice(0, 8)}</strong></td>
+            <td className="mono">{request.suggestedRole ?? "—"}</td>
+            <td className="col-status">
+              {request.status === "pending" ? <Status status="queued" label={t("access.statusPending")} />
+                : request.status === "approved" ? <Status status="pass" label={t("access.statusApproved")} />
+                : <Status status="fail" label={t("access.statusRejected")} />}
+            </td>
+            <td className="mono muted">{new Date(request.createdAt).toLocaleDateString()}</td>
+          </tr>)}
+        </tbody>
+      </table></div>
+    </div>
+  </section>;
 }
 
 /** agent 凭据：P9-4b 的落点（边界 9）。本阶段占位——一个空 tab 也不该是空白页。 */

@@ -569,11 +569,23 @@ export function AssistantDock() {
 
   /* 顶栏槽位（2026-09-16 入口移进顶栏）：两个壳的 topbar-actions 各渲染一个
      #assistant-topbar-slot（互斥渲染，DOM 里同一时刻只存在一个），入口按钮
-     portal 进去。路由切换时槽位节点换新（壳互换/页面重挂），按 pathname 重找；
-     effect 在 commit 后跑，槽位一定已在 DOM。 */
+     portal 进去。路由切换时槽位节点换新（壳互换/页面重挂），按 pathname 重找。
+     ⚠ 槽位**不一定**在这次 commit 里（2026-09-21 缺陷「项目内助手入口消失」）：
+     P14-1 的访问闸在身份问出前返回 `<div class="console-gate" />`（壳与顶栏都不渲染），
+     而 pathname 已经变了——effect 这一次找不到槽位，之后路径没变也不会再找，入口就一直
+     不出现（在项目里再点一次导航才回来）。补一段「槽位后到」的短重试：找到即停；
+     离开壳的页面（登录 / 非成员落地页）空转到上限就结束，不常驻轮询。 */
   const [entrySlot, setEntrySlot] = useState<HTMLElement | null>(null);
   useEffect(() => {
-    setEntrySlot(document.getElementById("assistant-topbar-slot"));
+    let timer: number | undefined;
+    let tries = 0;
+    const find = () => {
+      const node = document.getElementById("assistant-topbar-slot");
+      setEntrySlot((previous) => (previous === node ? previous : node));
+      if (!node && ++tries < 20) timer = window.setTimeout(find, 200);
+    };
+    find();
+    return () => { if (timer !== undefined) window.clearTimeout(timer); };
   }, [location.pathname]);
 
   function onScroll() {
@@ -1134,12 +1146,14 @@ export function AssistantDock() {
         {/* 个人中心 / 通知 / 换形象 / 主题 / 语言 / 登出（2026-09-16 通知入口随铃铛
             移入；P12-2 修订：顶栏右上角的「个人中心 + 退出」整对撤掉，改挂这里——
             账号级动作与通知/换形象/主题同属「我自己」的操作，收在头像这一排；抽屉
-            全视图常驻，未配置 agent 时也在，登出不会因为没配 agent 就找不到）。 */}
+            全视图常驻，未配置 agent 时也在，登出不会因为没配 agent 就找不到）。
+            已在 /me 时不再重复入栈（2026-09-21）：多压一条同名历史会把页面的回程键
+            （navigate(-1)）变成「回到 /me 自己」，用户读作返回键失灵。 */}
         <span className="assistant-quick-toggle">
           <IconButton
             icon={<UserRound size={14} />}
             label={t("me.title")}
-            onClick={() => { setOpen(false); void (async () => { if (await confirmLeave()) navigate("/me"); })(); }}
+            onClick={() => { setOpen(false); if (location.pathname === "/me") return; void (async () => { if (await confirmLeave()) navigate("/me"); })(); }}
           />
           <span className="assistant-bell">
             <IconButton
@@ -1298,7 +1312,8 @@ export function AssistantDock() {
             </ul>
             : <div className="assistant-notifications-state"><p className="muted">{t("notifications.empty")}</p></div>}
         <div className="assistant-notifications-foot">
-          <button type="button" className="linkish" onClick={() => { setOpen(false); void (async () => { if (await confirmLeave()) navigate("/me/notifications"); })(); }}>
+          {/* 已在该页时不再重复入栈（与抽屉头个人中心钮同款，2026-09-21）。 */}
+          <button type="button" className="linkish" onClick={() => { setOpen(false); if (location.pathname === "/me/notifications") return; void (async () => { if (await confirmLeave()) navigate("/me/notifications"); })(); }}>
             {t("notifications.viewAll")}
             <ArrowRight size={12} />
           </button>

@@ -581,6 +581,14 @@ body {
 
 .page-card-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 
+/* 全局层同根因兜底（2026-09-21 小屏缺陷）：卡内滚动与项目页一样「吃高度」——
+   视口不够高时（手机上顶栏自身也会换行变高），`height: 100%` 的卡片装不下
+   「工具卡 + 正文」，正文会被压成 0 高、工具卡下缘被卡自己的 `overflow: hidden` 裁掉。
+   给正文一个保底高度并让页面卡自己滚：装得下时卡内滚动照旧（无溢出、无滚动条），
+   装不下时才退化成卡内整卡滚动。 */
+.console[data-topnav] .page-card { overflow-y: auto; }
+.page-card-body { min-height: 240px; }
+
 /* 操作区：卡自带 --s5 内边距，用等值负外边距把底色铺到卡的边框盒，与卡的顶边/圆角
    对齐，读起来仍是同一张卡。 */
 .console[data-topnav] .page-card-toolbar {
@@ -680,7 +688,14 @@ body {
 .content-split {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* 高度够就各就各位（下卡吃掉剩余高度、卡内滚动）；装不下时**不能**是 `hidden`
+     ——窄屏工具卡换行后动辄 300px 起步，flex 会把下卡压到 0 高，同时把工具卡的下缘
+     一起裁掉（末尾的筛选/操作按钮够不着、列内滚动条无处可滚，2026-09-21 小屏缺陷）。
+     改为容器自己滚：`.content-split` 与 `.content` 是同一元素，滚动仍落在规则 5 的
+     那个唯一滚动容器上。横向照旧不外露（`overflow-x: hidden`，表格的横向滚动在
+     `.table-scroll` 自己身上）。 */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 /* 卡片形态只在 `.content-split` 下启用：工具卡同宽、有边框圆角、不吸附（列表卡自己
@@ -700,7 +715,9 @@ body {
    已形成滚动包含块，若由外层滚动，吸附表头会贴到不滚动的 `.table-scroll` 上而失效。 */
 .list-card {
   flex: 1 1 auto;
-  min-height: 0;
+  /* 保底高度（2026-09-21 小屏缺陷）：剩余高度不够时不再被 flex 压成「一条缝」，
+     装不下的部分交给 `.content-split` 滚动兜底。 */
+  min-height: 240px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -761,6 +778,27 @@ body {
 /* 卡内子项不得溢出卡边：flex 子项默认 `min-width: auto`，宽内容（长 pre、固定宽网格、
    表头）会把卡撑破——一律收到 0，交给卡内滚动处理。 */
 .list-card > * { min-width: 0; }
+
+/* ── 卡片模型的极端矮视口兜底（P10-8 遗留缺陷，2026-09-21）────────────────────
+   保底高度 + 容器滚动已经保证「不坏」；视口矮到连「工具卡 + 240px 列表卡」都装不下
+   时（横屏手机、桌面矮窗口），退回规则 5 的原始形态：两张卡按内容高度自然排布、
+   `.content` 整页滚动，卡内不再有第二个滚动容器（「页面滚 + 卡内滚」两层在触屏上
+   穿起来很别扭）。**窄屏不走这条**——≤560px 是紧凑档（见下面的 560 断点）：
+   卡片模型保留（工具卡常驻、列表卡吃到视口底），把工具卡收一档腾高度。 */
+@media (max-height: 460px) {
+  .content.content-split { display: block; }
+  /* 卡随内容长，保底高度不再需要（`.content` 兜住滚动）。 */
+  .list-card { display: block; min-height: 0; }
+  /* 吸附表头的滚动祖先变回 `.content`：卡不再是滚动容器，表头钉在自己盒子上就等于
+     钉在表头 —— 显式收回，免得留一个「滚起来不知道谁在滚」的伪吸附。 */
+  .list-card .grid thead th { position: static; }
+  /* 全局层同款：卡与正文都回到内容高度，滚动交回 `.content`（它原本 `overflow: hidden`
+     只为「卡内滚动」服务，卡不再定高后要放它滚）。正文的 `overflow-y: auto` 留着
+     ——高度 auto 时纵向不产生滚动条，横向的宽表照旧由它兜底。 */
+  .console[data-topnav] .content { overflow-y: auto; }
+  .console[data-topnav] .page-card { height: auto; min-height: 0; }
+  .page-card-body { min-height: 0; }
+}
 
 .page-head {
   display: flex;
@@ -1097,6 +1135,33 @@ button.readout-click {
 .col-owner { width: 148px; }
 .col-path { color: var(--ink-2); }
 
+/* 行操作列常驻右侧（2026-09-21 小屏缺陷）：窄窗口（或列多的表）横向溢出时，操作列会被
+   推到卡片外——「看不到操作按钮」。粘在滚动容器的右缘，超宽表也不用先横滑再点。
+   底色必须不透明（否则滚过的单元格会从按钮下面透上来），行 hover / 选中态同款跟随；
+   表头那枚要压在吸附表头之上。 */
+.grid .col-actions {
+  position: sticky;
+  right: 0;
+  background: var(--surface);
+}
+.grid tbody tr:hover .col-actions { background: var(--hover); }
+.grid tbody tr.is-selected .col-actions { background: var(--selected); }
+/* 表头那枚：z-index 压过吸附表头；底色仍是表头的 --raised（否则会比同行其它表头浅一档）。 */
+.grid thead th.col-actions { z-index: 2; background: var(--raised); }
+
+/* 窄容器（≤1100px）的列预算（2026-09-21 小屏缺陷，第三轮改为容器查询）：两枚
+   「创建人/更新人」固定 148px 共 296px，在 1015px 宽的表格容器里把「名称/路径」列
+   挤到几十像素、还把操作列推出卡片。收掉这两列（谁建谁改在资源详情与审计日志里
+   都能查），把宽度还给名称与操作列——操作列另有上面的常驻规则兜底。
+   断点量的是 `.table-scroll` 自己的宽（见上面的容器锚点），不是视口宽：1273px 视口
+   展开侧栏后容器 ~1015px 命中；收起 rail（56px）后 ~1169px 不命中、两列照常显示；
+   全局层无侧栏 ~1225px 同样不命中。分隔线用 inset 细线：折叠边框在 sticky 单元格上
+   会丢线（.tree-item.is-active 同法）。 */
+@container grid (max-width: 1100px) {
+  .col-owner { display: none; }
+  .grid .col-actions { box-shadow: inset 1px 0 0 var(--line); }
+}
+
 .cell-name { display: flex; align-items: center; gap: 9px; min-width: 0; }
 
 /* ── Method ────────────────────────────────────────────────────── */
@@ -1337,6 +1402,94 @@ button.readout-click {
 .project-facts dd { margin: 3px 0 0; color: var(--ink); }
 .project-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
 .btn.danger { color: var(--fail); border-color: var(--fail); }
+
+/* 非成员项目卡（P14-1 可见性两层）：身份可见、指标不可见。卡面比成员卡安静——
+   虚线边、无统计块，只留标题旁一枚「未加入」标签点明状态；操作只有「查看」进落地页。
+   标签是中性灰（不占用任何语义色——未加入不是失败）。 */
+.project-card-locked { border-style: dashed; }
+.project-lock-tag {
+  margin-left: var(--s2);
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-3);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* 无权限落地页（P14-1 边界 2）：非成员 URL 直达项目时的整屏落地态。壳互斥渲染，
+   这里独占视口（不进 .console），居中一张安静的卡片。 */
+.access-landing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100dvh;
+  padding: var(--s6);
+  background: var(--bg);
+}
+.access-landing-card {
+  width: 100%;
+  max-width: 440px;
+  padding: var(--s7) var(--s6);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  text-align: center;
+}
+.access-landing-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: var(--s4);
+  color: var(--ink-3);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.access-landing-eyebrow {
+  margin: 0 0 var(--s2);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.access-landing-card h1 { margin: 0 0 var(--s3); font-size: 20px; font-weight: 600; }
+.access-landing-desc { margin: 0 0 var(--s4); color: var(--ink-3); font-size: 13px; }
+.access-landing-card .muted { margin: 0 0 var(--s5); font-size: 13px; }
+.access-landing-admins {
+  margin: 0 0 var(--s5);
+  padding: var(--s4);
+  text-align: left;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+}
+.access-landing-admins-label { margin: 0 0 var(--s3); font-size: 12px; color: var(--ink-3); }
+.access-landing-admins ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--s3); }
+.access-landing-admins li { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.access-landing-admins li > span { font-size: 13px; color: var(--ink); }
+.access-admin-mail {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+  min-width: 0;
+}
+.access-admin-mail:hover { text-decoration: underline; text-underline-offset: 2px; }
+.access-landing-noadmin { margin-bottom: var(--s5); }
+/* 申请状态条（P14-2）：pending 用 --busy（执行中语义的近义——「在处理」），被拒
+   走中性 muted（不是失败态：被拒可再申请，不该染红）。 */
+.access-landing-pending { margin: 0 0 var(--s5); font-size: 13px; color: var(--busy); }
+.access-landing-rejected { margin: 0 0 var(--s5); font-size: 13px; }
+.access-landing-actions { display: flex; justify-content: center; gap: var(--s3); }
+/* 访问闸未问出前的占位（P14-1）：整屏空底色，不闪任何内容再弹落地页。 */
+.console-gate { min-height: 100dvh; background: var(--bg); }
 
 /* 详情抽屉的事实清单：标签列固定、值列吃剩余——抽屉窄、长路径是常态，值截断配 title
    悬停。与 .project-facts（折行网格的卡片统计块）是两种语境，不共用。
@@ -1703,10 +1856,34 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
   .definition-grid { grid-template-columns: 1fr; }
 }
 
+/* 紧凑档 · 与宽度无关的那半（2026-09-21 小屏缺陷）：矮窗口（≤620px 高，例如 1000×490
+   的半屏窗口）与窄屏（≤560px 宽）都要把「壳 + 工具卡」收一档，把高度让给列表卡。
+   这里只放与宽度无关的规则；横向内距、readouts 两列、登录卡等窄屏专属降级留在下面
+   的 560 块。纪律：表格正文 13px / 表头 11px / mono 机器数据不动（列表可读性底线）。 */
+@media (max-width: 560px), (max-height: 620px) {
+  .content { padding-top: var(--s3); padding-bottom: var(--s3); }
+  .console[data-topnav] .content { padding-top: var(--s3); padding-bottom: var(--s3); }
+
+  /* 标题与操作合并一行（原先 560px 以下纵向堆叠要 100px 上下）：标题块允许收缩、
+     操作恒不缩（.topbar-actions 自带 flex:0 0 auto）；描述收成一行截断、字级降一档。 */
+  .page-head { flex-direction: row; align-items: center; gap: var(--s3); }
+  .page-head > :first-child { min-width: 0; }
+  .page-head h1 { font-size: 17px; }
+  .page-head p { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* 工具卡内「标题行 ↔ 筛选行」的间距与两卡内距各收一档。 */
+  .page-toolbar > :not(:last-child) { margin-bottom: var(--s3); }
+  .content-split > .page-toolbar { padding: var(--s3) var(--s4); }
+  .list-scroll { padding: var(--s3) var(--s4); }
+  .console[data-topnav] .page-card-toolbar { padding: var(--s3) var(--s4); }
+}
+
 @media (max-width: 560px) {
   .batch-item { grid-template-columns: 16px minmax(0, 1fr); }
   .batch-item > :last-child { grid-column: 2 / -1; }
-  .content { padding: var(--s5) 14px 36px; }
+  /* 窄屏横向内距（纵向由上面的紧凑档接管）。 */
+  .content { padding: var(--s3) 14px var(--s3); }
+  .console[data-topnav] .content { padding: var(--s3) var(--s4) var(--s3); }
   .topbar { padding: 0 14px; }
 
   /* 顶层导航壳窄屏：topbar 收紧内距即可——导航已由 .topbar-nav 自己居中，
@@ -1719,12 +1896,6 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
   .readout:not(:nth-child(-n+2)) { border-top: 1px solid var(--line); }
   .readout strong { font-size: 19px; }
 
-  .page-head { flex-direction: column; align-items: flex-start; gap: var(--s3); }
-  .page-head h1 { font-size: 19px; }
-  /* 小屏卡片化降级（P10-8）：上下两卡的内距收紧，给下卡留出滚动高度。 */
-  .content-split > .page-toolbar { padding: var(--s4) var(--s5) var(--s3); }
-  .list-scroll { padding: var(--s4) var(--s5); }
-  .console[data-topnav] .page-card-toolbar { padding: var(--s4) var(--s5) var(--s3); }
   .project-grid { grid-template-columns: 1fr; }
   .setting-row { align-items: flex-start; flex-direction: column; gap: var(--s3); }
 
@@ -2403,7 +2574,10 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .import-warning { color: var(--fail); }
 
 .import-tree {
-  max-height: calc(100dvh - 420px);
+  /* 下限 200px（2026-09-21 矮视口缺陷）：590px 视口下 `100dvh - 420px` 只剩 170px，
+     树被压成三行高、评审窗口里几乎不可用；clamp 给一个「还能看」的底，
+     正常桌面（≥620px 视口）行为不变。 */
+  max-height: clamp(200px, calc(100dvh - 420px), 60dvh);
   min-height: 160px;
   overflow: auto;
   border: 1px solid var(--line);
@@ -3566,7 +3740,11 @@ button.attribution-entry:hover .chip { border-color: var(--accent); }
   flex: 1 1 auto;
   align-self: stretch;
   min-width: 0;
-  min-height: 420px;
+  /* 保底从 420px 收到 240px（2026-09-21 矮视口缺陷）：min-height 在 CSS 里压过
+     max-height——590px 高的视口下 `100dvh - 300px` 只有 290px，原 420px 保底直接
+     让 max-height 失效，列表框比视口还高、读作「内容被裁」。240px 与列表卡保底
+     同一口径；正常桌面视口下 max-height 更大、420 与 240 无行为差异。 */
+  min-height: 240px;
   /* 列表永远是「一个框」：超过一屏就框内滚动，而不是把页面越撑越长——与画布
      （.flow-canvas overflow: hidden）同一约束。 */
   max-height: calc(100dvh - 300px);
@@ -3901,8 +4079,20 @@ button.attribution-entry:hover .chip { border-color: var(--accent); }
    出现——内容没超出视口时不留一条常驻空轨道（信息密集的表格上方一条灰杠
    读作「有东西被截断」，2026-09-09 反馈）。Firefox：thin 滚动条无溢出时轨道
    不渲染；WebKit：auto + overlay scrollbar 滚动时浮现；老 WebKit（常驻轨道）
-   用 hover/active 时才显形的自绘滚动条兜底。 */
-.table-scroll { max-width: 100%; overflow-x: auto; border-radius: var(--r-lg); }
+   用 hover/active 时才显形的自绘滚动条兜底。
+   容器查询锚点（2026-09-21 第三轮小屏缺陷）：列预算断点不能再按**视口**宽算——
+   1273px 视口展开侧栏（210px）加内距后，卡片/表格容器只有 ~1015px，按视口写的
+   ≤1100px 断点不命中，owner 列照旧把名称列挤没。挂上 inline-size 容器后，
+   「表格实际有多宽」由容器查询自己量：侧栏展开/收起、全局层无侧栏、modal 里的表
+   都各自成立。size containment 只作用在 inline 轴，元素宽度本就由父级决定，
+   不影响表格布局与 sticky 定位。 */
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: var(--r-lg);
+  container-type: inline-size;
+  container-name: grid;
+}
 .table-scroll > .grid { min-width: 720px; }
 .table-scroll::-webkit-scrollbar { height: 8px; }
 .table-scroll::-webkit-scrollbar-thumb {
@@ -4557,6 +4747,11 @@ button.step-row:hover { background: var(--hover); }
 .notification-grid td { height: 52px; }
 
 /* ── 个人中心（P12-2：/me 四 tab）──────────────────────────────────────────── */
+
+/* 标题行 + 回程键（2026-09-21）：个人中心是「从任意页进来的口袋页」，回程键（返回
+   进入前的页面）贴在标题左侧——`page-head` 自身是两端的 flex（标题左、操作右），
+   回程键属于标题侧的一部分，包一层而不是直接塞进 page-head（否则会被当右缘操作）。 */
+.me-head { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
 
 /* 改密表单：三个字段纵向排、宽度收在舒适录入宽度——表单铺满 1680px 的 measure 会让
    每一行都要横扫视线。 */

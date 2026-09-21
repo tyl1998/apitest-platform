@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Select } from "antd";
+import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Bell, Bot, CalendarCheck, ChevronDown, ChevronRight, Database, FileClock, FolderGit2, Globe, History, Layers, ListChecks, MessageSquare, Plug, ScrollText, TrendingUp, Users, Workflow, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Bell, Bot, CalendarCheck, ChevronDown, ChevronRight, Database, FileClock, FolderGit2, Globe, History, Layers, ListChecks, Lock, Mail, MessageSquare, Plug, ScrollText, TrendingUp, Users, Workflow, type LucideIcon } from "lucide-react";
+import { api, type AccessRequest, type ProjectIdentity, type ProjectRole } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
 import { useRecordLastPage } from "../hooks/useRecordLastPage";
 import { useNavGuardStore } from "../stores/navGuardStore";
@@ -104,9 +105,31 @@ export function ProjectShell() {
      crumb reads 项目/报告列表/{报告名称} rather than a generic「当前报告」. */
   const [detailTitle, setDetailTitle] = useState<string>();
 
-  useEffect(() => { void refresh(); }, [refresh]);
-  /* The URL owns which project is open, never leftover store state. */
-  useEffect(() => { if (projectId) void loadProject(projectId); }, [projectId, loadProject]);
+  /**
+   * P14-1 可见性两层的访问闸：非成员 URL 直达项目时，壳不再照常拉受保护数据
+   * （environments/endpoints/settings 会一路 403，弹出全局无权限 toast），而是先问
+   * 身份端点（登录即可读，边界 2），拿到「是不是成员」再决定渲染。
+   * - undefined：还没问出来 → 壳先不渲染正文（避免闪一帧再弹 403）。
+   * - isMember=false：渲染「无权限」落地页（找管理员降级态，申请入口在 P14-2）。
+   * - isMember=true / 系统管理员：照常进壳。
+   * 项目不存在（404）也归落地页——身份端点回 undefined 时 identity 为 null。
+   */
+  const [identity, setIdentity] = useState<ProjectIdentity | null>();
+  useEffect(() => {
+    if (!projectId) return;
+    setIdentity(undefined);
+    let alive = true;
+    api.projectIdentity(projectId)
+      .then((value) => { if (alive) setIdentity(value); })
+      .catch(() => { if (alive) setIdentity(null); });
+    return () => { alive = false; };
+  }, [projectId]);
+  const accessGranted = identity?.isMember ?? false;
+
+  useEffect(() => { if (accessGranted) void refresh(); }, [refresh, accessGranted]);
+  /* The URL owns which project is open, never leftover store state.
+     只有成员才 loadProject——非成员的 loadProject 会触发受保护端点 403（P14-1）。 */
+  useEffect(() => { if (projectId && accessGranted) void loadProject(projectId); }, [projectId, loadProject, accessGranted]);
 
   async function go(to: string) {
     if (to === location.pathname) return;
@@ -161,6 +184,11 @@ export function ProjectShell() {
     : active === "repo" ? t("nav.repoMode")
     : active === "mocks" ? "Mock"
     : t(`${active}.title`);
+
+  /* 访问闸（P14-1）：身份未问出前壳不渲染正文，问出非成员则渲染落地页。放在所有
+     hook 之后——早返回不能越过 hook 调用。 */
+  if (projectId && identity === undefined) return <div className="console-gate" />;
+  if (projectId && !accessGranted) return <NoProjectAccess projectId={projectId} identity={identity ?? null} onBack={() => navigate("/projects")} />;
 
   return <div className="console" data-collapsed={sidebarCollapsed || undefined}>
     <aside className="sidebar">
@@ -226,8 +254,8 @@ export function ProjectShell() {
         <SidebarToggle />
       </div>
     </aside>
-    <div className="frame">
-      <header className="topbar">
+      <div className="frame">
+        <header className="topbar">
         {/* Every crumb but the last is a link back to that level. */}
         <nav className="crumb" aria-label={t("nav.breadcrumb")}>
           {/* 面包屑的项目名是「返回项目」——落点是默认页（P8 边界 22 + 验收门槛 14：
@@ -249,7 +277,9 @@ export function ProjectShell() {
           <Select
             value={projectId}
             onChange={(id) => void go(`/projects/${id}/${active}`)}
-            options={projects.map((item) => ({ value: item.id, label: item.name }))}
+            /* 切换器只列成员项目（P14-1 边界 7 倾向）：切换器是「进入」的入口，非成员
+               项目进去只有落地页；「发现」交给项目目录页。 */
+            options={projects.filter((item) => item.isMember).map((item) => ({ value: item.id, label: item.name }))}
             placeholder={t("dashboard.projects")}
             style={{ width: 190 }}
           />
@@ -260,4 +290,122 @@ export function ProjectShell() {
         <Outlet key={projectId} context={{ setDetailTitle } satisfies DetailCrumbContext} />
     </div>
 </div>;
+}
+
+/** 建议角色下拉的三档（与成员管理同一套词汇）；「不指定」= 交给管理员定。 */
+const SUGGESTED_ROLES: ProjectRole[] = ["viewer", "developer", "project_admin"];
+
+/**
+ * 无权限落地页（P14-1 边界 2 / 验收门槛 2；P14-2 接自助申请入口）：非成员 URL 直达
+ * 项目时渲染这里，而不是裸 403。展示项目身份（名称/描述）+ 管理员线索（姓名/邮箱，
+ * 边界 7），并给出「申请加入」入口。
+ *
+ * 申请状态随落地页一并拉（`myAccessRequests` 过滤本项目）：已有 pending 时入口换成
+ * 「申请审批中」的只读态（边界 6：单 pending，重复提交会 409，不给能点的按钮）；
+ * 被拒 / 无申请时给「申请加入」按钮，可带一个建议角色（边界 7，管理员批准时可改定）。
+ *
+ * `identity` 为 null = 项目不存在（身份端点 404）或加载失败：退成「项目不存在」，
+ * 不暴露管理员线索、也不给申请入口（一个不存在的项目没有可申请的对象）。
+ */
+function NoProjectAccess({ projectId, identity, onBack }: { projectId: string; identity: ProjectIdentity | null; onBack: () => void }) {
+  const { t } = useTranslation();
+  const missing = !identity;
+
+  /* 本项目下我的申请（undefined = 还没问出来；null = 没有）。只看最近一条：被拒后
+     可再申请，pending 唯一，approved 意味着我已是成员（不该还停在落地页）。 */
+  const [myRequest, setMyRequest] = useState<AccessRequest | null>();
+  const [applyOpen, setApplyOpen] = useState(false);
+  const [suggestedRole, setSuggestedRole] = useState<ProjectRole | undefined>();
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (missing) { setMyRequest(null); return; }
+    let alive = true;
+    api.myAccessRequests()
+      .then((list) => { if (alive) setMyRequest(list.find((request) => request.projectId === projectId) ?? null); })
+      .catch(() => { if (alive) setMyRequest(null); });
+    return () => { alive = false; };
+  }, [projectId, missing]);
+
+  const pending = myRequest?.status === "pending";
+
+  async function submitApply() {
+    setSubmitting(true);
+    try {
+      const created = await api.createAccessRequest(projectId, suggestedRole ? { suggestedRole } : undefined);
+      setMyRequest(created);
+      setApplyOpen(false);
+      message.success(t("access.applySubmitted"));
+    } catch (error) {
+      const code = (error as { response?: { data?: { code?: number } } })?.response?.data?.code;
+      /* 409 = 已是成员或已有 pending（并发窗口）：拉一次最新状态而不是报错。 */
+      if (code === 2003) {
+        api.myAccessRequests().then((list) => setMyRequest(list.find((request) => request.projectId === projectId) ?? null)).catch(() => {});
+        message.info(t("access.applyConflict"));
+        setApplyOpen(false);
+      } else {
+        message.error(t("access.applyFailed"));
+      }
+    } finally { setSubmitting(false); }
+  }
+
+  return <div className="access-landing">
+    <div className="access-landing-card">
+      <div className="access-landing-mark" aria-hidden><Lock size={20} /></div>
+      {missing ? <>
+        <h1>{t("access.missingTitle")}</h1>
+        <p className="muted">{t("access.missingHint")}</p>
+      </> : <>
+        <p className="access-landing-eyebrow">{t("access.eyebrow")}</p>
+        <h1>{identity.name}</h1>
+        {identity.description && <p className="access-landing-desc">{identity.description}</p>}
+        <p className="muted">{t("access.noAccessHint")}</p>
+        {identity.admins.length ? <div className="access-landing-admins">
+          <p className="access-landing-admins-label">{t("access.adminsLabel")}</p>
+          <ul>
+            {identity.admins.map((admin) => <li key={admin.email}>
+              <span className="truncate">{admin.name}</span>
+              <a className="access-admin-mail" href={`mailto:${admin.email}`}><Mail size={13} />{admin.email}</a>
+            </li>)}
+          </ul>
+        </div> : <p className="muted access-landing-noadmin">{t("access.noAdminHint")}</p>}
+        {/* 申请状态条：pending 时是只读的「审批中」，被拒时提示可再申请。 */}
+        {pending && <p className="access-landing-pending">{t("access.applyPending")}</p>}
+        {myRequest?.status === "rejected" && <p className="muted access-landing-rejected">{myRequest.note ? t("access.applyRejectedNote", { note: myRequest.note }) : t("access.applyRejected")}</p>}
+      </>}
+      <div className="access-landing-actions">
+        <button className="btn" onClick={onBack}>{t("access.backToProjects")}</button>
+        {!missing && myRequest !== undefined && !pending && (
+          <button className="btn btn-primary" onClick={() => { setSuggestedRole(undefined); setApplyOpen(true); }}>
+            {myRequest?.status === "rejected" ? t("access.applyAgain") : t("access.apply")}
+          </button>
+        )}
+      </div>
+    </div>
+
+    {/* 申请弹窗：可选一个建议角色（管理员批准时可改定，边界 7）。 */}
+    <Modal
+      open={applyOpen}
+      title={t("access.applyTitle")}
+      okText={t("access.applySubmit")}
+      cancelText={t("action.cancel")}
+      confirmLoading={submitting}
+      onOk={() => void submitApply()}
+      onCancel={() => setApplyOpen(false)}
+    >
+      <p className="form-note">{t("access.applyHint")}</p>
+      <label className="field" style={{ marginTop: "var(--s4)" }}>
+        <span>{t("access.suggestedRole")}</span>
+        <Select
+          allowClear
+          value={suggestedRole}
+          onChange={(value) => setSuggestedRole(value)}
+          placeholder={t("access.suggestedRolePlaceholder")}
+          options={SUGGESTED_ROLES.map((role) => ({ value: role, label: role }))}
+          style={{ width: "100%" }}
+        />
+      </label>
+      <p className="form-note">{t("access.suggestedRoleHint")}</p>
+    </Modal>
+  </div>;
 }
