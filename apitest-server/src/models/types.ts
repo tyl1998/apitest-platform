@@ -3039,6 +3039,49 @@ export function mapMcpProjectBinding(row: Record<string, unknown>): McpProjectBi
 }
 
 /**
+ * MCP 绑定许可申请（2026-09-21 用户反馈，迁移 070）。成员在项目里申请「允许把 Token
+ * 绑到角色上限之外的档位」，project_admin 审批；批准行本身就是授权（有效 scope 实时
+ * 聚合，见 `lib/mcpScopes.ts`），不写第二张事实表。
+ *
+ * 与 `AccessRequest` 同形状（申请人 / 项目 / 状态 / 审批人 / note），但 `scope` 取代
+ * `suggestedRole`：批的是「哪几档 MCP 权限」，不是「什么角色」。`scope` 只含
+ * write / execute（read 是成员默认就有的，不必申请）。
+ */
+export type McpBindingRequest = {
+  id: string;
+  projectId: string;
+  projectName: string | null;
+  userId: string;
+  applicantEmail: string | null;
+  applicantName: string | null;
+  scope: McpScope[];
+  status: "pending" | "approved" | "rejected";
+  handledBy: string | null;
+  handledByEmail: string | null;
+  handledAt: string | null;
+  note: string;
+  createdAt: string;
+};
+
+export function mapMcpBindingRequest(row: Record<string, unknown>): McpBindingRequest {
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    projectName: row.project_name === null || row.project_name === undefined || row.project_name === "" ? null : String(row.project_name),
+    userId: String(row.user_id),
+    applicantEmail: row.applicant_email ? String(row.applicant_email) : null,
+    applicantName: row.applicant_name ? String(row.applicant_name) : null,
+    scope: mcpScopes(row.scope),
+    status: String(row.status) as McpBindingRequest["status"],
+    handledBy: row.handled_by ? String(row.handled_by) : null,
+    handledByEmail: row.handled_by_email ? String(row.handled_by_email) : null,
+    handledAt: row.handled_at === null || row.handled_at === undefined ? null : new Date(String(row.handled_at)).toISOString(),
+    note: String(row.note ?? ""),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
+}
+
+/**
  * 一个文本用例模块（P7，迁移 052）。`path` 物化（'/模块A/子模块/'），是身份
  * （UNIQUE (project_id, path)）；`parentId` 为空即顶层模块。`caseCount` 只在
  * 树查询里由分组子查询带出（该模块**直属**的用例数，含全部状态——导航计数

@@ -34,6 +34,7 @@ import { gitCredentialRoutes } from "./routes/gitCredentials.js";
 import { pipelineRunRoutes } from "./routes/pipelineRuns.js";
 import { reportShareRoutes } from "./routes/reportShares.js";
 import { mcpTokenRoutes } from "./routes/mcpTokens.js";
+import { mcpBindingRequestRoutes } from "./routes/mcpBindingRequests.js";
 import { mcpRoutes } from "./routes/mcp.js";
 import { meRoutes } from "./routes/me.js";
 import { systemUserRoutes } from "./routes/systemUsers.js";
@@ -122,6 +123,10 @@ export async function buildApp(): Promise<FastifyInstance> {
      + 项目管理员踢绑定 + 工具清单展示。签发 / 列表 / 吊销已上移到用户级（P12 边界 2，
      见下面的 meRoutes）。 */
   await app.register(mcpTokenRoutes);
+  /* 2026-09-21：MCP 绑定许可申请（迁移 070）。成员在项目 MCP 页申请角色上限之外的
+     write / execute 档位，project_admin 审批；批准行本身就是授权（有效 scope 实时
+     聚合，lib/mcpScopes.ts），绑定校验与 /mcp 第 5 道闸门都读它。 */
+  await app.register(mcpBindingRequestRoutes);
   /* P5-3：`/mcp` 端点（无状态，`apimcp_` Token + **五道闸门**，不走 JWT；P12 目标项目
      成为 tools/call 的必填参数）。SDK 挂载与兼容腿见 routes/mcp.ts 文件头；工具面登记
      进 lib/mcpServer.ts 的注册表（57 → 59，P12 加 list_my_projects / copy_endpoint）。 */

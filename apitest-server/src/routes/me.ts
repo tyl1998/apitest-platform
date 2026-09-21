@@ -4,6 +4,7 @@ import { pool } from "../db.js";
 import { currentUser } from "../lib/auth.js";
 import { writeAuditLogAsync } from "../lib/audit.js";
 import { issueMcpToken } from "../lib/mcpAuth.js";
+import { MCP_SCOPES, effectiveMcpScopes, grantedMcpScopesByProject, mergeMcpScopes } from "../lib/mcpScopes.js";
 import { myRoleInProject } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { isUuid } from "../lib/uuid.js";
@@ -24,20 +25,14 @@ import { mapMcpBinding, mapMcpToken, type McpScope, type MyRole } from "../model
  * read、write/execute 绑定需该项目 write），调用时刻还会每次重跑 `canAccess`——
  * 所以这里校验过不等于以后一直放行，它只保证「申请时你说得出理由」。
  *
+ * **角色上限不是唯一来源（2026-09-21）**：绑定时校验的是 `lib/mcpScopes.ts` 的
+ * **有效 scope**（角色上限 ∪ 本人在该项目已被批准的绑定许可申请，迁移 070）。
+ * 项目管理员批准一条许可后，这一档就进得了绑定，`/mcp` 第 5 道闸门也认同一条批准
+ * ——申请入口在项目 MCP 页（`routes/mcpBindingRequests.ts`）。
+ *
  * 审计（边界 8）：`mcp_token.create` 改挂用户级（无 projectId）；`mcp_token.bind` /
  * `mcp_token.unbind` 记项目与 scope。明文 token 与哈希一律不进审计（既有纪律）。
  */
-
-/** scope 三值（计划 9.0 边界 1；P12 移到绑定上）。绑定默认只给 `read`；`write` 与 `execute` 必须显式勾选。 */
-const MCP_SCOPES = ["read", "write", "execute"] as const;
-
-/** 角色 → 该角色能拿到的 scope 上限（绑定时校验）。viewer 只有 read；三种写角色全档。 */
-const ROLE_MAX_SCOPE: Record<MyRole, McpScope[]> = {
-  system_admin: ["read", "write", "execute"],
-  project_admin: ["read", "write", "execute"],
-  developer: ["read", "write", "execute"],
-  viewer: ["read"],
-};
 
 /**
  * 归一并校验绑定 scope 入参：去重、保序、不认识的值拒绝而不是静默丢弃。
@@ -80,6 +75,9 @@ export async function meRoutes(app: FastifyInstance) {
    * 可绑定项目：本人有角色的项目集 + 每项目的 scope 上限（前端绑定弹窗据此禁用选项）。
    * 系统管理员对所有项目短路为 system_admin。**不返回任何项目指标**——这只是绑定选择器
    * 的选项源，不是项目目录。
+   *
+   * `maxScope` 是**有效**上限（2026-09-21）：角色上限 ∪ 本项目已批准的绑定许可申请。
+   * 已批准但还没绑的档位在这里就要可见——否则用户批完仍看到灰勾选框，以为批准没生效。
    */
   app.get("/api/v1/me/bindable-projects", async (request, reply) => {
     const user = await currentUser(request, reply);
@@ -92,14 +90,17 @@ export async function meRoutes(app: FastifyInstance) {
             ORDER BY p.name`,
           [user.id],
         );
+    /* 已批准申请一次全取，逐项目合（每个项目一条查询在这里是 N+1）。 */
+    const grants = await grantedMcpScopesByProject(user.id);
     return success({
       projects: result.rows.map((row) => {
+        const projectId = String(row.id);
         const role = (user.isSystemAdmin ? "system_admin" : String(row.role)) as MyRole;
         return {
-          projectId: String(row.id),
+          projectId,
           name: String(row.name),
           role,
-          maxScope: ROLE_MAX_SCOPE[role] ?? ["read"],
+          maxScope: mergeMcpScopes(role, grants.get(projectId) ?? []),
         };
       }),
       total: result.rowCount ?? 0,
@@ -190,8 +191,9 @@ export async function meRoutes(app: FastifyInstance) {
 
   /**
    * 绑定 token 到项目（或改该绑定的 scope）。**绑定时刻要求实时角色匹配**（边界 3）：
-   * 申请的每个 scope 都必须落在本人当前角色的上限内——viewer 只能绑 read，developer 可
-   * 绑全档。同 (token, project) 重复绑定 = 改 scope（upsert）。
+   * 申请的每个 scope 都必须落在本人的**有效上限**内（角色上限 ∪ 本项目已批准的绑定
+   * 许可申请，迁移 070）——viewer 默认只能绑 read，除非项目管理员批过更高档位。同
+   * (token, project) 重复绑定 = 改 scope（upsert）。
    */
   app.post<{ Params: { tokenId: string }; Body: { projectId?: string; scope?: unknown } }>("/api/v1/me/mcp/tokens/:tokenId/bindings", async (request, reply) => {
     const user = await currentUser(request, reply);
@@ -208,10 +210,11 @@ export async function meRoutes(app: FastifyInstance) {
     const project = await pool.query("SELECT 1 FROM projects WHERE id = $1", [projectId]);
     if (!project.rowCount) return fail(reply, 404, 2001, "project not found");
 
-    /* 实时角色（边界 3）：非成员或已降权者不能绑定到超出自身权限的 scope。 */
+    /* 实时角色（边界 3）+ 已批准许可（2026-09-21）：非成员不能绑；超出**有效上限**
+       （角色 ∪ 批准的绑定许可申请）的档位要先走项目 MCP 页的申请通道。 */
     const role = await myRoleInProject(user, projectId);
     if (!role) return fail(reply, 403, 1003, "forbidden: you are not a member of that project");
-    const maxScope = ROLE_MAX_SCOPE[role] ?? ["read"];
+    const maxScope = await effectiveMcpScopes(role, user.id, projectId);
     for (const scope of declared.scopes!) {
       if (!maxScope.includes(scope)) return fail(reply, 403, 1003, `forbidden: scope "${scope}" exceeds your role in that project`);
     }

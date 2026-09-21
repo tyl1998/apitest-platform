@@ -1,6 +1,8 @@
 import { pool } from "../db.js";
+import { mergeMcpScopes } from "./mcpScopes.js";
 import type { McpToolDefinition } from "./mcpServer.js";
 import { toolResult } from "./mcpToolResult.js";
+import type { McpScope, MyRole } from "../models/types.js";
 
 /**
  * 用户级工具（P12-1，计划 18.0 边界 5）：`list_my_projects`。
@@ -19,18 +21,14 @@ import { toolResult } from "./mcpToolResult.js";
  * 「门还在、钥匙不对了」，而不是继续报可触达。
  */
 
-/** 三值里 read 恒在，故只读绑定也永远能调用本工具本身。 */
-const ROLE_MAX_SCOPE: Record<string, string[]> = {
-  system_admin: ["read", "write", "execute"],
-  project_admin: ["read", "write", "execute"],
-  developer: ["read", "write", "execute"],
-  viewer: ["read"],
-};
-
+/** 三值里 read 恒在，故只读绑定也永远能调用本工具本身。
+ *
+ *  角色上限与「已批准的绑定许可申请」的并集口径在 `lib/mcpScopes.ts`（单点），这里
+ *  不再留第二份 —— 2026-09-21 加许可申请时就地归一。 */
 export const ME_TOOLS: readonly McpToolDefinition[] = [
   {
     name: "list_my_projects",
-    description: "List the projects THIS token is bound to, with the scope granted on each binding, the project's MCP channel state, and the issuer's live role. Call this first when a projectId is missing or rejected — every other tool takes a required projectId that must appear here. `reachable: false` means the binding exists but calls to that project will be refused (channel off, or the issuer lost the role). This tool takes no projectId and cannot list projects the token is not bound to (such projects exist but are invisible here), cannot create bindings (bind/unbind is a platform UI action), and returns no project metrics.",
+    description: "List the projects THIS token is bound to, with the scope granted on each binding, the project's MCP channel state, and the issuer's live role plus any approved MCP binding permissions. Call this first when a projectId is missing or rejected — every other tool takes a required projectId that must appear here. `reachable: false` means the binding exists but calls to that project will be refused (channel off, or the issuer is no longer a member). This tool takes no projectId and cannot list projects the token is not bound to (such projects exist but are invisible here), cannot create bindings or request permissions (both are platform UI actions), and returns no project metrics.",
     scope: "read",
     inputSchema: { type: "object", properties: {} },
     handler: async (_args, identity) => {
@@ -40,7 +38,10 @@ export const ME_TOOLS: readonly McpToolDefinition[] = [
       const isSystemAdmin = Boolean(owner.rows[0]?.is_system_admin) && owner.rows[0]?.status === "active";
       const result = await pool.query(
         `SELECT p.id, p.name, p.description, b.scope, COALESCE(s.mcp_enabled, false) AS mcp_enabled,
-                r.role, b.bound_at
+                r.role, b.bound_at,
+                COALESCE((SELECT array_agg(DISTINCT gs)
+                            FROM mcp_binding_requests br, unnest(br.scope) AS gs
+                           WHERE br.project_id = p.id AND br.user_id = $2 AND br.status = 'approved'), '{}') AS granted_scope
            FROM mcp_token_projects b
            JOIN projects p ON p.id = b.project_id
            LEFT JOIN project_settings s ON s.project_id = p.id
@@ -52,9 +53,11 @@ export const ME_TOOLS: readonly McpToolDefinition[] = [
       return toolResult({
         projects: result.rows.map((row) => {
           const scope = Array.isArray(row.scope) ? (row.scope as unknown[]).map(String) : [];
+          const granted = Array.isArray(row.granted_scope) ? (row.granted_scope as unknown[]).map(String) as McpScope[] : [];
           const role = isSystemAdmin ? "system_admin" : (row.role ? String(row.role) : null);
-          const maxScope = role ? (ROLE_MAX_SCOPE[role] ?? []) : [];
-          /* scope 只在角色允许的范围内才生效（绑定时已校验，撤权后这里会掉下来）。 */
+          /* 有效上限 = 角色上限 ∪ 本项目已批准的绑定许可（2026-09-21，`lib/mcpScopes.ts`）。 */
+          const maxScope = role ? mergeMcpScopes(role as MyRole, granted) : [];
+          /* scope 只在有效上限内才生效（绑定时已校验，撤权后这里会掉下来）。 */
           const effective = scope.filter((each) => maxScope.includes(each));
           const mcpEnabled = Boolean(row.mcp_enabled);
           return {

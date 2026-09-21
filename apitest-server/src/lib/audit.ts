@@ -96,6 +96,13 @@ export const AUDIT_ACTIONS = {
      detail 只带可选 note（自由文本，不含业务数据）。 ── */
   /** 拒绝权限申请。target = user（申请人）；detail 带可选 note。批准不在这里（走 member.upsert）。 */
   accessRequestReject: "access_request.reject",
+  /* ── 2026-09-21 MCP 绑定许可申请（迁移 070）。批准行本身就是授权（有效 scope 实时
+     聚合），所以批准也要落一条——它不落成员表，没有 member.upsert 那个现成动作可借。
+     target = user（申请人），detail 带 projectId 与批准/申请的档位。 ── */
+  /** 批准 MCP 绑定许可申请。 */
+  mcpBindingRequestApprove: "mcp_binding_request.approve",
+  /** 拒绝 MCP 绑定许可申请。detail 带可选 note。 */
+  mcpBindingRequestReject: "mcp_binding_request.reject",
   /* ── P8-2：失败归因（计划 12.2）。target = failure_attribution（targetId 是被归因
       的叶子失败行 id，不是归因行 id——归因行随打标生灭，「哪条失败被谁归成了什么」
       才是审计要回答的问题）。detail 只带分类码与目标类型，note 自由文本不进

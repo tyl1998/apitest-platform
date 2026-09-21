@@ -15,7 +15,7 @@ import { pool } from "../db.js";
  * 同一条取舍——返回 void，错误吞进日志）。
  */
 
-export type InboxKind = "member_change" | "plan_assign" | "alert" | "suite_result" | "ci_result" | "access_request";
+export type InboxKind = "member_change" | "plan_assign" | "alert" | "suite_result" | "ci_result" | "access_request" | "mcp_binding_request";
 
 /**
  * 全体成员扇出（member_change / plan_assign）。

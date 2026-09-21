@@ -4,9 +4,10 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { pool } from "../db.js";
 import { AUDIT_ACTIONS, writeAuditLogAsync } from "../lib/audit.js";
 import { authenticateMcp, mcpBearerToken, resolveBinding, type McpPrincipal } from "../lib/mcpAuth.js";
+import { hasMcpScopeGrant } from "../lib/mcpScopes.js";
 import { buildMcpServer, findMcpTool, mcpAuthInfo, mcpPrincipalFromAuthInfo, toolNeedsProject } from "../lib/mcpServer.js";
 import { canAccess } from "../lib/rbac.js";
-import { mapUser, type User } from "../models/types.js";
+import { mapUser, type McpScope, type User } from "../models/types.js";
 
 /**
  * `/mcp` 端点（P5-3，计划 9.2 / 9.3；P12-1 改为用户级 Token + 目标项目参数）。一条
@@ -29,7 +30,9 @@ import { mapUser, type User } from "../models/types.js";
  *    projectId，先调 list_my_projects」）：给模型一条自救路径，不透露被拒的项目或
  *    绑定是否存在（2026-09-16 增补，见 failMcpMethodNotFound 注释）；
  * ⑤ 按 owner 重跑 `canAccess(owner, 目标项目, write = 工具 scope ≠ read)` → 403
- *    （**read 也查**，边界 3：owner 被移出项目后 read token 立刻读不动）。
+ *    （**read 也查**，边界 3：owner 被移出项目后 read token 立刻读不动）。2026-09-21
+ *    起角色判不过时再看这一档是否被项目管理员批准过绑定许可（迁移 070），但**先要求
+ *    仍是成员**——许可补档位不补身份（见 tokenMayAccess）。
  * 无项目数据的工具（`get_script_contract` / `list_my_projects`）只受①约束。
  * ⑤ 的 owner 行与 canAccess 结果都是**惰性加载 + 请求内缓存**：纯粹的 initialize /
  * tools/list 请求不触发任何额外的用户查询与角色查询（闸门②③④都是廉价判据，先跑）。
@@ -112,12 +115,22 @@ async function mcpEnabled(projectId: string): Promise<boolean> {
  * 钥匙，不是一份权限快照；owner 被降权或被移出项目，Token 立刻不好使）。read 工具走
  * `write = false`。
  *
+ * **2026-09-21 起再加一条**：角色判不过时，看这一档是否被项目管理员批准过绑定许可
+ * （迁移 070 的 `mcp_binding_requests`，按**单档**判——批了 write 不等于能 execute）。
+ * 只放宽后者不放宽这里，会让「批准」变成空头支票：绑定绑得上，调用仍被这一道拦下。
+ * **许可补的是档位、不是成员身份**：先要求仍是成员（read 判过），被移出项目后读都
+ * 过不了，更不该靠一条历史批准把写放行。
+ *
  * owner 必定存在（`authenticateMcp` 已排除 `created_by IS NULL` 与已删行）；查不到
  * active 行（例如刚被禁用）一律判否——「谁被拒了」要能落到人，落不到人就不放行。
  */
-async function tokenMayAccess(owner: User | undefined, projectId: string, write: boolean): Promise<boolean> {
+async function tokenMayAccess(owner: User | undefined, projectId: string, scope: McpScope): Promise<boolean> {
   if (!owner) return false;
-  return canAccess(owner, projectId, write);
+  const write = scope !== "read";
+  if (await canAccess(owner, projectId, write)) return true;
+  /* 许可只在「仍然是成员」的前提下生效（成员身份由 read 判——viewer 即可）。 */
+  if (!await canAccess(owner, projectId, false)) return false;
+  return hasMcpScopeGrant(owner.id, projectId, scope);
 }
 
 /** 第 2/4/5 道闸门的拒绝审计（边界 13：只审计写入、执行与拒绝；P12 边界 8 补目标项目）。 */
@@ -236,11 +249,12 @@ export async function mcpRoutes(app: FastifyInstance) {
         auditRejected(principal, tool.name, "scope", binding.projectId, request.ip);
         return failMcpMethodNotFound(reply, target.id);
       }
-      const write = tool.scope !== "read";
-      const cacheKey = `${binding.projectId}:${write}`;
+      /* 缓存键按**单档**而不是 read/write 两分（2026-09-21：批准许可按档判）——同一个
+         批量体里 write 与 execute 可能一个批了、一个没批，两分键会把结论串档。 */
+      const cacheKey = `${binding.projectId}:${tool.scope}`;
       let allowed = accessCache.get(cacheKey);
       if (allowed === undefined) {
-        allowed = await tokenMayAccess(await loadOwner(), binding.projectId, write);
+        allowed = await tokenMayAccess(await loadOwner(), binding.projectId, tool.scope);
         accessCache.set(cacheKey, allowed);
       }
       if (!allowed) {
