@@ -2919,6 +2919,48 @@ POST   /api/v1/notifications/read-all                   全部已读
   新通知到达入口按钮跳 + 徽标 → 抽屉内看最近通知、点行深链 → 顶栏不再有
   铃铛、原铃铛位是助手头像）。
 
+##### 2026-09-22 增补：手臂姿态帧扩展（用户要求「给人物设计更多动作」）
+
+在 13.4.9「人物反应」之上补 4 个手臂姿态帧（沿用同一约束：反应 = 同一张脸上的
+表演，不动物种与配色；离散、状态变化驱动，reduced-motion 下位移停、姿态帧保留；
+仅 `full` 取景有手臂，`bust` 圆钮无臂不受影响）：
+
+- **`lib/avatar.ts`**：`AvatarPose` 由 `idle | cheer` 扩为
+  `idle | cheer | wave | shrug | point | crossed`；新增 `drawArmWave` / `drawArmShrug`
+  / `drawArmPoint` / `drawArmCrossed`（几何照搬既有 `drawArm` / `drawArmUp`）；手臂
+  分派改 `ARM_POSES` 左右分侧表——对称姿态两侧同函数靠镜像成右臂，**wave / point
+  单侧做动作、另一侧仍垂手**。
+- **`Avatar.tsx`**：`AvatarPulseKind` 增 `wave` / `shrug` / `point`（均非跳跃，走
+  保持计时）；`pose` 派生扩为「cheer > wave/shrug/point 一次性 > thinking=crossed
+  持续 > idle」，并补 shrug 抿嘴+略低头、wave 微笑+平视、point 视线朝指向侧。
+- **触发点（AssistantDock）**：合抽屉挥手告别（`wave`，Drawer 不销毁子树、滑出帧
+  仍可见）/ 用户叫停生成摊手（`shrug`）/ 流式中抱臂等待（`crossed`，由 thinking
+  心情自动带出，无新触发）。`point` 姿态与绘制就绪，暂未接事件——留待「助手抛出
+  可操作项（如 MRTR 确认卡出现）时指一下」这类明确状态变化再接。
+- **验证**：按 AGENTS.md 留给用户——`cd apitest-web && pnpm check`，服务重启后手工
+  看抽屉头 96px：开/合抽屉挥手、发消息→流式抱臂、按停止摊手；reduced-motion 下
+  只落姿态帧不位移。
+
+##### 2026-09-22 再增补：流式踱步 walk（用户明确放宽 Quiet Console 规则 4）
+
+用户要求「消息发送时抱臂 + 走路」。抱臂已由 thinking 心情带出（发消息即流式→抱臂）；
+走路是**循环动画**，与锁定契约的规则 4「全应用只允许一个环境动画」冲突。**用户明确
+决定放宽规则 4**：从「只允许 1 个」放宽为「允许 2 个，且都必须绑在流式状态、结束即停」
+——新增的第二个 = 助手流式回复时原地踏步。已同步改 `quiet-console` skill 的规则 4
+（附 2026-09-22 放宽说明）与 Banned 行。
+
+- **`lib/avatar.ts`**：`AvatarOptions` 增 `walk`（相位 0..1 循环，调用方 rAF 驱动）；
+  `drawLeg` 加 `swing ∈ [-1,1]`（膝/脚前后摆 + 抬脚，swing=0 退回直立腿）；两腿相位
+  差半拍，`toX/toY` 叠加躯干左右微摆 `sway` 与每半拍一次的小起伏 `bob`。仅 `full`
+  取景有腿。
+- **`Avatar.tsx`**：新增 walk rAF 时钟，**只在 `mood==="thinking"` 且非 reduced-motion
+  时跑**（~1s 一个步态循环），流式结束 mood 回 idle 即停在站立帧；与抱臂 pose 叠加
+  = 「踱步思考」。reduced-motion 下不跑循环，只留站立 + 抱臂静态帧。
+- **边界**：踱步只绑流式状态，和在飞呼吸点同时出现是这次放宽后允许的一对；不得再
+  加第三个循环，也不得让任一循环脱离在飞请求常驻。
+- **验证**：按 AGENTS.md 留给用户——`pnpm check` + 服务重启后看：发消息→抽屉头小人
+  抱臂原地踏步、回复结束停下站直；reduced-motion 下只抱臂不迈腿。
+
 #### 13.4.10 P9-8 实现状态（2026-09-16）上游异常演练
 
 三类上游异常逐条落点（**不做脱敏**——上游自报的错误文案原样透出，那是上游说的话，

@@ -33,9 +33,20 @@ that direction.
    where the developer-tool feel comes from — not from glow.
 
 4. **Motion marks state changes only.** Transitions are `--t` (120ms) on
-   hover/selection. Exactly one ambient animation is permitted in the whole
-   app: the breathing dot on an in-flight request. No scanlines, no drifting
-   grids, no pulsing glows. `prefers-reduced-motion` is honored globally.
+   hover/selection. Two ambient animations are permitted app-wide, both tied
+   to an in-flight request: the breathing dot, and the assistant avatar
+   pacing (walking in place with arms crossed) while a reply streams — see
+   the 2026-09-22 relaxation note below. Both stop the instant the request
+   settles. No scanlines, no drifting grids, no pulsing glows, and no
+   ambient motion outside those two. `prefers-reduced-motion` is honored
+   globally (the pace loop drops to a static standing + arms-crossed frame).
+
+   > **2026-09-22 relaxation (owner decision).** Rule 4 originally allowed
+   > exactly one ambient animation. It was deliberately widened to two so the
+   > assistant character can pace while thinking. The constraint that
+   > survives: ambient motion is only allowed *bound to the streaming state*
+   > and must cease when the stream ends. Do not add a third, and do not make
+   > either loop run outside an in-flight request.
 
 5. **The shell owns the viewport; only `.content` scrolls.** `.console` is
    `100dvh` with `overflow: hidden`. The sidebar and topbar never scroll.
@@ -45,8 +56,9 @@ that direction.
 
 Gradients on surfaces · `box-shadow` used as glow · `backdrop-filter`
 scanline or grid overlays · a second accent hue · ambient/looping animation
-· semantic colors used for decoration · `Math.floor` on rates and latencies
-(keep one decimal) · webfonts loaded from a CDN (use `@fontsource/*`)
+*other than the two request-bound loops named in rule 4* · semantic colors
+used for decoration · `Math.floor` on rates and latencies (keep one decimal)
+· webfonts loaded from a CDN (use `@fontsource/*`)
 
 ## Layout invariants
 
