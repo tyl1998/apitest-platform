@@ -20,7 +20,7 @@ import { NestedStepList } from "./NestedStepList";
 import { PreRequestHookEditor } from "./PreRequestHookEditor";
 import { RunStatusTag } from "./RunStatusTag";
 import { VariableField } from "./VariableField";
-import { toRunStatus } from "../ui";
+import { RESULT_DRAWER_WIDTH, toRunStatus } from "../ui";
 import { useThemeMode } from "../theme";
 import { DatabaseResult } from "./DatabaseResult";
 import { ScriptCodeEditor } from "./ScriptCodeEditor";
@@ -734,7 +734,7 @@ function DatabaseNodeDrawer({ projectId, flowId, node, nodes, edges, variables, 
   ];
 
   return <>
-    <Drawer title={t("flows.nodeTitle")} open onClose={onClose} width={760} extra={<NodeDrawerActions running={running} onRun={() => void runNode()} onDelete={onDelete} />}>
+    <Drawer title={t("flows.nodeTitle")} open onClose={onClose} width={RESULT_DRAWER_WIDTH} extra={<NodeDrawerActions running={running} onRun={() => void runNode()} onDelete={onDelete} />}>
       <div className="form-grid">
         <label className="field"><span>{t("flows.nodeName")}</span><input className="input" value={node.name} onChange={(event) => change({ name: event.target.value })} placeholder={t("flows.databaseNodeNamePlaceholder")} /></label>
         <label className="field"><span>{t("flows.onFailure")}</span><Select value={node.onFailure} onChange={(onFailure) => change({ onFailure })} options={[{ value: "stop", label: t("flows.failureStop") }, { value: "continue", label: t("flows.failureContinue") }]} style={{ width: "100%" }} /></label>
@@ -1077,8 +1077,8 @@ function asGenericStep(result?: FlowStepResult, type?: string): ExecutionStep | 
 /** The SQL evidence inside a database step's output_snapshot. */
 function databaseOutcome(result: ExecutionStep | undefined) {
   if (!result?.output?.rows) return undefined;
-  const output = result.output as { rows: Record<string, unknown>[]; rowCount?: number; truncated?: boolean };
-  return { rows: output.rows, rowCount: Number(output.rowCount ?? 0), truncated: Boolean(output.truncated), durationMs: result.durationMs };
+  const output = result.output as { rows: Record<string, unknown>[]; rowCount?: number; truncated?: boolean; fullScan?: boolean };
+  return { rows: output.rows, rowCount: Number(output.rowCount ?? 0), truncated: Boolean(output.truncated), durationMs: result.durationMs, fullScan: Boolean(output.fullScan) };
 }
 
 function toUnknownPairs(record: Record<string, unknown>): Pair[] {

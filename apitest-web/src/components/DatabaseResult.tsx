@@ -3,6 +3,10 @@ import { Modal } from "antd";
 import { useTranslation } from "react-i18next";
 import type { SqlExecutionResult } from "../api";
 
+/* 慢查询阈值：执行耗时到达此值即在结果区标一个「慢查询」提示。库查询过 1s 值得回看
+   是否走了索引/该不该加条件，取整秒是易记的默认门槛，而非精确的性能判据。 */
+const SLOW_QUERY_MS = 1000;
+
 export function DatabaseResult({ result, error }: { result?: SqlExecutionResult; error?: string }) {
   const { t } = useTranslation();
   /* 展开中的行下标。声明必须在下面两个早退之前——hooks 不能出现在条件之后。 */
@@ -12,12 +16,16 @@ export function DatabaseResult({ result, error }: { result?: SqlExecutionResult;
   const columns = Array.from(new Set(result.rows.flatMap((row) => Object.keys(row))));
   /* 下标越界即视为没有展开：重新跑一次 SQL 后，上次记住的下标可能已经不存在了。 */
   const detail = openRow === undefined ? undefined : result.rows[openRow];
+  const slow = result.durationMs >= SLOW_QUERY_MS;
 
   return <div className="sql-result">
     <div className="sql-result-meta mono">
       <span>{t("dataSources.rowCount", { count: result.rowCount })}</span>
-      <span>{result.durationMs.toFixed(1)} ms</span>
-      {result.truncated && <span>{t("dataSources.truncated")}</span>}
+      <span className={slow ? "sql-result-warn" : undefined}>{result.durationMs.toFixed(1)} ms</span>
+      {result.truncated && <span className="sql-result-warn">{t("dataSources.truncated")}</span>}
+      {/* 全表扫描：SQL 自身没写 LIMIT/TOP/FETCH，服务端已默认按 200 行封顶。 */}
+      {result.fullScan && <span className="sql-result-warn" title={t("dataSources.fullScanHint")}>{t("dataSources.fullScan")}</span>}
+      {slow && <span className="sql-result-warn" title={t("dataSources.slowQueryHint", { ms: SLOW_QUERY_MS })}>{t("dataSources.slowQuery")}</span>}
     </div>
     {result.rows.length > 0 && <div className="table-scroll">
       <table className="grid sql-result-grid">

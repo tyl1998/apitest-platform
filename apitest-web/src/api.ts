@@ -132,7 +132,7 @@ export type SqlDefinitionInput = {
   operation?: DataSourceOperation;
   params: SqlParameter[];
 };
-export type SqlExecutionResult = { rows: Record<string, unknown>[]; rowCount: number; truncated: boolean; durationMs: number };
+export type SqlExecutionResult = { rows: Record<string, unknown>[]; rowCount: number; truncated: boolean; durationMs: number; fullScan?: boolean };
 export type SqlExecutionInput = { sql?: string; statementType?: SqlStatementType; kind?: "sql" | "mongo" | "redis"; operation?: DataSourceOperation; params?: SqlParameter[]; values: Record<string, unknown> };
 /**
  * 交互式查询面板一次 /query 的执行历史（P2-1 增量）。元数据永久留，`resultPreview` 是被

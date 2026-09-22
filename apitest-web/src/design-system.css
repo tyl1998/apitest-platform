@@ -688,7 +688,7 @@ body {
 .content-split {
   display: flex;
   flex-direction: column;
-  /* 高度够就各就各位（下卡吃掉剩余高度、卡内滚动）；装不下时**不能**是 `hidden`
+  /* 卡内滚动兜底（2026-09-21 小屏缺陷）：视口装不下「工具卡 + 保底 240px 列表卡」时，
      ——窄屏工具卡换行后动辄 300px 起步，flex 会把下卡压到 0 高，同时把工具卡的下缘
      一起裁掉（末尾的筛选/操作按钮够不着、列内滚动条无处可滚，2026-09-21 小屏缺陷）。
      改为容器自己滚：`.content-split` 与 `.content` 是同一元素，滚动仍落在规则 5 的
@@ -696,6 +696,10 @@ body {
      `.table-scroll` 自己身上）。 */
   overflow-x: hidden;
   overflow-y: auto;
+  /* 列表卡底缘与侧栏齐平（2026-09-22 用户取舍）：`.content` 的 --s8 底内距会在下卡之下留
+     48px 间隙，卡片模型下这段留白没有意义（卡自己滚、下面不再有别的内容）。收成 0，让
+     `.list-card` 一直吃到视口底。工具卡模式（.content-split）专属，普通 .content 页不受影响。 */
+  padding-bottom: 0;
 }
 
 /* 卡片形态只在 `.content-split` 下启用：工具卡同宽、有边框圆角、不吸附（列表卡自己
@@ -779,26 +783,9 @@ body {
    表头）会把卡撑破——一律收到 0，交给卡内滚动处理。 */
 .list-card > * { min-width: 0; }
 
-/* ── 卡片模型的极端矮视口兜底（P10-8 遗留缺陷，2026-09-21）────────────────────
-   保底高度 + 容器滚动已经保证「不坏」；视口矮到连「工具卡 + 240px 列表卡」都装不下
-   时（横屏手机、桌面矮窗口），退回规则 5 的原始形态：两张卡按内容高度自然排布、
-   `.content` 整页滚动，卡内不再有第二个滚动容器（「页面滚 + 卡内滚」两层在触屏上
-   穿起来很别扭）。**窄屏不走这条**——≤560px 是紧凑档（见下面的 560 断点）：
-   卡片模型保留（工具卡常驻、列表卡吃到视口底），把工具卡收一档腾高度。 */
-@media (max-height: 460px) {
-  .content.content-split { display: block; }
-  /* 卡随内容长，保底高度不再需要（`.content` 兜住滚动）。 */
-  .list-card { display: block; min-height: 0; }
-  /* 吸附表头的滚动祖先变回 `.content`：卡不再是滚动容器，表头钉在自己盒子上就等于
-     钉在表头 —— 显式收回，免得留一个「滚起来不知道谁在滚」的伪吸附。 */
-  .list-card .grid thead th { position: static; }
-  /* 全局层同款：卡与正文都回到内容高度，滚动交回 `.content`（它原本 `overflow: hidden`
-     只为「卡内滚动」服务，卡不再定高后要放它滚）。正文的 `overflow-y: auto` 留着
-     ——高度 auto 时纵向不产生滚动条，横向的宽表照旧由它兜底。 */
-  .console[data-topnav] .content { overflow-y: auto; }
-  .console[data-topnav] .page-card { height: auto; min-height: 0; }
-  .page-card-body { min-height: 0; }
-}
+/* 卡片模型不再按视口高度回退（2026-09-22 用户取舍）：默认情况下内部可滚动的列表卡永远
+   吃满剩余高度、底缘与侧边栏齐平，任何视口高度都保持卡片模型（卡内滚动），不再在矮窗口
+   退回整页滚动。原 `@media (max-height: 460px)` 的极端矮视口兜底按此要求移除。 */
 
 .page-head {
   display: flex;
@@ -1980,11 +1967,12 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
   .definition-grid { grid-template-columns: 1fr; }
 }
 
-/* 紧凑档 · 与宽度无关的那半（2026-09-21 小屏缺陷）：矮窗口（≤620px 高，例如 1000×490
-   的半屏窗口）与窄屏（≤560px 宽）都要把「壳 + 工具卡」收一档，把高度让给列表卡。
-   这里只放与宽度无关的规则；横向内距、readouts 两列、登录卡等窄屏专属降级留在下面
-   的 560 块。纪律：表格正文 13px / 表头 11px / mono 机器数据不动（列表可读性底线）。 */
-@media (max-width: 560px), (max-height: 620px) {
+/* 紧凑档（2026-09-21 小屏缺陷；2026-09-22 按用户取舍去掉「按高度触发」那半）：只在窄屏
+   （≤560px 宽）把「壳 + 工具卡」收一档、把高度让给列表卡。原先矮窗口（≤620px 高）也触发，
+   现移除——默认卡片模型永远吃满高度、底缘与侧栏齐平，不再按视口高度降级。这里只放与宽度
+   无关的规则；横向内距、readouts 两列、登录卡等窄屏专属降级留在下面的 560 块。
+   纪律：表格正文 13px / 表头 11px / mono 机器数据不动（列表可读性底线）。 */
+@media (max-width: 560px) {
   .content { padding-top: var(--s3); padding-bottom: var(--s3); }
   .console[data-topnav] .content { padding-top: var(--s3); padding-bottom: var(--s3); }
 
@@ -2800,6 +2788,28 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 
 .pager { display: flex; justify-content: flex-end; margin-top: var(--s4); }
 
+/* 列表卡里的翻页条做成卡底页脚（2026-09-22）：卡底缘贴视口后，原先只有 margin-top、右下角
+   贴着卡边显得局促。改成 flex:0 0 auto 的常驻页脚——上边线与列表分隔，四周留白，右缘不再顶边。 */
+.list-card > .pager {
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding: var(--s3) var(--s5);
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+/* 用例库分页常驻卡底（2026-09-22）：pager 是 `.spec-main`（卡内右栏的纵向滚动容器）的直接
+   子节点，原先随表一起滚——页面一变矮翻页就滑出视口看不到。钉在滚动容器底缘，不透明底
+   + 上边线盖住下方滚过的行；横向留白与卡底页脚同款；页面滚动仍只落在 .spec-main（规则 5 不破）。 */
+.spec-main .pager {
+  position: sticky;
+  bottom: 0;
+  margin-top: 0;
+  padding: var(--s3) var(--s5);
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+
 /* ── Icon actions ──────────────────────────────────────────────── */
 
 /**
@@ -2852,7 +2862,7 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 /* ── Endpoint table ────────────────────────────────────────────── */
 
 .endpoint-grid { table-layout: fixed; }
-.endpoint-grid .col-path { width: 28%; }
+.endpoint-grid .col-path { width: 22%; }
 .endpoint-grid .col-num { width: 82px; }
 .endpoint-grid .col-history { width: 108px; }
 .endpoint-grid .col-status { width: 92px; }
@@ -2860,11 +2870,33 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .endpoint-grid .col-actions { width: 166px; }
 .endpoint-grid .col-cases { width: 76px; }
 
+/* 接口表：创建人/更新人常驻，容器不够时横向滚动而不是收列（用户取舍：宁可横滑也要看到两列）。
+   通用的 `@container grid (max-width:1100px) .col-owner{display:none}`（P10-8 收列档）在此
+   表被高特异度覆盖回 table-cell；再给表体一个 min-width 兜底，让固定列预算（选择 42 + 用例
+   76 + 耗时 82 + 状态 92 + 2×148 归属 + 操作 166 ≈ 754px）+ 名称/路径装不下时，横向滚动落在
+   `.table-scroll` 自己身上（页面仍不横滚，Quiet Console 不变量）。1470 视口容器 ~1195px 放得下
+   不出条；1370（容器 ~1095px）起按 min-width 触发横滑，两列照常在。 */
+.endpoint-grid .col-owner { display: table-cell; }
+/* .grid.endpoint-grid 双类压过后面的 `.table-scroll > .grid { min-width: 720px }`（同源顺序它在后） */
+.table-scroll > .grid.endpoint-grid { min-width: 1160px; }
+
 .endpoint-grid td { height: 46px; }
-.cell-name { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.cell-name { display: flex; align-items: center; gap: var(--s2); min-width: 0; position: relative; }
+/* 名字先截断、把余量让给标签：原先这枚 .truncate 没有 min-width:0（flex 子项默认不收缩），
+   名字撑满后把定宽的 .tag-inline 挤出单元格、盖住「路径」列——可编辑态还多一列 42px 勾选，更挤。 */
+.endpoint-grid .cell-name .truncate { flex: 1 1 auto; min-width: 0; }
 
 /* Tags sit inline rather than on a second line */
 .tag-inline { display: inline-flex; gap: 4px; flex: 0 0 auto; }
+
+/* 接口列表标签常态收缩＋裁剪（不设视口/容器断点）：owner 两列在 >1100px 容器里就已占 296px，
+   名称列常被挤到 ~120px，定宽 chip（原 flex:0 0 auto）+ Method 徽标超出格宽就溢到「路径」列上
+   ——这才是 1470 宽也能看到标签盖住路径的原因；上一版把裁剪压在 @container ≤1100px 里，1470
+   视口（容器 ~1212px）根本不触发。改为：名字先截断让位，标签在格内裁剪、永不外溢；hover 整行时
+   就地展开显示全部，不透明底（行 hover 同色 --hover）盖住下方路径。 */
+.endpoint-grid .tag-inline { flex: 0 1 auto; min-width: 0; overflow: hidden; transition: max-width var(--t); }
+.endpoint-grid tr:hover .cell-name { z-index: 1; }
+.endpoint-grid tr:hover .tag-inline { flex: 0 0 auto; overflow: visible; background: var(--hover); }
 .runstrip-hit { display: inline-flex; }
 .runstrip-hit[role="button"] { cursor: pointer; }
 
@@ -4271,6 +4303,9 @@ button.attribution-entry:hover .chip { border-color: var(--accent); }
 .sql-run-values { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--s3); margin-bottom: var(--s4); }
 .sql-result { min-width: 0; }
 .sql-result-meta { display: flex; gap: var(--s3); margin-bottom: var(--s3); color: var(--ink-3); font-size: 11px; }
+/* 结果元信息里的提示（截断 / 全表扫描 / 慢查询）：借 --skip 的「需注意但非失败」语义，
+   与执行历史里的 .chip-warn 同一色，不引入第二强调色。 */
+.sql-result-warn { color: var(--skip); }
 .sql-result-grid { width: max-content; min-width: 100%; }
 .sql-result-grid th, .sql-result-grid td { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

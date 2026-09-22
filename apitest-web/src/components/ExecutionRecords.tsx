@@ -7,7 +7,7 @@ import { useExecutionStream } from "../hooks/useExecutionStream";
 import { usePageContext } from "../hooks/usePageContext";
 import { triggerPersonLabel } from "../lib/trigger";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty, PageToolbar, toRunStatus } from "../ui";
+import { Empty, PageToolbar, RESULT_DRAWER_WIDTH, toRunStatus } from "../ui";
 import { BatchResultList } from "./BatchResultList";
 import { ExecutionSnapshot } from "./ExecutionSnapshot";
 import { FlowRunDrawer } from "./FlowRunDrawer";
@@ -671,7 +671,7 @@ export function ExecutionRecords() {
     </div>
 
     <ExecutionSnapshot result={result} onClose={closeResult} />
-    <Drawer title={t("endpoints.batchResult")} open={Boolean(batchResult)} onClose={closeBatch} width={720} extra={batchResult && <span className="mono muted">{t("endpoints.batchSummary", { total: batchResult.total, success: batchResult.successCount, failed: batchResult.failedCount })}</span>}>
+    <Drawer title={t("endpoints.batchResult")} open={Boolean(batchResult)} onClose={closeBatch} width={RESULT_DRAWER_WIDTH} extra={batchResult && <span className="mono muted">{t("endpoints.batchSummary", { total: batchResult.total, success: batchResult.successCount, failed: batchResult.failedCount })}</span>}>
       {batchResult && <BatchResultList batch={batchResult} />}
     </Drawer>
     {/* 一条父执行按类型进对应的抽屉。两个都常挂着，各自靠 run 为空时不渲染。 */}

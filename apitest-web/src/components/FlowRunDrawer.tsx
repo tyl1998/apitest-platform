@@ -3,7 +3,7 @@ import { Drawer } from "antd";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { Execution, ExecutionStep, FlowExecutionDetail } from "../api";
-import { toRunStatus } from "../ui";
+import { RESULT_DRAWER_WIDTH, toRunStatus } from "../ui";
 import { ExecutionStepDetail } from "./ExecutionStepDetail";
 import { ExecutionDetail } from "./ExecutionSnapshot";
 import { NestedStepList } from "./NestedStepList";
@@ -35,7 +35,7 @@ export function FlowRunDrawer({ projectId, run, onClose }: {
     title={run.flowName || t("flows.runDetail")}
     open
     onClose={onClose}
-    width={720}
+    width={RESULT_DRAWER_WIDTH}
     extra={<span className="mono muted">{t("flows.stepSummary", { success: run.successCount, total: run.total })}
       {run.failedCount > 0 ? ` · ${t("flows.failedCount", { count: run.failedCount })}` : ""}
       {run.skippedCount > 0 ? ` · ${t("flows.skippedCount", { count: run.skippedCount })}` : ""}</span>}

@@ -8,7 +8,7 @@ import { api, sqlQuickCallBaseUrl, sqlQuickCallCurl, type DataSource, type DataS
 import { defaultOperationText, formatOperation, operationLabelFromText, operationTemplates } from "../operationTemplates";
 import { useThemeMode } from "../theme";
 import { useCanWrite } from "../hooks/useMyRole";
-import { Empty, PageToolbar } from "../ui";
+import { Empty, PageToolbar, RESULT_DRAWER_WIDTH } from "../ui";
 import { DataSourceDrawer, apiMessage } from "./DataSourceList";
 import { VersionHistoryDrawer } from "./VersionHistoryDrawer";
 import { DatabaseResult } from "./DatabaseResult";
@@ -384,7 +384,7 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open
      跟着编辑器文本走，所以手改 JSON 也会同步。 */
   const currentOperation = operationLabelFromText(operationText);
 
-  return <Drawer title={source === "new" ? t("dataSources.createSql") : t("dataSources.editSql")} open={open} onClose={() => { setSqlHistoryOpen(false); setExecHistoryOpen(false); onClose(); }} width={820} extra={source && source !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setSqlHistoryOpen(true)}><History size={14} />{t("version.history")}</button> : undefined} footer={<div className="drawer-actions"><button className="btn" onClick={onClose}>{t("action.cancel")}</button><button className="btn btn-primary" disabled={saving || !source} onClick={() => void save()}>{saving ? "…" : t("action.save")}</button></div>}>
+  return <Drawer title={source === "new" ? t("dataSources.createSql") : t("dataSources.editSql")} open={open} onClose={() => { setSqlHistoryOpen(false); setExecHistoryOpen(false); onClose(); }} width={RESULT_DRAWER_WIDTH} extra={source && source !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setSqlHistoryOpen(true)}><History size={14} />{t("version.history")}</button> : undefined} footer={<div className="drawer-actions"><button className="btn" onClick={onClose}>{t("action.cancel")}</button><button className="btn btn-primary" disabled={saving || !source} onClick={() => void save()}>{saving ? "…" : t("action.save")}</button></div>}>
     {!source && open ? <p className="muted">{t("common.loading")}</p> : <>
       <div className="form-grid">
         <label className="field"><span>{t("dataSources.sqlName")}</span><input className="input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} autoFocus /></label>
@@ -483,7 +483,7 @@ function SqlHistoryDrawer({ projectId, dataSourceId, open, onClose, onPick }: { 
     title={t("dataSources.execHistory")}
     open={open}
     onClose={onClose}
-    width={820}
+    width={RESULT_DRAWER_WIDTH}
     extra={canWrite && items.length ? <button className="btn btn-small btn-with-icon" onClick={clearHistory}><Trash2 size={14} />{t("dataSources.execHistoryClear")}</button> : undefined}
   >
     <p className="form-note">{t("dataSources.execHistoryHint")}</p>

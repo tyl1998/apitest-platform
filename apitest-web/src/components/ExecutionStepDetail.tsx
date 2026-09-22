@@ -24,9 +24,9 @@ export function ExecutionStepDetail({ step, execution, publicView }: {
   if (execution) return <ExecutionDetail result={execution} publicView={publicView} />;
 
   if (step.stepType === "database") {
-    const output = step.output as { rows?: Record<string, unknown>[]; rowCount?: number; truncated?: boolean };
+    const output = step.output as { rows?: Record<string, unknown>[]; rowCount?: number; truncated?: boolean; fullScan?: boolean };
     return <DatabaseResult
-      result={output.rows ? { rows: output.rows, rowCount: Number(output.rowCount ?? 0), truncated: Boolean(output.truncated), durationMs: step.durationMs } : undefined}
+      result={output.rows ? { rows: output.rows, rowCount: Number(output.rowCount ?? 0), truncated: Boolean(output.truncated), durationMs: step.durationMs, fullScan: Boolean(output.fullScan) } : undefined}
       error={step.error}
     />;
   }

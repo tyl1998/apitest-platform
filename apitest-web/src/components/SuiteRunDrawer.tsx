@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { api, type Execution, type ExecutionStep, type FlowExecutionDetail, type SuiteExecutionDetail } from "../api";
 import { triggerLabel } from "../lib/trigger";
-import { toRunStatus } from "../ui";
+import { RESULT_DRAWER_WIDTH, toRunStatus } from "../ui";
 import { ExecutionDetail } from "./ExecutionSnapshot";
 import { StepEvidence, flowStepRows } from "./FlowRunDrawer";
 import { RunStatusTag } from "./RunStatusTag";
@@ -114,7 +114,7 @@ export function SuiteRunDrawer({ projectId, run, onClose, onCancel, canceling }:
     title={run.suiteName || t("suites.runDetail")}
     open
     onClose={onClose}
-    width={720}
+    width={RESULT_DRAWER_WIDTH}
     extra={<span className="mono muted">{t("suites.memberSummary", { success: run.successCount, total: run.total })}
       {run.failedCount > 0 ? ` · ${t("suites.memberFailed", { count: run.failedCount })}` : ""}
       {run.skippedCount > 0 ? ` · ${t("suites.memberSkipped", { count: run.skippedCount })}` : ""}</span>}
