@@ -10,6 +10,7 @@ import {
 import { abortPipelineRunAfterLease } from "./lib/pipelineRun.js";
 import { createRedis } from "./lib/queue.js";
 import { runScheduleTick, SCHEDULE_MISS_GRACE_MS, SCHEDULE_TICK_MS } from "./lib/schedule.js";
+import { purgeExpiredSqlHistory, SQL_HISTORY_TTL_DAYS, SQL_HISTORY_TTL_TICK_MS } from "./lib/sqlHistory.js";
 
 /**
  * 调度器进程（P3-4，计划 6.3）：与 API、worker 并列的第三个进程。
@@ -167,6 +168,26 @@ partitionTick.unref();
 /* 启动立刻跑一拍：停机跨季时下一季的分区还没建，不该再等 6 小时（虽然 DEFAULT 接得住）。 */
 void partitionMaintenanceTick().catch((error) => console.error("[scheduler] partition maintenance failed", error));
 
+/*
+ * ── SQL 执行历史 TTL（P2-1 增量，计划「第 1 批增量 · SQL 执行历史」）─────────────
+ *
+ * 形状与分区维护完全一样（定时扫一遍、advisory-lock 多实例互斥、启动即跑一拍、unref）：
+ * 删掉早于 now() - SQL_HISTORY_TTL_DAYS 的历史。它是三层淘汰里的第三层——单条体积上限与
+ * 环形缓冲已在写路径（lib/sqlHistory.ts）就地生效，这一拍只负责按时间收敛。TTL 关闭
+ * （天数 ≤ 0）时 purgeExpiredSqlHistory 直接返回，拍照跑但什么都不删。
+ */
+async function sqlHistoryTtlTick() {
+  const deleted = await purgeExpiredSqlHistory();
+  if (deleted) console.log(`[scheduler] purged ${deleted} expired SQL history row(s) (older than ${SQL_HISTORY_TTL_DAYS} day(s))`);
+}
+
+const sqlHistoryTick = setInterval(() => {
+  void sqlHistoryTtlTick().catch((error) => console.error("[scheduler] SQL history TTL purge failed", error));
+}, SQL_HISTORY_TTL_TICK_MS);
+sqlHistoryTick.unref();
+/* 启动立刻跑一拍：停机期间过期的历史不该再等 6 小时。 */
+void sqlHistoryTtlTick().catch((error) => console.error("[scheduler] SQL history TTL purge failed", error));
+
 /* 启动立刻跑一拍，而不是先空等 10 秒：刚起来的第一拍往往要处理停机期间积压的
    到期时刻（宽限期内的触发、超期的记 skipped）。 */
 void runScheduleTick().catch((error) => console.error("[scheduler] tick failed", error));
@@ -176,6 +197,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     clearInterval(tick);
     clearInterval(pipelineReapTick);
     clearInterval(partitionTick);
+    clearInterval(sqlHistoryTick);
     alertSubscriber.disconnect();
     await pool.end();
     process.exit(0);

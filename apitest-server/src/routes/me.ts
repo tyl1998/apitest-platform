@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
 import { currentUser } from "../lib/auth.js";
-import { writeAuditLogAsync } from "../lib/audit.js";
+import { AUDIT_ACTIONS, writeAuditLogAsync } from "../lib/audit.js";
 import { issueMcpToken } from "../lib/mcpAuth.js";
 import { MCP_SCOPES, effectiveMcpScopes, grantedMcpScopesByProject, mergeMcpScopes } from "../lib/mcpScopes.js";
 import { myRoleInProject } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
+import { apiKeyMeta, issueApiKey, revokeApiKey } from "../lib/apiKeys.js";
 import { isUuid } from "../lib/uuid.js";
 import { mapMcpBinding, mapMcpToken, type McpScope, type MyRole } from "../models/types.js";
 
@@ -263,5 +264,60 @@ export async function meRoutes(app: FastifyInstance) {
       ip: request.ip,
     });
     return success({ tokenId: request.params.tokenId, projectId: request.params.projectId });
+  });
+
+  /**
+   * 用户级 API 密钥（个人中心）：一人一把 AES 密钥，是**调用平台开放 API 的凭据本身**。
+   *
+   * 与 MCP Token 的分工：Token 是「外部 agent 走 MCP 协议」的钥匙；这把密钥是「用户直接
+   * 调用平台开放 API」的钥匙（第一个消费方是 SQL 快速调用——把 SQL 定义变成一条免登录、
+   * 可 curl 的地址：地址里的调用内容用它 AES-256-GCM 加密，公开端点用同一把密钥解密，
+   * 解得开即视为持钥人签发）。因此明文泄露 = 以本人身份、按本人权限调用这些 API 的能力
+   * 泄露，处置是轮换（覆盖）或吊销（删行，已发出的地址立即失效）。
+   *
+   * 读接口只回元数据（key_id / 时间戳），**永不回明文**；明文只在生成 / 轮换的那一次响应里
+   * 出现一次（同 ingest / runner / MCP token 的一次性纪律）。
+   */
+  app.get("/api/v1/me/api-key", async (request, reply) => {
+    const user = await currentUser(request, reply);
+    if (!user) return;
+    return success(await apiKeyMeta(user.id));
+  });
+
+  /** 生成 / 轮换：覆盖本人那一行，返回一次性明文密钥。轮换即让旧密钥加密的所有地址失效。 */
+  app.post("/api/v1/me/api-key", async (request, reply) => {
+    const user = await currentUser(request, reply);
+    if (!user) return;
+    const existing = await apiKeyMeta(user.id);
+    const issued = await issueApiKey(user.id);
+    /* 审计（边界 8）：只记「生成 / 轮换」这个事实与 key_id（公开标识，进 detail——它不是
+       UUID，进不了 target_id 列），密钥明文绝不进。targetId 落用户 id（UUID 列）。 */
+    writeAuditLogAsync({
+      action: existing ? AUDIT_ACTIONS.apiKeyRotate : AUDIT_ACTIONS.apiKeyCreate,
+      targetType: "api_key",
+      targetId: user.id,
+      projectId: null,
+      userId: user.id,
+      detail: { keyId: issued.keyId },
+      ip: request.ip,
+    });
+    return reply.code(existing ? 200 : 201).send(success({ keyId: issued.keyId, key: issued.secretB64, createdAt: issued.createdAt, rotatedAt: issued.rotatedAt, rotated: Boolean(existing) }));
+  });
+
+  /** 吊销：删本人密钥行，已发出的所有调用地址立即失效。幂等——没有密钥回 404。 */
+  app.delete("/api/v1/me/api-key", async (request, reply) => {
+    const user = await currentUser(request, reply);
+    if (!user) return;
+    const removed = await revokeApiKey(user.id);
+    if (!removed) return fail(reply, 404, 2001, "api key not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.apiKeyRevoke,
+      targetType: "api_key",
+      targetId: user.id,
+      projectId: null,
+      userId: user.id,
+      ip: request.ip,
+    });
+    return success({ revoked: true });
   });
 }

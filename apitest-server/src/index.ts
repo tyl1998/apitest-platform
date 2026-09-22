@@ -33,6 +33,7 @@ import { ciTaskRoutes } from "./routes/ciTasks.js";
 import { gitCredentialRoutes } from "./routes/gitCredentials.js";
 import { pipelineRunRoutes } from "./routes/pipelineRuns.js";
 import { reportShareRoutes } from "./routes/reportShares.js";
+import { sqlQuickCallRoutes } from "./routes/sqlQuickCall.js";
 import { mcpTokenRoutes } from "./routes/mcpTokens.js";
 import { mcpBindingRequestRoutes } from "./routes/mcpBindingRequests.js";
 import { mcpRoutes } from "./routes/mcp.js";
@@ -65,8 +66,15 @@ export async function buildApp(): Promise<FastifyInstance> {
    * methods must be listed explicitly: @fastify/cors defaults to
    * GET,HEAD,POST, so a browser preflight rejects every PUT/PATCH/DELETE
    * while curl (which sends no preflight) still succeeds.
+   *
+   * `maxAge` 与 methods 同属必配项：鉴权走 Authorization 头 ⇒ 没有任何请求是
+   * simple request，浏览器对每个 URL 都先发一次 OPTIONS；不声明
+   * Access-Control-Max-Age 时只剩 Chrome 的 5 秒默认预检缓存，dev 日志里 GET
+   * 与 OPTIONS 几乎一比一（2769 : 2385），等于把每个请求的往返翻倍。
+   * 600 秒覆盖一次页面会话里对同一 URL 的重复轮询（通知 30s 一拉），又不会把
+   * 改过的 CORS 配置在浏览器里滞留太久（Chrome 上限 7200 秒）。
    */
-  await app.register(cors, { origin: true, methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] });
+  await app.register(cors, { origin: true, methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], maxAge: 600 });
   /* 空串与未设置同义：本地 .env 只放非默认配置，占位值会让密钥漂移（dev 库里
      AES 加密的 Git 凭据按 JWT_SECRET 派生回退密钥解密，见 lib/crypto.ts）。 */
   await app.register(jwt, {
@@ -119,6 +127,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   /* 报告分享（2026-09-02）：项目内 CRUD + `/public/report-shares/:token` 免登录只读
      （与 Webhook 公开路由同款：不走 JWT，token 即凭据）。 */
   await app.register(reportShareRoutes);
+  /* SQL 快速调用（个人中心密钥）：`/public/sql-quick-call/:keyId` 免登录、密钥即凭据
+     （URL 里的 `d` 是本人 AES 密钥加密的调用描述符，解得开即视为持钥人签发；调用时刻
+     仍按本人实时 write 权限重判）。与报告分享 / Webhook 同层，不走 JWT。 */
+  await app.register(sqlQuickCallRoutes);
   /* P5-1 起家、P12-1 改能力面：MCP 的项目侧只读绑定视图（谁把钥匙开到我这扇门上）
      + 项目管理员踢绑定 + 工具清单展示。签发 / 列表 / 吊销已上移到用户级（P12 边界 2，
      见下面的 meRoutes）。 */

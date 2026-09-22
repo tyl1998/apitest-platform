@@ -42,6 +42,15 @@ export const AUDIT_ACTIONS = {
    */
   mcpTokenUnbind: "mcp_token.unbind",
   /**
+   * 用户级 API 密钥（个人中心，调用平台开放 API 的凭据）：生成 / 轮换 / 吊销。
+   * target = api_key，targetId 落**用户 id**（audit_logs.target_id 是 UUID 列，key_id 是
+   * base64url 短串，进不了那一列，改进 detail），`project_id` 为空（密钥归人）。密钥明文
+   * 绝不进审计。三动作都要留痕：这把密钥一旦泄露就是「以本人身份调用这些 API」的能力。
+   */
+  apiKeyCreate: "api_key.create",
+  apiKeyRotate: "api_key.rotate",
+  apiKeyRevoke: "api_key.revoke",
+  /**
    * MCP 调用被拒（P5-3，计划 9.0 边界 13「只审计写入、执行与拒绝」）。target = mcp_tool
    * （targetId 是工具名），detail 带 gate（scope 可见集 / rbac 活体判据）。只有第 3、4 道
    * 闸门的拒绝落这里——第 1 道没有可归属的身份（探针噪音），第 2 道是通道关着而不是

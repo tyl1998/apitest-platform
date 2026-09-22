@@ -739,6 +739,33 @@ export type SqlDefinition = {
   updatedAt: string;
 } & Ownership;
 
+/**
+ * P2-1 增量：交互式查询面板一次 `/query` 的执行历史（迁移 072）。
+ *
+ * 元数据永久留、结果只留一份被独立截断的小预览（`resultPreview` + `historyTruncated`）；
+ * 与执行结果本身的 `truncated`（执行器那层是否截断）分开表达。成功才有 `rowCount` /
+ * `durationMs`，失败只有 `error` 且不存预览。不带 Ownership——它按 `userId` 归本人，
+ * 不是「谁建/谁改」的共享资产。
+ */
+export type SqlExecutionHistory = {
+  id: string;
+  projectId: string;
+  dataSourceId: string;
+  userId: string;
+  statementType: SqlStatementType;
+  sql: string;
+  params: SqlParameterDefinition[];
+  values: Record<string, unknown>;
+  status: "success" | "error";
+  error?: string;
+  rowCount?: number;
+  durationMs?: number;
+  truncated: boolean;
+  resultPreview?: unknown[];
+  historyTruncated: boolean;
+  createdAt: string;
+};
+
 /** P2-5 external integration stub. The public id is a random capability, not a project id. */
 export type MockMode = "auto" | "fixed" | "template" | "proxy";
 export type MockResponse = { statusCode: number; headers: Record<string, string>; body?: unknown };
@@ -1919,6 +1946,28 @@ export function mapSqlDefinition(row: Record<string, unknown>): SqlDefinition {
     createdAt: new Date(String(row.created_at)).toISOString(), updatedAt: new Date(String(row.updated_at)).toISOString(),
     createdByEmail: ownershipEmail(row.created_by_email),
     updatedByEmail: ownershipEmail(row.updated_by_email),
+  };
+}
+
+/**
+ * 一条 SQL 执行历史行 → API 出参（P2-1 增量）。
+ *
+ * `/query` 是 ad-hoc 控制台，不经环境、没有 secret 值解析（不同于执行快照那条走
+ * `sanitizeValue` 的路径），params/values/preview 都是用户当场输入的字面量，故这里
+ * 只做 snake→camel，不再套一层无实参可比对的脱敏。失败行的 rowCount/durationMs/
+ * resultPreview 为 NULL，映射成 undefined。
+ */
+export function mapSqlExecutionHistory(row: Record<string, unknown>): SqlExecutionHistory {
+  return {
+    id: String(row.id), projectId: String(row.project_id), dataSourceId: String(row.data_source_id), userId: String(row.user_id),
+    statementType: String(row.statement_type) as SqlStatementType, sql: String(row.sql),
+    params: (row.params ?? []) as SqlParameterDefinition[], values: (row.values ?? {}) as Record<string, unknown>,
+    status: String(row.status) as SqlExecutionHistory["status"], error: row.error === null || row.error === undefined ? undefined : String(row.error),
+    rowCount: row.row_count === null || row.row_count === undefined ? undefined : Number(row.row_count),
+    durationMs: row.duration_ms === null || row.duration_ms === undefined ? undefined : Number(row.duration_ms),
+    truncated: Boolean(row.truncated), resultPreview: row.result_preview === null || row.result_preview === undefined ? undefined : (row.result_preview as unknown[]),
+    historyTruncated: Boolean(row.history_truncated),
+    createdAt: new Date(String(row.created_at)).toISOString(),
   };
 }
 

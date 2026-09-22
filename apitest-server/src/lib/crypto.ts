@@ -17,23 +17,41 @@ function encryptionKey(): Buffer {
   return key;
 }
 
-/** The nonce and auth tag travel with the ciphertext; the key never does. */
-export function encryptSecret(value: string): Buffer {
+/**
+ * AES-256-GCM with a caller-supplied 32-byte key. The nonce and auth tag travel
+ * with the ciphertext; the key never does. `encryptSecret`/`decryptSecret` are
+ * this same primitive bound to the server master key — the SQL 快速调用 密钥面
+ * reuses the exact format but with a per-user key (每把 key 是凭据本身，密钥即授权)。
+ */
+export function encryptWithKey(key: Buffer, value: string): Buffer {
+  if (key.length !== 32) throw new Error("encryption key must be exactly 32 bytes");
   const nonce = randomBytes(NONCE_BYTES);
-  const cipher = createCipheriv("aes-256-gcm", encryptionKey(), nonce);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
   const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
   return Buffer.concat([nonce, cipher.getAuthTag(), encrypted]);
 }
 
-export function decryptSecret(value: Buffer): string {
-  if (value.length < NONCE_BYTES + TAG_BYTES) throw new Error("data source credentials are invalid");
+export function decryptWithKey(key: Buffer, value: Buffer): string {
+  if (key.length !== 32) throw new Error("encryption key must be exactly 32 bytes");
+  if (value.length < NONCE_BYTES + TAG_BYTES) throw new Error("ciphertext is invalid");
   const nonce = value.subarray(0, NONCE_BYTES);
   const tag = value.subarray(NONCE_BYTES, NONCE_BYTES + TAG_BYTES);
   const encrypted = value.subarray(NONCE_BYTES + TAG_BYTES);
-  const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), nonce);
+  const decipher = createDecipheriv("aes-256-gcm", key, nonce);
   decipher.setAuthTag(tag);
+  /* GCM 认证标签解得开 = 密文由持钥人产生且未被篡改；解不开一律当作凭据不成立。 */
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
+}
+
+/** The nonce and auth tag travel with the ciphertext; the key never does. */
+export function encryptSecret(value: string): Buffer {
+  return encryptWithKey(encryptionKey(), value);
+}
+
+export function decryptSecret(value: Buffer): string {
+  if (value.length < NONCE_BYTES + TAG_BYTES) throw new Error("data source credentials are invalid");
   try {
-    return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
+    return decryptWithKey(encryptionKey(), value);
   } catch {
     throw new Error("data source credentials could not be decrypted");
   }

@@ -13,8 +13,11 @@ import { executeOperation } from "../lib/operationExecutor.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
 import { executeSql, validateSqlDefinition, validateSqlParams } from "../lib/sqlExecutor.js";
+import { recordSqlHistory } from "../lib/sqlHistory.js";
+import { loadApiSecretForUser } from "../lib/apiKeys.js";
+import { encodeToken } from "../lib/sqlQuickCall.js";
 import { isUuid } from "../lib/uuid.js";
-import { defaultPort, definitionKind, mapDataSource, mapSqlDefinition, type DataSourceConfig, type DataSourceType, type DataSourceOperation, type SqlParameterDefinition, type SqlStatementType } from "../models/types.js";
+import { defaultPort, definitionKind, mapDataSource, mapSqlDefinition, mapSqlExecutionHistory, type DataSourceConfig, type DataSourceType, type DataSourceOperation, type SqlParameterDefinition, type SqlStatementType } from "../models/types.js";
 
 type DataSourceBody = { name?: string; type?: DataSourceType; config?: Partial<DataSourceConfig>; password?: string | null };
 type SqlBody = { name?: string; description?: string; kind?: "sql" | "mongo" | "redis"; statementType?: SqlStatementType; sql?: string; operation?: unknown; params?: SqlParameterDefinition[] };
@@ -380,14 +383,67 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     try {
       const definition = await resolveRun(context.project.id, request.params.dataSourceId, request.body ?? {});
       const limits = { timeoutMs: request.body?.timeoutMs, maxRows: request.body?.maxRows, maxResultBytes: request.body?.maxResultBytes };
-      const result = definition.kind === "sql"
-        ? await executeSql({ projectId: context.project.id, dataSourceId: request.params.dataSourceId, statementType: definition.statementType, sql: definition.sql, params: definition.params, values: request.body?.values, ...limits })
-        : await executeOperation({ projectId: context.project.id, dataSourceId: request.params.dataSourceId, kind: definition.kind, operation: definition.operation, params: definition.params, values: request.body?.values, ...limits });
+      /* 只对关系型语句落历史（P2-1 增量）：mongo/redis 的 operation 不入 sql_execution_history
+         （回填不进 SQL 编辑器，也对不上 statement_type/sql 两列）。写历史 fire-and-forget，
+         `.catch` 吞掉——绝不影响这一次查询的响应。resolveRun 抛出（缺参、类型不符、数据源
+         不存在）走外层 catch，不落历史：那时还没有一条能自洽的 SQL 可记。 */
+      if (definition.kind === "sql") {
+        const values = request.body?.values ?? {};
+        try {
+          const result = await executeSql({ projectId: context.project.id, dataSourceId: request.params.dataSourceId, statementType: definition.statementType, sql: definition.sql, params: definition.params, values, ...limits });
+          void recordSqlHistory({
+            projectId: context.project.id, dataSourceId: request.params.dataSourceId, userId: context.user.id,
+            statementType: definition.statementType, sql: definition.sql, params: definition.params, values,
+            status: "success", rows: result.rows, rowCount: result.rowCount, truncated: result.truncated, durationMs: result.durationMs,
+          }).catch((historyError) => request.log.warn({ err: historyError }, "recording SQL history failed"));
+          return success(result);
+        } catch (error) {
+          void recordSqlHistory({
+            projectId: context.project.id, dataSourceId: request.params.dataSourceId, userId: context.user.id,
+            statementType: definition.statementType, sql: definition.sql, params: definition.params, values,
+            status: "error", error: error instanceof Error ? error.message : "SQL execution failed",
+          }).catch((historyError) => request.log.warn({ err: historyError }, "recording SQL history failed"));
+          throw error;
+        }
+      }
+      const result = await executeOperation({ projectId: context.project.id, dataSourceId: request.params.dataSourceId, kind: definition.kind, operation: definition.operation, params: definition.params, values: request.body?.values, ...limits });
       return success(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : "SQL execution failed";
       return message === "data source not found" ? fail(reply, 404, 2001, message) : fail(reply, 400, 2002, message);
     }
+  });
+
+  /**
+   * 交互式查询面板的执行历史（P2-1 增量）。
+   *
+   * **只返回本人记录**：历史按 `(user_id, data_source_id)` 归属，一个人的 ad-hoc 查询
+   * （含写语句）不该出现在别人的抽屉里。读权即可（viewer 也能看自己的），倒序分页。
+   */
+  app.get<{ Params: { id: string; dataSourceId: string }; Querystring: { page?: string; pageSize?: string } }>("/api/v1/projects/:id/data-sources/:dataSourceId/sql-history", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply); if (!context) return;
+    if (!isUuid(request.params.dataSourceId)) return fail(reply, 404, 2001, "data source not found");
+    const source = await pool.query("SELECT 1 FROM data_sources WHERE id = $1 AND project_id = $2", [request.params.dataSourceId, context.project.id]);
+    if (!source.rowCount) return fail(reply, 404, 2001, "data source not found");
+    const page = Math.max(1, Number(request.query.page ?? 1));
+    const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
+    const count = await pool.query("SELECT COUNT(*)::int AS total FROM sql_execution_history WHERE user_id = $1 AND data_source_id = $2", [context.user.id, request.params.dataSourceId]);
+    const result = await pool.query(
+      "SELECT * FROM sql_execution_history WHERE user_id = $1 AND data_source_id = $2 ORDER BY created_at DESC LIMIT $3 OFFSET $4",
+      [context.user.id, request.params.dataSourceId, pageSize, (page - 1) * pageSize],
+    );
+    return success(result.rows.map(mapSqlExecutionHistory), { page, pageSize, total: Number(count.rows[0].total) });
+  });
+
+  /** 清空本人在本数据源的执行历史（P2-1 增量）。写权：与 /query、/test 同一条纪律，
+      viewer 本就跑不了查询，也就没有历史可清。只删本人记录，绝不动别人的。 */
+  app.delete<{ Params: { id: string; dataSourceId: string } }>("/api/v1/projects/:id/data-sources/:dataSourceId/sql-history", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply, true); if (!context) return;
+    if (!isUuid(request.params.dataSourceId)) return fail(reply, 404, 2001, "data source not found");
+    const source = await pool.query("SELECT 1 FROM data_sources WHERE id = $1 AND project_id = $2", [request.params.dataSourceId, context.project.id]);
+    if (!source.rowCount) return fail(reply, 404, 2001, "data source not found");
+    const result = await pool.query("DELETE FROM sql_execution_history WHERE user_id = $1 AND data_source_id = $2", [context.user.id, request.params.dataSourceId]);
+    return success({ deleted: result.rowCount ?? 0 });
   });
 
   app.get<{ Params: { id: string; dataSourceId: string } }>("/api/v1/projects/:id/data-sources/:dataSourceId/sql-definitions", async (request, reply) => {
@@ -513,5 +569,29 @@ export async function dataSourceRoutes(app: FastifyInstance) {
         : await executeOperation({ projectId: context.project.id, dataSourceId: definition.dataSourceId, kind: definition.kind, operation: definition.operation, params: definition.params, values: request.body?.values, ...limits });
       return success(result);
     } catch (error) { return fail(reply, 400, 2002, error instanceof Error ? error.message : "SQL execution failed"); }
+  });
+
+  /**
+   * 快速调用令牌的构造端点（个人中心 API 密钥的落点）。
+   *
+   * 前端从不持有明文密钥（明文只在生成 / 轮换时出现一次），所以加密只能发生在服务端：
+   * 这里用**本人**的 API 密钥把 `{ projectId, sqlDefinitionId }` 加密成 `token`，前端拿着
+   * `keyId + token` 拼成请求头 `Authorization: ApiKey <keyId>.<token>`（`复制 cURL` 按钮）。
+   * 入参不进令牌——调用时在请求体 `param` 动态传，所以同一个令牌可反复复用、每次不同参数。
+   *
+   * 与执行同一条纪律：跑 SQL 要 write（viewer 不可，和 `/query`、`/test` 一致）。没设密钥
+   * 回 2002 + 明确引导（去个人中心生成），不是静默失败。
+   */
+  app.post<{ Params: { id: string; sqlId: string } }>("/api/v1/projects/:id/sql-definitions/:sqlId/quick-call", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply, true); if (!context) return;
+    if (!isUuid(request.params.sqlId)) return fail(reply, 404, 2001, "SQL definition not found");
+    const definition = await loadSqlDefinition(context.project.id, request.params.sqlId);
+    if (!definition) return fail(reply, 404, 2001, "SQL definition not found");
+    const key = await loadApiSecretForUser(context.user.id);
+    /* 2002（无法准备请求）而不是 400：输入没问题，缺的是本人还没在个人中心生成 API 密钥。 */
+    if (!key) return fail(reply, 400, 2002, "generate your API key in personal center first");
+    const token = encodeToken(key.secret, { projectId: context.project.id, sqlDefinitionId: definition.id });
+    /* params 一并回给前端：好在 curl 的 `-d` 里生成一个带参数名的 body 模板供用户改。 */
+    return success({ keyId: key.keyId, token, method: "POST" as const, params: definition.params.map((param) => param.name).filter(Boolean) });
   });
 }
