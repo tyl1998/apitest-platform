@@ -10,6 +10,7 @@ import { useThemeMode } from "../theme";
 import { useCanWrite } from "../hooks/useMyRole";
 import { Empty, PageToolbar, RESULT_DRAWER_WIDTH } from "../ui";
 import { DataSourceDrawer, apiMessage } from "./DataSourceList";
+import { OwnerCell } from "./OwnerCell";
 import { VersionHistoryDrawer } from "./VersionHistoryDrawer";
 import { DatabaseResult } from "./DatabaseResult";
 import { IconButton } from "./IconButton";
@@ -222,10 +223,13 @@ export function DataSourceDetail() {
       <Row label={t("dataSources.maxBytes")} value={formatBytes(source.config.maxResultBytes)} mono />
     </dl></div></section> : <section className="sql-section">
       <div className="section-toolbar"><div><h2>{t("dataSources.namedSql")}</h2><p>{t("dataSources.namedSqlHint")}</p></div>{canWrite && <button className="btn btn-primary btn-with-icon" onClick={() => setUrl({ tab: "sql", editSql: "new" })}><Plus size={14} />{t("dataSources.createSql")}</button>}</div>
-      {definitions.length ? <div className="table-scroll"><table className="grid sql-definition-grid"><thead><tr><th>{t("dataSources.sqlName")}</th><th>{t("dataSources.statementType")}</th><th>{t("dataSources.parameters")}</th><th>{t("common.updatedAt")}</th><th className="col-actions" /></tr></thead><tbody>
+      {definitions.length ? <div className="table-scroll"><table className="grid sql-definition-grid"><thead><tr><th>{t("dataSources.sqlName")}</th><th>{t("dataSources.statementType")}</th><th>{t("dataSources.parameters")}</th><th className="col-owner">{t("common.createdBy")}</th><th className="col-owner">{t("common.updatedBy")}</th><th>{t("common.updatedAt")}</th><th className="col-actions" /></tr></thead><tbody>
         {definitions.map((definition) => <tr key={definition.id} data-clickable onClick={() => setUrl({ tab: "sql", editSql: definition.id })}>
           <td><strong>{definition.name}</strong>{definition.description && <span className="cell-description truncate">{definition.description}</span>}</td>
-          <td className="mono">{definition.kind !== "sql" ? definition.kind : definition.statementType}</td><td className="mono">{definition.params.length}</td><td className="mono muted">{new Date(definition.updatedAt).toLocaleString()}</td>
+          <td className="mono">{definition.kind !== "sql" ? definition.kind : definition.statementType}</td><td className="mono">{definition.params.length}</td>
+          <td className="col-owner mono muted truncate"><OwnerCell kind="created" email={definition.createdByEmail} /></td>
+          <td className="col-owner mono muted truncate"><OwnerCell kind="updated" email={definition.updatedByEmail} createdAt={definition.createdAt} updatedAt={definition.updatedAt} /></td>
+          <td className="mono muted">{new Date(definition.updatedAt).toLocaleString()}</td>
           <td className="col-actions">{canWrite && <div className="row-actions" onClick={(event) => event.stopPropagation()}><IconButton icon={<Pencil size={14} />} label={t("action.edit")} onClick={() => setUrl({ tab: "sql", editSql: definition.id })} /><IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => void removeDefinition(definition)} /></div>}</td>
         </tr>)}
       </tbody></table></div> : <Empty title={t("dataSources.sqlEmptyTitle")} hint={t("dataSources.sqlEmptyHint")} action={canWrite ? <button className="btn btn-primary" onClick={() => setUrl({ tab: "sql", editSql: "new" })}>{t("dataSources.createSql")}</button> : undefined} />}
@@ -433,14 +437,15 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open
       onClose={() => setSqlHistoryOpen(false)}
       onRolledBack={() => void reloadDefinition()}
     />}
-    {/* 交互式查询面板的执行历史（P2-1 增量）：只对关系型数据源开，点一条回填 SQL 到编辑器。 */}
+    {/* 交互式查询面板的执行历史（P2-1 增量）：只对关系型数据源开，点一行展开预览，「复用」按钮回填 SQL。 */}
     {kind === "sql" && <SqlHistoryDrawer projectId={projectId} dataSourceId={dataSourceId} open={execHistoryOpen} onClose={() => setExecHistoryOpen(false)} onPick={applyHistory} />}
   </Drawer>;
 }
 
 /**
- * 执行历史抽屉（P2-1 增量）：本人在此数据源跑过的 /query，倒序分页。点一条把 SQL 回填到
- * 编辑器（onPick）；`historyTruncated` 徽标标注预览这一层被截过。清空只清本人本数据源的历史。
+ * 执行历史抽屉（P2-1 增量）：本人在此数据源跑过的 /query，倒序分页。点一行**默认展开**结果预览；
+ * 回填到编辑器（onPick）收进「复用」按钮，不再是整行默认动作，避免误覆盖当前编辑内容。
+ * `historyTruncated` 徽标标注预览这一层被截过。清空只清本人本数据源的历史。
  */
 function SqlHistoryDrawer({ projectId, dataSourceId, open, onClose, onPick }: { projectId: string; dataSourceId: string; open: boolean; onClose: () => void; onPick: (item: SqlExecutionHistory) => void }) {
   const { t } = useTranslation();
@@ -491,7 +496,10 @@ function SqlHistoryDrawer({ projectId, dataSourceId, open, onClose, onPick }: { 
       <div className="version-list">
         {items.map((item) => {
           const isOpen = expanded === item.id;
-          return <div key={item.id} className="sql-history-row" data-clickable onClick={() => onPick(item)}>
+          /* 点整行 = 展开预览（默认动作），不再默认回填——回填收进「复用」按钮，避免"看一眼"就把
+             当前编辑器覆盖掉。只有成功且带预览的行可展开；错误行/无预览行整行不可点。 */
+          const canExpand = item.status === "success" && !!item.resultPreview && item.resultPreview.length > 0;
+          return <div key={item.id} className="sql-history-row" data-clickable={canExpand || undefined} onClick={canExpand ? () => setExpanded(isOpen ? undefined : item.id) : undefined}>
             <div className="sql-history-head">
               {/* 语义色只用在状态上（Quiet Console 规则 2）：成功=通过绿，失败=失败红。 */}
               <span className="status mono" data-status={item.status === "success" ? "pass" : "fail"}>{item.status === "success" ? t("dataSources.execHistoryStatusSuccess") : t("dataSources.execHistoryStatusError")}</span>
@@ -499,14 +507,17 @@ function SqlHistoryDrawer({ projectId, dataSourceId, open, onClose, onPick }: { 
               {item.status === "success" && <span className="mono muted">{t("dataSources.rowCount", { count: item.rowCount ?? 0 })} · {(item.durationMs ?? 0).toFixed(1)} ms</span>}
               {item.truncated && <span className="chip-warn mono">{t("dataSources.truncated")}</span>}
               {item.historyTruncated && <span className="chip-warn mono">{t("dataSources.execHistoryPreviewTruncated")}</span>}
+              {/* 执行人（读侧只返回本人记录，故必然是当前用户）：与其它资产的归属列同一取值口。 */}
+              {item.userEmail && <span className="mono muted truncate">{t("dataSources.execHistoryBy")} {item.userEmail}</span>}
               <span className="sql-history-time mono muted">{new Date(item.createdAt).toLocaleString()}</span>
             </div>
             <code className="sql-history-sql mono">{item.sql}</code>
             {item.status === "error" && item.error && <pre className="sql-error mono">{item.error}</pre>}
             <div className="row-actions" onClick={(event) => event.stopPropagation()}>
+              {/* 回填当前编辑器（覆盖 SQL/参数/试跑值）收进这个显式按钮，不再是整行默认动作。 */}
               <button className="btn btn-small" onClick={() => onPick(item)}>{t("dataSources.execHistoryReuse")}</button>
-              {/* 预览：复用 DatabaseResult 渲染截断后的小预览（成功且有预览时才给）。 */}
-              {item.status === "success" && item.resultPreview && item.resultPreview.length > 0 && <button className="btn btn-small" onClick={() => setExpanded(isOpen ? undefined : item.id)}>{isOpen ? "−" : "+"} {t("dataSources.viewRow")}</button>}
+              {/* 预览：复用 DatabaseResult 渲染截断后的小预览（成功且有预览时才给）。整行点击同样切换它。 */}
+              {canExpand && <button className="btn btn-small" onClick={() => setExpanded(isOpen ? undefined : item.id)}>{isOpen ? "−" : "+"} {t("dataSources.viewRow")}</button>}
             </div>
             {isOpen && item.status === "success" && item.resultPreview && <div onClick={(event) => event.stopPropagation()}>
               <DatabaseResult result={{ rows: item.resultPreview, rowCount: item.rowCount ?? item.resultPreview.length, truncated: item.historyTruncated || item.truncated, durationMs: item.durationMs ?? 0 }} />

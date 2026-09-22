@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { drawAvatar, type AvatarFraming, type MouthV } from "../lib/avatar";
+import { drawAvatar, type AvatarFraming, type AvatarPose, type MouthV } from "../lib/avatar";
 
 /**
  * 人物头像（P9-6）：`lib/avatar` 的 Canvas 2D 封装，两档尺寸两个挂点——
@@ -12,19 +12,20 @@ import { drawAvatar, type AvatarFraming, type MouthV } from "../lib/avatar";
  *   递增 nonce 触发。反应 = 同一张脸上的表演（视线/嘴型/姿态/跳跃），不动物种
  *   与配色；且全部是状态变化驱动的离散动画，与 Quiet Console「动效只标记状态
  *   变化」一致；
- * - 眨眼是唯一的 idle 循环动画（计划 13.0 边界 5），只在 `animate` 为真且
- *   mood idle 且无一次性反应时跑——调用方保证「抽屉打开 && 没有在飞请求」
- *   （全应用只允许一个环境动画，与在飞呼吸点不同时出现）；
- * - `prefers-reduced-motion`：眨眼与跳跃停（跳跃直接落到姿态帧，位移消失、
- *   表情还在——表情是状态不是动效），视线/嘴型的切换保留。
+ * - 循环动画有两处（2026-09-22 放宽规则 4 后）：① 眨眼——只在 `animate` 且
+ *   mood idle 且无一次性反应时跑；② 走路踏步——只在 mood thinking（流式回复中）
+ *   跑，抱臂 + 迈腿 = 「踱步思考」，流式结束回 idle 即停。两者都绑在请求状态上、
+ *   结束即停，与在飞呼吸点是这条放宽后允许的一对；
+ * - `prefers-reduced-motion`：眨眼/跳跃/走路的位移都停（跳跃落姿态帧、走路落
+ *   站立+抱臂帧，位移消失、表情与姿态还在——那是状态不是动效），视线/嘴型保留。
  */
 export type AvatarMood = "idle" | "thinking";
-export type AvatarPulseKind = "greet" | "sent" | "done" | "error" | "bounce";
+export type AvatarPulseKind = "greet" | "sent" | "done" | "error" | "bounce" | "wave" | "shrug" | "point";
 export type AvatarPulse = { kind: AvatarPulseKind; nonce: number };
 
 const JUMP_MS = 900;
 const JUMP_KINDS = new Set<AvatarPulseKind>(["greet", "done", "bounce"]);
-const HOLD_MS: Record<AvatarPulseKind, number> = { greet: 700, sent: 700, done: 700, error: 2200, bounce: 400 };
+const HOLD_MS: Record<AvatarPulseKind, number> = { greet: 700, sent: 700, done: 700, error: 2200, bounce: 400, wave: 1100, shrug: 1400, point: 1600 };
 const IDLE_PHASE = { kind: null, started: 0 } as const;
 
 export function Avatar({ seed, size, framing, animate = false, mood = "idle", pulse, nightmare = false, className }: {
@@ -42,6 +43,7 @@ export function Avatar({ seed, size, framing, animate = false, mood = "idle", pu
   const boilRef = useRef(0);
   const [phase, setPhase] = useState<{ kind: AvatarPulseKind | null; started: number }>(IDLE_PHASE);
   const [jump, setJump] = useState(0);
+  const [walk, setWalk] = useState<number | undefined>(undefined);
   const reducedMotion = useRef(window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 
   /* pulse 触发：nonce 变化才认——同一个对象被重复 set 不重触发。 */
@@ -103,13 +105,51 @@ export function Avatar({ seed, size, framing, animate = false, mood = "idle", pu
     return () => { alive = false; if (timer !== undefined) window.clearTimeout(timer); };
   }, [animate, seed, mood, phase.kind]);
 
+  /* 走路时钟（2026-09-22 放宽规则 4 后的第二个循环动画）：只在 thinking 心情
+     （= 流式回复中）跑，原地踏步 + 抱臂 = 「踱步思考」，流式结束 mood 回 idle
+     即停在站立帧。reduced-motion 下不跑循环——只留抱臂的静态姿态帧。 */
+  useEffect(() => {
+    if (mood !== "thinking" || reducedMotion.current) { setWalk(undefined); return; }
+    let raf = 0;
+    let alive = true;
+    const start = performance.now();
+    const tick = () => {
+      if (!alive) return;
+      setWalk(((performance.now() - start) / 1000) % 1); // ~1s 一个完整步态循环
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { alive = false; cancelAnimationFrame(raf); };
+  }, [mood]);
+
   /* 表演参数：一次性反应优先于 mood 基线。cheer = 举手 + 张嘴 + 眼睛向上
      （原版 celebrate 的 lookY -0.8）；think = 视线抬起看向侧上方。 */
   const cheer = phase.kind === "greet" || phase.kind === "done";
-  const gazeX = cheer ? 0 : phase.kind === "sent" ? 0 : phase.kind === "error" ? 0 : mood === "thinking" ? -0.55 : 0;
-  const gazeY = cheer ? -0.8 : phase.kind === "sent" ? 0.7 : phase.kind === "error" ? 0.8 : mood === "thinking" ? -0.35 : 0;
-  const pose = cheer ? "cheer" : "idle";
-  const mouth: MouthV | undefined = cheer ? "open" : phase.kind === "error" ? "flat" : undefined;
+  const pose: AvatarPose =
+    cheer ? "cheer"
+      : phase.kind === "wave" ? "wave"
+        : phase.kind === "shrug" ? "shrug"
+          : phase.kind === "point" ? "point"
+            : mood === "thinking" ? "crossed" /* 流式中抱臂等待（持续状态帧，非动效） */
+              : "idle";
+  const gazeX =
+    phase.kind === "point" ? 0.5
+      : !phase.kind && mood === "thinking" ? -0.55
+        : 0;
+  const gazeY =
+    cheer ? -0.8
+      : phase.kind === "sent" ? 0.7
+        : phase.kind === "error" ? 0.8
+          : phase.kind === "point" ? 0.5
+            : phase.kind === "shrug" ? 0.25
+              : phase.kind === "wave" ? -0.1
+                : !phase.kind && mood === "thinking" ? -0.35
+                  : 0;
+  const mouth: MouthV | undefined =
+    cheer ? "open"
+      : phase.kind === "wave" ? "smile"
+        : phase.kind === "error" || phase.kind === "shrug" ? "flat"
+          : undefined;
 
   /* 画像：任一参数变化即整张重画（部件级确定性流保证表情帧间其余部件逐笔
      一致）。dpr 封顶 2——铅笔线在更高密度上不再需要更细。 */
@@ -129,9 +169,10 @@ export function Avatar({ seed, size, framing, animate = false, mood = "idle", pu
       gaze: { x: gazeX, y: gazeY },
       pose,
       jump,
+      walk,
       mouth,
     });
-  }, [seed, size, framing, nightmare, blink, gazeX, gazeY, pose, jump, mouth]);
+  }, [seed, size, framing, nightmare, blink, gazeX, gazeY, pose, jump, walk, mouth]);
 
   return <canvas ref={canvasRef} className={`avatar-canvas${className ? ` ${className}` : ""}`} style={{ width: size, height: size }} aria-hidden />;
 }

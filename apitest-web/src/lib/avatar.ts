@@ -8,8 +8,9 @@
  *   的调用方解析），前端每次画，同一种子永远同一张脸；
  * - nightmare 物种默认移出（企业内网工具里它只会被当 bug 报）：物种代码与
  *   暗色调色板全保留，开关藏在 preferences.avatarNightmare（无界面入口）；
- * - 动画只留眨眼（原版的转头/跳跃/庆祝/表情切换不搬），何时眨由调用方控制
- *   ——Quiet Console 全应用只允许一个环境动画；
+ * - 动画：idle 只眨眼（何时眨由调用方控制）；状态反应（gaze/pose/jump/mouth，
+ *   2026-09-16）；流式思考期间原地踏步 walk（2026-09-22 放宽 Quiet Console 规则 4
+ *   后的第二个循环动画，仅绑在流式状态、结束即停）；
  * - 与原版的两处有意差异：① 部件不再各自成纹理贴 3D 平面，而是按原版的世界
  *   坐标以缩放变换直接落笔（笔画按最终分辨率光栅化，不经过纹理降采样）；
  *   ② 五官滚动用一条 rng 流（同种子同人物），描边抖动按部件独立成流
@@ -518,8 +519,82 @@ function drawArmUp(ctx: CanvasRenderingContext2D, W: number, H: number, rng: () 
   }
 }
 
-function drawLeg(ctx: CanvasRenderingContext2D, W: number, H: number, rng: () => number, ch: Character) {
-  strokePts(ctx, rng, [[W * 0.5, H * 0.04], [W * 0.5 + jit(rng, 4), H * 0.55], [W * 0.5, H * 0.96]],
+/* 手臂（wave 挥手帧，2026-09-22）：单侧上抬到头侧、手掌张开——开/关抽屉的招呼。
+   几何照搬已验证的 drawArmUp 上举帧，仅落点收向头侧、加张开的指线。 */
+function drawArmWave(ctx: CanvasRenderingContext2D, W: number, H: number, rng: () => number, ch: Character) {
+  const hx = W * 0.2, hy = H * 0.2;
+
+  strokePts(ctx, rng, [[W * 0.99, H * 0.98], [W * 0.925, H * 0.97], [W * 0.86, H * 0.96]],
+    { w: 3.5, wob: 4, color: ch.pal.ink, alpha: 0.45 });
+  strokePts(ctx, rng, [[W * 0.86, H * 0.96], [W * 0.5, H * 0.5], [hx, hy]], { w: 6, wob: 2.5, color: ch.pal.ink });
+
+  if (ch.dark) {
+    for (let i = -1; i <= 1; i++) line(ctx, rng, hx, hy, hx + i * 9 - 3, hy - H * 0.12, { w: 3.5, color: ch.pal.ink, wob: 1.5, passes: 1 });
+  } else {
+    strokePts(ctx, rng, ellipsePts(hx, hy, W * 0.085, H * 0.05), { w: 4, wob: 1.5, color: ch.pal.ink, close: true });
+    for (let i = -1; i <= 1; i++) {
+      line(ctx, rng, hx + i * 6, hy - H * 0.03, hx + i * 11, hy - H * 0.11, { w: 3, color: ch.pal.ink, wob: 1.2, passes: 1, alpha: 0.9 });
+    }
+  }
+}
+
+/* 手臂（shrug 耸肩帧，2026-09-22）：肩正常垂点、小臂外翻向上翻出手掌——「不确定 /
+   停一下」。照搬 drawArm 的肩涂鸦，只把小臂折回上抬。 */
+function drawArmShrug(ctx: CanvasRenderingContext2D, W: number, H: number, rng: () => number, ch: Character) {
+  const bend = W * (0.30 + 0.12 * ch.bodyW + rng() * 0.05);
+  const x0 = W * 0.86, elbowX = x0 - bend, handX = x0 - bend * 0.45;
+
+  strokePts(ctx, rng, [[W * 0.99, H * 0.07], [x0 + (W * 0.99 - x0) * 0.35, H * 0.05], [x0, H * 0.04]],
+    { w: 3.5, wob: 4, color: ch.pal.ink, alpha: 0.45 });
+  strokePts(ctx, rng, [[x0, H * 0.04], [elbowX, H * 0.52], [handX, H * 0.34]], { w: 6, wob: 2.5, color: ch.pal.ink });
+
+  /* 翻上的手掌（开口向上的半椭圆——摊手）。 */
+  strokePts(ctx, rng, ellipsePts(handX, H * 0.3, W * 0.09, H * 0.05, 10, Math.PI, Math.PI * 2), { w: 4, wob: 1.5, color: ch.pal.ink });
+}
+
+/* 手臂（point 指向帧，2026-09-22）：单侧手臂向外下方伸直、食指探出——「看这个」。 */
+function drawArmPoint(ctx: CanvasRenderingContext2D, W: number, H: number, rng: () => number, ch: Character) {
+  const x0 = W * 0.86, handX = W * 0.14, handY = H * 0.62;
+
+  strokePts(ctx, rng, [[W * 0.99, H * 0.07], [x0 + (W * 0.99 - x0) * 0.35, H * 0.05], [x0, H * 0.04]],
+    { w: 3.5, wob: 4, color: ch.pal.ink, alpha: 0.45 });
+  strokePts(ctx, rng, [[x0, H * 0.04], [W * 0.5, H * 0.34], [handX, handY]], { w: 6, wob: 2.5, color: ch.pal.ink });
+
+  strokePts(ctx, rng, ellipsePts(handX + W * 0.03, handY, W * 0.06, H * 0.045), { w: 4, wob: 1.5, color: ch.pal.ink, close: true });
+  line(ctx, rng, handX, handY, handX - W * 0.14, handY + H * 0.04, { w: 4, color: ch.pal.ink, wob: 1.2, passes: 1 });
+}
+
+/* 手臂（crossed 抱臂帧，2026-09-22）：肩正常垂点、小臂横过肚皮向内——两臂镜像后
+   在身体中线交叠成「抱臂等待」。 */
+function drawArmCrossed(ctx: CanvasRenderingContext2D, W: number, H: number, rng: () => number, ch: Character) {
+  const x0 = W * 0.9;
+
+  strokePts(ctx, rng, [[W * 0.99, H * 0.07], [x0 + (W * 0.99 - x0) * 0.4, H * 0.05], [x0, H * 0.05]],
+    { w: 3.5, wob: 4, color: ch.pal.ink, alpha: 0.45 });
+  strokePts(ctx, rng, [[x0, H * 0.05], [W * 0.66, H * 0.4], [W * 0.99, H * 0.62]], { w: 6, wob: 2.5, color: ch.pal.ink });
+
+  strokePts(ctx, rng, ellipsePts(W * 0.96, H * 0.62, W * 0.08, H * 0.05), { w: 4, wob: 1.5, color: ch.pal.ink, close: true });
+}
+
+/* 每个姿态的左右手臂函数（[s=-1 侧, s=1 侧]）：对称姿态两侧同函数（靠 s===1 的镜像
+   变换成右臂）；wave / point 单侧做动作、另一侧仍垂手。 */
+type ArmFn = (ctx: CanvasRenderingContext2D, W: number, H: number, rng: () => number, ch: Character) => void;
+const ARM_POSES: Record<AvatarPose, readonly [ArmFn, ArmFn]> = {
+  idle: [drawArm, drawArm],
+  cheer: [drawArmUp, drawArmUp],
+  wave: [drawArm, drawArmWave],
+  point: [drawArm, drawArmPoint],
+  shrug: [drawArmShrug, drawArmShrug],
+  crossed: [drawArmCrossed, drawArmCrossed],
+};
+
+/* 腿（站立 / 迈步）。swing ∈ [-1,1]：>0 = 这条腿向前摆并抬脚，<0 = 向后蹬（walk
+   动画里两条腿相位差半拍）。swing=0 就是原来的直立腿。 */
+function drawLeg(ctx: CanvasRenderingContext2D, W: number, H: number, rng: () => number, ch: Character, swing = 0) {
+  const footX = W * 0.5 + swing * W * 0.42;
+  const lift = Math.max(0, swing) * H * 0.16;
+  const kneeX = W * 0.5 + swing * W * 0.18 + jit(rng, 4);
+  strokePts(ctx, rng, [[W * 0.5, H * 0.04], [kneeX, H * 0.55 - lift * 0.5], [footX, H * 0.96 - lift]],
     { w: 6, wob: 1.5, color: ch.pal.ink });
 }
 
@@ -593,6 +668,7 @@ function rollCharacter(rng: () => number, nightmareChance: number): Character {
 /* ── 布局与渲染 ───────────────────────────────────────────────────────────── */
 
 export type AvatarFraming = "bust" | "full";
+export type AvatarPose = "idle" | "cheer" | "wave" | "shrug" | "point" | "crossed";
 
 /** 头中心钉在 headGroup y=1.16（原版 HEAD_BASE_Y）；五官认 (u,v) 角度钉在不可见
     头球上（原版 placeFeatures；pitch/yaw 恒 0——不搬视线动画）。 */
@@ -621,11 +697,17 @@ export type AvatarOptions = {
       只动瞳孔（原版 lookAt 还会带着五官平面微移，这里不搬：96px 下瞳孔偏移
       已可读，头部转向的收益撑不起布局复杂度）。 */
   gaze?: { x: number; y: number };
-  /** 姿态：idle 垂手 / cheer 举手（celebrate 用，full 框架才有手臂）。 */
-  pose?: "idle" | "cheer";
+  /** 姿态（full 框架才有手臂）：idle 垂手 / cheer 举手（celebrate）/ wave 单手挥手
+      （开合抽屉招呼）/ shrug 摊手（停止生成）/ point 指向 / crossed 抱臂（thinking
+      等待）。手臂反应 = 同一张脸上的表演，不动物种与配色。 */
+  pose?: AvatarPose;
   /** 跳跃高度 0..1（celebrate 的抛物线进度，整体上移 0.55 世界单位封顶——
       原版 celebrate 的跳；值由调用方的 rAF 时间线驱动，drawAvatar 本身无时钟）。 */
   jump?: number;
+  /** 走路相位 0..1（循环）：流式思考中原地踏步的时钟，由调用方 rAF 驱动。两条腿
+      相位差半拍、身体左右微摆——这是 2026-09-22 放宽 Quiet Console 规则 4 后引入的
+      **第二个循环动画**（仅在 thinking 心情期间跑，流式结束即停）。full 框架才有腿。 */
+  walk?: number;
   /** 表情嘴型覆盖（celebrate 张嘴 / 出错抿嘴）：不在该物种嘴型池里的值忽略——
       猫没有「张嘴」，nightmare 不该被强行「微笑」。 */
   mouth?: MouthV;
@@ -642,7 +724,7 @@ export function newAvatarSeed(): string {
 /** 把种子人物画进 size×size 的方形画布（paper 底 + 半身/全身取景）。同参数
     重绘完全一致——确定性落点。 */
 export function drawAvatar(ctx: CanvasRenderingContext2D, size: number, seed: string, options: AvatarOptions = {}) {
-  const { framing = "bust", nightmare = false, blink = false, eyeBoil = 0, gaze, pose = "idle", jump = 0, mouth } = options;
+  const { framing = "bust", nightmare = false, blink = false, eyeBoil = 0, gaze, pose = "idle", jump = 0, walk, mouth } = options;
   /* preferences 是直通存储（PUT 不校验），这里自防护：非字符串/空白种子按
      匿名处理，脏值不进 hashSeed。 */
   const seedText = typeof seed === "string" && seed.trim() ? seed : "anonymous";
@@ -665,8 +747,15 @@ export function drawAvatar(ctx: CanvasRenderingContext2D, size: number, seed: st
   const scale = Math.min((size - pad * 2) / frame.w, (size - pad * 2) / frame.h);
   /* 跳跃：整根 y 轴抬升（原版 celebrate 的 root.position.y = up * 0.55）。 */
   const lift = Math.max(0, Math.min(1, jump)) * 0.55;
-  const toX = (x: number) => size / 2 + (x - (frame.x + frame.w / 2)) * scale;
-  const toY = (y: number) => pad + (frame.y + frame.h - (y + lift)) * scale;
+  /* 走路：相位 → 两条腿的摆动（差半拍）+ 躯干左右微摆 + 每步一次的小起伏。
+     walk 为 undefined 时全归零——站立不受影响。 */
+  const walking = typeof walk === "number" && framing === "full";
+  const ph = walking ? (walk as number) * Math.PI * 2 : 0;
+  const legSwing = walking ? [Math.sin(ph), Math.sin(ph + Math.PI)] : [0, 0];
+  const sway = walking ? Math.sin(ph) * 0.03 : 0;              // 躯干左右微摆
+  const bob = walking ? Math.max(0, Math.sin(ph * 2)) * 0.02 : 0; // 每半拍一次的小起伏
+  const toX = (x: number) => size / 2 + (x + sway - (frame.x + frame.w / 2)) * scale;
+  const toY = (y: number) => pad + (frame.y + frame.h - (y + lift + bob)) * scale;
 
   /** 一个部件 = 原版一张纹理：本地像素尺寸 + 世界矩形（中心/宽高）+ 可选镜像。
       等价 makePart + 网格摆放，但直接以缩放变换落笔——笔画按最终分辨率光栅化。 */
@@ -698,14 +787,18 @@ export function drawAvatar(ctx: CanvasRenderingContext2D, size: number, seed: st
   /* ── 自后向前（原版 z 序：地面 < 腿 < 躯干 < 手臂 < 头 < 耳 < 眼 < 鼻 < 嘴 < 发）── */
 
   if (framing === "full") {
-    part(1024, 48, 0, -0.01, 1.6, (1.6 * 48) / 1024, false, rngFrom("avatar-ground"), drawGround);
-    for (const s of [-1, 1]) part(48, 60, s * 0.12, 0.1, 0.16, 0.2, s === 1, stream(`leg${s}`), withCh(drawLeg));
+    /* 地面不跟着躯干摆（cx=-sway 抵消 toX 的 sway 项）——踱步是人在动，地不动。 */
+    part(1024, 48, -sway, -0.01, 1.6, (1.6 * 48) / 1024, false, rngFrom("avatar-ground"), drawGround);
+    /* 迈腿：左右腿相位差半拍（legSwing[0/1]），swing=0 时退回直立腿。 */
+    [-1, 1].forEach((s, idx) => part(48, 60, s * 0.12, 0.1, 0.16, 0.2, s === 1, stream(`leg${s}`),
+      (c, w, h, r) => drawLeg(c, w, h, r, ch, legSwing[idx])));
   }
   part(224, 224, 0, 0.5, 0.78, 0.82, false, stream("torso"), withCh(drawTorso));
   if (framing === "full") {
-    /* cheer 帧换举手手臂（celebrate）；部件流名不同——同一姿态重绘逐笔一致。 */
-    const armFn = pose === "cheer" ? drawArmUp : drawArm;
-    for (const s of [-1, 1]) part(96, 160, s * (0.19 * ch.bodyW + 0.137), 0.46, 0.38, 0.52, s === 1, stream(`${pose}Arm${s}`), withCh(armFn));
+    /* 姿态帧换手臂函数（cheer/wave/shrug/point/crossed）；部件流名带 pose——同一姿态
+       重绘逐笔一致，切姿态时换一版抖动。wave/point 左右不同函数（单侧做动作）。 */
+    const arms = ARM_POSES[pose];
+    [-1, 1].forEach((s, idx) => part(96, 160, s * (0.19 * ch.bodyW + 0.137), 0.46, 0.38, 0.52, s === 1, stream(`${pose}Arm${s}`), withCh(arms[idx])));
   }
 
   part(256, 256, 0, HEAD_BASE_Y, 1.05, 1.05, false, stream("head"), withCh(drawHead));

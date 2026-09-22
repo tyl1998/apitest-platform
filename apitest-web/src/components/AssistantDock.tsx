@@ -567,7 +567,15 @@ export function AssistantDock() {
    * - 刚登录（本会话首次挂载）入口小跳一下——「我在这」；
    * - 未读数上升（新通知到达，非首轮存量）入口再跳——通知入口就在这枚按钮上，跳是
    *   徽标出现的动效版。 */
-  useEffect(() => { if (open) fireHeaderPulse("greet"); }, [open]);
+  /* 开抽屉打招呼（greet：举手跳一下）；合抽屉挥手告别（wave）——Drawer 不销毁子树，
+     退场滑出的这一帧里 96px 全身像仍在，挥手看得见。首帧挂载（open 初值 false）不算
+     「合上」，用 ref 跳过。 */
+  const drawerMounted = useRef(false);
+  useEffect(() => {
+    if (open) fireHeaderPulse("greet");
+    else if (drawerMounted.current) fireHeaderPulse("wave");
+    drawerMounted.current = true;
+  }, [open]);
   useEffect(() => {
     if (greetedThisSession) return;
     greetedThisSession = true;
@@ -797,7 +805,8 @@ export function AssistantDock() {
     try {
       await api.stopAssistantConversation(streamingId);
       /* 上游停了之后流会自然收尾（终态帧）；这里不本地断流——半截回复留在气泡里
-         比悄悄消失诚实。 */
+         比悄悄消失诚实。人物反应（2026-09-22）：用户主动叫停 = 摊手（shrug）。 */
+      fireHeaderPulse("shrug");
     } catch (error) {
       errorToast(error, t("assistantDrawer.stopFailed"));
     }

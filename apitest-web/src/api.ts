@@ -122,7 +122,7 @@ export type SqlDefinition = {
   description: string;
   createdAt: string;
   updatedAt: string;
-};
+} & Ownership;
 export type SqlDefinitionInput = {
   name: string;
   description: string;
@@ -144,6 +144,8 @@ export type SqlExecutionHistory = {
   projectId: string;
   dataSourceId: string;
   userId: string;
+  /** 执行人 email（读侧 LEFT JOIN users 带出）；历史只返回本人记录，故必然是当前用户。 */
+  userEmail?: string | null;
   statementType: SqlStatementType;
   sql: string;
   params: SqlParameter[];
