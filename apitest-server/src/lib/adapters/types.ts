@@ -17,6 +17,9 @@ export type SqlExecutionResult = {
   rowCount: number;
   truncated: boolean;
   durationMs: number;
+  /** A query that declared no row limit of its own (potential full-table scan).
+      Undefined for commands and for mongo/redis operations. */
+  fullScan?: boolean;
 };
 
 /** A mongo/redis execution: the named-definition payload is a `kind` plus an

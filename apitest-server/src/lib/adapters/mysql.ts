@@ -1,6 +1,6 @@
 import { performance } from "node:perf_hooks";
 import mysql from "mysql2/promise";
-import { clamp, compileSql, DEFAULT_MAX_BYTES, DEFAULT_MAX_ROWS, HARD_MAX_BYTES, HARD_MAX_ROWS, truncateRows, validateSqlParams } from "./common.js";
+import { clamp, compileSql, DEFAULT_MAX_BYTES, hasRowLimitClause, HARD_MAX_BYTES, resolveMaxRows, truncateRows, validateSqlParams } from "./common.js";
 import { sqlSkeleton, validateStatement, type SkeletonFlags } from "./skeleton.js";
 import type { SqlAdapter, SqlExecutionInput, SqlExecutionResult } from "./types.js";
 
@@ -35,8 +35,10 @@ const adapter: SqlAdapter = {
     const normalizedSql = terminator < 0 ? input.sql : input.sql.slice(0, terminator);
     const compiled = compileSql(normalizedSql, input.params ?? [], input.values ?? {}, () => "?", MYSQL_SKELETON);
     const config = source.config;
+    /* No row-limiting clause on a query = full-table scan; capped at 200 rows. */
+    const fullScan = input.statementType === "query" && !hasRowLimitClause(skeleton);
     const timeoutMs = clamp(input.timeoutMs ?? config.queryTimeoutMs, 10_000, 60_000);
-    const maxRows = clamp(input.maxRows ?? config.maxRows, DEFAULT_MAX_ROWS, HARD_MAX_ROWS);
+    const maxRows = resolveMaxRows(input.maxRows, config.maxRows, !fullScan);
     const maxBytes = clamp(input.maxResultBytes ?? config.maxResultBytes, DEFAULT_MAX_BYTES, HARD_MAX_BYTES);
     /* bigNumberStrings keeps BIGINT beyond Number.MAX_SAFE_INTEGER lossless;
        dateStrings avoids timezone-shifted Date objects in evidence. */
@@ -63,7 +65,7 @@ const adapter: SqlAdapter = {
       const rawRows = Array.isArray(result) ? result : [];
       const rowCount = input.statementType === "command" ? Number((result as { affectedRows?: number }).affectedRows ?? rawRows.length) : rawRows.length;
       const { rows, truncated } = truncateRows(rawRows.map((row) => normalizeRow(row)), maxRows, maxBytes);
-      return { rows, rowCount, truncated, durationMs: Math.max(0, Math.round(performance.now() - started)) };
+      return { rows, rowCount, truncated, durationMs: Math.max(0, Math.round(performance.now() - started)), fullScan };
     } catch (error) {
       await connection.query("ROLLBACK").catch(() => {});
       throw error;

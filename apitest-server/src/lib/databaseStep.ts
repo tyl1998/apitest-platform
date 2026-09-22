@@ -68,7 +68,7 @@ export async function executeDatabaseWork(
       durationMs: result.durationMs,
       error: assertionFailed ? "one or more assertions failed" : extractFailed ? "one or more extracts failed" : undefined,
       output: mask({
-        rows: result.rows, rowCount: result.rowCount, truncated: result.truncated,
+        rows: result.rows, rowCount: result.rowCount, truncated: result.truncated, fullScan: result.fullScan,
         assertionResults: assertion.results, extractResults: extraction.results,
       }) as Record<string, unknown>,
       /* A failed step contributes nothing: the same transaction boundary a request

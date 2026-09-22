@@ -8,6 +8,40 @@ export const DEFAULT_MAX_ROWS = 100;
 export const HARD_MAX_ROWS = 1000;
 export const DEFAULT_MAX_BYTES = 1024 * 1024;
 export const HARD_MAX_BYTES = 10 * 1024 * 1024;
+/** A query that names no row limit (no LIMIT/TOP/FETCH/ROWNUM) is a full-table
+    scan; cap its evidence at this many rows so a forgotten WHERE cannot pull an
+    entire table back. A tighter safety net than the per-source ceiling, applied
+    only when the SQL itself asked for no bound. */
+export const NO_LIMIT_DEFAULT_ROWS = 200;
+
+/**
+ * True when the executable SQL already bounds its own row count. Matches the
+ * dialect-neutral row-limiting clauses across the supported drivers:
+ *   - `LIMIT n` (postgres/mysql)          - `FETCH FIRST/NEXT n ROWS` (SQL standard/oracle 12c+)
+ *   - `TOP n` / `TOP (n)` (sql server)    - `ROWNUM` predicate (oracle legacy)
+ * The caller passes an already-blanked skeleton (string literals / identifiers /
+ * comments removed) so a `LIMIT` living inside a string is never counted.
+ */
+export function hasRowLimitClause(skeleton: string): boolean {
+  const executable = skeleton.replace(/;/g, " ");
+  return /\bLIMIT\s+\d/i.test(executable)
+    || /\bFETCH\s+(?:FIRST|NEXT)\b/i.test(executable)
+    || /\bTOP\s*\(?\s*\d/i.test(executable)
+    || /\bROWNUM\b/i.test(executable);
+}
+
+/**
+ * The effective row cap for one execution. An explicit caller override always
+ * wins (clamped to the hard ceiling). Otherwise the per-source `maxRows` is the
+ * ceiling — but a query that declared no row limit of its own is pulled down to
+ * `NO_LIMIT_DEFAULT_ROWS`, never above the source ceiling. Commands and queries
+ * that already carry a LIMIT keep the source ceiling.
+ */
+export function resolveMaxRows(override: number | undefined, configMaxRows: number | undefined, hasLimitClause: boolean): number {
+  const ceiling = clamp(override ?? configMaxRows, DEFAULT_MAX_ROWS, HARD_MAX_ROWS);
+  if (override !== undefined || hasLimitClause) return ceiling;
+  return Math.min(ceiling, NO_LIMIT_DEFAULT_ROWS);
+}
 
 export function validateSqlParams(value: unknown): string | undefined {
   if (value === undefined) return undefined;
