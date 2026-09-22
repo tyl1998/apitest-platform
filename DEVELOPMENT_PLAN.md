@@ -1179,6 +1179,83 @@ MongoDB / Redis 使用独立操作定义，不伪装为 SQL，也不阻塞 P2 �
 - **先做数据源的理由**：「校验返回 body 是否符合数据库查出的数据」这类需求目前完全无法表达。
 - 落地后立刻可交付 **流程数据库节点**（执行与断言实现在 `lib/databaseStep.ts`）
 
+**第 1 批增量 · SQL 执行历史（P2-1 增量）** — `[已实现]`
+
+背景：查询面板 `POST .../data-sources/:id/query` 目前完全无状态（结果只进前端
+`DataSourceDetail.tsx` 的 `useState`，刷新即丢），无法重跑、找回查询文本或审计谁跑过写语句。
+
+确认口径（2026-09-22，用户确认）：**保存，但把小而恒定的「查询」与大而危险的「结果」分开存**。
+
+- **只对交互式 `/query` 落历史**：`test` 连接探针、flow 数据库步骤（已进
+  `execution_steps.output_snapshot`）、`/public/sql-quick-call` 均不入这张表，避免与既有记录重复。
+- **保存粒度 = 元数据 + 小预览**：元数据（`sql` / `statement_type` / `params` / `values` /
+  `data_source_id` / `user_id` / `status` / `error` / `row_count` / `duration_ms` / `truncated` /
+  `created_at`）永久留；结果只存一份 `result_preview`，写入前独立截断到
+  `SQL_HISTORY_PREVIEW_BYTES`（缺省 32KB）或前 50 行，先到先停并置 `history_truncated`。
+  这层截断独立于执行器已有的 `maxRows`/`maxBytes`（`common.ts:7-10`，100 行 / 1MiB），
+  保证单条历史体积恒定，与查询返回多大无关；失败查询不存预览，只存 error。
+- **三层淘汰（任一触发即生效）**：
+  1. 单条体积上限（上一条，32KB / 50 行）；
+  2. 环形缓冲：每 `(user_id, data_source_id)` 只留最近 `SQL_HISTORY_KEEP_PER_USER`（缺省 50）条，
+     插入后 `DELETE ... id NOT IN (最近 50)`；
+  3. TTL：scheduler 加一拍 `DELETE ... created_at < now() - SQL_HISTORY_TTL_DAYS`（缺省 **14 天**），
+     形状复用现有 `partitionMaintenanceTick`（`scheduler.ts:154-168`），advisory-lock 多实例安全。
+  - 存储上界 ≈ 用户数 × 数据源数 × 50 × 32KB，且 14 天自动收敛。
+- **落地面**：新增 migration `072_*.sql`（表 `sql_execution_history`，`ON DELETE CASCADE` 于
+  `data_sources` / `users`，按 `(user_id, data_source_id, created_at)` 建索引）；
+  `models/types.ts` 加 `SqlExecutionHistory` 类型 + `mapSqlExecutionHistory`；
+  `/query` 处理器成功/失败后 **fire-and-forget** 写一条（写历史失败绝不影响查询响应）；
+  新增 `GET .../data-sources/:id/sql-history`（分页）+ `DELETE .../sql-history`（清空）；
+  三个阈值走环境变量并进 `.env.example`。前端复用 `DataSourceDetail.tsx` 已有的
+  `sqlHistoryOpen` 状态开一个执行历史抽屉（当前它开的是资产版本历史），点一条回填 SQL 重跑，
+  带 `history_truncated` 徽标（前端按 quiet-console 契约）。
+- **边界**：不做全量结果 offload（executions 的 `065` 对象存储那套）——ad-hoc 控制台不需要可复现的完整结果；
+  不改执行器现有截断口径；不引入新依赖。
+
+实施步骤（分步提交，一次一文件；后端遵循 `server-contract` skill，前端遵循 `quiet-console` skill）：
+
+1. **migration `072_p2_sql_execution_history.sql`**：建表 `sql_execution_history`
+   （`id` / `project_id` / `data_source_id` / `user_id`，FK `ON DELETE CASCADE`；
+   `statement_type` / `sql` / `params jsonb` / `values jsonb` /
+   `status` CHECK `IN ('success','error')` / `error` / `row_count` / `duration_ms` /
+   `truncated` / `result_preview jsonb` / `history_truncated` /
+   `created_at TIMESTAMPTZ DEFAULT now()`），索引
+   `sql_execution_history_user_source_created_idx (user_id, data_source_id, created_at DESC)`；
+   全部 `IF NOT EXISTS`、前向。
+2. **`models/types.ts`**：加 `SqlExecutionHistory` 类型 + `mapSqlExecutionHistory`
+   （snake→camel，敏感值经 `sanitizeValue`）。
+3. **`lib/sqlHistory.ts`（新文件）**：`recordSqlHistory()` 做预览截断（`SQL_HISTORY_PREVIEW_BYTES`
+   缺省 32KB / 50 行）+ INSERT + 环形缓冲 DELETE（`SQL_HISTORY_KEEP_PER_USER` 缺省 50）；
+   在 `routes/dataSources.ts` 的 `/query` 处理器 success/catch 两路 **fire-and-forget** 调用
+   （`.catch` 吞掉，绝不影响查询响应）。
+4. **`routes/dataSources.ts`**：`GET .../data-sources/:dataSourceId/sql-history`（读权、分页
+   `page/pageSize`、`isUuid` 预检、只返回本人记录）+ `DELETE .../sql-history`（写权、清本人本数据源历史），
+   走标准 `success/fail` 信封。
+5. **`scheduler.ts` + `lib/sqlHistory.ts`**：仿 `partitionMaintenanceTick`（`scheduler.ts:154-168`）
+   加 TTL 拍（建议 6h），`DELETE ... created_at < now() - SQL_HISTORY_TTL_DAYS`（缺省 14 天），
+   advisory lock 互斥、启动即跑一拍、`unref()`、signal 处 `clearInterval`；`.env.example` 补三个变量。
+6. **前端（`apitest-web`）**：`api.ts` 加 `listSqlHistory` / `clearSqlHistory` + 类型；
+   `DataSourceDetail.tsx` 把 `sqlHistoryOpen` 指向新的执行历史抽屉（当前开的是资产版本历史，需区分/并列），
+   点一条回填 SQL 到编辑器、带 `history_truncated` 徽标，复用 `DatabaseResult.tsx` 渲染预览。
+
+约定：按 `AGENTS.md`——改动后不自动重启服务、不自动跑校验/测试（除非用户明确要求），改完报告本地 URL 与启动阻碍。
+
+**实现落地（2026-09-22）**：六步全部落地。迁移 `072_p2_sql_execution_history.sql`（表
+`sql_execution_history`，`project_id`/`data_source_id`/`user_id` 三 FK `ON DELETE CASCADE`，
+`"values"` 因保留字加引号，复合索引 `(user_id, data_source_id, created_at DESC)`）；
+`models/types.ts` 加 `SqlExecutionHistory` + `mapSqlExecutionHistory`；`lib/sqlHistory.ts`
+（`recordSqlHistory` 预览截断 32KB/50 行 + INSERT + 环形缓冲 DELETE，`purgeExpiredSqlHistory`
+TTL 拍 advisory-lock 互斥）；`routes/dataSources.ts` 的 `/query` **只对 `kind==='sql'`**
+成功/失败两路 fire-and-forget 写历史（mongo/redis 不入表），新增
+`GET/DELETE .../sql-history`（GET 读权分页只返本人，DELETE 写权清本人本源）；`scheduler.ts`
+仿 `partitionMaintenanceTick` 加 6h TTL 拍（`unref`、启动即跑、signal 处 `clearInterval`），
+`.env.example` 补 `SQL_HISTORY_PREVIEW_BYTES` / `SQL_HISTORY_KEEP_PER_USER` /
+`SQL_HISTORY_TTL_DAYS`。前端 `api.ts` 加 `sqlHistory`/`clearSqlHistory` + 类型；
+`DataSourceDetail.tsx` 新增独立的 `SqlHistoryDrawer`（与 SQL 定义版本历史并列，各自入口），
+试跑面板加「执行历史」按钮，点一条回填 SQL/语句类型/参数/试跑值，带 `truncated` 与
+`history_truncated`（预览已截断）徽标，复用 `DatabaseResult.tsx` 渲染预览。按 `AGENTS.md`
+未自动跑校验/迁移/重启服务。
+
 **第 2 批 · 流程节点补全（约 2 周）** — `[已实现，见 5.0.4]`
 
 - ~~**脚本节点**：把变量袋读写接进 `ctx.variables`，`return` 的对象合并进袋；
@@ -6491,6 +6568,70 @@ API Key（Key 走 `lib/crypto.ts:19` 的 AES-GCM，与 Webhook 密钥同款—�
 > URL 直达项目渲染「无权限 + 申请入口」落地页而非裸 403；新表 `access_requests`
 > 审批流（批准 = 既有成员 upsert，`granted_by` 落审批人、审计照旧）+ 站内信两路
 > 触达（新申请 → 全体 project_admin，审批结果 → 申请人）+ 单 pending 幂等。
+
+---
+
+## 十九、P15 — 用户级 API 密钥 + SQL 快速调用（免登录调用）
+
+> **立项 2026-09-22（范围已确认）。** 一句话范围：给用户一把**调用平台开放 API 的个人
+> AES 密钥**（个人中心设置，密钥即凭据，用户选定口径），第一个消费方是 SQL 快速调用——
+> 把已保存的 SQL 定义变成一条**免登录、可复制成 cURL**的外部调用。**已实现**。
+
+**边界与决策（四问已确认）：**
+
+1. **鉴权模型 = 密钥即凭据。** URL 路径带公开 `key_id`（仅定位是哪一把密钥，非秘密），
+   查询串 `d` 是用该密钥 AES-256-GCM 加密的调用描述符。`d` 解得开（GCM 认证标签通过）
+   即视为「密钥持有人签发的调用」，解不开一律 401。**不是**匿名公开、**不是**额外 Bearer。
+2. **加密范围 = 完整调用描述符** `{ projectId, sqlDefinitionId, values }`：URL 不暴露命中的是
+   哪个项目 / 哪条 SQL / 什么参数。
+3. **密钥发放 = 系统生成、只显示一次。** 32 字节随机密钥，库里以主密钥
+   （`DATA_SOURCE_ENCRYPTION_KEY`）再加密一层存放；明文只在生成 / 轮换响应里出现一次。
+   一人一把（`api_access_keys.user_id` 主键），轮换 = 覆盖行，吊销 = 删行（已发出的
+   URL 立即失效）。
+   - **密钥定位（2026-09-22 反馈②）**：这把密钥不是 SQL 专用，而是「用户调用平台通用
+     API 的密钥」——`api_access_keys` / `/me/api-key`，SQL 快速调用只是它的第一个消费方，
+     以后新增的开放 API 复用同一把。
+4. **端点形状 = 请求头带凭据 + 请求体带入参（2026-09-22 反馈①）。** 早期把整个描述符
+   （含入参）塞进 URL 的 `d` 查询串，用户反馈「看不懂、入参没法动态传」，遂改成：
+   - `POST /api/v1/public/sql-quick-call`
+   - Header `Authorization: ApiKey <keyId>.<token>`——`token` 是本人 API 密钥加密的
+     `{ projectId, sqlDefinitionId }`（既是凭据又指明跑哪条定义，防篡改）；也接受
+     `X-Api-Key` + `X-Api-Token` 两个头。
+   - Body `{ "param": { "a": "xxx" } }`——入参动态传，同一个令牌可反复复用、每次不同参数
+     （兼容 `values` 别名）。
+   - **复制产物 = 完整 cURL**：SQL 定义试跑面板的按钮把
+     `curl -X POST '<url>' -H 'Authorization: ApiKey …' -d '{"param":{…}}'` 复制到剪贴板
+     （body 用当前试跑值做模板，可改；根地址随 curl 一起透出）。
+
+**三道闸门（公开端点 `POST /api/v1/public/sql-quick-call`，不走 JWT）：**
+keyId 定位到密钥 → `token` 用该密钥解得开 → 持钥人**此刻**仍对该项目有 write（`canAccess`，
+与 `/query`、`/test` 同口径，viewer 不可跑；账号禁用即失效）。
+
+**落地清单：**
+
+- 迁移 `071_p15_api_keys.sql`：`api_access_keys(user_id PK, key_id UNIQUE,
+  secret_encrypted BYTEA, created_at, rotated_at)`（含 `DROP TABLE IF EXISTS
+  sql_quick_call_keys`——同阶段内改名，项目未发布，顺手清旧名空表）。
+- `lib/crypto.ts`：抽出 `encryptWithKey` / `decryptWithKey`（任意 32 字节密钥），
+  `encryptSecret` / `decryptSecret` 收敛为主密钥版本。
+- `lib/apiKeys.ts`：用户级 API 密钥的生成 / 元数据 / 吊销 / 取用单点（`issueApiKey`…）。
+- `lib/sqlQuickCall.ts`：调用**令牌** `encodeToken`/`decodeToken`（`{projectId, sqlId}`，密钥来自
+  `lib/apiKeys.ts`）+ `readCredential`（从 `Authorization: ApiKey <keyId>.<token>` 或
+  `X-Api-Key`/`X-Api-Token` 解出凭据）。
+- 个人中心 `routes/me.ts`：`GET / POST / DELETE /api/v1/me/api-key`
+  （读元数据 / 生成轮换 / 吊销；审计 `api_key.create|rotate|revoke`，密钥明文与哈希不进）。
+- 构造令牌 `routes/dataSources.ts`：`POST /api/v1/projects/:id/sql-definitions/:sqlId/quick-call`
+  （服务端用本人 API 密钥把 `{projectId, sqlId}` 编成 `token`，返回 `keyId + token + params`；
+  未设密钥回 2002 引导去个人中心）。
+- 公开执行 `routes/sqlQuickCall.ts`（注册于 `index.ts`，与报告分享 / Webhook 同层）。
+- 前端：`api.ts`（`apiKey` CRUD + `buildSqlQuickCall` + `sqlQuickCallCurl`/`sqlQuickCallBaseUrl`）、
+  个人中心「agent 凭据」tab 新增 **API 密钥**面板（生成 / 轮换 / 吊销 + 一次性明文弹窗）、
+  数据源 SQL 定义试跑面板新增「复制 cURL」按钮（烘焙当前入参值，复制 `curl -X POST '<url>'`）、
+  i18n 中英双份（`apiKey.*` + `sqlQuickCall.*`）。
+
+**安全说明（记录在案）：** 这是一个免登录、可外部调用的 SQL 执行面。密钥明文泄露 =
+以持钥人身份、其项目 write 权限跑这些 SQL 的能力泄露；处置手段是轮换或吊销。已发出的
+URL 自包含参数，请当作机密对待。
 
 ---
 
