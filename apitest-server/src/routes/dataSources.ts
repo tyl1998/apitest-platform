@@ -428,8 +428,12 @@ export async function dataSourceRoutes(app: FastifyInstance) {
     const page = Math.max(1, Number(request.query.page ?? 1));
     const pageSize = Math.min(100, Math.max(1, Number(request.query.pageSize ?? 20)));
     const count = await pool.query("SELECT COUNT(*)::int AS total FROM sql_execution_history WHERE user_id = $1 AND data_source_id = $2", [context.user.id, request.params.dataSourceId]);
+    /* 带出「执行人」email（P11 同款：uuid 存列、email 由 LEFT JOIN users 现取）。读侧本就
+       只返回本人记录，这一列在抽屉里显示的必然是调用者自己，仍与其它资产的归属列同一形制。 */
     const result = await pool.query(
-      "SELECT * FROM sql_execution_history WHERE user_id = $1 AND data_source_id = $2 ORDER BY created_at DESC LIMIT $3 OFFSET $4",
+      `SELECT seh.*, u.email AS user_email FROM sql_execution_history seh
+         LEFT JOIN users u ON u.id = seh.user_id
+       WHERE seh.user_id = $1 AND seh.data_source_id = $2 ORDER BY seh.created_at DESC LIMIT $3 OFFSET $4`,
       [context.user.id, request.params.dataSourceId, pageSize, (page - 1) * pageSize],
     );
     return success(result.rows.map(mapSqlExecutionHistory), { page, pageSize, total: Number(count.rows[0].total) });

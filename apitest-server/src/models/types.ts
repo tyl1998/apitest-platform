@@ -744,14 +744,17 @@ export type SqlDefinition = {
  *
  * 元数据永久留、结果只留一份被独立截断的小预览（`resultPreview` + `historyTruncated`）；
  * 与执行结果本身的 `truncated`（执行器那层是否截断）分开表达。成功才有 `rowCount` /
- * `durationMs`，失败只有 `error` 且不存预览。不带 Ownership——它按 `userId` 归本人，
- * 不是「谁建/谁改」的共享资产。
+ * `durationMs`，失败只有 `error` 且不存预览。不带 Ownership（没有「谁建/谁改」的共享
+ * 资产语义，读侧永远只返回本人记录），但为了在执行历史里显示「执行人」，读点 `LEFT JOIN
+ * users` 带出 `userId` 对应的 `userEmail`（与 `Ownership` / `TriggeredByEmail` 同一取值口）。
  */
 export type SqlExecutionHistory = {
   id: string;
   projectId: string;
   dataSourceId: string;
   userId: string;
+  /** 执行人 email 快照，由读侧查询 `LEFT JOIN users` 带出（写路径不填）。 */
+  userEmail?: string | null;
   statementType: SqlStatementType;
   sql: string;
   params: SqlParameterDefinition[];
@@ -1960,6 +1963,7 @@ export function mapSqlDefinition(row: Record<string, unknown>): SqlDefinition {
 export function mapSqlExecutionHistory(row: Record<string, unknown>): SqlExecutionHistory {
   return {
     id: String(row.id), projectId: String(row.project_id), dataSourceId: String(row.data_source_id), userId: String(row.user_id),
+    userEmail: ownershipEmail(row.user_email),
     statementType: String(row.statement_type) as SqlStatementType, sql: String(row.sql),
     params: (row.params ?? []) as SqlParameterDefinition[], values: (row.values ?? {}) as Record<string, unknown>,
     status: String(row.status) as SqlExecutionHistory["status"], error: row.error === null || row.error === undefined ? undefined : String(row.error),
