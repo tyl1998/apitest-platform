@@ -1212,6 +1212,30 @@ MongoDB / Redis 使用独立操作定义，不伪装为 SQL，也不阻塞 P2 �
 - **边界**：不做全量结果 offload（executions 的 `065` 对象存储那套）——ad-hoc 控制台不需要可复现的完整结果；
   不改执行器现有截断口径；不引入新依赖。
 
+**第 1 批增量 · 全表扫描默认封顶 + 慢查询提示 + 结果抽屉加宽（2026-09-22，用户确认）** — `[已实现]`
+
+确认口径（三问三答）：① 结果抽屉加宽覆盖**流程/套件执行结果抽屉 + 数据源 SQL 编辑器/试跑/历史抽屉 +
+流程节点（数据库）编辑抽屉**（单行详情 Modal 不动）；② 无 LIMIT 的查询**本次执行默认按 200 行封顶**，
+写了 LIMIT/TOP/FETCH 的沿用其行为与既有配置上限；③ 慢查询在**结果区显示警示标记**，不阻断执行。
+
+- **无 LIMIT 封顶 = 全表扫描保护**：`common.ts` 加 `NO_LIMIT_DEFAULT_ROWS=200`、`hasRowLimitClause(skeleton)`
+  （在已抹字符串/注释的骨架上识别 `LIMIT n` / `FETCH FIRST|NEXT` / `TOP (n)` / `ROWNUM`）、
+  `resolveMaxRows(override, configMaxRows, hasLimit)`。四个 SQL 适配器（pg/mysql/mssql/oracle）改用
+  `resolveMaxRows`：调用方显式 `maxRows` 最优先；否则查询若自带行数限制走数据源配置上限，
+  自带无限制则下压到 200（但不超过配置上限）。command 与已带 LIMIT 的查询口径不变。
+- **`fullScan` 证据位**：`SqlExecutionResult` 加可选 `fullScan`（仅 query 且无行数限制时为 true），
+  经 `databaseStep` 写入 `execution_steps.output_snapshot`，`/query`、`/test`、命名 SQL 试跑直接透传。
+  mongo/redis 操作不带此位。
+- **前端提示（quiet-console 契约）**：`DatabaseResult.tsx` 元信息行新增「全表扫描」「慢查询」标记，
+  与既有「结果已截断」同用 `.sql-result-warn`（借 `--skip` 色，不引第二强调色）；慢查询阈值
+  `SLOW_QUERY_MS=1000`（纯前端展示判据，不入库、不阻断）。i18n 加 `dataSources.fullScan(Hint)` /
+  `dataSources.slowQuery(Hint)`。
+- **结果抽屉宽度**：`ui.tsx` 加 `RESULT_DRAWER_WIDTH = "min(1600px, max(820px, 70vw))"`，
+  由 `FlowRunDrawer` / `SuiteRunDrawer` / `ExecutionRecords` 批量结果抽屉 / `DataSourceDetail` 的
+  SQL 编辑与执行历史抽屉 / `FlowNodeDrawer` 数据库节点抽屉共用（宽屏约 70%，下限 820、上限 1600）。
+- **边界**：不新增迁移、不改历史表口径（`sql_execution_history` 仍只存 rows/rowCount/truncated/duration）；
+  不引入新依赖；慢查询判定不做后端记录。
+
 实施步骤（分步提交，一次一文件；后端遵循 `server-contract` skill，前端遵循 `quiet-console` skill）：
 
 1. **migration `072_p2_sql_execution_history.sql`**：建表 `sql_execution_history`
