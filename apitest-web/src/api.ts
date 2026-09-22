@@ -2364,7 +2364,9 @@ export type ExecutionFilters = { status?: string; endpointId?: string; source?: 
 /** Paged reads keep `total` so the UI can show real page controls. */
 export type Paged<T> = { items: T[]; page: number; pageSize: number; total: number };
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000/api/v1";
+/* 缺省走相对路径 `/api/v1`（同源）——dev 由 Vite proxy、生产由 Nginx 反代到后端，避免跨源/CORS。
+   设了 `VITE_API_BASE_URL`（绝对地址）时改为直连该地址（双域名不反代的逃生口）。 */
+const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
 
 const client = axios.create({ baseURL: BASE_URL });
 
