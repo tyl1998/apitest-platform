@@ -1805,6 +1805,7 @@ pre.code { max-height: 340px; }
 .docs-md a { color: var(--accent); text-decoration: underline; }
 .docs-md strong { font-weight: 600; }
 .docs-md blockquote { margin: 0 0 var(--s3); padding: 2px var(--s3); border-left: 2px solid var(--line-strong); color: var(--ink-2); }
+.docs-md img { display: block; margin: var(--s3) 0; max-width: 100%; height: auto; border: 1px solid var(--line-strong); border-radius: var(--r); background: var(--raised); }
 
 /* 窄屏（<760px）：目录折到正文之上，成横向可滚条；正文列不再与之并排。 */
 @media (max-width: 760px) {
@@ -5499,6 +5500,28 @@ button.step-row:hover { background: var(--hover); }
   width: 20px; height: 20px; border-radius: 999px;
   background: var(--accent); color: var(--accent-ink);
   font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+
+/* ── SQL 执行历史抽屉（P2-1 增量）──────────────────────────────────────────
+   行是一次 /query 的记录：状态 + 语句类型 + 行数/耗时 + 时间一行，SQL 一行，动作一行。
+   复用 .version-list 的间距与卡片语汇；语义色只落在 .status 上（契约规则 2）。 */
+.sql-history-row {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+  cursor: pointer;
+  transition: background var(--t), border-color var(--t);
+}
+.sql-history-row:hover { background: var(--hover); }
+.sql-history-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+/* 时间推到行尾，与前面的状态/类型/计量分隔开。 */
+.sql-history-time { margin-left: auto; }
+/* SQL 文本：等宽、两行内截断——历史行是索引，看全文回填后在编辑器里看。 */
+.sql-history-sql {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; color: var(--ink); font-size: 12px; white-space: pre-wrap; word-break: break-word;
 }
 
 .version-diff-field { margin-bottom: var(--s3); }

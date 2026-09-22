@@ -3,7 +3,7 @@ import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { Link2, Plus, Trash2 } from "lucide-react";
-import { api, type AccessRequest, type BindableProject, type McpBindingRequest, type McpScope, type McpToken, type MeProfile } from "../api";
+import { api, type AccessRequest, type ApiKey, type BindableProject, type McpBindingRequest, type McpScope, type McpToken, type MeProfile } from "../api";
 import { Empty, Status } from "../ui";
 import { apiMessage } from "./DataSourceList";
 import { CopyButton } from "./CopyButton";
@@ -148,13 +148,126 @@ function MyAccessRequestsTab() {
   </section>;
 }
 
-/** agent 凭据：P9-4b 的落点（边界 9）。本阶段占位——一个空 tab 也不该是空白页。 */
+/** agent 凭据：P9-4b 的落点（边界 9）+ 用户级 API 密钥（本人级凭据的自然归属）。 */
 function CredentialsTab() {
   const { t } = useTranslation();
-  return <section className="panel">
-    <div className="panel-head"><strong>{t("me.tabCredentials")}</strong></div>
-    <div className="panel-body"><Empty title={t("me.credentialsEmptyTitle")} hint={t("me.credentialsEmptyHint")} /></div>
-  </section>;
+  return <>
+    <ApiKeyPanel />
+    <section className="panel">
+      <div className="panel-head"><strong>{t("me.tabCredentials")}</strong></div>
+      <div className="panel-body"><Empty title={t("me.credentialsEmptyTitle")} hint={t("me.credentialsEmptyHint")} /></div>
+    </section>
+  </>;
+}
+
+/**
+ * 用户级 API 密钥（个人中心设置）：一人一把 AES 密钥，是**调用平台开放 API 的凭据本身**。
+ *
+ * 第一个消费方是 SQL 快速调用（把 SQL 定义变成免登录、可 curl 的调用地址：地址里的调用
+ * 内容用它加密，公开端点用它解密，解得开即视为本人签发）；以后新增的开放 API 复用同一把。
+ *
+ * 明文只在生成 / 轮换的那一次弹窗里出现一次（与 MCP Token 同款一次性纪律）：这里只展示
+ * key_id（公开标识）与时间戳。安全含义要在文案里说清——密钥泄露 = 以本人身份调用这些
+ * API 的能力泄露，轮换会让旧密钥加密的所有调用地址立即失效，吊销则让全部地址失效。
+ */
+function ApiKeyPanel() {
+  const { t } = useTranslation();
+  const [key, setKey] = useState<ApiKey | null>();
+  const [failed, setFailed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  /** 生成 / 轮换后的一次性明文（弹窗展示，显式关闭后清空）。 */
+  const [issued, setIssued] = useState<string>();
+  const [issuedRotated, setIssuedRotated] = useState(false);
+
+  const load = useCallback(async () => {
+    try { setKey(await api.apiKey()); setFailed(false); }
+    catch { setFailed(true); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  async function issue() {
+    setBusy(true);
+    try {
+      const result = await api.issueApiKey();
+      setIssued(result.key);
+      setIssuedRotated(result.rotated);
+    } catch (error) {
+      message.error(apiMessage(error) ?? t("apiKey.issueFailed"));
+    } finally { setBusy(false); }
+  }
+
+  function closeIssued() {
+    setIssued(undefined);
+    void load();
+  }
+
+  function rotate() {
+    Modal.confirm({
+      title: t("apiKey.rotateTitle"),
+      content: t("apiKey.rotateHint"),
+      okText: t("apiKey.rotate"), okButtonProps: { danger: true }, cancelText: t("action.cancel"),
+      onOk: () => issue(),
+    });
+  }
+
+  function revoke() {
+    Modal.confirm({
+      title: t("apiKey.revokeTitle"),
+      content: t("apiKey.revokeHint"),
+      okText: t("apiKey.revoke"), okButtonProps: { danger: true }, cancelText: t("action.cancel"),
+      onOk: async () => {
+        try { await api.revokeApiKey(); message.success(t("apiKey.revoked")); await load(); }
+        catch (error) { message.error(apiMessage(error) ?? t("apiKey.revokeFailed")); }
+      },
+    });
+  }
+
+  return <>
+    <section className="panel">
+      <div className="panel-head">
+        <strong>{t("apiKey.title")}</strong>
+        {key === null && <button className="btn btn-primary" disabled={busy} onClick={() => void issue()}>{t("apiKey.generate")}</button>}
+      </div>
+      <div className="panel-body">
+        <p className="form-note">{t("apiKey.hint")}</p>
+        {failed ? <p className="form-error">{t("me.loadFailed")}</p>
+          : key === undefined ? <p className="muted">{t("common.loading")}</p>
+            : key === null ? <Empty title={t("apiKey.emptyTitle")} hint={t("apiKey.emptyHint")} />
+              : <>
+                <dl className="definition-grid">
+                  <div><dt>{t("apiKey.keyId")}</dt><dd className="mono">{key.keyId}</dd></div>
+                  <div><dt>{t("apiKey.createdAt")}</dt><dd className="mono muted">{new Date(key.createdAt).toLocaleString()}</dd></div>
+                  <div><dt>{t("apiKey.rotatedAt")}</dt><dd className="mono muted">{new Date(key.rotatedAt).toLocaleString()}</dd></div>
+                </dl>
+                <div className="row-actions" style={{ marginTop: "var(--s3)" }}>
+                  <button className="btn" disabled={busy} onClick={rotate}>{t("apiKey.rotate")}</button>
+                  <button className="btn danger" disabled={busy} onClick={revoke}>{t("apiKey.revoke")}</button>
+                </div>
+              </>}
+      </div>
+    </section>
+
+    {/* 一次性明文：显式「我已保存」才能关（同 MCP Token 的两段式，凭据不能被顺手点掉）。 */}
+    <Modal
+      open={Boolean(issued)}
+      title={issuedRotated ? t("apiKey.rotatedTitle") : t("apiKey.generatedTitle")}
+      okText={t("apiKey.savedIt")}
+      closable={false}
+      maskClosable={false}
+      keyboard={false}
+      cancelButtonProps={{ style: { display: "none" } }}
+      onOk={closeIssued}
+    >
+      <div className="code-block" style={{ marginTop: "var(--s4)" }}>
+        <div className="code-block-head">
+          <span className="label">{t("apiKey.plaintext")}</span>
+          {issued && <CopyButton value={() => issued} />}
+        </div>
+        <pre className="code">{issued}</pre>
+      </div>
+      <p className="form-note">{t("apiKey.plaintextOnce")}</p>
+    </Modal>
+  </>;
 }
 
 /**

@@ -134,6 +134,29 @@ export type SqlDefinitionInput = {
 };
 export type SqlExecutionResult = { rows: Record<string, unknown>[]; rowCount: number; truncated: boolean; durationMs: number };
 export type SqlExecutionInput = { sql?: string; statementType?: SqlStatementType; kind?: "sql" | "mongo" | "redis"; operation?: DataSourceOperation; params?: SqlParameter[]; values: Record<string, unknown> };
+/**
+ * 交互式查询面板一次 /query 的执行历史（P2-1 增量）。元数据永久留，`resultPreview` 是被
+ * 独立截断的小预览（`historyTruncated` 标注这一层是否截过，与结果本身的 `truncated` 分开）。
+ * 失败行只有 `error`，没有 rowCount / durationMs / resultPreview。
+ */
+export type SqlExecutionHistory = {
+  id: string;
+  projectId: string;
+  dataSourceId: string;
+  userId: string;
+  statementType: SqlStatementType;
+  sql: string;
+  params: SqlParameter[];
+  values: Record<string, unknown>;
+  status: "success" | "error";
+  error?: string;
+  rowCount?: number;
+  durationMs?: number;
+  truncated: boolean;
+  resultPreview?: Record<string, unknown>[];
+  historyTruncated: boolean;
+  createdAt: string;
+};
 export type DataSourceTestResult = SqlExecutionResult;
 export type MockMode = "auto" | "fixed" | "template" | "proxy";
 export type MockResponse = { statusCode: number; headers: Record<string, string>; body?: unknown };
@@ -3006,6 +3029,44 @@ export type McpBindingRequest = {
 /** 个人中心基本信息（`GET /me/profile`，`/auth/me` 的聚合别名）。 */
 export type MeProfile = { id: string; email: string; name: string; isSystemAdmin: boolean; mustChangePassword: boolean };
 
+/** 用户级 API 密钥（个人中心，调用平台开放 API 的凭据）的元数据：读接口永不含明文。 */
+export type ApiKey = { keyId: string; createdAt: string; rotatedAt: string };
+/** 生成 / 轮换的一次性响应：`key` 是明文密钥，只出现这一次；`rotated` 区分覆盖了旧密钥。 */
+export type ApiKeyIssued = ApiKey & { key: string; rotated: boolean };
+/**
+ * 构造 SQL 快速调用凭据的服务端产物。
+ * - `token` 是本人 API 密钥加密的 `{projectId, sqlId}`（既是凭据又指明跑哪条定义）；
+ * - `params` 是该定义的参数名清单，用来在 curl 的 `-d` 里生成一个可改的 body 模板。
+ */
+export type SqlQuickCall = { keyId: string; token: string; method: "POST"; params: string[] };
+
+/**
+ * 快速调用所用的 API 根地址（透出给用户看的「实际配置」）。
+ *
+ * 优先 `VITE_API_BASE_URL`（部署时配置的对外可达地址）；未配置时回退到**当前访问来源**
+ * 的 3000 端口（与 `mcpEndpointUrl` 同一拼法）——而不是写死的 localhost，否则从局域网/
+ * 线上访问时复制出来的地址对外部调用方不可用。末尾去掉多余斜杠。
+ */
+export function sqlQuickCallBaseUrl() {
+  const base = import.meta.env.VITE_API_BASE_URL ?? `${window.location.origin.replace(/:\d+$/, ":3000")}/api/v1`;
+  return String(base).replace(/\/$/, "");
+}
+
+/**
+ * 拼一条可直接运行的 cURL：凭据放请求头 `Authorization: ApiKey <keyId>.<token>`，入参放
+ * 请求体 `{ "param": { ... } }`（可动态改）。base 已含 /api/v1，随 curl 一起把实际配置透出。
+ */
+export function sqlQuickCallCurl(built: SqlQuickCall, param: Record<string, unknown>) {
+  const url = `${sqlQuickCallBaseUrl()}/public/sql-quick-call`;
+  const body = JSON.stringify({ param });
+  return [
+    `curl -X POST '${url}' \\`,
+    `  -H 'Authorization: ApiKey ${built.keyId}.${built.token}' \\`,
+    `  -H 'Content-Type: application/json' \\`,
+    `  -d '${body}'`,
+  ].join("\n");
+}
+
 export const api = {
   /**
    * 登录响应带 `mustChangePassword`（P6-3）：为 true 时前端只放行 /change-password。
@@ -3328,6 +3389,11 @@ export const api = {
   deleteDataSource: (projectId: string, dataSourceId: string) => client.delete(`/projects/${projectId}/data-sources/${dataSourceId}`).then(data<{ id: string }>),
   testDataSource: (projectId: string, dataSourceId: string) => client.post(`/projects/${projectId}/data-sources/${dataSourceId}/test`).then(data<DataSourceTestResult>),
   queryDataSource: (projectId: string, dataSourceId: string, input: SqlExecutionInput) => client.post(`/projects/${projectId}/data-sources/${dataSourceId}/query`, input).then(data<SqlExecutionResult>),
+  /** 本人在此数据源的 /query 执行历史（倒序分页）；服务端只返回调用者自己的记录。 */
+  sqlHistory: (projectId: string, dataSourceId: string, filters?: { page?: number; pageSize?: number }) =>
+    client.get(`/projects/${projectId}/data-sources/${dataSourceId}/sql-history`, { params: { page: filters?.page, pageSize: filters?.pageSize } }).then(paged<SqlExecutionHistory>),
+  /** 清空本人在此数据源的执行历史。 */
+  clearSqlHistory: (projectId: string, dataSourceId: string) => client.delete(`/projects/${projectId}/data-sources/${dataSourceId}/sql-history`).then(data<{ deleted: number }>),
   sqlDefinitions: (projectId: string, dataSourceId: string) => client.get(`/projects/${projectId}/data-sources/${dataSourceId}/sql-definitions`).then(data<SqlDefinition[]>),
   sqlDefinition: (projectId: string, sqlId: string) => client.get(`/projects/${projectId}/sql-definitions/${sqlId}`).then(data<SqlDefinition>),
   createSqlDefinition: (projectId: string, dataSourceId: string, input: SqlDefinitionInput) => client.post(`/projects/${projectId}/data-sources/${dataSourceId}/sql-definitions`, input).then(data<SqlDefinition>),
@@ -3985,6 +4051,17 @@ export const api = {
   meProfile: () => client.get("/me/profile").then(data<MeProfile>),
   /** 可绑定项目集 + 每项目 scope 上限（绑定弹窗据此禁用选项）。 */
   bindableProjects: () => client.get("/me/bindable-projects").then(data<{ projects: BindableProject[]; total: number }>),
+
+  /* ── 用户级 API 密钥（个人中心）：一人一把 AES 密钥，调用平台开放 API 的凭据本身。 */
+  /** 本人密钥元数据；未设置回 null。永不含明文。 */
+  apiKey: () => client.get("/me/api-key").then(data<ApiKey | null>),
+  /** 生成 / 轮换：返回一次性明文密钥（`key`）。轮换即让旧密钥加密的所有调用地址失效。 */
+  issueApiKey: () => client.post("/me/api-key").then(data<ApiKeyIssued>),
+  /** 吊销：删本人密钥，已发出的所有调用地址立即失效。 */
+  revokeApiKey: () => client.delete("/me/api-key").then(data<{ revoked: boolean }>),
+  /** 让服务端用本人 API 密钥把一条 SQL 定义编成调用令牌；前端据此拼请求头与可复制 cURL。 */
+  buildSqlQuickCall: (projectId: string, sqlId: string) =>
+    client.post(`/projects/${projectId}/sql-definitions/${sqlId}/quick-call`).then(data<SqlQuickCall>),
 
   /* ── P8-2：失败归因（REST 四条 + 字典管理）────────────────────────────────── */
 

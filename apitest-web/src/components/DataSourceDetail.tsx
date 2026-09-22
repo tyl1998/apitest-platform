@@ -3,8 +3,8 @@ import { Drawer, Modal, Select, message } from "antd";
 import Editor from "@monaco-editor/react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Cable, History, Pencil, Play, Plus, Trash2 } from "lucide-react";
-import { api, type DataSource, type DataSourceOperation, type DataSourceType, type SqlDefinition, type SqlDefinitionInput, type SqlExecutionResult, type SqlParameter, type SqlParameterType } from "../api";
+import { Cable, Clock, History, Link2, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { api, sqlQuickCallBaseUrl, sqlQuickCallCurl, type DataSource, type DataSourceOperation, type DataSourceType, type SqlDefinition, type SqlDefinitionInput, type SqlExecutionHistory, type SqlExecutionResult, type SqlParameter, type SqlParameterType } from "../api";
 import { defaultOperationText, formatOperation, operationLabelFromText, operationTemplates } from "../operationTemplates";
 import { useThemeMode } from "../theme";
 import { useCanWrite } from "../hooks/useMyRole";
@@ -15,6 +15,111 @@ import { DatabaseResult } from "./DatabaseResult";
 import { IconButton } from "./IconButton";
 
 const PARAM_TYPES: SqlParameterType[] = ["string", "number", "boolean", "date", "json"];
+const SQL_TOKEN = /\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}/g;
+
+/* 与后端 lib/adapters/skeleton.ts 同一份词法规则：把字符串字面量、引号标识符与各类注释
+   抹成空格，返回「可执行 SQL」骨架。注释/字符串里的 {{name}} 是数据不是绑定点——提取
+   参数定义时绝不能把它们当命名参数捡起来。 */
+function sqlSkeleton(sql: string): string {
+  let out = ""; let i = 0;
+  const isQuote = (char: string) => char === "'" || char === '"' || char === "`";
+  const blank = (length: number) => { out += " ".repeat(length); };
+  while (i < sql.length) {
+    const char = sql[i]; const next = sql[i + 1];
+    if (isQuote(char)) {
+      const quote = char; blank(1); i += 1;
+      while (i < sql.length) {
+        blank(1);
+        if (sql[i] === quote) {
+          if (sql[i + 1] === quote) { blank(1); i += 2; continue; }
+          i += 1; break;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    if (char === "[") {
+      blank(1); i += 1;
+      while (i < sql.length) {
+        blank(1);
+        if (sql[i] === "]") {
+          if (sql[i + 1] === "]") { blank(1); i += 2; continue; }
+          i += 1; break;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    if (char === "-" && next === "-") {
+      blank(2); i += 2;
+      while (i < sql.length && sql[i] !== "\n") { blank(1); i += 1; }
+      continue;
+    }
+    if (char === "#") {
+      while (i < sql.length && sql[i] !== "\n") { blank(1); i += 1; }
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      blank(2); i += 2;
+      while (i < sql.length && !(sql[i] === "*" && sql[i + 1] === "/")) { out += sql[i] === "\n" ? "\n" : " "; i += 1; }
+      if (i < sql.length) { blank(2); i += 2; }
+      continue;
+    }
+    if (char === "$") {
+      const match = sql.slice(i).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
+      if (match) {
+        const tag = match[0]; blank(tag.length); i += tag.length;
+        const end = sql.indexOf(tag, i);
+        const length = end < 0 ? sql.length - i : end + tag.length - i;
+        blank(length); i += length; continue;
+      }
+    }
+    out += char; i += 1;
+  }
+  return out;
+}
+
+/* 从 SQL 里提取命名参数：先抹掉字符串/标识符/注释，再在可执行部分找 {{name}}，
+   按出现顺序去重返回。表名/列名等被注释掉的 {{xx}} 一律不捡。 */
+function detectNamedParams(sql: string): string[] {
+  const skeleton = sqlSkeleton(sql);
+  const names: string[] = [];
+  let match: RegExpExecArray | null;
+  SQL_TOKEN.lastIndex = 0;
+  while ((match = SQL_TOKEN.exec(skeleton)) !== null) {
+    const token = skeleton.slice(match.index, SQL_TOKEN.lastIndex);
+    if (!token.includes("{")) continue;
+    if (!names.includes(match[1])) names.push(match[1]);
+  }
+  return names;
+}
+
+/* 把 SQL 里检测到的命名与手动定义合并，目标是让「参数定义」跟着 {{name}} 走：
+   - 仍被引用的（含名字在 SQL 里）：保留,带上既有类型/必填/默认值；
+   - 曾经定义过、还没来得及配置（保持默认 string / 非必填 / 无默认值）但现在 SQL 已
+     不引用的：清掉——它只是一次误判残留，留着会误导试跑区；
+   - 已手动配置过（改了类型 / 勾了必填 / 填了默认值）但 SQL 不再引用的：保留——用户
+     可能在收尾前临时移走再贴回，不能因打字中间态丢配置；
+   - SQL 新出现的名字：以默认 string 定义追加,不重复。 */
+function syncParams(current: SqlParameter[], names: string[]): SqlParameter[] {
+  const referenced = new Set(names);
+  const kept = current.filter((param) => {
+    const name = param.name.trim();
+    /* 空名字的行是用户刚点「添加参数」还没填——不自动删。 */
+    if (!name) return true;
+    /* 仍在 SQL 里引用的保留（配置原样带上）。 */
+    if (referenced.has(name)) return true;
+    /* 已手动配置过的保留——用户可能在收尾前临时移走再贴回，不能因打字中间态丢配置。 */
+    return param.type !== "string" || param.required || param.defaultValue !== undefined;
+  });
+  const existing = new Set(kept.map((param) => param.name.trim()).filter(Boolean));
+  for (const name of names) {
+    if (existing.has(name)) continue;
+    kept.push({ name, type: "string", required: false });
+    existing.add(name);
+  }
+  return kept;
+}
 
 export function DataSourceDetail() {
   const { t } = useTranslation();
@@ -152,10 +257,14 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open
   const [values, setValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
+  const [copyingCurl, setCopyingCurl] = useState(false);
   const [result, setResult] = useState<SqlExecutionResult>();
   const [error, setError] = useState<string>();
   /* SQL 定义的版本历史入口（P10-6）：与数据源本体分开的另一个资产。 */
   const [sqlHistoryOpen, setSqlHistoryOpen] = useState(false);
+  /* 交互式查询面板的执行历史（P2-1 增量）：按 (本人, 数据源) 归属，与上面的「版本历史」
+     是两码事——版本历史是这条定义内容的序列，执行历史是这个数据源上跑过的 ad-hoc 查询。 */
+  const [execHistoryOpen, setExecHistoryOpen] = useState(false);
 
   /* 把一条定义（或 "new"）灌进草稿。首次打开与「版本回滚后重拉这一条」（P10-6）复用它，
      好让回滚只刷新当前抽屉的表单、不连累外层数据源详情页。 */
@@ -239,12 +348,43 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open
     finally { setRunning(false); }
   }
 
+  /* 从执行历史回填一条到编辑器（P2-1 增量）：SQL、语句类型、参数定义一并带回，试跑值
+     按名回灌（历史里存的是当时传入的字面量）。只对关系型数据源可用——mongo/redis 不落历史。 */
+  function applyHistory(item: SqlExecutionHistory) {
+    setDraft((current) => ({ ...current, statementType: item.statementType, sql: item.sql, params: item.params }));
+    setValues(Object.fromEntries(Object.entries(item.values ?? {}).map(([name, value]) => [name, stringifyValue(value)])));
+    setResult(undefined); setError(undefined);
+    setExecHistoryOpen(false);
+    message.success(t("dataSources.execHistoryReused"));
+  }
+
+  /**
+   * 复制一条可直接运行的 cURL：服务端用本人 API 密钥把这条定义编成调用令牌（`{projectId,
+   * sqlId}` 加密），前端拼成 `curl -X POST '<url>' -H 'Authorization: ApiKey <keyId>.<token>'
+   * -d '{"param":{...}}'`。凭据在请求头、入参在请求体（用当前试跑值做模板，可动态改），
+   * 根地址随 curl 一起透出（取自 `VITE_API_BASE_URL`，未配置时回退当前来源 3000 端口）。
+   * 未设密钥时服务端回 2002，翻成「去个人中心生成」的引导。只对已保存的定义可用。
+   */
+  async function copyQuickCallCurl() {
+    if (!source || source === "new") return;
+    setCopyingCurl(true);
+    try {
+      const built = await api.buildSqlQuickCall(projectId, source.id);
+      /* body 模板：定义的每个参数名一列（带上当前试跑值），用户复制后按需改。 */
+      const param = parameterValues(draft.params, values);
+      await writeClipboard(sqlQuickCallCurl(built, param));
+      message.success(t("sqlQuickCall.curlCopied", { base: sqlQuickCallBaseUrl() }));
+    } catch (nextError) {
+      message.error(apiMessage(nextError) ?? t("sqlQuickCall.urlFailed"));
+    } finally { setCopyingCurl(false); }
+  }
+
   const templates = operationTemplates(sourceType);
   /* 受控下拉框：重新打开一条已保存的定义时要能看出它是哪种操作，而不是一个空占位符。
      跟着编辑器文本走，所以手改 JSON 也会同步。 */
   const currentOperation = operationLabelFromText(operationText);
 
-  return <Drawer title={source === "new" ? t("dataSources.createSql") : t("dataSources.editSql")} open={open} onClose={() => { setSqlHistoryOpen(false); onClose(); }} width={820} extra={source && source !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setSqlHistoryOpen(true)}><History size={14} />{t("version.history")}</button> : undefined} footer={<div className="drawer-actions"><button className="btn" onClick={onClose}>{t("action.cancel")}</button><button className="btn btn-primary" disabled={saving || !source} onClick={() => void save()}>{saving ? "…" : t("action.save")}</button></div>}>
+  return <Drawer title={source === "new" ? t("dataSources.createSql") : t("dataSources.editSql")} open={open} onClose={() => { setSqlHistoryOpen(false); setExecHistoryOpen(false); onClose(); }} width={820} extra={source && source !== "new" ? <button className="btn btn-small btn-with-icon" onClick={() => setSqlHistoryOpen(true)}><History size={14} />{t("version.history")}</button> : undefined} footer={<div className="drawer-actions"><button className="btn" onClick={onClose}>{t("action.cancel")}</button><button className="btn btn-primary" disabled={saving || !source} onClick={() => void save()}>{saving ? "…" : t("action.save")}</button></div>}>
     {!source && open ? <p className="muted">{t("common.loading")}</p> : <>
       <div className="form-grid">
         <label className="field"><span>{t("dataSources.sqlName")}</span><input className="input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} autoFocus /></label>
@@ -253,8 +393,9 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open
       </div>
       {kind === "sql" ? <>
         <h3 className="subhead">SQL</h3>
-        <div className="script-code sql-editor"><Editor height="250px" language="sql" theme={mode === "dark" ? "vs-dark" : "light"} value={draft.sql ?? ""} onChange={(sql) => setDraft({ ...draft, sql: sql ?? "" })} options={{ minimap: { enabled: false }, fontSize: 12, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, automaticLayout: true }} /></div>
+        <div className="script-code sql-editor"><Editor height="250px" language="sql" theme={mode === "dark" ? "vs-dark" : "light"} value={draft.sql ?? ""} onChange={(sql) => setDraft({ ...draft, sql: sql ?? "", params: syncParams(draft.params, detectNamedParams(sql ?? "")) })} options={{ minimap: { enabled: false }, fontSize: 12, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, automaticLayout: true }} /></div>
         <p className="form-note">{t("dataSources.sqlSafetyHint")}</p>
+        <p className="form-note">{t("dataSources.sqlParamHint")}</p>
       </> : <>
         <h3 className="subhead">{t("dataSources.operation")}</h3>
         <div className="script-code sql-editor"><Editor height="250px" language="json" theme={mode === "dark" ? "vs-dark" : "light"} value={operationText} onChange={(text) => setOperationText(text ?? "")} options={{ minimap: { enabled: false }, fontSize: 12, fontFamily: "'JetBrains Mono', monospace", scrollBeyondLastLine: false, automaticLayout: true }} /></div>
@@ -270,7 +411,13 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open
           <IconButton icon={<Trash2 size={14} />} label={t("action.delete")} tone="danger" onClick={() => setDraft({ ...draft, params: draft.params.filter((_, at) => at !== index) })} />
         </div>)}
       </div>
-      <section className="panel sql-run-panel"><div className="panel-head"><strong>{t("dataSources.tryRun")}</strong><button className="btn btn-with-icon" disabled={running || (kind === "sql" && !draft.sql?.trim())} onClick={() => void run()}><Play size={14} />{running ? t("action.running") : t("action.run")}</button></div><div className="panel-body">
+      <section className="panel sql-run-panel"><div className="panel-head"><strong>{t("dataSources.tryRun")}</strong><div className="row-actions">
+        {/* 执行历史（P2-1 增量）：只对关系型数据源开——mongo/redis 的 operation 不落这张表。 */}
+        {kind === "sql" && <button className="btn btn-with-icon" onClick={() => setExecHistoryOpen(true)}><Clock size={14} />{t("dataSources.execHistory")}</button>}
+        {/* 已保存的定义才有 sqlId：把当前入参值烘焙进免登录调用 cURL（AES 加密，密钥在个人中心）。 */}
+        <button className="btn btn-with-icon" disabled={copyingCurl || !source || source === "new"} title={!source || source === "new" ? t("sqlQuickCall.urlNeedsSave") : undefined} onClick={() => void copyQuickCallCurl()}><Link2 size={14} />{copyingCurl ? t("action.running") : t("sqlQuickCall.copyCurl")}</button>
+        <button className="btn btn-with-icon" disabled={running || (kind === "sql" && !draft.sql?.trim())} onClick={() => void run()}><Play size={14} />{running ? t("action.running") : t("action.run")}</button>
+      </div></div><div className="panel-body">
         {draft.params.length > 0 && <div className="sql-run-values">{draft.params.map((param, index) => <label className="field" key={`${param.name}:${index}`}><span className="mono">{param.name || "—"}</span><input className="input mono" value={values[param.name] ?? ""} onChange={(event) => setValues((current) => ({ ...current, [param.name]: event.target.value }))} placeholder={param.defaultValue === undefined ? "" : stringifyValue(param.defaultValue)} /></label>)}</div>}
         {!result && !error && <p className="form-note">{t("dataSources.tryRunHint")}</p>}
         <DatabaseResult result={result} error={error} />
@@ -286,7 +433,106 @@ function SqlDefinitionDrawer({ projectId, dataSourceId, sourceType, source, open
       onClose={() => setSqlHistoryOpen(false)}
       onRolledBack={() => void reloadDefinition()}
     />}
+    {/* 交互式查询面板的执行历史（P2-1 增量）：只对关系型数据源开，点一条回填 SQL 到编辑器。 */}
+    {kind === "sql" && <SqlHistoryDrawer projectId={projectId} dataSourceId={dataSourceId} open={execHistoryOpen} onClose={() => setExecHistoryOpen(false)} onPick={applyHistory} />}
   </Drawer>;
+}
+
+/**
+ * 执行历史抽屉（P2-1 增量）：本人在此数据源跑过的 /query，倒序分页。点一条把 SQL 回填到
+ * 编辑器（onPick）；`historyTruncated` 徽标标注预览这一层被截过。清空只清本人本数据源的历史。
+ */
+function SqlHistoryDrawer({ projectId, dataSourceId, open, onClose, onPick }: { projectId: string; dataSourceId: string; open: boolean; onClose: () => void; onPick: (item: SqlExecutionHistory) => void }) {
+  const { t } = useTranslation();
+  const canWrite = useCanWrite();
+  const [items, setItems] = useState<SqlExecutionHistory[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [expanded, setExpanded] = useState<string>();
+
+  const load = useCallback(async (nextPage: number) => {
+    setLoading(true);
+    try {
+      const result = await api.sqlHistory(projectId, dataSourceId, { page: nextPage, pageSize: 20 });
+      /* 翻页累加（「加载更多」而非分页器）：ad-hoc 历史多是往下翻着找上次那条，接续更顺手。 */
+      setItems((current) => nextPage === 1 ? result.items : [...current, ...result.items]);
+      setPage(result.page);
+      setTotal(result.total);
+    } catch { message.error(t("dataSources.execHistoryLoadFailed")); }
+    finally { setLoading(false); }
+  }, [projectId, dataSourceId, t]);
+
+  useEffect(() => { if (open) { setExpanded(undefined); void load(1); } }, [open, load]);
+
+  function clearHistory() {
+    Modal.confirm({
+      title: t("dataSources.execHistoryClearTitle"), content: t("dataSources.execHistoryClearHint"),
+      okText: t("dataSources.execHistoryClear"), cancelText: t("action.cancel"), okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await api.clearSqlHistory(projectId, dataSourceId);
+          setItems([]); setTotal(0); setPage(1);
+          message.success(t("dataSources.execHistoryCleared"));
+        } catch (error) { message.error(apiMessage(error) ?? t("dataSources.execHistoryClearFailed")); throw error; }
+      },
+    });
+  }
+
+  return <Drawer
+    title={t("dataSources.execHistory")}
+    open={open}
+    onClose={onClose}
+    width={820}
+    extra={canWrite && items.length ? <button className="btn btn-small btn-with-icon" onClick={clearHistory}><Trash2 size={14} />{t("dataSources.execHistoryClear")}</button> : undefined}
+  >
+    <p className="form-note">{t("dataSources.execHistoryHint")}</p>
+    {items.length ? <>
+      <div className="version-list">
+        {items.map((item) => {
+          const isOpen = expanded === item.id;
+          return <div key={item.id} className="sql-history-row" data-clickable onClick={() => onPick(item)}>
+            <div className="sql-history-head">
+              {/* 语义色只用在状态上（Quiet Console 规则 2）：成功=通过绿，失败=失败红。 */}
+              <span className="status mono" data-status={item.status === "success" ? "pass" : "fail"}>{item.status === "success" ? t("dataSources.execHistoryStatusSuccess") : t("dataSources.execHistoryStatusError")}</span>
+              <span className="chip mono">{item.statementType}</span>
+              {item.status === "success" && <span className="mono muted">{t("dataSources.rowCount", { count: item.rowCount ?? 0 })} · {(item.durationMs ?? 0).toFixed(1)} ms</span>}
+              {item.truncated && <span className="chip-warn mono">{t("dataSources.truncated")}</span>}
+              {item.historyTruncated && <span className="chip-warn mono">{t("dataSources.execHistoryPreviewTruncated")}</span>}
+              <span className="sql-history-time mono muted">{new Date(item.createdAt).toLocaleString()}</span>
+            </div>
+            <code className="sql-history-sql mono">{item.sql}</code>
+            {item.status === "error" && item.error && <pre className="sql-error mono">{item.error}</pre>}
+            <div className="row-actions" onClick={(event) => event.stopPropagation()}>
+              <button className="btn btn-small" onClick={() => onPick(item)}>{t("dataSources.execHistoryReuse")}</button>
+              {/* 预览：复用 DatabaseResult 渲染截断后的小预览（成功且有预览时才给）。 */}
+              {item.status === "success" && item.resultPreview && item.resultPreview.length > 0 && <button className="btn btn-small" onClick={() => setExpanded(isOpen ? undefined : item.id)}>{isOpen ? "−" : "+"} {t("dataSources.viewRow")}</button>}
+            </div>
+            {isOpen && item.status === "success" && item.resultPreview && <div onClick={(event) => event.stopPropagation()}>
+              <DatabaseResult result={{ rows: item.resultPreview, rowCount: item.rowCount ?? item.resultPreview.length, truncated: item.historyTruncated || item.truncated, durationMs: item.durationMs ?? 0 }} />
+            </div>}
+          </div>;
+        })}
+      </div>
+      {items.length < total && <div className="drawer-actions" style={{ justifyContent: "center", marginTop: 12 }}>
+        <button className="btn" disabled={loading} onClick={() => void load(page + 1)}>{loading ? "…" : t("dataSources.execHistoryLoadMore")}</button>
+      </div>}
+    </> : !loading && <Empty title={t("dataSources.execHistoryEmptyTitle")} hint={t("dataSources.execHistoryEmptyHint")} />}
+  </Drawer>;
+}
+
+/* navigator.clipboard 只在 secure context 存在；本 app 常经 LAN http 访问，textarea 回退
+   是主路径而非兼容补丁（与 CopyButton 同一处理）。 */
+async function writeClipboard(text: string) {
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    const scratch = document.createElement("textarea");
+    scratch.value = text;
+    scratch.style.cssText = "position:fixed;left:-9999px;top:0";
+    document.body.appendChild(scratch);
+    scratch.select();
+    try { document.execCommand("copy"); } finally { scratch.remove(); }
+  }
 }
 
 function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) { return <div className="definition-row"><dt>{label}</dt><dd className={mono ? "mono" : undefined}>{value}</dd></div>; }
