@@ -1,0 +1,79 @@
+# apitest-web 容器版反向代理模板（单机 docker run，无 compose）
+#
+# 这是 deploy/nginx.conf 的容器化版本，差异有三：
+#   1. upstream 后端地址来自环境变量 ${BACKEND_UPSTREAM}，容器启动时由 nginx 官方
+#      镜像的 envsubst 入口注入（原文件写死 127.0.0.1:3000，容器里打不通）。
+#      $host / $uri 等 nginx 变量不是环境变量，不会被替换,保持原样。
+#   2. 容器内 TLS 交给外层（宿主 nginx / LB / ingress）终结,这里只 listen 80。
+#   3. root 指向镜像内的 /usr/share/nginx/html（vite build 产物 COPY 到此处）。
+#
+# 后端地址示例（见 DOCKER_DEPLOY.md）：
+#   -e BACKEND_UPSTREAM=host.docker.internal:3000   # 后端在宿主机
+#   -e BACKEND_UPSTREAM=10.0.0.12:3000              # 后端在另一台机器
+
+upstream apitest_backend {
+    server ${BACKEND_UPSTREAM};
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # 上传体：导入用例 / 附件等留足余量
+    client_max_body_size 32m;
+
+    # SSE 长连接：执行流 / 助手对话流。必须放在通用 /api/ 之前，关缓冲、拉长超时。
+    location ^~ /api/v1/projects/ {
+        proxy_pass http://apitest_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+    }
+
+    # SPA 自己的 API 请求：同源转发到后端
+    location /api/ {
+        proxy_pass http://apitest_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    # 外部可直接调用的根路径端点（不带 /api/v1 前缀）：
+    #   /mock/:publicId/*  Mock 回放
+    #   /mcp               MCP 端点
+    #   /ingest            SDK 上报
+    location ~ ^/(mock|mcp|ingest)(/|$) {
+        proxy_pass http://apitest_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+    }
+
+    # 带 hash 的构建资源：长缓存
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    # SPA 路由回退：其余路径交给前端路由
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
