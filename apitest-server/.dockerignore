@@ -1,0 +1,20 @@
+# 依赖与构建产物：镜像内重新安装/编译，不从宿主拷
+node_modules
+dist
+*.tsbuildinfo
+
+# 本地运行态与密钥：绝不进镜像
+.env
+.env.*
+data
+*.log
+
+# 版本控制与编辑器噪音
+.git
+.gitignore
+.vscode
+.idea
+
+# 中间件编排（单机 docker run 部署不需要它进镜像）
+compose.yaml
+README.md
