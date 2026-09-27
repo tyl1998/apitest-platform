@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { Trash2 } from "lucide-react";
 import { CopyButton } from "./CopyButton";
 import { IconButton } from "./IconButton";
+import { normalizeFullWidthPunct } from "../lib/normalize";
 import type { Pair } from "./KeyValueEditor";
 
 /**
@@ -67,7 +68,7 @@ export function VariableRowsEditor({ title, hint, pairs, onChange, keyPlaceholde
           className="input mono"
           value={pair.value}
           placeholder="value"
-          onChange={(event) => update(index, { value: event.target.value })}
+          onChange={(event) => update(index, { value: normalizeFullWidthPunct(event.target.value) })}
           spellCheck={false}
         />
         {pair.key.trim() && !blank

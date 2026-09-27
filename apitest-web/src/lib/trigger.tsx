@@ -27,16 +27,25 @@ export function triggerPersonLabel(
  * `source` 可空：入队响应等不含触发列的形状也走这里，缺省读作手动。
  * `triggeredByEmail` 显式传 `undefined` 表示这一行没有触发人这一维（如只回触发源的旧形状），
  * 此时只渲染触发源，不追加「 · —」。
+ *
+ * `sourceUrl`（2026-09-26）：外部触发的来源链接（webhook 请求体 `_trigger_url`，如第三方
+ * CI 的任务地址）。有值时渲染为可点击的外部链接，直接展示 URL 文本（不只是一个 ↗ 图标），
+ * 让用户一眼看到「这次是哪个 CI 构建触发的」。
  */
 export function triggerLabel(
   t: (key: string, vars?: Record<string, unknown>) => string,
   source?: TriggerSource,
   refName?: string | null,
   triggeredByEmail?: string | null,
+  sourceUrl?: string | null,
 ) {
   const resolved = source ?? "manual";
   const base = t(`suiteReports.trigger${resolved.charAt(0).toUpperCase()}${resolved.slice(1)}`);
   const withRef = refName ? `${base}「${refName}」` : base;
-  if (triggeredByEmail === undefined) return withRef;
-  return `${withRef} · ${triggerPersonLabel(t, triggeredByEmail, source)}`;
+  const withUrl = sourceUrl
+    ? <a className="trigger-source-link" href={sourceUrl} target="_blank" rel="noreferrer" title={sourceUrl}>{sourceUrl.replace(/^https?:\/\//, "")}</a>
+    : null;
+  const label = <>{withRef}{withUrl}</>;
+  if (triggeredByEmail === undefined) return label;
+  return <>{label} · {triggerPersonLabel(t, triggeredByEmail, source)}</>;
 }

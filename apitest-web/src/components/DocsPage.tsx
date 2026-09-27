@@ -29,6 +29,7 @@ const SECTIONS = [
   "suites",
   "schedules",
   "mocks",
+  "webhooks",
   "reports",
   "stats",
   "repo",
@@ -36,6 +37,7 @@ const SECTIONS = [
   "mcp",
   "alerts",
   "permissions",
+  "credentials",
   "account",
 ] as const;
 

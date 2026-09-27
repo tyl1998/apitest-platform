@@ -6,16 +6,21 @@ import { UserPlus } from "lucide-react";
 import { api, type AccessRequest, type MemberCandidate, type ProjectMember, type ProjectRole } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useCanManageProject } from "../hooks/useMyRole";
+import { useAuthStore } from "../stores/authStore";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, PageToolbar, Status, Tip } from "../ui";
 
 /**
  * 成员与权限（P6-4，计划 10.3）：成员表（角色下拉就地改）+ 添加成员（搜索平台用户 →
- * 选角色）。
+ * 选角色）；P16-1 增成员自己那行的「申请升级」入口。
  *
  * 页面对 viewer/developer 也可读（`GET /members` 是项目读权限——「知道找谁要权限」
  * 是这张表的产品理由），但**管理面**（添加 / 改角色 / 移除）只对 project_admin 渲染
  * （边界 6「只藏入口不做禁用态」；后端守卫才是权限的单一事实）。
+ *
+ * P16-1 提权入口是 viewer/developer 唯一的自助提权通道：目标角色严格高于当前角色，
+ * 提交后走 P14 同一条审批流（project_admin 在「权限申请」tab 批准），有 pending 时
+ * 自己那行显示「审批中」而不是按钮。
  *
  * 审计摘要曾嵌在表尾（P6-2/P11-10），2026-09-19 删除：它的内容与项目配置 → 审计日志页
  * 完全重合（同一接口、同一批行），成员页留着只是把一份可下钻的清单复述成不可下钻的
@@ -32,6 +37,9 @@ const ROLE_OPTIONS: { value: ProjectRole; label: string }[] = [
   { value: "developer", label: "developer" },
   { value: "viewer", label: "viewer" },
 ];
+
+/** 角色序（P16-1，与后端 accessRequests.ts 的 ROLE_RANK 同口径）：提权目标必须严格更高。 */
+const ROLE_RANK: Record<ProjectRole, number> = { viewer: 1, developer: 2, project_admin: 3 };
 
 /**
  * 成员与权限（P6-4 + P14-2）：成员表 + 权限申请审批。
@@ -157,6 +165,66 @@ function MembersTab() {
   /* 唯一的 project_admin：改角色/移除必然 409，UI 直接不给这两个入口（文件头注释）。 */
   const adminCount = members.filter((member) => member.role === "project_admin").length;
 
+  /* ── 申请升级（P16-1）────────────────────────────────────────────────────
+     自己那行的自助提权入口（viewer/developer）：目标角色严格高于当前角色，提交走
+     P14 审批流。有 pending 时按钮换成「审批中」——单 pending 规则在后端，UI 不给
+     重复提交的入口。myRequest 取本项目最近一条申请（接口按时间倒序）。 */
+  const myUserId = useAuthStore((state) => state.user?.id);
+  const [myRequest, setMyRequest] = useState<AccessRequest | null>();
+
+  useEffect(() => {
+    if (!projectId) return;
+    let aborted = false;
+    api.myAccessRequests()
+      .then((list) => { if (!aborted) setMyRequest(list.find((request) => request.projectId === projectId) ?? null); })
+      .catch(() => { if (!aborted) setMyRequest(null); });
+    return () => { aborted = true; };
+  }, [projectId]);
+
+  /** 提权候选 = 严格高于当前角色的档位（ROLE_RANK 同后端口径）。 */
+  function upgradeTargets(role: ProjectRole): ProjectRole[] {
+    return (["developer", "project_admin"] as ProjectRole[]).filter((target) => ROLE_RANK[target] > ROLE_RANK[role]);
+  }
+
+  /* 弹窗与「申请加入项目」（ProjectShell 落地页）同一套样式：受控 Modal + form-note +
+     全宽角色 Select + Select 下再一条 form-note——同一类申请，同一种读法。 */
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [upgradeTarget, setUpgradeTarget] = useState<ProjectRole>();
+  const [upgradeOptions, setUpgradeOptions] = useState<ProjectRole[]>([]);
+  const [upgradeSubmitting, setUpgradeSubmitting] = useState(false);
+
+  function requestUpgrade(member: ProjectMember) {
+    const targets = upgradeTargets(member.role);
+    if (!targets.length) return;
+    setUpgradeOptions(targets);
+    setUpgradeTarget(targets[0]);
+    setUpgradeOpen(true);
+  }
+
+  async function submitUpgrade() {
+    if (!projectId || !upgradeTarget) return;
+    setUpgradeSubmitting(true);
+    try {
+      const created = await api.createAccessRequest(projectId, { suggestedRole: upgradeTarget });
+      setMyRequest(created);
+      setUpgradeOpen(false);
+      message.success(t("members.upgradeSubmitted"));
+    } catch (error) {
+      /* 409（code 2003）= 已有该角色或更高 / 已有待审申请（并发窗口）：与申请加入同款——
+         拉一次最新状态、收起弹窗，如实告知而不是报错。 */
+      const code = (error as { response?: { data?: { code?: number } } })?.response?.data?.code;
+      if (code === 2003) {
+        api.myAccessRequests().then((list) => setMyRequest(list.find((request) => request.projectId === projectId) ?? null)).catch(() => {});
+        message.info(t("members.upgradeConflict"));
+        setUpgradeOpen(false);
+      } else {
+        message.error(t("members.upgradeFailed"));
+      }
+    } finally {
+      setUpgradeSubmitting(false);
+    }
+  }
+
   return <>
     {canManage && <div className="filter-bar">
       <Select
@@ -194,7 +262,8 @@ function MembersTab() {
         <th>{t("members.role")}</th>
         <th>{t("members.grantedBy")}</th>
         <th>{t("members.grantedAt")}</th>
-        {canManage && <th className="col-actions" />}
+        {/* 操作列对所有人存在：管理员放移除，低角色自己那行放「申请升级」（P16-1）。 */}
+        <th className="col-actions" />
       </tr></thead>
       <tbody>
         {members.map((member) => {
@@ -226,16 +295,47 @@ function MembersTab() {
             </td>
             <td className="mono muted">{member.grantedByEmail ?? "—"}</td>
             <td className="mono muted">{new Date(member.grantedAt).toLocaleDateString()}</td>
-            {canManage && <td className="col-actions">
-              {!lastAdmin && <div className="row-actions">
-                <button className="btn danger" onClick={() => removeMember(member)}>{t("members.remove")}</button>
-              </div>}
-            </td>}
+            <td className="col-actions">
+              {canManage
+                ? (!lastAdmin && <div className="row-actions">
+                    <button className="btn danger" onClick={() => removeMember(member)}>{t("members.remove")}</button>
+                  </div>)
+                : member.userId === myUserId && (
+                    myRequest?.status === "pending"
+                      ? <Status status="queued" label={t("members.upgradePending")} />
+                      : upgradeTargets(member.role).length > 0 && <div className="row-actions">
+                          <button className="btn" onClick={() => requestUpgrade(member)}>{t("members.upgrade")}</button>
+                        </div>
+                  )}
+            </td>
           </tr>;
         })}
       </tbody>
     </table></div> : !loading && <Empty title={t("members.emptyTitle")} hint={t("members.emptyHint")} />}
     </div>
+
+    {/* 申请升级弹窗（P16-1）：与「申请加入项目」弹窗同款样式（form-note + 全宽 Select + 尾注）。 */}
+    <Modal
+      open={upgradeOpen}
+      title={t("members.upgradeTitle")}
+      okText={t("members.upgradeSubmit")}
+      cancelText={t("action.cancel")}
+      confirmLoading={upgradeSubmitting}
+      onOk={() => void submitUpgrade()}
+      onCancel={() => setUpgradeOpen(false)}
+    >
+      <p className="form-note">{t("members.upgradeHint")}</p>
+      <label className="field" style={{ marginTop: "var(--s4)" }}>
+        <span>{t("members.upgradeTarget")}</span>
+        <Select
+          value={upgradeTarget}
+          onChange={(value: ProjectRole) => setUpgradeTarget(value)}
+          options={upgradeOptions.map((role) => ({ value: role, label: role }))}
+          style={{ width: "100%" }}
+        />
+      </label>
+      <p className="form-note">{t("members.upgradeRoleHint")}</p>
+    </Modal>
   </>;
 }
 
@@ -329,6 +429,8 @@ function AccessRequestsTab() {
             <div className="mono muted">{request.applicantEmail}</div>
           </td>
           <td>
+            {/* 提权申请带申请时的角色快照（fromRole）：显示「当前 → 目标」，与加入申请一眼区分。 */}
+            {request.fromRole && <span className="mono muted">{request.fromRole} → </span>}
             {request.status === "pending"
               ? <Select
                   size="small"

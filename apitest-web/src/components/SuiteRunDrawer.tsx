@@ -125,7 +125,7 @@ export function SuiteRunDrawer({ projectId, run, onClose, onCancel, canceling }:
         区分线索。 */}
     <div className="report-identity">
       {run.reportName && <span className="mono truncate">{run.reportName}</span>}
-      <span className="muted">{triggerLabel(t, run.triggerSource, run.triggerRefName, run.triggeredByEmail)}</span>
+      <span className="muted">{triggerLabel(t, run.triggerSource, run.triggerRefName, run.triggeredByEmail, run.triggerSourceUrl)}</span>
       {Object.keys(run.variableOverrides).length > 0 && (
         <span className="mono muted truncate">{Object.entries(run.variableOverrides).map(([key, value]) => `${key}=${value}`).join(" ")}</span>
       )}

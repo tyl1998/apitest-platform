@@ -3,7 +3,7 @@ import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { Link2, Plus, Trash2 } from "lucide-react";
-import { api, type AccessRequest, type ApiKey, type BindableProject, type McpBindingRequest, type McpScope, type McpToken, type MeProfile } from "../api";
+import { api, type AccessRequest, type ApiKey, type AssistantUserAgent, type AssistantUserProvider, type BindableProject, type McpBindingRequest, type McpScope, type McpToken, type MeProfile } from "../api";
 import { Empty, Status } from "../ui";
 import { apiMessage } from "./DataSourceList";
 import { CopyButton } from "./CopyButton";
@@ -19,7 +19,7 @@ import { mcpEndpointUrl } from "./McpPage";
  * 收进 `/me` 独立页；P13-1 再把这一页整体搬进助手抽屉（`AssistantDock` 的 `me`
  * 视图），删除 `/me` 路由——个人中心与助手抽屉不再是两套并存的账号面。
  *
- * 本组件是那四个分区的**受控** tab 面板（tab 状态由抽屉持有，无 URL）：
+ * 本组件是这五个分区的**受控** tab 面板（tab 状态由抽屉持有，无 URL）：
  *
  * - **基本信息**：`GET /me/profile` 只读账号块。改密表单已删除（P13-1 边界 2）——
  *   改密入口仍在抽屉的 password 视图与「改密码」chip，不再重复出现在基本信息里。
@@ -27,24 +27,28 @@ import { mcpEndpointUrl } from "./McpPage";
  * - **MCP Token**：签发 / 吊销（本人）+ 绑定管理（项目 × scope）。Token 本体没有
  *   scope——`read` / `write` / `execute` 是绑定的属性（边界 2），写权限的爆炸半径
  *   不随绑定数增长。平铺成两张表（Token / 绑定明细），不做逐 Token 卡片。
- * - **agent 凭据**：P9-4b 的落点，本阶段只留占位（真正编辑在抽屉 settings）。
+ * - **个人凭证**（2026-09-26 用户反馈拆分）：原「个人凭证」一格撤掉——**API Key 凭证**
+ *   独立成 tab（用户级 API 密钥），**agent 凭证**独立成 tab 且读取设置内的列表（助手
+ *   抽屉「设置」卡的「我的 agent」同一份数据，本页只读展示，编辑仍回「设置」卡）。
  *
  * **通知**分区已删除（2026-09-21 用户反馈「个人信息内删除通知跳转」）：通知只有
  * 抽屉头的铃铛视图（`.assistant-notifications`，「近 10 条」速览）一个落点，个人
  * 中心不再有第二个入口——同一种东西两个入口只会让人怀疑看到的是两份数据。
  */
-export type MeTab = "profile" | "requests" | "mcp" | "credentials";
+export type MeTab = "profile" | "requests" | "mcp" | "apiKey" | "agent";
 
 /** 抽屉内的个人中心面板：tab 受控（抽屉头的「个人中心」钮切它）。tab 条与正文分离
  *  ——tab 条不随正文滚动（`.me-panel` 才是滚动体），长内容（MCP Token）滚到头也
- *  不会把「基本信息 / 我的申请」这两枚切换钮带走（2026-09-21 用户反馈）。 */
-export function MeCenter({ tab, onTab }: { tab: MeTab; onTab: (tab: MeTab) => void }) {
+ *  不会把「基本信息 / 我的申请」这两枚切换钮带走（2026-09-21 用户反馈）。
+ *  `onConfigureAgent`：agent 凭证 tab 的「去配置」跳抽屉「设置」卡（编辑不在本页）。 */
+export function MeCenter({ tab, onTab, onConfigureAgent }: { tab: MeTab; onTab: (tab: MeTab) => void; onConfigureAgent: (providerId: string) => void }) {
   const { t } = useTranslation();
   const tabs: [MeTab, string][] = [
     ["profile", t("me.tabProfile")],
     ["requests", t("me.tabRequests")],
     ["mcp", t("me.tabMcp")],
-    ["credentials", t("me.tabCredentials")],
+    ["apiKey", t("me.tabApiKey")],
+    ["agent", t("me.agentCredentials")],
   ];
 
   return <>
@@ -58,7 +62,8 @@ export function MeCenter({ tab, onTab }: { tab: MeTab; onTab: (tab: MeTab) => vo
       {tab === "profile" && <ProfileTab />}
       {tab === "requests" && <MyAccessRequestsTab />}
       {tab === "mcp" && <McpTokensTab />}
-      {tab === "credentials" && <CredentialsTab />}
+      {tab === "apiKey" && <ApiKeyPanel />}
+      {tab === "agent" && <AgentCredentialsTab onConfigure={onConfigureAgent} />}
     </div>
   </>;
 }
@@ -99,9 +104,10 @@ function ProfileTab() {
 }
 
 /**
- * 我的申请（P14-2）：本人跨项目提交过的权限申请与当前状态。只读——申请入口在项目的
- * 无权限落地页（那里才是「进不去、想进」的语境）；这里是「我申请过哪些、批了没」的
- * 汇总，行点击深链回对应项目（批准后进得去，未批仍是落地页）。
+ * 我的申请（P14-2 + P16-1）：本人跨项目提交过的权限申请与当前状态。只读——加入申请
+ * 入口在项目的无权限落地页（那里才是「进不去、想进」的语境），提权申请入口在成员页
+ * 自己那行（P16-1）；这里是「我申请过哪些、批了没」的汇总，行点击深链回对应项目
+ * （批准后进得去，未批仍是落地页）。
  */
 function MyAccessRequestsTab() {
   const { t } = useTranslation();
@@ -134,7 +140,10 @@ function MyAccessRequestsTab() {
         <tbody>
           {rows.map((request) => <tr key={request.id} data-clickable onClick={() => navigate(`/projects/${request.projectId}/trends`)}>
             <td><strong className="truncate">{request.projectName ?? request.projectId.slice(0, 8)}</strong></td>
-            <td className="mono">{request.suggestedRole ?? "—"}</td>
+            <td className="mono">
+              {/* 提权申请显示「当前 → 目标」（fromRole 是申请提交时的快照），加入申请只显示建议角色。 */}
+              {request.fromRole ? `${request.fromRole} → ${request.suggestedRole ?? "—"}` : (request.suggestedRole ?? "—")}
+            </td>
             <td className="col-status">
               {request.status === "pending" ? <Status status="queued" label={t("access.statusPending")} />
                 : request.status === "approved" ? <Status status="pass" label={t("access.statusApproved")} />
@@ -148,16 +157,88 @@ function MyAccessRequestsTab() {
   </section>;
 }
 
-/** agent 凭据：P9-4b 的落点（边界 9）+ 用户级 API 密钥（本人级凭据的自然归属）。 */
-function CredentialsTab() {
+/**
+ * agent 凭证 tab（2026-09-26 用户反馈：「个人凭证」拆开，agent 凭证独立成 tab）：
+ * **读取设置内的列表**——与助手抽屉「设置」卡的「我的 agent」同一份数据（上游目录
+ * `GET /assistant/providers` + 我的配置 `GET /assistant/my-agents`），一人一份、密文
+ * 加密落库只回键名。本页只读：编辑（含设默认、测试连接）在「设置」卡，行上「去配置」
+ * 直接跳过去——同一种东西两个可编辑入口只会让人怀疑改的是不是同一份。
+ */
+function AgentCredentialsTab({ onConfigure }: { onConfigure: (providerId: string) => void }) {
   const { t } = useTranslation();
-  return <>
-    <ApiKeyPanel />
-    <section className="panel">
-      <div className="panel-head"><strong>{t("me.tabCredentials")}</strong></div>
-      <div className="panel-body"><Empty title={t("me.credentialsEmptyTitle")} hint={t("me.credentialsEmptyHint")} /></div>
-    </section>
-  </>;
+  const [providers, setProviders] = useState<AssistantUserProvider[]>();
+  const [agents, setAgents] = useState<AssistantUserAgent[]>();
+  const [failed, setFailed] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [catalog, mine] = await Promise.all([api.assistantUserProviders(), api.myAssistantAgents()]);
+      setProviders(catalog);
+      setAgents(mine);
+      setFailed(false);
+    } catch {
+      setFailed(true);
+    }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  /* 行 = 设置卡下拉里的上游目录（启用中的），带上我的配置；目录外还有的行（上游被
+     停用但配置还在）追加在后——凭据是我配的，停用不等于消失。 */
+  const agentByProvider = new Map((agents ?? []).map((agent): [string, AssistantUserAgent] => [agent.providerId, agent]));
+  const rows = [
+    ...(providers ?? []).map((provider) => ({ providerId: provider.id, name: provider.name, agent: agentByProvider.get(provider.id) })),
+    ...(agents ?? []).filter((agent) => !(providers ?? []).some((provider) => provider.id === agent.providerId))
+      .map((agent) => ({ providerId: agent.providerId, name: agent.providerName, agent })),
+  ];
+
+  if (failed) return <section className="panel"><div className="panel-body"><Empty
+    title={t("me.loadFailed")}
+    hint={t("me.agentCredentialsHint")}
+    action={<button className="btn" onClick={() => void load()}>{t("action.retry")}</button>}
+  /></div></section>;
+
+  return <section className="panel">
+    <div className="panel-head"><strong>{t("me.agentCredentials")}</strong></div>
+    <div className="panel-body">
+      <p className="form-note">{t("me.agentCredentialsHint")}</p>
+      {providers === undefined || agents === undefined ? <p className="muted">{t("common.loading")}</p>
+        : rows.length === 0 ? <Empty title={t("me.agentEmptyTitle")} hint={t("me.agentEmptyHint")} />
+          : <div className="table-scroll"><table className="grid">
+            <thead><tr>
+              <th>{t("me.agentProvider")}</th>
+              <th className="col-status">{t("me.agentStatus")}</th>
+              <th>{t("me.agentParams")}</th>
+              <th className="mono">{t("me.agentUpdatedAt")}</th>
+              <th className="col-actions" />
+            </tr></thead>
+            <tbody>{rows.map((row) => <tr key={row.providerId}>
+              <td className="truncate">
+                <strong>{row.name}</strong>
+                {row.agent?.isDefault && <span className="chip">{t("me.agentDefault")}</span>}
+                {row.agent && !row.agent.providerEnabled && <span className="chip">{t("me.agentDisabled")}</span>}
+              </td>
+              <td className="col-status">
+                {row.agent
+                  ? <span className="chip">{t("me.agentConfigured")}</span>
+                  : <span className="muted">{t("me.agentNotConfigured")}</span>}
+              </td>
+              <td className="truncate">
+                {row.agent && (Object.keys(row.agent.params).length || row.agent.secretKeys.length) ? (
+                  <span className="tag-inline">
+                    {Object.entries(row.agent.params).map(([key, value]) => <span key={key} className="chip mono">{key}: {value}</span>)}
+                    {/* 密文只回键名（值不回显）：这里也只列键名，不装作能看到值。 */}
+                    {row.agent.secretKeys.map((key) => <span key={key} className="chip mono">{key}: •••</span>)}
+                  </span>
+                ) : <span className="muted">—</span>}
+              </td>
+              <td className="mono muted">{row.agent ? new Date(row.agent.updatedAt).toLocaleString() : "—"}</td>
+              <td className="col-actions"><div className="row-actions">
+                <button className="btn" onClick={() => onConfigure(row.providerId)}>{t("me.agentConfigure")}</button>
+              </div></td>
+            </tr>)}</tbody>
+          </table></div>}
+    </div>
+  </section>;
 }
 
 /**

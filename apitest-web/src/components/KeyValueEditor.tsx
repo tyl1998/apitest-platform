@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { List, AlignLeft, X } from "lucide-react";
 import { IconButton } from "./IconButton";
+import { normalizeFullWidthPunct } from "../lib/normalize";
 import { VariableField } from "./VariableField";
 import type { VariableOption } from "./VariablePicker";
 
@@ -100,7 +101,7 @@ export function KeyValueEditor({ pairs, onChange, keyPlaceholder, valuePlacehold
   function switchToTable() {
     /* An emptied box means "remove everything", so the parse is applied as-is
        rather than treated as a no-op. */
-    onChange(parseText(textValue));
+    onChange(parseText(normalizeFullWidthPunct(textValue)));
     setMode("table");
   }
 
@@ -108,13 +109,15 @@ export function KeyValueEditor({ pairs, onChange, keyPlaceholder, valuePlacehold
    * `index === pairs.length` is the trailing blank row: an edit there appends
    * instead of patching. The row keeps the same list position and React key
    * across that transition, so the DOM node — and the caret in it — survives.
+   * 值做全角归一（`：`→`:`），避免全角标点写进请求头被 fetch 拒绝。
    */
   function update(index: number, patch: Partial<Pair>) {
+    const applied = patch.value !== undefined ? { ...patch, value: normalizeFullWidthPunct(patch.value) } : patch;
     if (index === pairs.length) {
-      onChange([...pairs, { key: "", value: "", enabled: true, ...patch }]);
+      onChange([...pairs, { key: "", value: "", enabled: true, ...applied }]);
       return;
     }
-    onChange(pairs.map((pair, i) => i === index ? { ...pair, ...patch } : pair));
+    onChange(pairs.map((pair, i) => i === index ? { ...pair, ...applied } : pair));
   }
 
   const count = pairs.filter((pair) => pair.enabled && pair.key.trim()).length;

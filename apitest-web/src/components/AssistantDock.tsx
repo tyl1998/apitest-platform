@@ -266,7 +266,8 @@ export function AssistantDock() {
   const [open, setOpen] = useState(false);
   /** 抽屉内容视图（P9-4b 设置在抽屉里；P9-5 增改密码表单卡；P13-1 通知视图并入
    *  「个人中心」me 视图，原「近 10 条」缩略视图删除）：chat / settings / password /
-   *  me（个人中心五分区：基本信息 / 通知 / 我的申请 / MCP Token / agent 凭据）。 */
+   *  me（个人中心五分区：基本信息 / 我的申请 / MCP 凭证 / API Key 凭证 / agent 凭证，
+   *  2026-09-26 拆「个人凭证」后）。 */
   const [view, setView] = useState<"chat" | "settings" | "password" | "notifications" | "me">("chat");
   /** 个人中心当前分区（P13-1）：抽屉头「个人中心」钮落 profile；me 视图内的 tab 条
    *  也切它。视图切走再切回停在上次的分区。通知不是分区（2026-09-21 用户反馈：
@@ -274,6 +275,15 @@ export function AssistantDock() {
   const [meTab, setMeTab] = useState<MeTab>("profile");
   /** 打开个人中心到指定分区（抽屉头「个人中心」钮、/打开 指令共用）。 */
   function openMe(tab: MeTab) { setMeTab(tab); setView("me"); }
+  /** 个人中心 agent 凭证 tab 的「去配置」（2026-09-26）：跳「设置」卡并预选该上游。
+   *  预选经 ref 传给设置卡的取数效应——那次加载完成后只预选一次，之后照旧
+   *  「我的默认 → 系统推荐 → 第一个」。 */
+  const requestedSettingsProviderRef = useRef<string>();
+  function openAgentSettings(providerId: string) {
+    requestedSettingsProviderRef.current = providerId;
+    setSettingsProviderId(providerId);
+    setView("settings");
+  }
   /** 闸门语义快照（probeAssistantAvailability）：unconfigured 时入口降级、抽屉给引导。 */
   const [availability, setAvailability] = useState<"ready" | "unconfigured" | "disabled" | undefined>();
   /** 未配置引导的判别（P9-4b）：503 只说明「我的 agent 没配好」，还得知道平台有没有
@@ -281,6 +291,12 @@ export function AssistantDock() {
   const [catalogState, setCatalogState] = useState<"unknown" | "has" | "empty">("unknown");
   const [conversations, setConversations] = useState<AssistantConversation[]>();
   const [activeId, setActiveId] = useState<string>();
+  /** 上游名索引 + 我的默认上游（2026-09-26 用户反馈：聊天窗没展示当前选的是哪个
+   *  agent 上游）。会话在创建时就绑定上游（行上 provider_id），之后不跟随「默认
+   *  agent」切换——标签按绑定显示。名字取 `GET /assistant/my-agents` 的
+   *  providerName（与「设置」卡同一份数据）；加载失败静默，标签缺席不挡对话。 */
+  const [upstreamNames, setUpstreamNames] = useState<Record<string, string>>({});
+  const [defaultUpstream, setDefaultUpstream] = useState<{ id: string; name: string } | null>();
   /** 消息按会话分桶：切走再切回不丢内容；流式回合写自己的桶，不打扰当前显示。 */
   const [threads, setThreads] = useState<Record<string, ChatEntry[]>>({});
   const [historyState, setHistoryState] = useState<"idle" | "loading" | "failed" | "unavailable">("idle");
@@ -386,6 +402,8 @@ export function AssistantDock() {
   /* 停止按钮跟着在飞的回合（不是当前显示的会话——中途切走时按钮仍要停对地方）。 */
   const streamingConversation = conversations?.find((conversation) => conversation.id === streamingId);
   const stopCapable = Boolean(streamingConversation?.providerCapabilities.stop);
+  /* 当前显示的会话（上游标签用）：与 streamingConversation 同一取法。 */
+  const activeConversation = conversations?.find((conversation) => conversation.id === activeId);
 
   /* 发送时刻的页面上下文（P9-4c）：页面注册内容 + 当刻 route（在此合成，页面不填）。
      未注册页面也带 route——路径里的实体 id 仍在；全局层页面没有抽屉，不采不注。 */
@@ -469,6 +487,20 @@ export function AssistantDock() {
     return () => { alive = false; };
   }, [open, availability, t]);
 
+  /* 上游名索引（聊天窗的上游标签）：抽屉打开拉一次「我的 agent」，会话的 provider_id
+     映射成名字；我的默认 = 新会话会用的上游。与设置卡同源（同一接口），失败静默。 */
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    void api.myAssistantAgents().then((agents) => {
+      if (!alive) return;
+      setUpstreamNames(Object.fromEntries(agents.map((agent): [string, string] => [agent.providerId, agent.providerName])));
+      const mine = agents.find((agent) => agent.isDefault && agent.providerEnabled);
+      setDefaultUpstream(mine ? { id: mine.providerId, name: mine.providerName } : null);
+    }).catch(() => undefined);
+    return () => { alive = false; };
+  }, [open]);
+
   /* 历史回放（transcript 在上游，边界 2）：切会话/重开抽屉时拉一次，整桶替换（上游
      是权威——别处/别的设备聊过的内容在这里自愈）。正在流式的会话跳过：回放会把
      在飞的回合冲掉。协议没定义 history 端点时直接标记不可用，不撞 400。 */
@@ -526,9 +558,14 @@ export function AssistantDock() {
       if (!alive) return;
       setUserProviders(providers);
       setMyAgents(agents);
-      const preferred = agents.find((agent) => agent.isDefault)?.providerId
-        ?? providers.find((provider) => provider.isDefault)?.id
-        ?? providers[0]?.id;
+      /* 「去配置」跳来的预选一次有效，用完即弃；否则照旧「我的默认 → 系统推荐 →
+         第一个」（个人中心 agent 凭证 tab 的入口，2026-09-26）。 */
+      const requested = requestedSettingsProviderRef.current;
+      requestedSettingsProviderRef.current = undefined;
+      const preferred = (requested && providers.some((provider) => provider.id === requested)) ? requested
+        : agents.find((agent) => agent.isDefault)?.providerId
+          ?? providers.find((provider) => provider.isDefault)?.id
+          ?? providers[0]?.id;
       setSettingsProviderId(preferred);
     }).catch(() => {
       if (!alive) return;
@@ -1358,25 +1395,45 @@ export function AssistantDock() {
             : <div className="assistant-notifications-state"><p className="muted">{t("notifications.empty")}</p></div>}
       </div> : view === "me" ? <div className="assistant-me">
         {/* 个人中心（P13-1：原独立 `/me` 页整体并入抽屉）：基本信息 / 我的申请 /
-            MCP Token / agent 凭据。头部返回键与 MeCenter 的 tab 条都在滚动体之外
-            ——长内容（MCP Token）滚到底也不会把切 tab 的钮带走（2026-09-21 反馈）。 */}
+            MCP 凭证 / API Key 凭证 / agent 凭证（2026-09-26 拆「个人凭证」）。头部
+            返回键与 MeCenter 的 tab 条都在滚动体之外——长内容（MCP Token）滚到底也
+            不会把切 tab 的钮带走（2026-09-21 反馈）。 */}
         <div className="assistant-me-head">
           <button className="btn" onClick={() => setView("chat")}>
             <ArrowLeft size={14} />{t("assistantSettings.back")}
           </button>
         </div>
-        <MeCenter tab={meTab} onTab={setMeTab} />
+        <MeCenter tab={meTab} onTab={setMeTab} onConfigureAgent={openAgentSettings} />
       </div> : chatReady ? <>
         <div className="assistant-switcher">
           <Select
             value={activeId}
             onChange={(id) => { followRef.current = true; setActiveId(id); }}
-            options={(conversations ?? []).map((conversation) => ({ value: conversation.id, label: conversationLabel(conversation) }))}
+            options={(conversations ?? []).map((conversation) => ({
+              value: conversation.id,
+              /* 选项带上游名（2026-09-26）：两个上游各有会话时，光看话题分不清谁绑的
+                 是哪个上游。 */
+              label: upstreamNames[conversation.providerId]
+                ? `${conversationLabel(conversation)} · ${upstreamNames[conversation.providerId]}`
+                : conversationLabel(conversation),
+            }))}
             placeholder={t("assistantDrawer.switcherPlaceholder")}
             loading={conversations === undefined}
             disabled={!conversations?.length}
             style={{ flex: "1 1 auto", minWidth: 0 }}
           />
+          {/* 当前会话绑定的上游（2026-09-26 用户反馈：聊天窗没展示当前选的 agent 上游）：
+              会话创建时绑定、之后一直走它——hover 说清「换默认只影响新会话」。没选
+              会话时显示「新会话」会用的默认上游。 */}
+          {activeConversation ? (
+            <span className="chip mono truncate" title={t("assistantDrawer.upstreamHint")} style={{ maxWidth: 180 }}>
+              {t("assistantDrawer.upstream")}：{upstreamNames[activeConversation.providerId] ?? t("assistantDrawer.upstreamUnknown")}
+            </span>
+          ) : !activeId && defaultUpstream ? (
+            <span className="chip mono truncate" title={t("assistantDrawer.upstreamNewHint")} style={{ maxWidth: 180 }}>
+              {t("assistantDrawer.upstreamNew", { name: defaultUpstream.name })}
+            </span>
+          ) : null}
           {/* 删除当前会话（清脏数据）：图标钮随选择器，空列表不渲染。对话用户级化
               （2026-09-16）后会话是本人的，不看项目角色。 */}
           {activeId && conversations?.some((row) => row.id === activeId) && (

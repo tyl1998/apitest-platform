@@ -29,6 +29,7 @@ import { ExecutionResolver } from "./components/ExecutionResolver";
 import { DataSourceList } from "./components/DataSourceList";
 import { DataSourceDetail } from "./components/DataSourceDetail";
 import { MockList } from "./components/MockList";
+import { WebhookTriggers } from "./components/WebhookTriggers";
 import { McpPage } from "./components/McpPage";
 import { RepoCaseTreePage } from "./components/RepoCaseTree";
 import { RepoCredentials } from "./components/RepoCredentials";
@@ -161,6 +162,7 @@ function Root() {
         <Route path="data-sources" element={<DataSourceList />} />
         <Route path="data-sources/:dataSourceId" element={<DataSourceDetail />} />
         <Route path="mocks" element={<MockList />} />
+        <Route path="webhooks" element={<WebhookTriggers />} />
         {/* P5：MCP 管理页（开关 / 端点 / Token / 工具清单）。只读展示 + 管理动作，
             不做对话式创建 UI（交互文档 3.10 的边界）。 */}
         <Route path="mcp" element={<McpPage />} />

@@ -995,6 +995,7 @@ export function SpecCases() {
       </div>
     </div>
     {filterBar}
+    {bulkBar}
     </PageToolbar>
 
     <div className="list-card">
@@ -1063,7 +1064,7 @@ export function SpecCases() {
           canWrite={canWrite}
           onOpenCase={(item) => setEditing(item.id)}
           onSaved={bumpRevision}
-        />) : <>{bulkBar}{caseTable}</>}
+        />) : <>{caseTable}</>}
       </div>
     </div>
     </div>

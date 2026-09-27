@@ -862,6 +862,7 @@ export type ExecutionIndex = {
   triggerRefId?: string;
   /** 触发者名字快照：调度被删后报告仍说得出「谁让它跑的」（边界 13）。 */
   triggerRefName?: string;
+  triggerSourceUrl?: string;
   status: ExecutionStatus;
   total: number;
   successCount: number;
@@ -1068,6 +1069,7 @@ export type SuiteExecutionDetail = SuiteExecution & {
   triggerSource: TriggerSource;
   triggerRefId?: string;
   triggerRefName?: string;
+  triggerSourceUrl?: string;
   executionSteps: ExecutionStep[];
   runs: Execution[];
 } & TriggeredByEmail;
@@ -1463,6 +1465,8 @@ export type WebhookTrigger = {
   hasSecret: boolean;
   enabled: boolean;
   lastTriggeredAt?: string;
+  lastRunId?: string;
+  lastRunStatus?: string;
   createdAt: string;
   updatedAt: string;
 } & Ownership;
@@ -1565,6 +1569,7 @@ export type SuiteReportSummary = {
   triggerSource: TriggerSource;
   triggerRefId: string | null;
   triggerRefName: string | null;
+  triggerSourceUrl?: string;
   variableOverrides: Record<string, string>;
   status: ExecutionStatus;
   total: number;
@@ -1592,6 +1597,7 @@ export type SuiteReport = {
   triggerSource: TriggerSource;
   triggerRefId: string | null;
   triggerRefName: string | null;
+  triggerSourceUrl?: string;
   variableOverrides: Record<string, string>;
   status: ExecutionStatus;
   error: string | null;
@@ -2115,6 +2121,7 @@ export type PipelineRun = {
   leaseExpiresAt?: string;
   triggerSource: TriggerSource;
   triggerRefName?: string;
+  triggerSourceUrl?: string;
   triggeredBy?: string;
   gitRef: string;
   commitSha: string;
@@ -2648,8 +2655,10 @@ export type ProjectMember = {
 };
 
 /**
- * 权限申请（P14-2）：非成员自助申请加入项目的一条记录。`suggestedRole` 可空
- * （未带建议，最终角色以批准动作为准）。按视角带出快照：管理员审批列表看
+ * 权限申请（P14-2）：非成员自助申请加入、或成员申请提权（P16-1）的一条记录。
+ * `suggestedRole` 可空（加入申请未带建议，最终角色以批准动作为准；提权申请必带且
+ * 高于 `fromRole`）。`fromRole` 是申请提交时的角色快照：null = 加入申请，有值 =
+ * 提权申请（审批列表据此显示「当前 X → 申请 Y」）。按视角带出快照：管理员审批列表看
  * `applicantEmail` / `applicantName` / `handledByEmail`，本人「我的申请」看
  * `projectName`——缺列即 null。
  */
@@ -2660,6 +2669,7 @@ export type AccessRequest = {
   userId: string;
   applicantEmail: string | null;
   applicantName: string | null;
+  fromRole: ProjectRole | null;
   suggestedRole: ProjectRole | null;
   status: "pending" | "approved" | "rejected";
   handledBy: string | null;
@@ -3741,6 +3751,8 @@ export const api = {
     client.delete(`/projects/${projectId}/webhook-triggers/${triggerId}`).then(data<{ id: string }>),
   rotateWebhookSecret: (projectId: string, triggerId: string) =>
     client.post(`/projects/${projectId}/webhook-triggers/${triggerId}/rotate-secret`).then(data<{ id: string; secret: string }>),
+  webhookSecret: (projectId: string, triggerId: string) =>
+    client.get(`/projects/${projectId}/webhook-triggers/${triggerId}/secret`).then(data<{ id: string; secret: string }>),
 
   notificationChannels: (projectId: string) => client.get(`/projects/${projectId}/notification-channels`).then(data<NotificationChannel[]>),
   createNotificationChannel: (projectId: string, input: NotificationChannelInput) =>

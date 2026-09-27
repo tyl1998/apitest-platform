@@ -622,6 +622,12 @@ body {
 }
 
 .bulk-bar strong { margin-right: auto; font-size: 13px; }
+
+/* 批量操作条在顶层工具卡内（2026-09-26 验收反馈）：批量动作从列表卡挪进
+   .page-toolbar，不再用负上边距贴卡沿——列表卡 overflow:hidden 会把那段抬升
+   裁掉、看起来像被卡片挡住。工具卡里它是普通子块，去掉负上边距即可，底部间距
+   由 `.page-toolbar > :not(:last-child)` 统一接管。 */
+.page-toolbar .bulk-bar { margin-top: 0; }
 .batch-items { border-top: 1px solid var(--line); }
 .batch-row { border-bottom: 1px solid var(--line); }
 .batch-row:last-child { border-bottom: 0; }
@@ -3443,6 +3449,23 @@ button.chip-action:hover { border-color: var(--accent); color: var(--ink); }
 }
 
 .cell-link:hover { text-decoration: underline; }
+
+/* 触发来源外链（2026-09-26）：webhook 请求体 `_trigger_url` 的可点链接，显示 URL 文本
+   （去掉协议前缀），让用户一眼看到「这次是哪个 CI 构建触发的」。 */
+.trigger-source-link {
+  margin-left: var(--s1);
+  color: var(--accent);
+  text-decoration: none;
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+}
+.trigger-source-link:hover { text-decoration: underline; }
 
 .btn-small { padding: 3px 8px; font-size: 12px; }
 

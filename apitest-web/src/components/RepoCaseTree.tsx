@@ -2,9 +2,10 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import { Drawer, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ChevronDown, ChevronRight, Play, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronUp, Play, X } from "lucide-react";
 import { api, noRunnerLabel, type CiTask, type CiTaskRecommendation, type RepoCaseDetail, type RepoCaseTree, type RepoTestCase } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
+import { useCompactViewport } from "../hooks/useCompactViewport";
 import { usePageContext } from "../hooks/usePageContext";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, Method, PageToolbar, Readout, Tip, toRunStatus } from "../ui";
@@ -277,6 +278,12 @@ export function RepoCaseTreePage() {
   /* viewer：勾选执行是「跑已保存资产」（P6-4），勾选框与批量条全藏；树本身照读。 */
   const canWrite = useCanWrite();
 
+  /* 顶部工具卡收缩（2026-09-26 验收反馈）：紧凑视口（≤1470×800）下默认收起覆盖率读数
+     与筛选行给树腾空间；大屏上由用户手动开关。bulk-bar 勾选动作不参与收起，始终可见。 */
+  const compactViewport = useCompactViewport();
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
+  const effectiveCollapsed = compactViewport || toolbarCollapsed;
+
   /* 筛选走地址栏（与接口列表同款约定）：一份筛好的树要能被贴给别人。 */
   const keyword = searchParams.get("keyword") ?? "";
   const status = searchParams.get("status") ?? "active";
@@ -457,10 +464,16 @@ export function RepoCaseTreePage() {
 
   return <main className="content content-split">
     <PageToolbar>
-    <RepoPageHead title={t("repoCases.title")} hint={t("repoCases.hint")} />
+    <RepoPageHead
+      title={t("repoCases.title")}
+      hint={t("repoCases.hint")}
+      actions={!compactViewport ? <button className="btn btn-icon" title={effectiveCollapsed ? t("repoCases.expandToolbar") : t("repoCases.collapseToolbar")} onClick={() => setToolbarCollapsed((value) => !value)}>
+        {effectiveCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+      </button> : undefined}
+    />
     <RepoTabs active="tree" />
 
-    {coverage && <div className="readouts">
+    {!effectiveCollapsed && coverage && <div className="readouts">
       {/* 这份覆盖只在本页算、本页显示（边界 2）：看板的覆盖率口径本阶段一个字都不改。 */}
       <Readout label={t("repoCases.coveredEndpoints")} value={`${coverage.coveredEndpointTotal}/${coverage.endpointTotal}`} />
       <Readout label={t("repoCases.coverageRate")} value={coverageRate === null ? "—" : coverageRate.toFixed(1)} unit="%" />
@@ -469,33 +482,57 @@ export function RepoCaseTreePage() {
     </div>}
     {/* 两个计数口径不同，必须写明（边界 9）：接口上的「用例数」是关系数，项目级是
         distinct case_key，相加不相等。 */}
-    <p className="form-note">{t("repoCases.countingNote")}</p>
+    {!effectiveCollapsed && <p className="form-note">{t("repoCases.countingNote")}</p>}
 
-    <div className="filter-bar">
-      <input
-        className="input mono"
-        value={keyword}
-        onChange={(event) => patchParams({ keyword: event.target.value, page: undefined })}
-        placeholder={t("repoCases.searchPlaceholder")}
-        style={{ width: 260 }}
-      />
-      <label className="check-field">
-        <input
-          type="checkbox"
-          checked={status === "all"}
-          onChange={(event) => patchParams({ status: event.target.checked ? "all" : undefined, page: undefined })}
-        />
-        {t("repoCases.showRemoved")}
-      </label>
-      <span className="filter-spacer" />
-      {coverage && <span className="muted mono">{t("repoCases.removedTotal", { count: coverage.removedCaseTotal })}</span>}
-    </div>
-    </PageToolbar>
+    {/* 关键字搜索 + 已移除筛选。收缩态仍保留搜索框，并把覆盖率压成一行简略读数一起放
+        进来（2026-09-26 验收反馈②，照 CiTaskList 同款）。 */}
+    {effectiveCollapsed
+      ? <div className="filter-bar">
+          <input
+            className="input mono"
+            value={keyword}
+            onChange={(event) => patchParams({ keyword: event.target.value, page: undefined })}
+            placeholder={t("repoCases.searchPlaceholder")}
+            style={{ width: 240 }}
+          />
+          <label className="check-field">
+            <input
+              type="checkbox"
+              checked={status === "all"}
+              onChange={(event) => patchParams({ status: event.target.checked ? "all" : undefined, page: undefined })}
+            />
+            {t("repoCases.showRemoved")}
+          </label>
+          <span className="filter-spacer" />
+          {coverage && <span className="mono muted">
+            {t("repoCases.coverageRate")} {coverageRate === null ? "—" : `${coverageRate.toFixed(1)}%`} · {t("repoCases.coveredEndpoints")} {coverage.coveredEndpointTotal}/{coverage.endpointTotal}
+          </span>}
+        </div>
+      : <div className="filter-bar">
+          <input
+            className="input mono"
+            value={keyword}
+            onChange={(event) => patchParams({ keyword: event.target.value, page: undefined })}
+            placeholder={t("repoCases.searchPlaceholder")}
+            style={{ width: 260 }}
+          />
+          <label className="check-field">
+            <input
+              type="checkbox"
+              checked={status === "all"}
+              onChange={(event) => patchParams({ status: event.target.checked ? "all" : undefined, page: undefined })}
+            />
+            {t("repoCases.showRemoved")}
+          </label>
+          <span className="filter-spacer" />
+          {coverage && <span className="muted mono">{t("repoCases.removedTotal", { count: coverage.removedCaseTotal })}</span>}
+        </div>}
 
-    <div className="list-card">
     {/* 勾选执行的操作条（§8.3，照 EndpointList 的 bulk-bar 形状）。**不是接口模式批量
         调试的等价物**：平台不持有测试代码，只传 case_filter + 收结果 + 对账，所以文案
-        与那边不同，且必须把「快不快取决于仓库脚本」说出来（§8.3 落地点末条）。 */}
+        与那边不同，且必须把「快不快取决于仓库脚本」说出来（§8.3 落地点末条）。挪进顶层
+        工具卡（2026-09-26 验收反馈）：与 EndpointList/SpecCases 同款，批量动作不再被
+        列表卡的 overflow:hidden 裁掉。 */}
     {canWrite && selected.size > 0 && <div className="bulk-bar">
       <strong>{t("repoCases.selectedCount", { count: selected.size })}</strong>
       <button className="btn btn-primary btn-with-icon" disabled={triggering} onClick={openTrigger}>
@@ -503,7 +540,9 @@ export function RepoCaseTreePage() {
       </button>
       <button className="btn btn-icon" title={t("action.cancel")} onClick={() => setSelected(new Set())}><X size={15} /></button>
     </div>}
+    </PageToolbar>
 
+    <div className="list-card">
     <div className="list-scroll">
 
     {tree && tree.endpoints.length > 0 && <div className="table-scroll"><table className="grid grid-fixed">

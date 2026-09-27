@@ -413,7 +413,7 @@ export function PipelineRunPage() {
         {/* 触发（P11-8）：触发源「引用名」 · 触发人，与报告列表、运行抽屉同一份拼法
             （`lib/trigger` 的 triggerLabel）。null 触发人 = 非人工（边界 11）。 */}
         <span className="pipeline-fact-value truncate">
-          {triggerLabel(t, run.triggerSource, run.triggerRefName, run.triggeredByEmail)}
+          {triggerLabel(t, run.triggerSource, run.triggerRefName, run.triggeredByEmail, run.triggerSourceUrl)}
         </span>
       </div>
       {/* 计数只在终态出现（在途时它们还在变），四个 chip 而不是一句拼接文本：失败数

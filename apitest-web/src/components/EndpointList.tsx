@@ -335,9 +335,7 @@ export function EndpointList() {
         <ListChecks size={14} />{t("endpoints.lastBatchResult", { total: batchResult.total, failed: batchResult.failedCount })}
       </button>}
     </div>
-    </PageToolbar>
 
-    <div className="list-card">
     {canWrite && selected.size > 0 && <div className="bulk-bar">
       <strong>{t("endpoints.selectedCount", { count: selected.size })}</strong>
       <button className="btn btn-primary btn-with-icon" disabled={batchRunning} onClick={() => setBatchOpen(true)}>
@@ -348,7 +346,9 @@ export function EndpointList() {
       </button>
       <button className="btn btn-icon" title={t("action.cancel")} onClick={() => setSelected(new Set())}><X size={15} /></button>
     </div>}
+    </PageToolbar>
 
+    <div className="list-card">
     {endpoints.length ? <div className="table-scroll"><table className="grid endpoint-grid">
       <thead><tr>
         {canWrite && <th className="col-select"><input type="checkbox" aria-label={t("endpoints.selectAll")} checked={endpoints.length > 0 && selected.size === endpoints.length} onChange={(event) => toggleAll(event.target.checked)} /></th>}

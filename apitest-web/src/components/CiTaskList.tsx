@@ -2,10 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Modal, Pagination, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams } from "react-router-dom";
-import { ChevronDown, ChevronRight, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronUp, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { api, noRunnerLabel, type CiTask, type PipelineRun, type RunnerPool } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useCanWrite } from "../hooks/useMyRole";
+import { useCompactViewport } from "../hooks/useCompactViewport";
 import { triggerLabel } from "../lib/trigger";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, PageToolbar, Readout, Tip } from "../ui";
@@ -94,6 +95,11 @@ export function CiTaskList() {
   const [historyLoading, setHistoryLoading] = useState(false);
   /* 展开中的任务 id 走 ref：慢请求期间用户点了另一行是常态，落地前要核对「还在看它」。 */
   const expandedRef = useRef<string | undefined>(undefined);
+  /* 顶部工具卡收缩：紧凑视口（< 1470×800）下默认收缩给任务列表腾空间；大屏上由
+     用户手动开关。`toolbarCollapsed` 是手动覆盖，`effectiveCollapsed` 是最终生效值。 */
+  const compactViewport = useCompactViewport();
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
+  const effectiveCollapsed = compactViewport || toolbarCollapsed;
 
   /** `silent`：轮询路径不闪 loading——列表数据在眼前，整表替换成一句「加载中」比
       旧数据多停 10 秒更刺眼。 */
@@ -223,15 +229,21 @@ export function CiTaskList() {
     <RepoPageHead
       title={t("ciTasks.title")}
       hint={t("ciTasks.hint")}
-      actions={canWrite ? <button className="btn btn-primary btn-with-icon" onClick={() => navigate(`/projects/${projectId}/repo/tasks/new`)}>
-        <Plus size={14} />{t("ciTasks.create")}
-      </button> : undefined}
+      actions={<>
+        {/* 顶部工具卡收缩开关（2026-09-26 验收反馈）：把 Runner 池读数与搜索行收起来，
+            列表多露一段；再点展开还原。icon-only，标题行已提供语境。紧凑视口下本来
+            就默认收缩，开关无意义，隐藏。 */}
+        {!compactViewport && <button className="btn btn-icon" title={effectiveCollapsed ? t("ciTasks.expandToolbar") : t("ciTasks.collapseToolbar")} onClick={() => setToolbarCollapsed((value) => !value)}>
+          {effectiveCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+        </button>}
+        {canWrite ? <button className="btn btn-primary btn-with-icon" onClick={() => navigate(`/projects/${projectId}/repo/tasks/new`)}>
+          <Plus size={14} />{t("ciTasks.create")}
+        </button> : undefined}
+      </>}
     />
     <RepoTabs active="tasks" />
 
-    {/* Runner 池实时状态（交互 3.12.1）。「Runner」与「执行器」是两回事，这一句写明它，
-        否则会被当成系统设置里那个面板的重复功能报上来（8.6）。 */}
-    {pool && <>
+    {!effectiveCollapsed && pool && <>
       <div className="readouts">
         <Readout label={t("ciTasks.poolOnline")} value={`${pool.online}/${pool.total}`} />
         <Readout label={t("ciTasks.poolCapacity")} value={pool.capacity} />
@@ -244,15 +256,30 @@ export function CiTaskList() {
     </>}
 
     {/* 关键字搜索（服务端 ILIKE：名称 / 描述 / Git 地址）。改关键字回第一页——留在
-        第 3 页搜出 2 条结果就是一张空表。 */}
-    <div className="filter-bar">
-      <input
-        className="input"
-        value={keyword}
-        onChange={(event) => { setKeyword(event.target.value); setPage(1); }}
-        placeholder={t("ciTasks.searchPlaceholder")}
-      />
-    </div>
+        第 3 页搜出 2 条结果就是一张空表。收缩态仍保留搜索框，并把 Runner 池压缩成
+        一行简略读数一起放进来（2026-09-26 验收反馈②）。 */}
+    {effectiveCollapsed
+      ? <div className="filter-bar">
+          <input
+            className="input"
+            value={keyword}
+            onChange={(event) => { setKeyword(event.target.value); setPage(1); }}
+            placeholder={t("ciTasks.searchPlaceholder")}
+            style={{ maxWidth: 320 }}
+          />
+          <span className="filter-spacer" />
+          {pool && <span className="mono muted">
+            {t("ciTasks.poolOnline")} {pool.online}/{pool.total} · {t("ciTasks.poolCapacity")} {pool.capacity} · {t("ciTasks.poolQueued")} {pool.queued}
+          </span>}
+        </div>
+      : <div className="filter-bar">
+          <input
+            className="input"
+            value={keyword}
+            onChange={(event) => { setKeyword(event.target.value); setPage(1); }}
+            placeholder={t("ciTasks.searchPlaceholder")}
+          />
+        </div>}
     </PageToolbar>
 
     <div className="list-card">
@@ -333,10 +360,13 @@ function CiTaskRow({ task, expanded, historyRuns, historyTotal, historyLoading, 
   const runTotal = task.runTotal;
 
   return <>
+    {/* 整行默认点击 = 展开/收起执行历史（2026-09-26 验收反馈：不再默认跳编辑页，编辑
+        收进行内的铅笔按钮）。首列的折叠按钮是同一动作的显式入口，stopPropagation 后
+        不会重复触发。 */}
     <tr
       data-clickable=""
       data-removed={task.enabled ? undefined : ""}
-      onClick={onEdit}
+      onClick={onToggleHistory}
     >
       <td className="col-expand" onClick={(event) => { event.stopPropagation(); onToggleHistory(); }}>
         <button className="btn btn-icon" aria-label={t("ciTasks.history")} aria-expanded={expanded}>
@@ -427,7 +457,7 @@ function CiTaskRow({ task, expanded, historyRuns, historyTotal, historyLoading, 
                 </td>
                 {/* 触发列（P11-8）：触发源 + 触发人。这一格原来只渲染触发源，触发人用
                     共享的 triggerLabel 拼在后面（引用名不在这格显示，与原来一致）。 */}
-                <td>{triggerLabel(t, run.triggerSource, undefined, run.triggeredByEmail)}</td>
+                <td>{triggerLabel(t, run.triggerSource, undefined, run.triggeredByEmail, run.triggerSourceUrl)}</td>
                 <td className="col-num mono">{run.caseTotal}</td>
                 <td className="col-num mono">{run.passedCount}</td>
                 <td className="col-num mono">{run.failedCount > 0 ? <span className="text-fail">{run.failedCount}</span> : "0"}</td>

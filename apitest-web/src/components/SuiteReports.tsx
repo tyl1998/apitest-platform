@@ -32,7 +32,7 @@ import { ShareReportButton } from "./ShareReportButton";
  */
 
 const PAGE_SIZES = [20, 50, 100];
-const TRIGGER_SOURCES: TriggerSource[] = ["manual", "scheduled", "webhook", "ci"];
+const TRIGGER_SOURCES: TriggerSource[] = ["manual", "scheduled", "webhook"];
 const REPORT_SOURCES = ["all", "suite", "runner"] as const;
 /**
  * 归因筛选的「未归因」伪值（与服务端 `attributionFilterSql` 同款）：分类 code 以小写
@@ -523,7 +523,7 @@ export function SuiteReportDetail({ projectId, report, t, publicView, shareToken
           <div><dt>{t("suites.name")}</dt><dd>{report.suiteName}</dd></div>
           <div><dt>{t("flows.environment")}</dt><dd>{report.environmentName ?? t("endpoints.noEnvironment")}</dd></div>
           <div><dt>{t("suiteReports.variables")}</dt><dd className="mono">{overrides || <span className="muted">{t("suiteReports.variablesNone")}</span>}</dd></div>
-          <div><dt>{t("suiteReports.trigger")}</dt><dd>{triggerLabel(t, report.triggerSource, report.triggerRefName, report.triggeredByEmail)}</dd></div>
+          <div><dt>{t("suiteReports.trigger")}</dt><dd>{triggerLabel(t, report.triggerSource, report.triggerRefName, report.triggeredByEmail, report.triggerSourceUrl)}</dd></div>
           <div><dt>{t("environments.runnerLabel")}</dt><dd className="mono">{report.runnerLabel}</dd></div>
           <div><dt>{t("suiteReports.startedAt")}</dt><dd className="mono">{new Date(report.startedAt ?? report.createdAt).toLocaleString()}</dd></div>
           <div><dt>{t("suiteReports.finishedAt")}</dt><dd className="mono">{report.finishedAt ? new Date(report.finishedAt).toLocaleString() : "—"}</dd></div>

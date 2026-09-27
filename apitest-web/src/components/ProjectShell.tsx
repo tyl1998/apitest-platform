@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Bell, Bot, CalendarCheck, ChevronDown, ChevronRight, Database, FileClock, FolderGit2, Globe, History, Layers, ListChecks, Lock, Mail, MessageSquare, Plug, ScrollText, TrendingUp, Users, Workflow, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Bell, Bot, CalendarCheck, ChevronDown, ChevronRight, Database, FileClock, FolderGit2, Globe, History, Layers, ListChecks, Lock, Mail, MessageSquare, Plug, ScrollText, TrendingUp, Users, Webhook, Workflow, type LucideIcon } from "lucide-react";
 import { api, type AccessRequest, type ProjectIdentity, type ProjectRole } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
 import { useRecordLastPage } from "../hooks/useRecordLastPage";
@@ -11,7 +11,7 @@ import { useProjectStore } from "../stores/projectStore";
 import { useIsWideViewport, useSidebarCollapsed } from "../stores/sidebarStore";
 import { IconNavButton, SidebarToggle } from "./SidebarControls";
 
-const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "mcp", "repo", "spec-cases", "test-plans", "reports", "suite-reports", "trends", "alerts", "members", "audit"] as const;
+const PAGES = ["endpoints", "flows", "suites", "environments", "data-sources", "mocks", "webhooks", "mcp", "repo", "spec-cases", "test-plans", "reports", "suite-reports", "trends", "alerts", "members", "audit"] as const;
 export type ProjectPage = typeof PAGES[number];
 
 /**
@@ -34,6 +34,7 @@ const NAV_ICONS: Record<ProjectPage, LucideIcon> = {
   environments: Globe,
   "data-sources": Database,
   mocks: MessageSquare,
+  webhooks: Webhook,
   mcp: Bot,
   repo: FolderGit2,
   "spec-cases": ListChecks,
@@ -152,7 +153,7 @@ export function ProjectShell() {
     { group: "flows", label: t("nav.orchestration"), items: [["flows", t("nav.flows")], ["suites", t("nav.suites")], ["repo", t("nav.repoMode")]], defaultOpen: true },
     /* 测试资源（2026-09-09 重组）：环境/数据源/Mock 从「接口资产」拆出——它们
        服务所有测试形态，不独属接口模式。 */
-    { group: "environments", label: t("nav.testResources"), items: [["environments", t("nav.environments")], ["data-sources", t("nav.dataSources")], ["mocks", "Mock"]], defaultOpen: true },
+    { group: "environments", label: t("nav.testResources"), items: [["environments", t("nav.environments")], ["data-sources", t("nav.dataSources")], ["mocks", "Mock"], ["webhooks", t("nav.webhooks")]], defaultOpen: true },
     { group: "reports", label: t("nav.common"), items: [["reports", t("nav.reports")], ["suite-reports", t("nav.suiteReports")], ["trends", t("nav.trends")]], defaultOpen: true },
     /* 项目配置：默认收起。MCP / 告警 / 成员是配置完就不再来的页面。助手无项目页
        （P9-4 修订：默认开启、无项目闸门），对话入口在右下角常驻抽屉。
