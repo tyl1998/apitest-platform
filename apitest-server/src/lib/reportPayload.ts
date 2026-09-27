@@ -29,7 +29,7 @@ export async function loadSuiteReport(projectId: string, executionId: string) {
   const result = await pool.query(
     /* P11 边界 11：报告详情也要答「谁触发的」——触发人在父索引上，join users 取 email
        快照（`ei` 已在本查询里，加一条 users join 即可；本查询的列都带前缀）。 */
-    `SELECT se.*, ${derivedColumns()}, ei.trigger_source, ei.trigger_ref_id, ei.trigger_ref_name,
+    `SELECT se.*, ${derivedColumns()}, ei.trigger_source, ei.trigger_ref_id, ei.trigger_ref_name, ei.trigger_source_url,
             triggerer.email AS triggered_by_email
        FROM suite_executions se JOIN execution_index ei ON ei.id = se.execution_index_id
        LEFT JOIN users triggerer ON triggerer.id = ei.triggered_by
@@ -69,6 +69,7 @@ export async function loadSuiteReport(projectId: string, executionId: string) {
     triggerSource: String(row.trigger_source ?? "manual"),
     triggerRefId: row.trigger_ref_id ? String(row.trigger_ref_id) : null,
     triggerRefName: row.trigger_ref_name ? String(row.trigger_ref_name) : null,
+    triggerSourceUrl: row.trigger_source_url ? String(row.trigger_source_url) : null,
     /* P11 边界 11：null = 定时 / Webhook / 非人 CI（前端显示「系统」）。 */
     triggeredByEmail: row.triggered_by_email ? String(row.triggered_by_email) : null,
     variableOverrides: (row.variable_overrides ?? {}) as Record<string, string>,

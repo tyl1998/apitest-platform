@@ -175,6 +175,7 @@ export const AUDIT_ACTIONS = {
   webhookTriggerCreate: "webhook_trigger.create",
   webhookTriggerUpdate: "webhook_trigger.update",
   webhookTriggerDelete: "webhook_trigger.delete",
+  webhookTriggerReadSecret: "webhook_trigger.read_secret",
   notificationChannelCreate: "notification_channel.create",
   notificationChannelUpdate: "notification_channel.update",
   notificationChannelDelete: "notification_channel.delete",

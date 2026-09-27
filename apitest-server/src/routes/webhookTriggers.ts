@@ -33,18 +33,31 @@ import { WEBHOOK_TARGET_TYPES, mapWebhookTrigger, type WebhookTargetType } from 
 const SIGNATURE_WINDOW_SECONDS = 300;
 const NONCE_TTL_SECONDS = SIGNATURE_WINDOW_SECONDS * 2;
 
+/** 前端基地址（报告跳转链接用）：优先 `WEB_ORIGIN` 环境变量，缺省本地 dev 的 5173。 */
+function webOrigin(): string {
+  return (process.env.WEB_ORIGIN ?? "http://localhost:5173").replace(/\/+$/, "");
+}
+
 /** 目标类型 → 那张表（代码常量三选一，不是输入拼接；见 validateTarget）。 */
 const TARGET_TABLES: Record<WebhookTargetType, string> = { flow: "flows", suite: "test_suites", ci_task: "ci_tasks" };
 
 /** 带目标名的一行（目标被删后 LEFT JOIN 得 NULL，仍读得通）。 */
 /* P11 归属列（边界 7/9）：`LEFT JOIN users` 带出 email 快照。常量被列表与详情共用；
    基表已显式 `w.*`，加 join 不会污染投影。 */
-const SELECT_TRIGGER = `SELECT w.*, COALESCE(f.name, ts.name, ct.name) AS target_name, creator.email AS created_by_email, updater.email AS updated_by_email FROM webhook_triggers w
+const SELECT_TRIGGER = `SELECT w.*, COALESCE(f.name, ts.name, ct.name) AS target_name, creator.email AS created_by_email, updater.email AS updated_by_email,
+  COALESCE(se.status, pr.status, fe.status) AS last_run_status,
+  CASE WHEN w.last_run_id IS NOT NULL THEN COALESCE(
+    se.status, pr.status, fe.status
+  ) END AS last_run_status_resolved
+FROM webhook_triggers w
   LEFT JOIN flows f ON w.target_type = 'flow' AND f.id = w.target_id
   LEFT JOIN test_suites ts ON w.target_type = 'suite' AND ts.id = w.target_id
   LEFT JOIN ci_tasks ct ON w.target_type = 'ci_task' AND ct.id = w.target_id
   LEFT JOIN users creator ON creator.id = w.created_by
-  LEFT JOIN users updater ON updater.id = w.updated_by`;
+  LEFT JOIN users updater ON updater.id = w.updated_by
+  LEFT JOIN suite_executions se ON w.target_type = 'suite' AND se.id = w.last_run_id
+  LEFT JOIN pipeline_runs pr ON w.target_type = 'ci_task' AND pr.id = w.last_run_id
+  LEFT JOIN flow_executions fe ON w.target_type = 'flow' AND fe.id = w.last_run_id`;
 
 type TriggerBody = {
   name?: string;
@@ -79,6 +92,8 @@ function scalarOverrides(body: unknown): Record<string, string> {
   const overrides: Record<string, string> = {};
   for (const [key, value] of Object.entries(body)) {
     if (!VARIABLE_NAME_PATTERN.test(key)) continue;
+    /* `_trigger_url` 是保留键（触发来源链接，见触发分支），不当作变量注入。 */
+    if (key === "_trigger_url") continue;
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") overrides[key] = String(value);
   }
   return overrides;
@@ -204,6 +219,25 @@ export async function webhookTriggerRoutes(app: FastifyInstance) {
     return success({ id: result.rows[0].id, secret });
   });
 
+  /** 读取密钥明文（2026-09-26 验收需求）：列表行「复制 curl」需要真实密钥才能拼出可直接
+      运行的脚本。密钥对项目内可写成员本就可得（轮换/更新都在这一层），读一次明文不扩大
+      爆炸半径；审计记一次字段名。 */
+  app.get<{ Params: { id: string; triggerId: string } }>("/api/v1/projects/:id/webhook-triggers/:triggerId/secret", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply, true); if (!context) return;
+    if (!isUuid(request.params.triggerId)) return fail(reply, 404, 2001, "webhook trigger not found");
+    const result = await pool.query("SELECT secret_encrypted FROM webhook_triggers WHERE id = $1 AND project_id = $2", [request.params.triggerId, context.project.id]);
+    if (!result.rowCount) return fail(reply, 404, 2001, "webhook trigger not found");
+    let secret: string;
+    try { secret = decryptSecret(result.rows[0].secret_encrypted as Buffer); }
+    catch { return fail(reply, 500, 5001, "webhook secret could not be decrypted"); }
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.webhookTriggerReadSecret, targetType: "webhook_trigger", targetId: request.params.triggerId,
+      projectId: context.project.id, userId: context.user.id,
+      detail: { fields: ["secret"] }, ip: request.ip,
+    });
+    return success({ id: request.params.triggerId, secret });
+  });
+
   /**
    * 公开触发路由（无鉴权，HMAC 准入）。
    *
@@ -260,15 +294,25 @@ export async function webhookTriggerRoutes(app: FastifyInstance) {
 
       const projectId = String(row.project_id);
       const environmentId = row.environment_id ? String(row.environment_id) : undefined;
-      const trigger = { source: "webhook" as const, refId: String(row.id), refName: String(row.name) };
+      /* 请求体里可带一个保留键 `_trigger_url`（第三方 CI 放本次任务地址），记为触发来源
+         链接；不校验协议，只取字符串。scalarOverrides 会跳过它（`_` 开头键名合法但语义
+         保留给来源，不进变量）。 */
+      let sourceUrl: string | undefined;
+      try {
+        const parsedBody = raw.length ? JSON.parse(raw.toString("utf8")) : undefined;
+        if (parsedBody && typeof parsedBody === "object" && !Array.isArray(parsedBody) && typeof (parsedBody as Record<string, unknown>)._trigger_url === "string") {
+          sourceUrl = (parsedBody as Record<string, unknown>)._trigger_url as string;
+        }
+      } catch { /* 非 JSON 请求体没有来源链接，准入靠签名不靠格式 */ }
+      const trigger = { source: "webhook" as const, refId: String(row.id), refName: String(row.name), sourceUrl };
       const targetType = String(row.target_type);
       try {
         /* 三分支**显式**分派（P4.5-12 改掉了原来的 `if flow / else suite` 落空写法）：
            那种写法下一个未知的 target_type 会被静默当套件跑一遍，而 CHECK 之外的值只可能
            来自有人手改过行——按未知拒绝才对。 */
         if (targetType === "flow") {
-          /* 请求体注入仅流程（边界 7）：套件与 CI 任务没有这个变量模型，body 整体忽略。
-             非 JSON 的请求体注入为空而不是报错——准入靠签名，不靠格式。 */
+          /* 请求体顶层标量注入为流程变量覆盖（边界 7）。非 JSON 的请求体注入为空而不是
+             报错——准入靠签名，不靠格式。 */
           let body: unknown;
           try { body = raw.length ? JSON.parse(raw.toString("utf8")) : undefined; } catch { body = undefined; }
           const flowExecutionId = await triggerFlowRun({
@@ -276,37 +320,141 @@ export async function webhookTriggerRoutes(app: FastifyInstance) {
             variableOverrides: scalarOverrides(body),
             trigger,
           });
-          return reply.code(202).send(success({ flowExecutionId }));
+          await pool.query("UPDATE webhook_triggers SET last_run_id = $2 WHERE id = $1", [row.id, flowExecutionId]);
+          return reply.code(202).send(success({
+            flowExecutionId,
+            reportUrl: `${webOrigin()}/projects/${projectId}/execution-index/${flowExecutionId}`,
+          }));
         }
         if (targetType === "suite") {
+          /* 请求体的顶层标量作为**变量覆盖**传入（2026-09-26 验收需求）：套件成员与
+             环境默认头都能引用变量（如 `defaultHeaders: {"X-Env-Tag": "{{lane}}"}`），
+             触发时注入 `{"lane":"A"}` 就能按请求体分流到对应环境。与流程同用
+             `scalarOverrides` 展开——只取顶层字符串/数字/布尔，嵌套对象与非法键跳过。 */
+          let body: unknown;
+          try { body = raw.length ? JSON.parse(raw.toString("utf8")) : undefined; } catch { body = undefined; }
           const suiteExecutionId = await triggerSuiteRun({
-            projectId, suiteId: String(row.target_id), environmentId, trigger,
+            projectId, suiteId: String(row.target_id), environmentId,
+            variables: scalarOverrides(body),
+            trigger,
           });
-          return reply.code(202).send(success({ suiteExecutionId }));
+          await pool.query("UPDATE webhook_triggers SET last_run_id = $2 WHERE id = $1", [row.id, suiteExecutionId]);
+          return reply.code(202).send(success({
+            suiteExecutionId,
+            reportUrl: `${webOrigin()}/projects/${projectId}/suite-reports/${suiteExecutionId}`,
+          }));
         }
         if (targetType === "ci_task") {
           /**
            * CI 任务目标（P4.5-12）。走 `triggerCiTaskRun`——无在线 Runner 的 2004、沙箱档
            * 可满足性、任务停用这些检查与手动触发共用一份（P3 边界 5）。
            *
-           * **不注入请求体、不带 `Idempotency-Key`**：
-           * - 请求体注入是流程独占（边界 7）。CI 任务确实有 `parameters` 这个同形的袋子，
-           *   但把外部 POST 的顶层标量灌进 Runner 的环境变量是另一件事——那些值会进
-           *   `env`、进日志（任务级 secret 已删，Runner 侧没有脱敏词表，见 8.11 的 B 类）。
-           *   要带参数就在任务的 `env` 里写死，或者用调度的变量覆盖。
-           * - 幂等键的来源只能是 nonce，而 nonce 已经在上面挡掉重放了；再加一层只是把同一
-           *   个不变量说第二遍，且 `IdempotentReplayError` 不被 `failTrigger` 认作失败，
-           *   落到下面的 catch 里会变成一个 500。
+           * **把请求体的顶层标量作为 `parameters` 透传（2026-09-26 验收需求）**：脚本想
+           * 区分目标环境（如 `X=A`）就靠它——`parameters` 会以环境变量形式出现在 Runner
+           * 的 shell 里（`lib/jobSpec.ts` 合并进 env），脚本读变量即可分流。只取顶层的
+           * 字符串/数字/布尔（与流程的 `scalarOverrides` 同一套展开），嵌套对象与非法键
+           * 直接跳过——一个字段不合规不该让整次触发失败。**不进 audit 明文**：parameters
+           * 只记键名（`triggerCiTaskRun` 落 `parameterKeys`），值可能含用户数据。
+           *
+           * 幂等键的来源只能是 nonce，而 nonce 已经在上面挡掉重放了；再加一层只是把同一
+           * 个不变量说第二遍，且 `IdempotentReplayError` 不被 `failTrigger` 认作失败，
+           * 落到下面的 catch 里会变成一个 500。
            */
+          let body: unknown;
+          try { body = raw.length ? JSON.parse(raw.toString("utf8")) : undefined; } catch { body = undefined; }
           const run = await triggerCiTaskRun({
             projectId, ciTaskId: String(row.target_id), trigger,
+            parameters: scalarOverrides(body),
           });
-          return reply.code(202).send(success({ pipelineRunId: run.id, runNumber: run.runNumber }));
+          await pool.query("UPDATE webhook_triggers SET last_run_id = $2 WHERE id = $1", [row.id, run.id]);
+          return reply.code(202).send(success({
+            pipelineRunId: run.id, runNumber: run.runNumber,
+            reportUrl: `${webOrigin()}/projects/${projectId}/pipeline-runs/${run.id}`,
+          }));
         }
         return fail(reply, 400, 1001, `unsupported webhook target type "${targetType}"`);
       } catch (error) {
         return failTrigger(reply, error, "webhook trigger failed");
       }
+    });
+
+    /**
+     * 运行状态查询（2026-09-26 验收需求）：外部 CI 触发后轮询等结果，走同一套 HMAC 签名
+     * （不需要另配 API key / JWT）。GET 无 body，签名原文是 `timestamp.nonce.`（末尾空）。
+     *
+     * 校验与 POST 触发完全同款：时间窗 ±300s + nonce 防重放 + HMAC-SHA256。runId 必须
+     * 属于这条 webhook 的目标（防跨触发器窥探）。
+     */
+    scope.get<{ Params: { publicId: string; runId: string } }>("/webhooks/:publicId/runs/:runId", async (request, reply) => {
+      const found = await pool.query("SELECT * FROM webhook_triggers WHERE public_id = $1", [request.params.publicId]);
+      if (!found.rowCount) return fail(reply, 404, 2001, "webhook trigger not found");
+      const row = found.rows[0];
+
+      const timestamp = request.headers["x-apitest-timestamp"];
+      const nonce = request.headers["x-apitest-nonce"];
+      const signature = request.headers["x-apitest-signature"];
+      if (typeof timestamp !== "string" || typeof nonce !== "string" || typeof signature !== "string") {
+        return fail(reply, 401, 1002, "X-Apitest-Timestamp, X-Apitest-Nonce and X-Apitest-Signature headers are required");
+      }
+      const seconds = Number(timestamp);
+      if (!Number.isFinite(seconds) || Math.abs(Date.now() / 1000 - seconds) > SIGNATURE_WINDOW_SECONDS) {
+        return fail(reply, 401, 1002, "signature timestamp is outside the allowed window");
+      }
+      /* GET 无 body：签名原文 = `timestamp.nonce.`（末尾点后为空串）。 */
+      let expected: string;
+      try {
+        expected = createHmac("sha256", decryptSecret(row.secret_encrypted as Buffer)).update(`${timestamp}.${nonce}.`).digest("hex");
+      } catch {
+        return fail(reply, 500, 5001, "webhook secret could not be decrypted");
+      }
+      if (!timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+        return fail(reply, 401, 1002, "signature mismatch");
+      }
+
+      /* 按目标类型查运行状态；runId 必须属于这条触发器的目标。 */
+      const runId = request.params.runId;
+      const targetType = String(row.target_type);
+      if (!isUuid(runId)) return fail(reply, 404, 2001, "run not found");
+
+      if (targetType === "suite") {
+        const r = await pool.query(
+          "SELECT status, total, success_count, failed_count, skipped_count FROM suite_executions WHERE id = $1 AND suite_id = $2",
+          [runId, String(row.target_id)],
+        );
+        if (!r.rowCount) return fail(reply, 404, 2001, "run not found");
+        const d = r.rows[0];
+        return reply.code(200).send(success({
+          status: String(d.status), total: Number(d.total),
+          successCount: Number(d.success_count), failedCount: Number(d.failed_count), skippedCount: Number(d.skipped_count),
+        }));
+      }
+      if (targetType === "ci_task") {
+        const r = await pool.query(
+          "SELECT status, case_total, passed_count, failed_count, skipped_count, run_number, error FROM pipeline_runs WHERE id = $1 AND ci_task_id = $2",
+          [runId, String(row.target_id)],
+        );
+        if (!r.rowCount) return fail(reply, 404, 2001, "run not found");
+        const d = r.rows[0];
+        return reply.code(200).send(success({
+          status: String(d.status), runNumber: Number(d.run_number),
+          total: Number(d.case_total), successCount: Number(d.passed_count),
+          failedCount: Number(d.failed_count), skippedCount: Number(d.skipped_count),
+          error: d.error ? String(d.error) : undefined,
+        }));
+      }
+      if (targetType === "flow") {
+        const r = await pool.query(
+          "SELECT status, total, success_count, failed_count, skipped_count FROM flow_executions WHERE id = $1 AND flow_id = $2",
+          [runId, String(row.target_id)],
+        );
+        if (!r.rowCount) return fail(reply, 404, 2001, "run not found");
+        const d = r.rows[0];
+        return reply.code(200).send(success({
+          status: String(d.status), total: Number(d.total),
+          successCount: Number(d.success_count), failedCount: Number(d.failed_count), skippedCount: Number(d.skipped_count),
+        }));
+      }
+      return fail(reply, 400, 1001, `unsupported webhook target type "${targetType}"`);
     });
   });
 }

@@ -348,7 +348,7 @@ export async function ciTaskRoutes(app: FastifyInstance) {
    * （双击两条 run）。键在**成功触发后**才占用：校验失败（400/404/2004）不占键，
    * 同一键换个参数重试是允许的。
    */
-  app.post<{ Params: { id: string; taskId: string }; Body: { parameters?: Record<string, string>; caseFilter?: { caseKeys?: unknown } | null } }>(
+  app.post<{ Params: { id: string; taskId: string }; Body: { parameters?: Record<string, string>; caseFilter?: { caseKeys?: unknown } | null; sourceUrl?: string } }>(
     "/api/v1/projects/:id/ci-tasks/:taskId/trigger",
     async (request, reply) => {
       const context = await requireProjectAccess(request, reply, true); if (!context) return;
@@ -363,6 +363,7 @@ export async function ciTaskRoutes(app: FastifyInstance) {
           triggeredBy: context.user.id,
           idempotencyKey: normalizedKey.key,
           requestIp: request.ip,
+          trigger: { source: "manual", userId: context.user.id, sourceUrl: request.body?.sourceUrl },
         });
         return reply.code(202).send(success(run));
       } catch (error) {

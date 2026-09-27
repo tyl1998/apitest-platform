@@ -271,6 +271,7 @@ export async function reportRoutes(app: FastifyInstance) {
       triggerSource: String(row.trigger_source ?? "manual"),
       triggerRefId: row.trigger_ref_id ? String(row.trigger_ref_id) : null,
       triggerRefName: row.trigger_ref_name ? String(row.trigger_ref_name) : null,
+      triggerSourceUrl: row.trigger_source_url ? String(row.trigger_source_url) : null,
       /* P11 边界 11：触发人（null = 定时 / Webhook / 非人 CI，前端显示「系统」）。 */
       triggeredByEmail: row.triggered_by_email ? String(row.triggered_by_email) : null,
       variableOverrides: (row.variable_overrides ?? {}) as Record<string, string>,
@@ -464,9 +465,9 @@ function reportUnionSql(): string {
            CASE WHEN se.started_at IS NOT NULL
              THEN EXTRACT(EPOCH FROM (se.started_at - se.created_at)) * 1000 END AS queue_ms,
            ${PASS_RATE_SQL("se")} AS pass_rate,
-           ei.trigger_source, ei.trigger_ref_id, ei.trigger_ref_name,
+           ei.trigger_source, ei.trigger_ref_id, ei.trigger_ref_name, ei.trigger_source_url,
            /* P11 边界 11：两个分支列序必须一致（UNION ALL 按位置对齐），所以这一列在
-              两支里都紧跟 trigger_* 三列。 */
+              两支里都紧跟 trigger_* 四列（含 trigger_source_url）。 */
            su_triggerer.email AS triggered_by_email,
            se.created_at, se.started_at, se.finished_at
       FROM suite_executions se
@@ -486,7 +487,7 @@ function reportUnionSql(): string {
            CASE WHEN pr.started_at IS NOT NULL
              THEN EXTRACT(EPOCH FROM (pr.started_at - pr.created_at)) * 1000 END AS queue_ms,
            ${PASS_RATE_SQL("pr", "passed_count")} AS pass_rate,
-           pr.trigger_source, pr.trigger_ref_id, pr.trigger_ref_name,
+           pr.trigger_source, pr.trigger_ref_id, pr.trigger_ref_name, pr.trigger_source_url,
            pr_triggerer.email AS triggered_by_email,
            pr.created_at, pr.started_at, pr.finished_at
       FROM pipeline_runs pr

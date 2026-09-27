@@ -328,7 +328,7 @@ export async function suiteRoutes(app: FastifyInstance) {
    * 校验与入队在 `lib/trigger.ts`（P3-3 边界 5）：手动、调度（P3-4）、Webhook（P3-6）
    * 共用同一条路径，错误码与 P2 完全一致（验收 6.7.1）。
    */
-  app.post<{ Params: { id: string; suiteId: string }; Body: { execution?: Partial<SuiteExecutionConfig>; variables?: Record<string, string> } }>("/api/v1/projects/:id/test-suites/:suiteId/execute", async (request, reply) => {
+  app.post<{ Params: { id: string; suiteId: string }; Body: { execution?: Partial<SuiteExecutionConfig>; variables?: Record<string, string>; sourceUrl?: string } }>("/api/v1/projects/:id/test-suites/:suiteId/execute", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
     try {
       const suiteExecutionId = await triggerSuiteRun({
@@ -336,8 +336,9 @@ export async function suiteRoutes(app: FastifyInstance) {
         suiteId: request.params.suiteId,
         execution: request.body?.execution,
         variables: request.body?.variables,
-        /* 手动触发带上人（P9-1 收件口径）：站内通知据此定点发。 */
-        trigger: { source: "manual", userId: context.user.id },
+        /* 手动触发带上人（P9-1 收件口径）：站内通知据此定点发。sourceUrl 供外部 CI 传
+           触发来源链接（与 webhook `_trigger_url` 同一语义），记入触发列。 */
+        trigger: { source: "manual", userId: context.user.id, sourceUrl: request.body?.sourceUrl },
       });
       /* 202: an accepted run, not a verdict. The client follows it on the stream. */
       const queued = await pool.query("SELECT * FROM suite_executions WHERE id = $1", [suiteExecutionId]);

@@ -346,9 +346,9 @@ export async function insertFlowRun(input: EnqueueFlowInput): Promise<{ flowExec
   try {
     await client.query("BEGIN");
     await client.query(
-      `INSERT INTO execution_index (id, project_id, kind, target_id, target_name, detail_id, status, total, trigger_source, trigger_ref_id, trigger_ref_name, triggered_by)
-       VALUES ($1, $2, 'flow', $3, $4, $5, 'queued', $6, $7, $8, $9, $10)`,
-      [executionIndexId, input.projectId, input.flowId ?? null, input.flowName, flowExecutionId, plan.length, trigger.source, trigger.refId ?? null, trigger.refName ?? null, trigger.userId ?? null],
+      `INSERT INTO execution_index (id, project_id, kind, target_id, target_name, detail_id, status, total, trigger_source, trigger_ref_id, trigger_ref_name, trigger_source_url, triggered_by)
+       VALUES ($1, $2, 'flow', $3, $4, $5, 'queued', $6, $7, $8, $9, $10, $11)`,
+      [executionIndexId, input.projectId, input.flowId ?? null, input.flowName, flowExecutionId, plan.length, trigger.source, trigger.refId ?? null, trigger.refName ?? null, trigger.sourceUrl ?? null, trigger.userId ?? null],
     );
     await client.query(
       `INSERT INTO flow_executions (
@@ -548,9 +548,9 @@ export async function enqueueSuiteRun(input: EnqueueSuiteInput): Promise<string>
        冻一份 trigger，让 worker 里的流程成员能继承触发者（performSuiteRun）。 */
     const reportName = await suiteReportName(client, input.suiteId, input.suiteName);
     await client.query(
-      `INSERT INTO execution_index (id, project_id, kind, target_id, target_name, detail_id, status, total, trigger_source, trigger_ref_id, trigger_ref_name, triggered_by)
-       VALUES ($1, $2, 'suite', $3, $4, $5, 'queued', $6, $7, $8, $9, $10)`,
-      [executionIndexId, input.projectId, input.suiteId ?? null, input.suiteName, suiteExecutionId, total, trigger.source, trigger.refId ?? null, trigger.refName ?? null, trigger.userId ?? null],
+      `INSERT INTO execution_index (id, project_id, kind, target_id, target_name, detail_id, status, total, trigger_source, trigger_ref_id, trigger_ref_name, trigger_source_url, triggered_by)
+       VALUES ($1, $2, 'suite', $3, $4, $5, 'queued', $6, $7, $8, $9, $10, $11)`,
+      [executionIndexId, input.projectId, input.suiteId ?? null, input.suiteName, suiteExecutionId, total, trigger.source, trigger.refId ?? null, trigger.refName ?? null, trigger.sourceUrl ?? null, trigger.userId ?? null],
     );
     await client.query(
       `INSERT INTO suite_executions (

@@ -27,8 +27,13 @@ export const BUILTIN_VARIABLES = ["$timestamp", "$date", "$uuid", "$randomInt", 
 /**
  * A fresh regex per call. A shared `/g` instance carries `lastIndex` between
  * `replace` and `matchAll`, which makes resolution depend on what ran before.
+ *
+ * 语法（2026-09-26 验收需求，变量默认值）：`{{name:默认}}`——变量未定义时用默认值替代，
+ * 而不是把 `{{name}}` 原样留在请求里（调试接口/流程不带变量时，`defaultHeaders` 里引用
+ * 未注入的变量会发出一串字面 `{{name}}`）。`:默认` 里不能含 `}`，也不能含 `(`（`(args)`
+ * 是内置变量 `{{$name(args)}}` 的独立语法）。未给出 `:默认` 时行为不变（未定义 = 原样保留）。
  */
-const reference = () => /{{\s*(\$?[\w.-]+)\s*(?:\(([^)]*)\))?\s*}}/g;
+const reference = () => /{{\s*(\$?[\w.-]+)\s*(?:\(([^)]*)\))?\s*(?::([^}]*))?\s*}}/g;
 
 /**
  * Date tokens, longest-first so `YYYY` is not consumed as two `YY` and `SSS`
@@ -128,9 +133,11 @@ function asText(value: unknown): string {
  * job (`resolveDeep`).
  */
 export function resolveVariables(value: string, variables: VariableBag) {
-  return value.replace(reference(), (whole, key: string, rawArgs: string | undefined) => {
+  return value.replace(reference(), (whole, key: string, rawArgs: string | undefined, rawDefault: string | undefined) => {
     const resolved = key.startsWith("$") ? builtin(key, rawArgs) : variables[key];
-    return resolved === undefined ? whole : asText(resolved);
+    if (resolved !== undefined) return asText(resolved);
+    /* `{{var:默认}}`：未定义时落到默认值（含显式空默认）；没写默认才原样保留。 */
+    return rawDefault !== undefined ? rawDefault : whole;
   });
 }
 
@@ -142,17 +149,17 @@ export function resolveVariables(value: string, variables: VariableBag) {
  * `{ "note": "got {{items}}" }` can only mean text. Anchoring the pattern is
  * what lets one bag serve both without a second syntax to learn.
  */
-const SOLE_REFERENCE = /^\s*{{\s*(\$?[\w.-]+)\s*(?:\(([^)]*)\))?\s*}}\s*$/;
+const SOLE_REFERENCE = /^\s*{{\s*(\$?[\w.-]+)\s*(?:\(([^)]*)\))?\s*(?::([^}]*))?\s*}}\s*$/;
 
 export function resolveDeep(value: unknown, variables: VariableBag): unknown {
   if (typeof value === "string") {
     const sole = SOLE_REFERENCE.exec(value);
     if (sole) {
-      const [, key, rawArgs] = sole;
+      const [, key, rawArgs, rawDefault] = sole;
       const resolved = key.startsWith("$") ? builtin(key, rawArgs) : variables[key];
-      /* Unknown names stay verbatim, exactly as in `resolveVariables`, so a
-         typo remains visible in the snapshot instead of becoming null. */
-      if (resolved === undefined) return value;
+      /* `{{var:默认}}`：整字段未定义时落到默认值；没写默认则原样保留，让拼写错误在
+         快照里可见而不变成 null。 */
+      if (resolved === undefined) return rawDefault !== undefined ? rawDefault : value;
       /**
        * A captured value arrives as text when it came from a `{{var}}` chain, so
        * a JSON-looking string is re-parsed to restore its shape. Guarded by the

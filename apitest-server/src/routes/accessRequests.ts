@@ -10,15 +10,18 @@ import { isUuid } from "../lib/uuid.js";
 import { mapAccessRequest, type Role } from "../models/types.js";
 
 /**
- * 权限申请审批流（P14-2，计划 20，14.7 转正）。
+ * 权限申请审批流（P14-2，计划 20，14.7 转正；P16-1 扩展成员提权）。
  *
  * 自助申请的闭环，五条 REST：
- * - `POST /projects/:id/access-requests`——非成员提交申请（**不走 requireProjectAccess**：
- *   那会把非成员 403 挡在门外，而申请正是非成员要做的事，用 currentUser 守卫）。
+ * - `POST /projects/:id/access-requests`——提交申请（**不走 requireProjectAccess**：
+ *   那会把非成员 403 挡在门外，而申请正是非成员/低角色要做的事，用 currentUser 守卫）。
+ *   两种形态：**加入申请**（非成员，suggestedRole 可空）与**提权申请**（P16-1，成员
+ *   申请严格更高的角色，必带目标角色，from_role 落申请时的角色快照）。
  * - `GET  /projects/:id/access-requests`——project_admin 看本项目的申请（待审 + 历史）。
  * - `GET  /access-requests/me`——本人跨项目的申请与状态（全局层，无项目前缀）。
  * - `POST /access-requests/:id/approve`——**批准 = 既有成员 upsert**（边界 3：不写第二条
- *   加成员路径，granted_by 落审批人、member.upsert 审计照旧，member_change 通知照旧）。
+ *   加成员路径，granted_by 落审批人、member.upsert 审计照旧，member_change 通知照旧；
+ *   提权批准即改角色，通知文案区分「新成员加入」与「角色变更」）。
  * - `POST /access-requests/:id/reject`——拒绝只记状态（handled_by/at）。
  *
  * 两条无项目前缀的审批端点（approve / reject）不能挂 requireProjectAdmin（它按
@@ -37,6 +40,10 @@ function parseRole(input: unknown): Role | undefined {
   return ROLES.includes(input as Role) ? input as Role : undefined;
 }
 
+/** 角色序（P16-1）：提权申请只认「严格高于当前角色」。system_admin 是运行时最高级，
+ *  任何目标都不比它高，提权口子对它天然关闭（无需单独特判）。 */
+const ROLE_RANK: Record<Role | "system_admin", number> = { viewer: 1, developer: 2, project_admin: 3, system_admin: 4 };
+
 /** 管理面读取投影：申请人身份 + 审批人邮箱快照（审批列表第一眼要看清谁在申请、谁批的）。 */
 const ADMIN_SELECT = `
   SELECT ar.*, u.email AS applicant_email, u.name AS applicant_name, h.email AS handled_by_email, p.name AS project_name
@@ -47,9 +54,13 @@ const ADMIN_SELECT = `
 
 export async function accessRequestRoutes(app: FastifyInstance) {
   /**
-   * 提交申请（非成员）。用 currentUser 守卫——非成员正是要用这个口子，requireProjectAccess
-   * 会先把他 403 掉。已是成员（含 system_admin，它是全项目成员）回 409：你已经进得来，
-   * 没有可申请的。带建议角色可选（suggestedRole，边界 7）；给了但非法值回 400。
+   * 提交申请。两种形态（P16-1 放开提权后）：
+   * - **加入申请**（非成员）：suggestedRole 可空（边界 7），from_role 落 NULL。
+   * - **提权申请**（成员，P16-1）：必带目标角色且必须**严格高于**当前角色；未给目标 /
+   *   同级 / 降级一律 409（你已经有这权限，没有可申请的）。入口在成员页自己那行。
+   * 用 currentUser 守卫——申请正是非成员/低角色要做的事，requireProjectAccess 会先把
+   * 他 403 掉。system_admin（全项目成员、角色最高）两种形态都进不来：无目标走「已可
+   * 进入」409，带目标走「已拥有」409（ROLE_RANK 自然挡掉，无需单独特判）。
    * 单 pending（边界 6）：已有 pending 回 409；partial unique index 是并发兜底
    * （唯一冲突 23505 也归 409）。
    */
@@ -68,8 +79,15 @@ export async function accessRequestRoutes(app: FastifyInstance) {
       suggestedRole = parsed;
     }
 
-    /* 已是成员不必申请（system_admin 短路成 member，也一并挡住）。 */
-    if (await myRoleInProject(user, projectId)) return fail(reply, 409, 2003, "you already have access to this project");
+    /* 已是成员只有「提权」可申请（P16-1）：未给目标 → 仍是「你已经进得来」409；
+       目标不高于当前角色 → 「你已经有这权限」409。 */
+    const currentRole = await myRoleInProject(user, projectId);
+    if (currentRole) {
+      if (!suggestedRole) return fail(reply, 409, 2003, "you already have access to this project");
+      if (ROLE_RANK[suggestedRole] <= ROLE_RANK[currentRole]) {
+        return fail(reply, 409, 2003, `you already have ${currentRole} or higher`);
+      }
+    }
 
     /* 单 pending 预检（边界 6）：给个干净的 409，不靠唯一冲突的报错文案。 */
     const pending = await pool.query(
@@ -78,11 +96,14 @@ export async function accessRequestRoutes(app: FastifyInstance) {
     );
     if (pending.rowCount) return fail(reply, 409, 2003, "you already have a pending request for this project");
 
+    /* from_role 快照（迁移 075）：提权申请记下申请提交时的角色——历史读当时事实，
+       不读时 JOIN 当前角色（批准后角色已变，JOIN 会说谎）。 */
+    const fromRole: Role | null = currentRole === "system_admin" ? null : (currentRole as Role | null);
     const id = randomUUID();
     try {
       await pool.query(
-        "INSERT INTO access_requests (id, project_id, user_id, suggested_role) VALUES ($1, $2, $3, $4)",
-        [id, projectId, user.id, suggestedRole],
+        "INSERT INTO access_requests (id, project_id, user_id, suggested_role, from_role) VALUES ($1, $2, $3, $4, $5)",
+        [id, projectId, user.id, suggestedRole, fromRole],
       );
     } catch (error) {
       /* partial unique index 的并发兜底：预检与插入之间另一个请求抢先落了 pending。 */
@@ -91,13 +112,16 @@ export async function accessRequestRoutes(app: FastifyInstance) {
     }
 
     /* 定向投递（边界 5）：新申请只通知能放人进来的 project_admin，深链到成员页的申请
-       tab。申请人是非成员，不会是该项目管理员，excludeUserId 从简不传。 */
+       tab。提权申请文案带「从什么角色提」，与加入申请一眼区分。申请人是非成员/低角色，
+       不会是该项目管理员，excludeUserId 从简不传。 */
     deliverInboxToRole({
       projectId,
       role: "project_admin",
       kind: "access_request",
-      title: `新的权限申请：${user.email}`,
-      body: suggestedRole ? `申请角色：${suggestedRole}` : "未指定建议角色",
+      title: fromRole ? `新的提权申请：${user.email}` : `新的权限申请：${user.email}`,
+      body: fromRole
+        ? `${fromRole} → ${suggestedRole}`
+        : (suggestedRole ? `申请角色：${suggestedRole}` : "未指定建议角色"),
       link: `/projects/${projectId}/members?tab=requests`,
     });
 
@@ -143,8 +167,10 @@ export async function accessRequestRoutes(app: FastifyInstance) {
   /**
    * 批准（project_admin）。**= 既有成员 upsert**（边界 3）：最终角色可在批准时改定
    * （body.role），未给则用申请的 suggestedRole；两者都无则 400（管理员必须定个角色）。
-   * granted_by 落审批人，member.upsert 审计与 member_change 通知与人工添加完全一致
-   * （验收门槛 4）。带条件 UPDATE 原子消费 pending（并发下第二个批准者拿不到行 → 409）。
+   * 加入申请与提权申请（P16-1）同一条路径——提权批准即改角色（ON CONFLICT DO UPDATE），
+   * granted_by 落审批人，member.upsert 审计照旧（验收门槛 4），member_change 通知文案
+   * 按 from_role 区分「新成员加入」与「角色变更」。带条件 UPDATE 原子消费 pending
+   * （并发下第二个批准者拿不到行 → 409）。
    */
   app.post<{ Params: { id: string }; Body: { role?: string } }>("/api/v1/access-requests/:id/approve", async (request, reply) => {
     const user = await currentUser(request, reply); if (!user) return;
@@ -190,12 +216,16 @@ export async function accessRequestRoutes(app: FastifyInstance) {
       detail: { email, to: grantRole, via: "access_request" },
       ip: request.ip,
     });
-    /* member_change 全体扇出（新成员加入，与人工添加同一通知源）。 */
+    /* member_change 全体扇出（与人工添加同一通知源）：提权批准是「角色变更」不是
+       「新成员加入」，文案按申请时的 from_role 快照区分。 */
+    const fromRole = row.from_role ? String(row.from_role) : null;
     deliverInbox({
       projectId,
       kind: "member_change",
-      title: `新成员加入：${email}`,
-      body: `由 ${user.email} 通过权限申请批准`,
+      title: fromRole ? `成员角色变更：${email}` : `新成员加入：${email}`,
+      body: fromRole
+        ? `由 ${user.email} 通过提权申请批准：${fromRole} → ${grantRole}`
+        : `由 ${user.email} 通过权限申请批准`,
       link: `/projects/${projectId}/members`,
     });
     /* 结果通知申请人（access_request 源）：深链到本人的「我的申请」tab。 */

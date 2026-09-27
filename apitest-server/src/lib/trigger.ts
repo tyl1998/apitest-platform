@@ -14,7 +14,7 @@ import {
   mapCiTask, mapFlow, mapPipelineRun, mapTestSuite,
   RUNNER_OFFLINE_AFTER_SECONDS,
   SUITE_DEFAULT_CONCURRENCY, SUITE_MAX_CONCURRENCY, SUITE_MAX_MEMBERS,
-  type Flow, type FlowEdge, type FlowNode, type PipelineRun, type SuiteExecutionConfig, type SuiteMemberRef, type SuiteMemberSnapshot, type SuiteSelection, type TestSuite, type TriggerContext,
+  type Flow, type FlowEdge, type FlowNode, type PipelineRun, type SuiteExecutionConfig, type SuiteMemberRef, type SuiteMemberSnapshot, type SuiteSelection, type TestSuite, type TriggerContext, type CiTask,
 } from "../models/types.js";
 
 /**
@@ -510,6 +510,61 @@ export class IdempotentReplayError extends Error {
 }
 
 /**
+ * 无在线 Runner 时记一条失败 run（2026-09-26 验收需求）。
+ *
+ * 触发本身成功（验签通过、被接受），只是执行起不来。记两行：
+ * - `pipeline_runs`：`status='failed'` + `error`，任务历史里能看到这次「触发但没跑起来」。
+ * - `execution_index`（kind='runner'）：执行记录页按 runner 筛也能看到这一类。
+ *
+ * 与正常 run 同款取 run_number（`MAX+1`）；幂等键不在此占（请求没产出可重试的 run，
+ * 失败不是「同一意图重复跑」——撞 2004 后起完 Runner 再点是同一次意图，见 P4.5-8）。
+ */
+async function recordCiTaskNoRunnerFailure(task: CiTask, input: CiTaskTriggerInput, message: string): Promise<void> {
+  const trigger = input.trigger ?? { source: "manual" as const };
+  const runId = randomUUID();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    /* 锁任务行算 run_number（与正常 run 同款）：并发触发不会都数到同一个 n。 */
+    await client.query("SELECT 1 FROM ci_tasks WHERE id = $1 AND project_id = $2 FOR UPDATE", [task.id, input.projectId]);
+    const numbered = await client.query("SELECT COALESCE(MAX(run_number), 0) + 1 AS next FROM pipeline_runs WHERE ci_task_id = $1", [task.id]);
+    const runNumber = Number(numbered.rows[0].next);
+    await client.query(
+      `INSERT INTO pipeline_runs (
+         id, project_id, ci_task_id, run_number, status, stage, runner_label, sandbox_mode,
+         trigger_source, trigger_ref_id, trigger_ref_name, trigger_source_url, triggered_by, git_ref, case_filter, parameters, error, finished_at
+       ) VALUES ($1, $2, $3, $4, 'failed', 'done', $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15, now())`,
+      [
+        runId, input.projectId, task.id, runNumber,
+        task.runnerLabel, task.sandboxMode,
+        trigger.source, trigger.refId ?? null, trigger.refName ?? null, trigger.sourceUrl ?? null, input.triggeredBy ?? null,
+        task.gitRef, null, JSON.stringify(input.parameters ?? {}), message,
+      ],
+    );
+    const indexId = randomUUID();
+    await client.query(
+      `INSERT INTO execution_index (
+         id, project_id, kind, target_id, target_name, detail_id, status,
+         total, success_count, failed_count, skipped_count, canceled_count,
+         trigger_source, trigger_ref_id, trigger_ref_name, trigger_source_url, started_at, finished_at
+       ) VALUES ($1, $2, 'runner', $3, $4, $5, 'failed', 0, 0, 0, 0, 0, $6, $7, $8, $9, now(), now())`,
+      [
+        indexId, input.projectId, task.id,
+        `${task.name} #${runNumber}`, runId,
+        trigger.source, trigger.refId ?? null, trigger.refName ?? null, trigger.sourceUrl ?? null,
+      ],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    /* 失败记录本身就是尽力而为：写不进（库异常等）不应再盖过原始 NoCiRunnerError 的语义，
+       静默吞掉，让上层照常返回 503/2004。 */
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * 触发一次 CI 任务：校验 → 检查 Runner 可用性 → 写下一行 `queued` 的 pipeline run。
  *
  * 校验全部在**写行之前**（照 P2-8 边界 4 的教训）：分区没有 Runner、沙箱档没人支持、
@@ -574,8 +629,15 @@ export async function triggerCiTaskRun(input: CiTaskTriggerInput): Promise<Pipel
   );
   const online = Number(available.rows[0].online);
   const matching = Number(available.rows[0].matching);
-  if (!online) throw new NoCiRunnerError(task.runnerLabel, `no online runner serves partition "${task.runnerLabel}"; register one with this label first`);
+  if (!online) {
+    /* 无在线 Runner 也记一条失败 run（2026-09-26 验收需求）：触发本身成功了（HMAC 验签
+       通过、被接受），只是执行因为缺 Runner 起不来。不记的话任务历史里「这次触发」什么
+       都看不见，外部 CI 回调成功却无从核对。 */
+    await recordCiTaskNoRunnerFailure(task, input, `no online runner serves partition "${task.runnerLabel}"; register one with this label first`);
+    throw new NoCiRunnerError(task.runnerLabel, `no online runner serves partition "${task.runnerLabel}"; register one with this label first`);
+  }
   if (!matching) {
+    await recordCiTaskNoRunnerFailure(task, input, `online runners on partition "${task.runnerLabel}" do not support sandbox mode "${task.sandboxMode}"; register a runner with that capability or switch the task to ${task.sandboxMode === "container" ? "process" : "container"} mode`);
     throw new NoCiRunnerError(task.runnerLabel, `online runners on partition "${task.runnerLabel}" do not support sandbox mode "${task.sandboxMode}"; register a runner with that capability or switch the task to ${task.sandboxMode === "container" ? "process" : "container"} mode`);
   }
 
@@ -616,13 +678,13 @@ export async function triggerCiTaskRun(input: CiTaskTriggerInput): Promise<Pipel
     const inserted = await client.query(
       `INSERT INTO pipeline_runs (
          id, project_id, ci_task_id, run_number, status, stage, runner_label, sandbox_mode,
-         trigger_source, trigger_ref_id, trigger_ref_name, triggered_by, git_ref, case_filter, parameters
-       ) VALUES ($1, $2, $3, $4, 'queued', 'pending', $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb)
+         trigger_source, trigger_ref_id, trigger_ref_name, trigger_source_url, triggered_by, git_ref, case_filter, parameters
+       ) VALUES ($1, $2, $3, $4, 'queued', 'pending', $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb)
        RETURNING *`,
       [
         runId, input.projectId, task.id, Number(numbered.rows[0].next),
         task.runnerLabel, task.sandboxMode,
-        trigger.source, trigger.refId ?? null, trigger.refName ?? null, input.triggeredBy ?? null,
+        trigger.source, trigger.refId ?? null, trigger.refName ?? null, trigger.sourceUrl ?? null, input.triggeredBy ?? null,
         task.gitRef, caseFilter ? JSON.stringify(caseFilter) : null, JSON.stringify(input.parameters ?? {}),
       ],
     );

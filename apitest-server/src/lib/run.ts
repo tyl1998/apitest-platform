@@ -51,6 +51,18 @@ function hasHeader(headers: Record<string, string>, name: string) {
   return Object.keys(headers).some((key) => key.toLowerCase() === name.toLowerCase());
 }
 
+/** 全角标点 → 半角（U+FF01–U+FF5E → U+0021–U+007E）。输入法会打出 `：`（U+FF1A）这种
+    全角冒号，写进请求头后 `fetch` 的 header 只收 Latin-1 字节，会抛「Cannot convert
+    argument to a ByteString」的运行时错误。这里在发请求前兜底归一，存库里的脏值也不崩。 */
+function toAsciiPunct(value: string): string {
+  let out = "";
+  for (const ch of value) {
+    const code = ch.codePointAt(0)!;
+    out += code >= 0xFF01 && code <= 0xFF5E ? String.fromCharCode(0x21 + (code - 0xFF01)) : ch;
+  }
+  return out;
+}
+
 /**
  * Applies path params, query params and auth on top of the stored URL.
  *
@@ -110,7 +122,9 @@ export function buildRequest(request: RequestSnapshot, variables: Record<string,
     }
   }
 
-  return { url: url.toString(), query: Object.fromEntries(url.searchParams.entries()), headers, body, bodySnapshot };
+  /* 兜底：所有头值归一成全角→半角，杜绝全角标点（中文冒号等）把 fetch 打崩。 */
+  const safeHeaders = Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, toAsciiPunct(value)]));
+  return { url: url.toString(), query: Object.fromEntries(url.searchParams.entries()), headers: safeHeaders, body, bodySnapshot };
 }
 
 export type LoadedEnvironment = {

@@ -814,6 +814,9 @@ export type TriggerContext = {
   source: TriggerSource;
   refId?: string;
   refName?: string;
+  /** 外部触发来源链接（2026-09-26）：webhook 请求体里的 `_trigger_url`，第三方 CI 可
+      放本次任务的地址，报告/执行记录里点开直达触发它的那次构建。 */
+  sourceUrl?: string;
   /** 触发人（手动 / MCP execute / CI 手动触发）；非人触发缺省。 */
   userId?: string;
 };
@@ -850,6 +853,8 @@ export type ExecutionIndex = {
   triggerRefId?: string;
   /** 触发者名字的快照（边界 13）：调度被删后，报告仍要说得出「谁让它跑的」。 */
   triggerRefName?: string;
+  /** 外部触发来源链接（webhook 请求体 `_trigger_url`），第三方 CI 的任务地址。 */
+  triggerSourceUrl?: string;
   status: "queued" | "running" | "success" | "failed" | "canceled";
   total: number;
   successCount: number;
@@ -1269,6 +1274,10 @@ export type WebhookTrigger = {
   hasSecret: boolean;
   enabled: boolean;
   lastTriggeredAt?: string;
+  /** 最近一次触发的运行 id（列表 LEFT JOIN 出状态，点击跳转到运行详情）。 */
+  lastRunId?: string;
+  /** 最近一次运行的状态（从 suite_executions / pipeline_runs / flow_executions 实时读）。 */
+  lastRunStatus?: string;
   createdAt: string;
   updatedAt: string;
 } & Ownership;
@@ -1590,9 +1599,12 @@ export function mapMemberCandidate(row: Record<string, unknown>): MemberCandidat
 }
 
 /**
- * 权限申请（P14-2，计划 20）：非成员自助申请加入项目的一条记录。
+ * 权限申请（P14-2，计划 20）：非成员自助申请加入项目、或成员申请提权（P16-1）的一条记录。
  *
- * `suggestedRole` 可空（NULL = 未带建议，边界 7）——最终授予的角色以批准动作为准。
+ * `suggestedRole` 可空（NULL = 未带建议，边界 7）——最终授予的角色以批准动作为准；
+ * 提权申请必带目标角色（严格高于 `fromRole`）。`fromRole` 是**申请提交时**的角色快照
+ * （迁移 075）：NULL = 加入申请（非成员），有值 = 提权申请——不读时 JOIN 当前角色，
+ * 批准后角色已变，JOIN 会把「viewer → developer」显示成「developer → developer」。
  * 读时按视角 JOIN 出快照：`GET /access-requests/me`（本人跨项目）带 `projectName`
  * 让人认得出「向哪个项目申请」；`GET /projects/:id/access-requests`（管理员）带
  * 申请人 `applicantEmail` / `applicantName` 与审批人 `handledByEmail`——审批列表
@@ -1605,6 +1617,7 @@ export type AccessRequest = {
   userId: string;
   applicantEmail: string | null;
   applicantName: string | null;
+  fromRole: Role | null;
   suggestedRole: Role | null;
   status: "pending" | "approved" | "rejected";
   handledBy: string | null;
@@ -1622,6 +1635,7 @@ export function mapAccessRequest(row: Record<string, unknown>): AccessRequest {
     userId: String(row.user_id),
     applicantEmail: row.applicant_email ? String(row.applicant_email) : null,
     applicantName: row.applicant_name ? String(row.applicant_name) : null,
+    fromRole: row.from_role ? String(row.from_role) as Role : null,
     suggestedRole: row.suggested_role ? String(row.suggested_role) as Role : null,
     status: String(row.status) as AccessRequest["status"],
     handledBy: row.handled_by ? String(row.handled_by) : null,
@@ -2004,6 +2018,7 @@ export function mapExecutionIndex(row: Record<string, unknown>): ExecutionIndex 
     triggerSource: (row.trigger_source ?? "manual") as TriggerSource,
     triggerRefId: row.trigger_ref_id ? String(row.trigger_ref_id) : undefined,
     triggerRefName: row.trigger_ref_name ? String(row.trigger_ref_name) : undefined,
+    triggerSourceUrl: row.trigger_source_url ? String(row.trigger_source_url) : undefined,
     status: String(row.status) as ExecutionIndex["status"], total: Number(row.total), successCount: Number(row.success_count),
     failedCount: Number(row.failed_count), skippedCount: Number(row.skipped_count), canceledCount: Number(row.canceled_count),
     createdAt: new Date(String(row.created_at)).toISOString(),
@@ -2154,6 +2169,8 @@ export function mapWebhookTrigger(row: Record<string, unknown>): WebhookTrigger 
     hasSecret: Boolean(row.secret_encrypted),
     enabled: Boolean(row.enabled),
     lastTriggeredAt: row.last_triggered_at ? new Date(String(row.last_triggered_at)).toISOString() : undefined,
+    lastRunId: row.last_run_id ? String(row.last_run_id) : undefined,
+    lastRunStatus: row.last_run_status ? String(row.last_run_status) : undefined,
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
     createdByEmail: ownershipEmail(row.created_by_email),
@@ -2804,6 +2821,8 @@ export type PipelineRun = {
   triggerSource: TriggerSource;
   triggerRefId?: string;
   triggerRefName?: string;
+  /** 外部触发来源链接（webhook 请求体 `_trigger_url`），第三方 CI 的任务地址。 */
+  triggerSourceUrl?: string;
   triggeredBy?: string;
   gitRef: string;
   /** clone 完了由 Runner 回填。 */
@@ -2845,6 +2864,7 @@ export function mapPipelineRun(row: Record<string, unknown>): PipelineRun {
     triggerSource: String(row.trigger_source ?? "manual") as TriggerSource,
     triggerRefId: row.trigger_ref_id ? String(row.trigger_ref_id) : undefined,
     triggerRefName: row.trigger_ref_name ? String(row.trigger_ref_name) : undefined,
+    triggerSourceUrl: row.trigger_source_url ? String(row.trigger_source_url) : undefined,
     triggeredBy: row.triggered_by ? String(row.triggered_by) : undefined,
     gitRef: String(row.git_ref), commitSha: String(row.commit_sha ?? ""),
     caseFilter: filter
