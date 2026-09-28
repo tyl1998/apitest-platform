@@ -3150,6 +3150,9 @@ export const api = {
   /** 吊销是软删（留 `revokedAt`）：硬删会级联掉 runners，「那台机器拿哪张 token 注册的」就答不出来了。 */
   revokeRunnerToken: (tokenId: string) =>
     client.delete(`/system/runner-tokens/${tokenId}`).then(data<RunnerToken>),
+  /** 重新取回明文（2026-09-28 可重复复制）：可逆加密存储，丢了不必吊销重发。已吊销的取不到。 */
+  runnerTokenSecret: (tokenId: string) =>
+    client.get(`/system/runner-tokens/${tokenId}/secret`).then(data<{ id: string; token: string }>),
 
   /* ── P6-2：用户管理 + 审计日志 ── */
   /** 用户列表（keyword 在 SQL 过滤，覆盖全量；total 是全量命中数）。 */
@@ -3833,6 +3836,9 @@ export const api = {
     client.post(`/projects/${projectId}/ingest-tokens`, { name }).then(data<IngestToken & { token: string }>),
   revokeIngestToken: (projectId: string, tokenId: string) =>
     client.delete(`/projects/${projectId}/ingest-tokens/${tokenId}`).then(data<IngestToken>),
+  /** 重新取回明文（2026-09-28 可重复复制）：可逆加密存储，丢了不必吊销重发。已吊销的取不到。 */
+  ingestTokenSecret: (projectId: string, tokenId: string) =>
+    client.get(`/projects/${projectId}/ingest-tokens/${tokenId}/secret`).then(data<{ id: string; token: string }>),
 
   /* ── P4.5-14: 项目级 Git 拉取凭据（取代仓库行上的 clone 凭据） ─────────────── */
 
@@ -4028,6 +4034,9 @@ export const api = {
   /** 吊销（软删留行）但**即时生效**：鉴权候选集走部分索引，被吊销行下一次调用就不在。 */
   revokeMeMcpToken: (tokenId: string) =>
     client.delete(`/me/mcp/tokens/${encodeURIComponent(tokenId)}`).then(data<McpToken>),
+  /** 重新取回明文（2026-09-28 可重复复制）：可逆加密存储，丢了不必吊销重发。已吊销的取不到。 */
+  meMcpTokenSecret: (tokenId: string) =>
+    client.get(`/me/mcp/tokens/${encodeURIComponent(tokenId)}/secret`).then(data<{ id: string; token: string }>),
   /** 绑定 / 改绑定（同 (token, project) 重复提交 = 改 scope；服务端要求 ≤ 实时角色上限）。 */
   bindMeMcpToken: (tokenId: string, input: { projectId: string; scope: McpScope[] }) =>
     client.post(`/me/mcp/tokens/${encodeURIComponent(tokenId)}/bindings`, input).then(data<McpBinding>),
@@ -4071,6 +4080,8 @@ export const api = {
   /* ── 用户级 API 密钥（个人中心）：一人一把 AES 密钥，调用平台开放 API 的凭据本身。 */
   /** 本人密钥元数据；未设置回 null。永不含明文。 */
   apiKey: () => client.get("/me/api-key").then(data<ApiKey | null>),
+  /** 重新取回明文（2026-09-28 可重复复制）：密钥本就是可逆加密存的，丢了不必轮换。未设置回 404。 */
+  apiKeySecret: () => client.get("/me/api-key/secret").then(data<{ keyId: string; key: string }>),
   /** 生成 / 轮换：返回一次性明文密钥（`key`）。轮换即让旧密钥加密的所有调用地址失效。 */
   issueApiKey: () => client.post("/me/api-key").then(data<ApiKeyIssued>),
   /** 吊销：删本人密钥，已发出的所有调用地址立即失效。 */

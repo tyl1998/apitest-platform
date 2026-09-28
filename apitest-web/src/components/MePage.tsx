@@ -2,11 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { Link2, Plus, Trash2 } from "lucide-react";
+import { Copy, Link2, Plus, Trash2 } from "lucide-react";
 import { api, type AccessRequest, type ApiKey, type AssistantUserAgent, type AssistantUserProvider, type BindableProject, type McpBindingRequest, type McpScope, type McpToken, type MeProfile } from "../api";
 import { Empty, Status } from "../ui";
 import { apiMessage } from "./DataSourceList";
-import { CopyButton } from "./CopyButton";
+import { CopyButton, writeClipboard } from "./CopyButton";
 import { IconButton } from "./IconButton";
 import { mcpEndpointUrl } from "./McpPage";
 
@@ -303,6 +303,15 @@ function ApiKeyPanel() {
     });
   }
 
+  async function copyKey() {
+    try {
+      /* 密钥本就是可逆加密存的，明文可重新取回：拉一次直接复制，丢了不必轮换。 */
+      const { key } = await api.apiKeySecret();
+      await writeClipboard(key);
+      message.success(t("apiKey.copied"));
+    } catch (error) { message.error(apiMessage(error) ?? t("apiKey.copyFailed")); }
+  }
+
   return <>
     <section className="panel">
       <div className="panel-head">
@@ -321,6 +330,7 @@ function ApiKeyPanel() {
                   <div><dt>{t("apiKey.rotatedAt")}</dt><dd className="mono muted">{new Date(key.rotatedAt).toLocaleString()}</dd></div>
                 </dl>
                 <div className="row-actions" style={{ marginTop: "var(--s3)" }}>
+                  <button className="btn btn-with-icon" disabled={busy} onClick={() => void copyKey()}><Copy size={14} />{t("apiKey.copy")}</button>
                   <button className="btn" disabled={busy} onClick={rotate}>{t("apiKey.rotate")}</button>
                   <button className="btn danger" disabled={busy} onClick={revoke}>{t("apiKey.revoke")}</button>
                 </div>
@@ -424,6 +434,15 @@ function McpTokensTab() {
     setIssued(undefined);
     setIssueName("");
     void load();
+  }
+
+  async function copySecret(token: McpToken) {
+    try {
+      /* Token 现改为可逆加密存储，明文可重新取回：拉一次直接复制，丢了不必吊销重发。 */
+      const { token: secret } = await api.meMcpTokenSecret(token.id);
+      await writeClipboard(secret);
+      message.success(t("mcp.tokenCopied"));
+    } catch (error) { message.error(apiMessage(error) ?? t("mcp.tokenCopyFailed")); }
   }
 
   function openBind(token: McpToken, projectId?: string, scope?: McpScope[]) {
@@ -536,6 +555,7 @@ function McpTokensTab() {
                   <button className="btn btn-with-icon" onClick={() => openBind(token)}>
                     <Link2 size={14} />{t("me.bindProject")}
                   </button>
+                  <IconButton icon={<Copy size={14} />} label={t("mcp.tokenCopy")} onClick={() => void copySecret(token)} />
                   <IconButton icon={<Trash2 size={14} />} label={t("mcp.tokenRevoke")} tone="danger" onClick={() => revoke(token)} />
                 </div></td>
               </tr>)}</tbody>

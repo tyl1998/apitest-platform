@@ -4,6 +4,38 @@ import { Check, Copy } from "lucide-react";
 import { IconButton } from "./IconButton";
 
 /**
+ * Writes text to the clipboard, falling back to an off-screen textarea when the
+ * async Clipboard API is unavailable.
+ *
+ * `navigator.clipboard` only exists in a secure context. This app is reached
+ * over plain http on LAN addresses, where it is absent entirely — calling
+ * `navigator.clipboard.writeText` there throws, and a caller that only awaited
+ * the promise would leave the clipboard holding its previous contents (a paste
+ * then shows a stale value that looks like the copy produced the wrong text).
+ * So the textarea path is load-bearing rather than legacy support, and every
+ * copy — button or programmatic — must go through here.
+ */
+export async function writeClipboard(text: string): Promise<void> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    /* fall through to the textarea path below */
+  }
+  const scratch = document.createElement("textarea");
+  scratch.value = text;
+  /* Off-screen rather than hidden: `display:none` cannot be selected. */
+  scratch.style.cssText = "position:fixed;left:-9999px;top:0";
+  document.body.appendChild(scratch);
+  scratch.select();
+  try {
+    if (!document.execCommand("copy")) throw new Error("copy command was rejected");
+  } finally { scratch.remove(); }
+}
+
+/**
  * Copies a block of machine data — a response body, a header map, a request
  * snapshot.
  *
@@ -32,23 +64,7 @@ export function CopyButton({ value, label }: {
   useEffect(() => () => clearTimeout(timer.current), []);
 
   async function copy() {
-    const text = value();
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      /**
-       * `navigator.clipboard` only exists in a secure context. This app is
-       * reached over plain http on LAN addresses, where it is absent entirely,
-       * so the textarea path is load-bearing rather than legacy support.
-       */
-      const scratch = document.createElement("textarea");
-      scratch.value = text;
-      /* Off-screen rather than hidden: `display:none` cannot be selected. */
-      scratch.style.cssText = "position:fixed;left:-9999px;top:0";
-      document.body.appendChild(scratch);
-      scratch.select();
-      try { document.execCommand("copy"); } finally { scratch.remove(); }
-    }
+    await writeClipboard(value());
     setCopied(true);
     clearTimeout(timer.current);
     timer.current = setTimeout(() => setCopied(false), 1400);

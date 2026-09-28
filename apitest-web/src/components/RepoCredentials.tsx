@@ -2,12 +2,12 @@ import { useEffect, useState } from "react";
 import { Modal, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
-import { Plus, Trash2 } from "lucide-react";
+import { Copy, Plus, Trash2 } from "lucide-react";
 import { api, type GitCredential, type IngestToken, type Repository } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, PageToolbar } from "../ui";
-import { CopyButton } from "./CopyButton";
+import { CopyButton, writeClipboard } from "./CopyButton";
 import { GitCredentialModal } from "./GitCredentialModal";
 import { IconButton } from "./IconButton";
 import { RepoPageHead, RepoTabs } from "./RepoShell";
@@ -82,6 +82,16 @@ export function RepoCredentials() {
       await load();
     } catch { message.error(t("repoCases.tokenCreateFailed")); }
     finally { setCreating(false); }
+  }
+
+  async function copySecret(token: IngestToken) {
+    if (!projectId) return;
+    try {
+      /* 凭据现改为可逆加密存储，明文可重新取回：拉一次明文直接复制，丢了不必吊销重发。 */
+      const { token: secret } = await api.ingestTokenSecret(projectId, token.id);
+      await writeClipboard(secret);
+      message.success(t("repoCases.tokenCopied"));
+    } catch { message.error(t("repoCases.tokenCopyFailed")); }
   }
 
   function revokeToken(token: IngestToken) {
@@ -244,6 +254,7 @@ export function RepoCredentials() {
               </td>
               <td className="col-actions" onClick={(event) => event.stopPropagation()}>
                 {!token.revokedAt && canWrite && <div className="row-actions">
+                  <IconButton icon={<Copy size={14} />} label={t("repoCases.tokenCopy")} onClick={() => void copySecret(token)} />
                   <IconButton icon={<Trash2 size={14} />} label={t("repoCases.tokenRevoke")} tone="danger" onClick={() => revokeToken(token)} />
                 </div>}
               </td>

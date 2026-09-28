@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
-import { Plus, Trash2 } from "lucide-react";
+import { Copy, Plus, Trash2 } from "lucide-react";
 import { api, type Runner, type RunnerFleet, type RunnerToken } from "../api";
 import { Empty, Readout, Status } from "../ui";
-import { CopyButton } from "./CopyButton";
+import { CopyButton, writeClipboard } from "./CopyButton";
 import { IconButton } from "./IconButton";
 
 /**
@@ -99,6 +99,15 @@ export function RunnerPoolPanel() {
       await load();
     } catch { message.error(t("runners.tokenCreateFailed")); }
     finally { setCreating(false); }
+  }
+
+  async function copySecret(token: RunnerToken) {
+    try {
+      /* Token 现改为可逆加密存储，明文可重新取回：拉一次明文直接复制，丢了不必吊销重发。 */
+      const { token: secret } = await api.runnerTokenSecret(token.id);
+      await writeClipboard(secret);
+      message.success(t("runners.tokenCopied"));
+    } catch { message.error(t("runners.tokenCopyFailed")); }
   }
 
   function revokeToken(token: RunnerToken) {
@@ -255,6 +264,7 @@ export function RunnerPoolPanel() {
           </td>
           <td className="col-actions">
             {!token.revokedAt && <div className="row-actions">
+              <IconButton icon={<Copy size={14} />} label={t("runners.tokenCopy")} onClick={() => void copySecret(token)} />
               <IconButton icon={<Trash2 size={14} />} label={t("runners.tokenRevoke")} tone="danger" onClick={() => revokeToken(token)} />
             </div>}
           </td>
