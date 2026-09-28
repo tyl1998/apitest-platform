@@ -1,13 +1,17 @@
-import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { pool } from "../db.js";
+import { decryptSecret, encryptSecret } from "./crypto.js";
 import { mapRepository, type Repository } from "../models/types.js";
 
 /**
  * 上报 Token 的签发与校验（P4-2，计划 7.0 边界 17）。
  *
- * **哈希而不加密**：Webhook 密钥必须拿到明文才能验签（P3 边界 6），所以那里是
- * AES-GCM；上报 Token 只需比对，因此走 scrypt——库被读走时，前者能被解密、后者不能。
- * 格式与 `users.password_hash` 同款 `salt:digest`（`lib/auth.ts`），不新造第二种。
+ * **AES-GCM 可逆加密而不是哈希**（2026-09-28 起）：产品要求「凭据能重新复制」——丢了
+ * 不必吊销重发，管理页按前缀取回明文即可。这要求明文能被服务端解回来，所以从 scrypt
+ * 哈希改成 AES-256-GCM（与 Webhook 密钥、`api_access_keys` 同款 `secret_encrypted`）。
+ * 代价说清：库被读走时，加密的凭据能被主密钥解开——用可重复复制换掉了「库泄露也拿不到
+ * 明文」这条属性。校验因此变成「解出库里明文、常量时间比对」而不再是 scrypt 比对；
+ * 前缀部分索引仍在，热路径仍只在候选行上做一次廉价解密。
  */
 
 /** 明文形状：`apitrack_<random>`。前缀与包名/环境变量一致（计划 7.4）。 */
@@ -24,24 +28,24 @@ const TOKEN_BYTES = 24;
  */
 const IDENTIFIER_LENGTH = 8;
 
-export type IssuedToken = { plaintext: string; hash: string; prefix: string };
+export type IssuedToken = { plaintext: string; secretEncrypted: Buffer; prefix: string };
 
 export function issueIngestToken(): IssuedToken {
   const secret = randomBytes(TOKEN_BYTES).toString("base64url");
   const plaintext = `${TOKEN_PREFIX}${secret}`;
-  const salt = randomUUID();
   return {
     plaintext,
-    hash: `${salt}:${scryptSync(plaintext, salt, 64).toString("hex")}`,
+    secretEncrypted: encryptSecret(plaintext),
     prefix: `${TOKEN_PREFIX}${secret.slice(0, IDENTIFIER_LENGTH)}`,
   };
 }
 
-function matches(plaintext: string, stored: string) {
-  const [salt, digest] = stored.split(":");
-  if (!salt || !digest) return false;
-  const actual = scryptSync(plaintext, salt, 64);
-  const expected = Buffer.from(digest, "hex");
+/** 库里存的是主密钥加密的明文；比对 = 解回明文再常量时间比。解不开一律当作凭据不成立。 */
+function matches(plaintext: string, stored: Buffer): boolean {
+  let decrypted: string;
+  try { decrypted = decryptSecret(stored); } catch { return false; }
+  const actual = Buffer.from(plaintext);
+  const expected = Buffer.from(decrypted);
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
@@ -58,8 +62,8 @@ export type IngestIdentity = { tokenId: string; projectId: string };
 /**
  * 校验一个上报 Token，返回它所属项目。
  *
- * 候选行按前缀取（迁移 034 的部分索引），而不是全表逐行 scrypt——scrypt 是刻意昂贵的，
- * 全表比对会让上报接口的耗时随 Token 总数线性增长，而上报是 CI 每次跑完都要打的热路径。
+ * 候选行按前缀取（迁移 034 的部分索引），而不是全表逐行解密——加密比对虽比 scrypt 便宜，
+ * 全表解密仍会让上报接口的耗时随 Token 总数线性增长，而上报是 CI 每次跑完都要打的热路径。
  * 吊销行被索引条件排除，所以吊销即时生效（验收 7）。
  */
 export async function authenticateIngest(header: string | undefined): Promise<IngestIdentity | undefined> {
@@ -67,11 +71,11 @@ export async function authenticateIngest(header: string | undefined): Promise<In
   if (!token) return undefined;
   const prefix = token.slice(0, TOKEN_PREFIX.length + IDENTIFIER_LENGTH);
   const candidates = await pool.query(
-    "SELECT id, project_id, token_hash FROM ingest_tokens WHERE token_prefix = $1 AND revoked_at IS NULL",
+    "SELECT id, project_id, secret_encrypted FROM ingest_tokens WHERE token_prefix = $1 AND revoked_at IS NULL",
     [prefix],
   );
   for (const row of candidates.rows) {
-    if (!matches(token, String(row.token_hash))) continue;
+    if (!matches(token, row.secret_encrypted as Buffer)) continue;
     /* 「这个 Token 还活着吗」在接入排查里是第一个要看的事实，所以每次上报都记一笔。
        不进上报事务：它是审计而不是数据，上报回滚了也不该让「用过」这件事消失。 */
     void pool.query("UPDATE ingest_tokens SET last_used_at = now() WHERE id = $1", [row.id]).catch(() => {});

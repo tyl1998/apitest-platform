@@ -3,11 +3,12 @@ import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
 import { currentUser } from "../lib/auth.js";
 import { AUDIT_ACTIONS, writeAuditLogAsync } from "../lib/audit.js";
+import { decryptSecret } from "../lib/crypto.js";
 import { issueMcpToken } from "../lib/mcpAuth.js";
 import { MCP_SCOPES, effectiveMcpScopes, grantedMcpScopesByProject, mergeMcpScopes } from "../lib/mcpScopes.js";
 import { myRoleInProject } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
-import { apiKeyMeta, issueApiKey, revokeApiKey } from "../lib/apiKeys.js";
+import { apiKeyMeta, issueApiKey, loadApiKeyPlaintext, revokeApiKey } from "../lib/apiKeys.js";
 import { isUuid } from "../lib/uuid.js";
 import { mapMcpBinding, mapMcpToken, type McpScope, type MyRole } from "../models/types.js";
 
@@ -110,7 +111,7 @@ export async function meRoutes(app: FastifyInstance) {
 
   /**
    * 本人 token 列表（含绑定数组）。**已吊销的不列**：吊销即从管理视图消失，行留在表里
-   * 供审计对账（与 ingest / runner token 列表同一口径）。token_hash 永不进投影。
+   * 供审计对账（与 ingest / runner token 列表同一口径）。secret_encrypted 永不进投影。
    */
   app.get("/api/v1/me/mcp/tokens", async (request, reply) => {
     const user = await currentUser(request, reply);
@@ -132,9 +133,9 @@ export async function meRoutes(app: FastifyInstance) {
   });
 
   /**
-   * 签发本人 token。**明文只在这一次响应里出现**（与 ingest / runner Token 同一条纪律），
-   * 丢了只能吊销重发。request 里没有 scope：scope 在绑定上（边界 2），签发本身不产生任何
-   * 项目级权限——新 token 一行绑定都没有，任何 tools/call 都会因未绑定被拒。
+   * 签发本人 token。明文在本次响应里出现；此后也能重新复制（下面的 `/secret`），丢了不必
+   * 吊销重发。request 里没有 scope：scope 在绑定上（边界 2），签发本身不产生任何项目级
+   * 权限——新 token 一行绑定都没有，任何 tools/call 都会因未绑定被拒。
    */
   app.post<{ Body: { name?: string } }>("/api/v1/me/mcp/tokens", async (request, reply) => {
     const user = await currentUser(request, reply);
@@ -143,10 +144,10 @@ export async function meRoutes(app: FastifyInstance) {
     if (!name) return fail(reply, 400, 1001, "token name is required");
     const issued = issueMcpToken();
     const result = await pool.query(
-      `INSERT INTO mcp_tokens (id, name, token_hash, token_prefix, created_by)
+      `INSERT INTO mcp_tokens (id, name, secret_encrypted, token_prefix, created_by)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id, name, token_prefix, created_by, last_used_at, revoked_at, created_at`,
-      [randomUUID(), name, issued.hash, issued.prefix, user.id],
+      [randomUUID(), name, issued.secretEncrypted, issued.prefix, user.id],
     );
     /* 审计（边界 8）：create 改挂用户级，`project_id` 为空——token 归人，不归项目；
        detail 只带 name（明文与哈希都不进）。 */
@@ -188,6 +189,31 @@ export async function meRoutes(app: FastifyInstance) {
       ip: request.ip,
     });
     return success(mapMcpToken(result.rows[0]));
+  });
+
+  /**
+   * 重新取回本人 token 明文（2026-09-28 可重复复制）：token 现改为可逆加密存储，凭据可
+   * 重新复制而不必吊销重发。只回本人签发（`created_by = user.id`）且未吊销的行——吊销的
+   * 死 token 取回明文没有意义。签发/吊销本就是 owner 自己的权限，读一次明文不扩大爆炸半径；
+   * 审计记一次（明文不进 detail）。
+   */
+  app.get<{ Params: { tokenId: string } }>("/api/v1/me/mcp/tokens/:tokenId/secret", async (request, reply) => {
+    const user = await currentUser(request, reply);
+    if (!user) return;
+    if (!isUuid(request.params.tokenId)) return fail(reply, 404, 2001, "mcp token not found");
+    const result = await pool.query(
+      "SELECT secret_encrypted FROM mcp_tokens WHERE id = $1 AND created_by = $2 AND revoked_at IS NULL",
+      [request.params.tokenId, user.id],
+    );
+    if (!result.rowCount) return fail(reply, 404, 2001, "mcp token not found");
+    let token: string;
+    try { token = decryptSecret(result.rows[0].secret_encrypted as Buffer); }
+    catch { return fail(reply, 500, 5001, "mcp token could not be decrypted"); }
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.mcpTokenReadSecret, targetType: "mcp_token", targetId: request.params.tokenId,
+      projectId: null, userId: user.id, ip: request.ip,
+    });
+    return success({ id: request.params.tokenId, token });
   });
 
   /**
@@ -275,13 +301,32 @@ export async function meRoutes(app: FastifyInstance) {
    * 解得开即视为持钥人签发）。因此明文泄露 = 以本人身份、按本人权限调用这些 API 的能力
    * 泄露，处置是轮换（覆盖）或吊销（删行，已发出的地址立即失效）。
    *
-   * 读接口只回元数据（key_id / 时间戳），**永不回明文**；明文只在生成 / 轮换的那一次响应里
-   * 出现一次（同 ingest / runner / MCP token 的一次性纪律）。
+   * 元数据读接口（key_id / 时间戳）不回明文；明文由本人专属的 `/api-key/secret` 按需重新
+   * 取回（2026-09-28 可重复复制——密钥本就是可逆加密存的）。生成 / 轮换的响应里也带一次明文。
    */
   app.get("/api/v1/me/api-key", async (request, reply) => {
     const user = await currentUser(request, reply);
     if (!user) return;
     return success(await apiKeyMeta(user.id));
+  });
+
+  /**
+   * 重新取回本人密钥明文（2026-09-28 可重复复制）：密钥本就是可逆加密存储的，凭据可
+   * 重新复制而不必轮换。是本人自己的钥匙，读一次明文不扩大爆炸半径（轮换/吊销权同样只在
+   * 本人手上）；审计记一次（明文不进 detail）。没设置回 404。
+   */
+  app.get("/api/v1/me/api-key/secret", async (request, reply) => {
+    const user = await currentUser(request, reply);
+    if (!user) return;
+    let loaded: Awaited<ReturnType<typeof loadApiKeyPlaintext>>;
+    try { loaded = await loadApiKeyPlaintext(user.id); }
+    catch { return fail(reply, 500, 5001, "api key could not be decrypted"); }
+    if (!loaded) return fail(reply, 404, 2001, "api key not found");
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.apiKeyReadSecret, targetType: "api_key", targetId: user.id,
+      projectId: null, userId: user.id, detail: { keyId: loaded.keyId }, ip: request.ip,
+    });
+    return success({ keyId: loaded.keyId, key: loaded.key });
   });
 
   /** 生成 / 轮换：覆盖本人那一行，返回一次性明文密钥。轮换即让旧密钥加密的所有地址失效。 */

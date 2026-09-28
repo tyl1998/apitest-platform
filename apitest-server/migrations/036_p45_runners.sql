@@ -24,8 +24,9 @@
  * （对比 `ingest_tokens` 确实带 `project_id`——那是因为一份上报**必然**属于一个项目，
  * `/ingest` 从 token 反查 `project_id` 是它的核心机制；这里项目是从 job 来的。）
  *
- * **哈希而不加密**，格式与 `ingest_tokens.token_hash` / `users.password_hash` 同款
- * `salt:digest`（scrypt）：只需比对就不该可解密。明文只在创建时回一次。
+ * **AES-GCM 可逆加密存储**（2026-09-28 起，取代原 scrypt 哈希），格式与
+ * `ingest_tokens.secret_encrypted` / Webhook 密钥同款：产品要求凭据能重新复制，管理页
+ * 按前缀取回明文即可，丢了不必吊销重发。代价：库被读走时加密的凭据能被主密钥解开。
  *
  * `labels` 放在 token 上而**不只**放在 Runner 上，注册时校验子集关系（见下）。
  *
@@ -36,10 +37,10 @@ CREATE TABLE IF NOT EXISTS runner_tokens (
   id UUID PRIMARY KEY,
   /* 人给的名字，「办公内网 01」。用于面板辨认，不参与任何逻辑。 */
   name TEXT NOT NULL,
-  token_hash TEXT NOT NULL,
+  secret_encrypted BYTEA,         -- AES-256-GCM(明文 token)，可解回供重新复制
   /* 明文的 `apirunner_` + 随机段前 8 位。供列表辨认，也让鉴权按前缀取候选行而不是
-     全表 scrypt——scrypt 是刻意昂贵的，全表比对会让心跳这条热路径随 token 总数线性
-     变慢。它不足以反推 token，也不参与校验本身。 */
+     全表解密——全表比对会让心跳这条热路径随 token 总数线性变慢。它不足以反推 token，
+     也不参与校验本身。 */
   token_prefix TEXT NOT NULL,
   /* 这张 token 允许声明的分区（P2-8 的同一套 `runner_label` 命名空间）。 */
   labels TEXT[] NOT NULL DEFAULT ARRAY['default'],

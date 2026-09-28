@@ -73,3 +73,15 @@ export async function loadApiSecretByKeyId(keyId: string): Promise<{ userId: str
   const secret = Buffer.from(decryptSecret(result.rows[0].secret_encrypted as Buffer), "base64url");
   return { userId: String(result.rows[0].user_id), secret };
 }
+
+/**
+ * 本人密钥明文（重新复制用）：直接回库里存的那串明文，**与生成 / 轮换那一次响应里的 `key`
+ * 逐字一致**。刻意不走 `loadApiSecretForUser` 的 base64url 解码→再编码往返——那条路是给
+ * 加密调用内容用的（要的是 32 字节原始密钥），用在这里等于把展示串重新编码一遍，任何非
+ * 规范化差异都会让「复制到的」和「生成时看到的」对不上。没设置返回 undefined。
+ */
+export async function loadApiKeyPlaintext(userId: string): Promise<{ keyId: string; key: string } | undefined> {
+  const result = await pool.query("SELECT key_id, secret_encrypted FROM api_access_keys WHERE user_id = $1", [userId]);
+  if (!result.rowCount) return undefined;
+  return { keyId: String(result.rows[0].key_id), key: decryptSecret(result.rows[0].secret_encrypted as Buffer) };
+}

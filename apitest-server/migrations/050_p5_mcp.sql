@@ -13,10 +13,10 @@
 /*
  * MCP Token。项目级，`Authorization: Bearer apimcp_<random>`。
  *
- * **哈希存储，不加密**（边界 14，照搬 P4 边界 17 的推理）：只需比对就该哈希，scrypt +
- * `salt:digest` 格式与 `users.password_hash` / `ingest_tokens` / `runner_tokens` 一致。
- * 这是第三次照抄同一形状（ingestAuth / runnerAuth），不抽第四层公共封装——三份 40 行
- * 的具体实现比一层参数化抽象更好读。
+ * **AES-GCM 可逆加密存储**（2026-09-28 起，取代原 scrypt 哈希）：产品要求凭据能重新
+ * 复制，明文要能被服务端解回来——个人中心按前缀取回明文即可，丢了不必吊销重发。格式与
+ * `ingest_tokens` / `runner_tokens` / Webhook 密钥的 `secret_encrypted` 一致。代价：库被
+ * 读走时加密的凭据能被主密钥解开，用可重复复制换掉了「库泄露也拿不到明文」这条属性。
  *
  * `scope TEXT[]` 而不是 boolean 列：`ingest_runs.scope`（035）与 `workers.labels`（027）
  * 是先例，当初留的「将来加 scope 不改表」这次兑现——`execute` 在表结构零改动的
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   id UUID PRIMARY KEY,
   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  token_hash TEXT NOT NULL,                -- scrypt，salt:digest（边界 14）
+  secret_encrypted BYTEA,         -- AES-256-GCM(明文 token)，可解回供重新复制
   token_prefix TEXT NOT NULL,              -- 明文前 8 位，辨认与候选集收窄用
   scope TEXT[] NOT NULL DEFAULT '{read}',  -- 'read' / 'write' / 'execute'（边界 1）
   created_by UUID REFERENCES users(id) ON DELETE SET NULL,   -- 写权限的活体判据（边界 2）
@@ -43,8 +43,8 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
 );
 
 /*
- * `/mcp` 鉴权按前缀取候选行再逐个 scrypt 比对（与 ingest_tokens_prefix_idx 同款）：
- * scrypt 是刻意昂贵的，全表比对会让鉴权耗时随 Token 总数线性增长。前缀索引把候选集
+ * `/mcp` 鉴权按前缀取候选行再逐个解密比对（与 ingest_tokens_prefix_idx 同款）：
+ * 全表解密会让鉴权耗时随 Token 总数线性增长。前缀索引把候选集
  * 压到个位数，且吊销行被 WHERE 条件排除——吊销即时生效，无缓存窗口。
  */
 CREATE INDEX IF NOT EXISTS mcp_tokens_prefix_idx

@@ -22,6 +22,8 @@ export const AUDIT_ACTIONS = {
   runnerTokenCreate: "runner_token.create",
   /** Runner 注册 Token 吊销。target = runner_token，系统级。 */
   runnerTokenRevoke: "runner_token.revoke",
+  /** Runner 注册 Token 明文重新取回（2026-09-28 可重复复制）。target = runner_token，系统级。 */
+  runnerTokenReadSecret: "runner_token.read_secret",
   /**
    * MCP Token 签发（P5-1，计划 9.3；P12 改为**用户级**）。target = mcp_token，
    * `project_id` 为空（token 归人，不归项目）；detail 只带 name——scope 已不在 token
@@ -41,6 +43,8 @@ export const AUDIT_ACTIONS = {
    * 解绑权两侧都有：owner 自助解绑、项目管理员踢绑定（边界 4）。
    */
   mcpTokenUnbind: "mcp_token.unbind",
+  /** MCP Token 明文重新取回（2026-09-28 可重复复制）。target = mcp_token，无项目归属。 */
+  mcpTokenReadSecret: "mcp_token.read_secret",
   /**
    * 用户级 API 密钥（个人中心，调用平台开放 API 的凭据）：生成 / 轮换 / 吊销。
    * target = api_key，targetId 落**用户 id**（audit_logs.target_id 是 UUID 列，key_id 是
@@ -50,6 +54,10 @@ export const AUDIT_ACTIONS = {
   apiKeyCreate: "api_key.create",
   apiKeyRotate: "api_key.rotate",
   apiKeyRevoke: "api_key.revoke",
+  /** 用户级 API 密钥明文重新取回（2026-09-28 可重复复制）。target = api_key，密钥明文不进 detail。 */
+  apiKeyReadSecret: "api_key.read_secret",
+  /** 上报 Token 明文重新取回（2026-09-28 可重复复制）。target = ingest_token，项目级。 */
+  ingestTokenReadSecret: "ingest_token.read_secret",
   /**
    * MCP 调用被拒（P5-3，计划 9.0 边界 13「只审计写入、执行与拒绝」）。target = mcp_tool
    * （targetId 是工具名），detail 带 gate（scope 可见集 / rbac 活体判据）。只有第 3、4 道

@@ -2424,8 +2424,8 @@ export function mapGitCredential(row: Record<string, unknown>): GitCredential {
 export function mapIngestToken(row: Record<string, unknown>): IngestToken {
   return {
     id: String(row.id), projectId: String(row.project_id), name: String(row.name),
-    /* token_hash 刻意不出现在这个映射里：它没有任何客户端用途，映射里留一行就迟早
-       会被某个 `SELECT *` 带到响应里去。 */
+    /* secret_encrypted 刻意不出现在这个映射里：它没有任何客户端用途（明文重新复制走专门的
+       `/secret` 端点），映射里留一行就迟早会被某个 `SELECT *` 带到响应里去。 */
     tokenPrefix: String(row.token_prefix),
     createdBy: row.created_by ? String(row.created_by) : undefined,
     lastUsedAt: row.last_used_at ? new Date(String(row.last_used_at)).toISOString() : undefined,
@@ -2695,7 +2695,7 @@ export type CiTask = {
 export function mapRunnerToken(row: Record<string, unknown>): RunnerToken {
   return {
     id: String(row.id), name: String(row.name),
-    /* token_hash 刻意不出现在这个映射里，理由同 `mapIngestToken`：映射里留一行就迟早
+    /* secret_encrypted 刻意不出现在这个映射里，理由同 `mapIngestToken`：映射里留一行就迟早
        会被某个 `SELECT *` 带到响应里去。 */
     tokenPrefix: String(row.token_prefix),
     labels: Array.isArray(row.labels) && row.labels.length ? (row.labels as unknown[]).map(String) : ["default"],
@@ -3065,8 +3065,8 @@ export type McpToken = {
 export function mapMcpToken(row: Record<string, unknown>): McpToken {
   return {
     id: String(row.id), name: String(row.name),
-    /* token_hash 刻意不出现在这个映射里，理由同 `mapIngestToken`：它没有任何客户端
-       用途，映射里留一行就迟早会被某个 `SELECT *` 带到响应里去。 */
+    /* secret_encrypted 刻意不出现在这个映射里，理由同 `mapIngestToken`：它没有任何客户端
+       用途（明文重新复制走专门的 `/secret` 端点），映射里留一行就迟早会被某个 `SELECT *` 带到响应里去。 */
     tokenPrefix: String(row.token_prefix),
     /* 绑定由调用方 SQL 以 `json_agg`（或二次查询）带回：`row.bindings` 是 jsonb 数组。
        单行读（签发响应）没有绑定，读成空数组。 */
@@ -3083,7 +3083,7 @@ export function mapMcpToken(row: Record<string, unknown>): McpToken {
 /**
  * 项目侧看到的绑定行（`GET /projects/:id/mcp/bindings`，P12 边界 4）：回答「谁的钥匙
  * 开了我这扇门」。owner 三列是读时 JOIN 快照——项目管理员要能指着具体的人说「这把
- * 钥匙收回来」，只给 token 前缀说不出这句话。**token_hash / 明文永不出现在这里。**
+ * 钥匙收回来」，只给 token 前缀说不出这句话。**secret_encrypted / 明文永不出现在这里。**
  */
 export type McpProjectBinding = {
   tokenId: string;

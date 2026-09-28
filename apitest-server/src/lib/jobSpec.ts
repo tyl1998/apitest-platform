@@ -129,17 +129,16 @@ export async function buildJobSpec(baseUrl: string, run: ClaimedRun): Promise<Jo
 
   /*
    * `APITRACK_TOKEN` 按 run 现签一张新的 ingest token（8.2 约定 8「复用 ingest_tokens」
-   * 的落地形状）：库里只存 scrypt 哈希，明文取不回来，所以「注入」只能是在凭据只出现
-   * 一次的地方新签一张——明文进 JobSpec、哈希进 `ingest_tokens`（名字带任务与序号，
-   * 列表页认得出是 CI 签的，可吊销）。按 run 一张意味着隔离与吊销都以 run 为粒度；
-   * run 终态后由 `complete`（P4.5-4）顺手吊销，防行数无界增长。
+   * 的落地形状）：明文进 JobSpec、加密密文进 `ingest_tokens`（名字带任务与序号，列表页
+   * 认得出是 CI 签的，可吊销）。按 run 一张意味着隔离与吊销都以 run 为粒度；run 终态后
+   * 由 `complete`（P4.5-4）顺手吊销，防行数无界增长。
    */
   let ingestToken: string | undefined;
   if (task.sdk_ingest_enabled) {
     const issued = issueIngestToken();
     await pool.query(
-      "INSERT INTO ingest_tokens (id, project_id, name, token_hash, token_prefix) VALUES ($1, $2, $3, $4, $5)",
-      [randomUUID(), run.project_id, `ci ${String(task.task_name)} #${run.run_number}`, issued.hash, issued.prefix],
+      "INSERT INTO ingest_tokens (id, project_id, name, secret_encrypted, token_prefix) VALUES ($1, $2, $3, $4, $5)",
+      [randomUUID(), run.project_id, `ci ${String(task.task_name)} #${run.run_number}`, issued.secretEncrypted, issued.prefix],
     );
     ingestToken = issued.plaintext;
   }

@@ -1,13 +1,15 @@
-import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { pool } from "../db.js";
+import { decryptSecret, encryptSecret } from "./crypto.js";
 import { RUNNER_PROTOCOL_VERSION, SUPPORTED_RUNNER_PROTOCOL_VERSIONS } from "../models/types.js";
 
 /**
  * Runner 注册 Token 的签发与校验（P4.5-1，计划 8.0 边界与 8.2）。
  *
- * **形状照抄 `ingestAuth.ts`**：scrypt `salt:digest` + 前缀部分索引。不是复制粘贴的偷懒，
- * 而是刻意的——两者的需求完全一致（只需比对、不需解密、鉴权在热路径上），而第二种哈希
- * 格式意味着「凭据是怎么存的」在这个代码库里有两个答案。
+ * **AES-GCM 可逆加密而不是哈希**（2026-09-28 起）：产品要求「凭据能重新复制」——管理页
+ * 按前缀取回明文即可，丢了不必吊销重发。格式与 `ingest_tokens` / Webhook 密钥同款
+ * `secret_encrypted`。代价说清：库被读走时加密的凭据能被主密钥解开——用可重复复制换掉了
+ * 「库泄露也拿不到明文」这条属性。校验因此是「解出库里明文、常量时间比对」。
  *
  * **与 `ingestAuth` 的两处必然不同**：
  * ① Token 是**系统级**的，校验返回的是 token 身份与它允许的分区，而不是一个 `projectId`
@@ -23,29 +25,29 @@ const TOKEN_BYTES = 24;
  * 库里存的辨认前缀长度：`apirunner_` 加随机段的前 8 位。
  *
  * 与 `ingestAuth.ts` 同一个取舍：8 位 base64url 不足以反推剩余 24 位、从不参与校验，但
- * 足以在列表里认出「这条是哪个」，并让鉴权按前缀取候选行而不是全表 scrypt。
- * scrypt 是刻意昂贵的，而心跳是每 30 秒一次、按 Runner 台数放大的热路径。
+ * 足以在列表里认出「这条是哪个」，并让鉴权按前缀取候选行而不是全表解密。
+ * 心跳是每 30 秒一次、按 Runner 台数放大的热路径，候选集收窄到个位数很关键。
  */
 const IDENTIFIER_LENGTH = 8;
 
-export type IssuedRunnerToken = { plaintext: string; hash: string; prefix: string };
+export type IssuedRunnerToken = { plaintext: string; secretEncrypted: Buffer; prefix: string };
 
 export function issueRunnerToken(): IssuedRunnerToken {
   const secret = randomBytes(TOKEN_BYTES).toString("base64url");
   const plaintext = `${TOKEN_PREFIX}${secret}`;
-  const salt = randomUUID();
   return {
     plaintext,
-    hash: `${salt}:${scryptSync(plaintext, salt, 64).toString("hex")}`,
+    secretEncrypted: encryptSecret(plaintext),
     prefix: `${TOKEN_PREFIX}${secret.slice(0, IDENTIFIER_LENGTH)}`,
   };
 }
 
-function matches(plaintext: string, stored: string) {
-  const [salt, digest] = stored.split(":");
-  if (!salt || !digest) return false;
-  const actual = scryptSync(plaintext, salt, 64);
-  const expected = Buffer.from(digest, "hex");
+/** 库里存的是主密钥加密的明文；比对 = 解回明文再常量时间比。解不开一律当作凭据不成立。 */
+function matches(plaintext: string, stored: Buffer): boolean {
+  let decrypted: string;
+  try { decrypted = decryptSecret(stored); } catch { return false; }
+  const actual = Buffer.from(plaintext);
+  const expected = Buffer.from(decrypted);
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
@@ -76,11 +78,11 @@ export async function authenticateRunner(header: string | undefined): Promise<Ru
   if (!token) return undefined;
   const prefix = token.slice(0, TOKEN_PREFIX.length + IDENTIFIER_LENGTH);
   const candidates = await pool.query(
-    "SELECT id, name, labels, token_hash FROM runner_tokens WHERE token_prefix = $1 AND revoked_at IS NULL",
+    "SELECT id, name, labels, secret_encrypted FROM runner_tokens WHERE token_prefix = $1 AND revoked_at IS NULL",
     [prefix],
   );
   for (const row of candidates.rows) {
-    if (!matches(token, String(row.token_hash))) continue;
+    if (!matches(token, row.secret_encrypted as Buffer)) continue;
     /* 「这张 Token 还活着吗」在接入排查里是第一个要看的事实，所以每次调用都记一笔。
        不进调用方的事务、失败不抛：它是审计而不是数据，一次心跳回滚了也不该让「用过」
        这件事消失（与 `ingestAuth.ts` 同款）。 */

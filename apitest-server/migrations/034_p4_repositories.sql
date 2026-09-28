@@ -40,10 +40,10 @@ CREATE TABLE IF NOT EXISTS repositories (
 /*
  * 上报 Token。项目级，`Authorization: Bearer apitrack_<token>`。
  *
- * **哈希存储，不加密**（边界 17）：Webhook 密钥必须拿到明文才能验签（P3 边界 6），
- * 所以那里是 AES-GCM；上报 Token 只需比对，因此走 scrypt 哈希（与
- * `users.password_hash` 同款格式 `salt:digest`），明文只在创建时回一次。
- * 库被读走时，前者能被解密、后者不能——能哈希的地方就不该加密。
+ * **AES-GCM 可逆加密存储**（2026-09-28 起，取代原 scrypt 哈希）：产品要求「凭据能重新
+ * 复制」，所以明文要能被服务端解回来——管理页按前缀取回明文即可，丢了不必吊销重发。
+ * 格式与 Webhook 密钥 / `api_access_keys.secret_encrypted` 同款。代价：库被读走时加密的
+ * 凭据能被主密钥解开，用可重复复制换掉了「库泄露也拿不到明文」这条属性。
  *
  * `token_prefix` 存明文前 8 位（`apitrack_` 之后的那段），供列表展示与「这条是哪个」
  * 的辨认。它不足以反推出 Token，也不参与校验。
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS ingest_tokens (
   id UUID PRIMARY KEY,
   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  token_hash TEXT NOT NULL,
+  secret_encrypted BYTEA,         -- AES-256-GCM(明文 token)，可解回供重新复制
   token_prefix TEXT NOT NULL,
   created_by UUID REFERENCES users(id) ON DELETE SET NULL,
   last_used_at TIMESTAMPTZ,
@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS ingest_tokens (
 CREATE INDEX IF NOT EXISTS ingest_tokens_project_created_at_idx ON ingest_tokens(project_id, created_at DESC);
 /*
  * `/ingest` 的鉴权扫描：Token 是不透明随机串，请求里没有项目信息，所以只能按前缀
- * 取候选行再逐个 scrypt 比对。前缀索引把候选集压到个位数——全表 scrypt 会让上报接口
+ * 取候选行再逐个解密比对。前缀索引把候选集压到个位数——全表解密会让上报接口
  * 的耗时随 Token 总数线性增长。
  */
 CREATE INDEX IF NOT EXISTS ingest_tokens_prefix_idx ON ingest_tokens(token_prefix) WHERE revoked_at IS NULL;

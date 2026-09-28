@@ -6,7 +6,8 @@ import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { pool } from "../db.js";
-import { writeAuditLogAsync } from "../lib/audit.js";
+import { AUDIT_ACTIONS, writeAuditLogAsync } from "../lib/audit.js";
+import { decryptSecret } from "../lib/crypto.js";
 import { currentUser } from "../lib/auth.js";
 import { publishEvent } from "../lib/events.js";
 import { buildJobSpec } from "../lib/jobSpec.js";
@@ -728,7 +729,7 @@ export async function runnerRoutes(app: FastifyInstance) {
    */
   app.get("/api/v1/system/runner-tokens", async (request, reply) => {
     const user = await requireSystemAdmin(request, reply); if (!user) return;
-    /* 列名写全而**不是** `SELECT *`：`token_hash` 被 `SELECT *` 带进来后，映射漏一个字段
+    /* 列名写全而**不是** `SELECT *`：`secret_encrypted` 被 `SELECT *` 带进来后，映射漏一个字段
        就是一次凭据泄露（与 `repositories.ts` 的 ingest-token 列表同款纪律）。 */
     const result = await pool.query(
       `SELECT t.id, t.name, t.token_prefix, t.labels, t.created_by, t.last_used_at, t.revoked_at, t.created_at,
@@ -738,7 +739,7 @@ export async function runnerRoutes(app: FastifyInstance) {
     return success(result.rows.map(mapRunnerToken), { total: result.rowCount });
   });
 
-  /** 创建：明文**只在这一次响应里出现**，丢了只能吊销重发（与上报 Token 同一条纪律）。 */
+  /** 创建：明文在本次响应里出现；此后也能重新复制（下面的 `/secret`），丢了不必吊销重发。 */
   app.post<{ Body: { name?: string; labels?: unknown } }>("/api/v1/system/runner-tokens", async (request, reply) => {
     const user = await requireSystemAdmin(request, reply); if (!user) return;
     const name = request.body?.name?.trim();
@@ -747,13 +748,13 @@ export async function runnerRoutes(app: FastifyInstance) {
     if (declared.error) return fail(reply, 400, 1001, declared.error);
     const issued = issueRunnerToken();
     const result = await pool.query(
-      `INSERT INTO runner_tokens (id, name, token_hash, token_prefix, labels, created_by)
+      `INSERT INTO runner_tokens (id, name, secret_encrypted, token_prefix, labels, created_by)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, name, token_prefix, labels, created_by, last_used_at, revoked_at, created_at`,
-      [randomUUID(), name, issued.hash, issued.prefix, declared.labels ?? [DEFAULT_RUNNER_LABEL], user.id],
+      [randomUUID(), name, issued.secretEncrypted, issued.prefix, declared.labels ?? [DEFAULT_RUNNER_LABEL], user.id],
     );
     /* 审计（P4.5-8）：detail 只有名字与标签——明文 token 连日志都不进（明文只在响应里
-       出现一次的纪律），token_hash 也不是审计要回答的问题。系统级动作，project_id 为空。 */
+       出现一次的纪律），加密密文也不是审计要回答的问题。系统级动作，project_id 为空。 */
     writeAuditLogAsync({
       action: "runner_token.create",
       targetType: "runner_token",
@@ -792,6 +793,26 @@ export async function runnerRoutes(app: FastifyInstance) {
       ip: request.ip,
     });
     return success(mapRunnerToken(result.rows[0]));
+  });
+
+  /** 重新取回明文（2026-09-28 可重复复制）：Token 现改为可逆加密存储，丢了不必吊销重发。
+      签发/吊销本就是系统管理员权限，读一次明文不扩大爆炸半径；已吊销的不给，审计记一次。 */
+  app.get<{ Params: { tokenId: string } }>("/api/v1/system/runner-tokens/:tokenId/secret", async (request, reply) => {
+    const user = await requireSystemAdmin(request, reply); if (!user) return;
+    if (!isUuid(request.params.tokenId)) return fail(reply, 404, 2001, "runner token not found");
+    const result = await pool.query(
+      "SELECT secret_encrypted FROM runner_tokens WHERE id = $1 AND revoked_at IS NULL",
+      [request.params.tokenId],
+    );
+    if (!result.rowCount) return fail(reply, 404, 2001, "runner token not found");
+    let token: string;
+    try { token = decryptSecret(result.rows[0].secret_encrypted as Buffer); }
+    catch { return fail(reply, 500, 5001, "runner token could not be decrypted"); }
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.runnerTokenReadSecret, targetType: "runner_token", targetId: request.params.tokenId,
+      userId: user.id, ip: request.ip,
+    });
+    return success({ id: request.params.tokenId, token });
   });
 
   /**

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { pool } from "../db.js";
+import { AUDIT_ACTIONS, writeAuditLogAsync } from "../lib/audit.js";
+import { decryptSecret } from "../lib/crypto.js";
 import { issueIngestToken } from "../lib/ingestAuth.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, success } from "../lib/response.js";
@@ -89,7 +91,7 @@ export async function repositoryRoutes(app: FastifyInstance) {
 
   app.get<{ Params: { id: string } }>("/api/v1/projects/:id/ingest-tokens", async (request, reply) => {
     const context = await requireProjectAccess(request, reply); if (!context) return;
-    /* 列出所有列**除了** token_hash：`SELECT *` 会把它带进来，而映射漏一个字段就是一次
+    /* 列出所有列**除了** secret_encrypted：`SELECT *` 会把它带进来，而映射漏一个字段就是一次
        凭据泄露。列名写全比信任映射安全。
        已吊销的不列：吊销即从管理视图消失（行留在表里供「那次上报是谁报的」对账）。CI
        按 run 现签的 token（`ci … #N`）在 run 终态即吊销，列出来只会以每个任务每天几十
@@ -102,17 +104,17 @@ export async function repositoryRoutes(app: FastifyInstance) {
     return success(result.rows.map(mapIngestToken), { total: result.rowCount });
   });
 
-  /** 创建：明文**只在这一次响应里出现**（边界 17），丢了只能吊销重发。 */
+  /** 创建：明文在本次响应里出现；此后也能按前缀重新复制（下面的 `/secret`）。 */
   app.post<{ Params: { id: string }; Body: { name?: string } }>("/api/v1/projects/:id/ingest-tokens", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
     const name = request.body?.name?.trim();
     if (!name) return fail(reply, 400, 1001, "token name is required");
     const issued = issueIngestToken();
     const result = await pool.query(
-      `INSERT INTO ingest_tokens (id, project_id, name, token_hash, token_prefix, created_by)
+      `INSERT INTO ingest_tokens (id, project_id, name, secret_encrypted, token_prefix, created_by)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, project_id, name, token_prefix, created_by, last_used_at, revoked_at, created_at`,
-      [randomUUID(), context.project.id, name, issued.hash, issued.prefix, context.user.id],
+      [randomUUID(), context.project.id, name, issued.secretEncrypted, issued.prefix, context.user.id],
     );
     return reply.code(201).send(success({ ...mapIngestToken(result.rows[0]), token: issued.plaintext }));
   });
@@ -129,5 +131,26 @@ export async function repositoryRoutes(app: FastifyInstance) {
     );
     if (!result.rowCount) return fail(reply, 404, 2001, "ingest token not found");
     return success(mapIngestToken(result.rows[0]));
+  });
+
+  /** 重新取回明文（2026-09-28 可重复复制）：密钥现改为可逆加密存储，凭据可重新复制而不必
+      吊销重发。项目内可写成员本就能签发/吊销这些 Token，读一次明文不扩大爆炸半径；已吊销的
+      不给（`revoked_at IS NULL`），审计记一次。 */
+  app.get<{ Params: { id: string; tokenId: string } }>("/api/v1/projects/:id/ingest-tokens/:tokenId/secret", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply, true); if (!context) return;
+    if (!isUuid(request.params.tokenId)) return fail(reply, 404, 2001, "ingest token not found");
+    const result = await pool.query(
+      "SELECT secret_encrypted FROM ingest_tokens WHERE id = $1 AND project_id = $2 AND revoked_at IS NULL",
+      [request.params.tokenId, context.project.id],
+    );
+    if (!result.rowCount) return fail(reply, 404, 2001, "ingest token not found");
+    let token: string;
+    try { token = decryptSecret(result.rows[0].secret_encrypted as Buffer); }
+    catch { return fail(reply, 500, 5001, "ingest token could not be decrypted"); }
+    writeAuditLogAsync({
+      action: AUDIT_ACTIONS.ingestTokenReadSecret, targetType: "ingest_token", targetId: request.params.tokenId,
+      projectId: context.project.id, userId: context.user.id, ip: request.ip,
+    });
+    return success({ id: request.params.tokenId, token });
   });
 }

@@ -1,12 +1,16 @@
-import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { pool } from "../db.js";
+import { decryptSecret, encryptSecret } from "./crypto.js";
 import { mapMcpBinding, type McpBinding, type McpScope } from "../models/types.js";
 
 /**
  * MCP Token 的签发与校验（P5-1，计划 9.3；P12-1 改为用户级 + 项目绑定）。
  *
- * **形状逐字照抄 `lib/ingestAuth.ts`**，只改前缀（`apimcp_`）与表名——计划明说这是
- * 第三次照抄、不抽公共层（边界 14）：三份 40 行的具体实现比一层参数化抽象更好读。
+ * **AES-GCM 可逆加密而不是哈希**（2026-09-28 起）：产品要求「凭据能重新复制」——个人中心
+ * 按前缀取回明文即可，丢了不必吊销重发。格式与 `ingest_tokens` / `runner_tokens` /
+ * Webhook 密钥同款 `secret_encrypted`。代价说清：库被读走时加密的凭据能被主密钥解开——
+ * 用可重复复制换掉了「库泄露也拿不到明文」这条属性。校验因此是「解出库里明文、常量时间
+ * 比对」；前缀部分索引仍在，热路径仍只在候选行上做一次廉价解密。
  * P12 之后唯一的形状差异是「校验结果是一组绑定而不是一个项目」。
  *
  * **用户级（P12 边界 2）**：token 行上没有 `project_id` 也没有 `scope`——两者都在
@@ -31,28 +35,28 @@ const TOKEN_BYTES = 24;
  *
  * 与 `ingestAuth.ts` 同一个取舍：8 位 base64url 不足以反推剩余 24 位、从不参与校验，
  * 但足以在列表里认出「这条是哪个」，并让 `/mcp` 鉴权按前缀取候选行而不是全表
- * scrypt——scrypt 是刻意昂贵的，而 MCP 调用是 agent 一轮对话十几次的热路径。
+ * 解密——MCP 调用是 agent 一轮对话十几次的热路径，候选集收窄到个位数很关键。
  */
 const IDENTIFIER_LENGTH = 8;
 
-export type IssuedMcpToken = { plaintext: string; hash: string; prefix: string };
+export type IssuedMcpToken = { plaintext: string; secretEncrypted: Buffer; prefix: string };
 
 export function issueMcpToken(): IssuedMcpToken {
   const secret = randomBytes(TOKEN_BYTES).toString("base64url");
   const plaintext = `${TOKEN_PREFIX}${secret}`;
-  const salt = randomUUID();
   return {
     plaintext,
-    hash: `${salt}:${scryptSync(plaintext, salt, 64).toString("hex")}`,
+    secretEncrypted: encryptSecret(plaintext),
     prefix: `${TOKEN_PREFIX}${secret.slice(0, IDENTIFIER_LENGTH)}`,
   };
 }
 
-function matches(plaintext: string, stored: string) {
-  const [salt, digest] = stored.split(":");
-  if (!salt || !digest) return false;
-  const actual = scryptSync(plaintext, salt, 64);
-  const expected = Buffer.from(digest, "hex");
+/** 库里存的是主密钥加密的明文；比对 = 解回明文再常量时间比。解不开一律当作凭据不成立。 */
+function matches(plaintext: string, stored: Buffer): boolean {
+  let decrypted: string;
+  try { decrypted = decryptSecret(stored); } catch { return false; }
+  const actual = Buffer.from(plaintext);
+  const expected = Buffer.from(decrypted);
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
@@ -115,18 +119,18 @@ export function resolveBinding(bindings: McpBinding[], projectId: string): McpBi
  * 所以吊销与 owner 删除都即时生效，下一次调用就被拒（无缓存窗口）。
  *
  * 绑定集按命中行二次带回（一条 token 的绑定数是个位数，不做 join 聚合的额外形状）；
- * 前缀索引把候选集压到个位数，scrypt 只对候选行跑。
+ * 前缀索引把候选集压到个位数，解密只对候选行跑。
  */
 export async function authenticateMcp(header: string | undefined): Promise<McpPrincipal | undefined> {
   const token = mcpBearerToken(header);
   if (!token) return undefined;
   const prefix = token.slice(0, TOKEN_PREFIX.length + IDENTIFIER_LENGTH);
   const candidates = await pool.query(
-    "SELECT id, created_by, token_hash FROM mcp_tokens WHERE token_prefix = $1 AND revoked_at IS NULL AND created_by IS NOT NULL",
+    "SELECT id, created_by, secret_encrypted FROM mcp_tokens WHERE token_prefix = $1 AND revoked_at IS NULL AND created_by IS NOT NULL",
     [prefix],
   );
   for (const row of candidates.rows) {
-    if (!matches(token, String(row.token_hash))) continue;
+    if (!matches(token, row.secret_encrypted as Buffer)) continue;
     /* 「这把 Token 还有人在用吗」由 `last_used_at` 回答（照 `ingestAuth.ts` 的取舍）：
        不进业务事务、失败不抛——业务回滚了不该让「用过」这件事消失，它是审计而不是数据。 */
     void pool.query("UPDATE mcp_tokens SET last_used_at = now() WHERE id = $1", [row.id]).catch(() => {});

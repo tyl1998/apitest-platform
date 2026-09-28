@@ -26,7 +26,7 @@ import { mapMcpProjectBinding } from "../models/types.js";
  */
 
 export async function mcpTokenRoutes(app: FastifyInstance) {
-  /* 列名写全而**不是** `SELECT *`：`token_hash` 被 `SELECT *` 带进来后，映射漏一个
+  /* 列名写全而**不是** `SELECT *`：`secret_encrypted` 被 `SELECT *` 带进来后，映射漏一个
      字段就是一次凭据泄露（与 ingest-token / runner-token 列表同款纪律）。明文与哈希
      都不出现在这里——项目管理员只需要知道「谁的哪把钥匙」。已吊销的 token 不列：
      闸门①已排除它，列表再展示只会制造「是不是还能用」的疑问。 */
