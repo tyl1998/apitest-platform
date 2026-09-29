@@ -13,7 +13,8 @@ import { IconButton } from "./IconButton";
  *
  * 编辑器是**页内分步**的（不做弹窗——这种量级的表单塞弹窗里既看不全也没法对照）：
  * 基础连接 → ① 建会话（前置）→ ② 发消息（核心，含 SSE 事件映射）→ ③ 停止（后置·
- * 可选）→ ④ 历史（后置·可选）→ 用户参数。步骤顺序就是调用链顺序；每个字段带说明
+ * 可选）→ ④ 删除（后置·可选）→ ⑤ 历史（后置·可选）→ 用户参数。步骤顺序就是调用链
+ * 顺序；每个字段带说明
  * 与示例，模板变量的来源（引擎内置 vs {{user.键名}}）在第一步讲清并在各步复述。
  *
  * 凭据不在系统行上（用户级）：测试连接带一组**临时参数**（不落库）——「配置对不对」
@@ -269,6 +270,7 @@ export function AssistantProvidersPanel() {
     { key: "create", optional: false },
     { key: "chat", optional: false },
     { key: "stop", optional: true },
+    { key: "delete", optional: true },
     { key: "history", optional: true },
     { key: "userParams", optional: false },
   ] as const;
@@ -595,8 +597,10 @@ export function AssistantProvidersPanel() {
           <input className="input mono" value={draft.stopPath} onChange={(event) => patch({ stopPath: event.target.value })} placeholder="/api/v1/chat/{{conversationId}}/stop" />
         </Field>
       </div>}
+    </>}
 
-      <label className="check-field" style={{ marginTop: "var(--s4)" }}>
+    {step === 4 && <>
+      <label className="check-field" style={{ margin: 0 }}>
         <input type="checkbox" checked={draft.hasDelete} onChange={(event) => patch({ hasDelete: event.target.checked })} />
         {t("assistantProviders.hasDelete")}
         <span className="field-hint" style={{ marginLeft: "var(--s2)" }}>{t("providerStep.hint.deletePath")}</span>
@@ -611,7 +615,7 @@ export function AssistantProvidersPanel() {
       </div>}
     </>}
 
-    {step === 4 && <>
+    {step === 5 && <>
       <label className="check-field" style={{ margin: 0 }}>
         <input type="checkbox" checked={draft.hasHistory} onChange={(event) => patch({ hasHistory: event.target.checked })} />
         {t("assistantProviders.hasHistory")}
@@ -640,7 +644,7 @@ export function AssistantProvidersPanel() {
       </div>}
     </>}
 
-    {step === 5 && <>
+    {step === 6 && <>
       <p className="form-note">{t("assistantProviders.userParamsHint")}</p>
       {draft.userParams.map((param, index) => <div key={index} className="provider-param-row">
         <Field label={t("assistantProviders.paramKey")} hint={t("providerStep.hint.paramKey")}>
