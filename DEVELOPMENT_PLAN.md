@@ -6274,6 +6274,17 @@ elicitation 能力时 delete **降级为拒绝**并提示走 UI——降级而�
 转述 elicitation / MRTR 是 P5-3 实测项；不转述则 delete 在聊天里不可用，可逆写与执行不受
 影响。
 
+#### 9.4.2 工具安全标注（ToolAnnotations，2026-09-28 增补）
+
+`tools/list` 里每条工具带 `annotations`（MCP 规范 ToolAnnotations）——上游 AI 客户端据此
+决定**调用前是否弹窗向人确认**：缺 annotations、`readOnlyHint !== true`、或
+`destructiveHint === true` 一律判为危险动作。声明不逐条手写，从工具既有的 `scope` 派生
+（`mcpServer.ts` 的 `toolAnnotations`）：`read` → `readOnlyHint: true` + `destructiveHint:
+false`；`write` 里只有 `delete_*` → `destructiveHint: true`；`execute` → `openWorldHint:
+true`（真的打到被测系统）。于是读工具免弹窗，写/执行仍一律要人确认。这是**调用前**的声明式
+提示，与 9.4.1 的 MRTR **调用中**确认回合互补：前者让客户端不为只读工具弹无用窗，后者用于
+运行时才知道要不要确认的删除。
+
 **明确不提供的工具，只剩三类**（写进 `get_script_contract` 的说明里，模型问起来能自己读到）：
 
 - **任意构造请求的执行**（内联 method / url / body 的自由执行）：执行只作用于已保存的命名
