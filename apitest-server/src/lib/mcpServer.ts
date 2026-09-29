@@ -4,6 +4,7 @@ import {
   type AuthInfo,
   type CallToolResult,
   type InputRequiredResult,
+  type ToolAnnotations,
 } from "@modelcontextprotocol/server";
 import type { McpBinding, McpScope } from "../models/types.js";
 import {
@@ -105,6 +106,20 @@ export function toolsVisibleTo(scope: McpScope[]): McpToolDefinition[] {
 /** 一条工具是否需要在注册包装里解析目标项目。 */
 export function toolNeedsProject(tool: McpToolDefinition): boolean {
   return !PROJECT_FREE_TOOLS.has(tool.name);
+}
+
+/**
+ * 工具的 `annotations`（MCP 规范 ToolAnnotations）——上游客户端「调用前要不要弹窗
+ * 向人确认」就按它判定：缺 annotations / `readOnlyHint !== true` / `destructiveHint
+ * === true` 一律视为危险。声明依据是工具的 `scope`（边界 1 的三档能力），不逐条手写
+ * 免得漏标：`read` 档只跑 SELECT，声明 `readOnlyHint`；`write` 档里只有 `delete_*`
+ * 会销毁数据，声明 `destructiveHint`；`execute` 档会真的打到被测系统，声明
+ * `openWorldHint`。
+ */
+function toolAnnotations(tool: McpToolDefinition): ToolAnnotations {
+  if (tool.scope === "read") return { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
+  if (tool.scope === "execute") return { readOnlyHint: false, destructiveHint: false, openWorldHint: true };
+  return { readOnlyHint: false, destructiveHint: tool.name.startsWith("delete_"), openWorldHint: false };
 }
 
 /**
@@ -210,7 +225,7 @@ export function buildMcpServer(principal: McpPrincipal | undefined): McpServer {
     const schema = toolNeedsProject(tool) ? injectProjectArg(tool) : tool.inputSchema;
     server.registerTool(
       tool.name,
-      { description: tool.description, inputSchema: fromJsonSchema(schema) },
+      { description: tool.description, inputSchema: fromJsonSchema(schema), annotations: toolAnnotations(tool) },
       /* 第二个参数是 SDK 的 ServerContext：MRTR 的 inputResponses 从 `ctx.mcpReq` 挑出
          传给工具（delete_* 的确认判据，9.4.1）。其余 context 面本期工具用不到。 */
       async (args, ctx) => {
