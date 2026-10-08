@@ -13,7 +13,7 @@ import {
 import { toolError, type MrtrContext } from "./mcpToolResult.js";
 import { READ_CORE_TOOLS } from "./mcpToolsReadCore.js";
 import { READ_TASKS_TOOLS } from "./mcpToolsReadTasks.js";
-import { READ_SPEC_TOOLS } from "./mcpToolsSpec.js";
+import { READ_SPEC_TOOLS, WRITE_SPEC_TOOLS } from "./mcpToolsSpec.js";
 import { ATTRIBUTION_TOOLS } from "./mcpToolsAttribution.js";
 import { WRITE_CORE_TOOLS } from "./mcpToolsWriteCore.js";
 import { WRITE_CRUD_TOOLS } from "./mcpToolsWriteCrud.js";
@@ -82,7 +82,7 @@ export type McpToolDefinition = {
 export const MCP_TOOLS: readonly McpToolDefinition[] = [
   ...READ_CORE_TOOLS, ...READ_TASKS_TOOLS, ...READ_SPEC_TOOLS,
   ...ATTRIBUTION_TOOLS,
-  ...WRITE_CORE_TOOLS, ...WRITE_CRUD_TOOLS, ...WRITE_EXTRA_TOOLS, ...EXECUTE_TOOLS,
+  ...WRITE_CORE_TOOLS, ...WRITE_CRUD_TOOLS, ...WRITE_SPEC_TOOLS, ...WRITE_EXTRA_TOOLS, ...EXECUTE_TOOLS,
   ...ME_TOOLS,
 ];
 

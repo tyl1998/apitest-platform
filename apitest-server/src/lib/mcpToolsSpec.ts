@@ -41,12 +41,12 @@ function gateDelete(mcpReq: MrtrContext, message: string):
 export const READ_SPEC_TOOLS: readonly McpToolDefinition[] = [
   {
     name: "list_spec_cases",
-    description: "List text (spec) test cases — design-only assets with title/preconditions/steps/expected, distinct from executable API cases. Filters: keyword (title/itemKey), moduleId, path (module path prefix including all sublevels), priority (P0-P3), status (unreviewed|reviewed|deprecated), automation (yes/no; a case counts as automated when it has at least one non-endpoint binding). Rows are summaries with modulePath, linkCount and automated — use get_spec_case for one full definition. Cannot create, modify or delete spec cases.",
+    description: "List text (spec) test cases — design-only assets with title/preconditions/steps/expected, distinct from executable API cases. Filters: keyword (substring, matches title/itemKey AND module name/module path — so a requirement that lives in any nested module directory or in the title is found in one call), moduleId (direct cases of one module), path (module path prefix including all sublevels), priority (P0-P3), status (unreviewed|reviewed|deprecated), automation (yes/no; a case counts as automated when it has at least one non-endpoint binding). Rows carry full content plus modulePath, linkCount and automated — use get_spec_case for one case's links. Cannot create, modify or delete spec cases.",
     scope: "read",
     inputSchema: {
       type: "object",
       properties: {
-        keyword: { type: "string", description: "substring match against title and item_key" },
+        keyword: { type: "string", description: "substring match against title, item_key, module name and module path" },
         moduleId: { type: "string", description: "restrict to direct cases of one module" },
         path: { type: "string", description: "module path prefix, e.g. '/模块A/'; includes all sublevels" },
         priority: { type: "string", description: "P0 | P1 | P2 | P3" },
@@ -62,8 +62,10 @@ export const READ_SPEC_TOOLS: readonly McpToolDefinition[] = [
       const clauses = ["c.project_id = $1"];
       const keyword = stringArg(args, "keyword");
       if (keyword) {
+        /* keyword 同时匹配模块名与模块路径：需求可能挂在任意层级目录下、也可能写在标题里，
+           一句调用要能同时命中两种（2026-10-08 用户要求）。 */
         params.push(`%${keyword}%`);
-        clauses.push(`(c.title ILIKE $${params.length} OR c.item_key ILIKE $${params.length})`);
+        clauses.push(`(c.title ILIKE $${params.length} OR c.item_key ILIKE $${params.length} OR m.name ILIKE $${params.length} OR m.path ILIKE $${params.length})`);
       }
       const path = stringArg(args, "path");
       if (path) {
