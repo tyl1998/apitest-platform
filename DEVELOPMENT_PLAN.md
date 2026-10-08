@@ -6221,7 +6221,7 @@ id）——没有 id，AI 把两跳连不起来，「快」就无从谈起；②
 | `get_run_case` | 报告明细抽屉同源数据（`pipeline_run_cases` / allure 归一） | 失败明细：断言逐条、错误信息、日志摘录，64KB 截断 |
 | `get_run_logs` | 日志下载路由的读取版 | `tail` 参数（默认 200 行）**尾部优先** + 64KB 上限 |
 | `list_repo_cases` | 仓库用例树 | `keyword` 过滤，行带 system → 接口 → 用例 路径 |
-| `list_spec_cases`（2026-09-09 增补，上限 44→55） | `specCases.ts` 列表同款 SQL | 文本用例摘要行带 `modulePath`/`linkCount`/`automated`；keyword/moduleId/path/priority/status/automation 过滤 |
+| `list_spec_cases`（2026-09-09 增补，上限 44→55；2026-10-08 扩 keyword） | `specCases.ts` 列表 SQL 的 MCP 版（2026-10-08 起 keyword 比 REST 多匹配模块名/路径） | 行带 `modulePath`/`linkCount`/`automated`；keyword/moduleId/path/priority/status/automation 过滤。**keyword 扩为同时匹配 title/itemKey/模块名/模块路径**——需求可能挂在任意层级目录下也可能写在标题里，一句调用即可同时命中两种（`path` 仍前缀匹配，找嵌套模块走 keyword 更直接）。REST 列表/导出的 keyword 仍只匹配 title/itemKey，如需 UI 同步再扩（list + export 两处） |
 | `get_spec_case` | `specCases.ts` 详情 | 完整定义 + `links[]`（target 名读时 JOIN，不带 lastResult 拼串——工具面只要名字与 id） |
 | `list_spec_modules` | `specModules.ts` 树全量 | 拍平模块列表 + 直属 case/active/automated 三计数，path 深度优先序 |
 
