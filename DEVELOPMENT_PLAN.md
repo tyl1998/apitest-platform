@@ -276,7 +276,7 @@ MVP    流程    数据源  套件调度 仓库    Runner   MCP    用户   测�
                                                                    P15 于 2026-09-22 立项、P16 于
                                                                    2026-09-27 立项（成员提权申请 +
                                                                    凭证命名与用途说明），见本计划
-                                                                   十九 / 二十章）
+                                                                   十九 / 二十章；P17 于 2026-10-09 立项（接口来源，见二十一章））
 ```
 
 ---
@@ -6749,6 +6749,138 @@ Token」过时表述修正。
 
 ---
 
+## 二十一、P17 — 接口来源（Spec Source，创建接口时按来源搜索预填）
+
+> **立项 2026-10-09（范围已确认）。** 一句话范围：给平台引入「**接口来源**」——一个可以去取接口
+> 定义的地方。来源有两种形态（**静态 spec URL** 与 **远端平台适配器**，都要），**全部系统级、仅系统
+> 管理员可建**；用户在创建接口时**勾选**来源、输关键词搜索，把命中的 operation **预填进创建表单**
+> （不自动落库、人确认后走既有 `POST /endpoints`）。**本期只做「创建时填充」**：不做文档变更回灌 /
+> 漂移检测、不做来源推送、不做自动落库。
+>
+> **实现状态 2026-10-09：已实现（待手工验收）。** 落地：迁移 `077_spec_sources.sql`；
+> `lib/specFetch.ts`（安全出站，支持 GET/POST + 请求体）；`lib/specDrivers/`（`types.ts` /
+> `index.ts` / `openapi.ts` 快照驱动 / `adapter.ts` + `adapterConfig.ts` 通用远端检索驱动）；
+> `routes/specSources.ts`（读 / 搜全员、管理 `requireSystemAdmin`；`list()` 来源走快照本地搜、
+> 仅 `search()` 来源实时透传）；前端系统设置「接口来源」tab（含 adapter 配置表单）与创建接口
+> 弹窗第四种格式「从来源搜索」；i18n 中英双份 + `/docs` 新增「接口来源」一节；后端新增依赖 `yaml`。
+> **「从来源搜索」命中的 operation 经前端路由 state 预填进创建表单（不落库）。**
+>
+> **增补 2026-10-09（用户确认）：** ① 接口来源新增第三个类型 `apifox`——Apifox 分享文档
+> （`lib/specDrivers/apifox.ts`：读分享 `llms.txt` → 逐接口页抽 OpenAPI → 复用
+> `normalizeOpenApi` 归一；快照型，可刷新，URL 填分享链接即可，可填首页或任一接口页）；② 系统设置三面板（provider /
+> 归因类型 / 接口来源）的**新增按钮右置、描述移到按钮下方**；③ 接口来源的建 / 改从弹窗改为
+> **页内编辑器**（与助手 provider 同形，字段带说明、「返回」回列表）。
+>
+> **增补 2026-10-10（用户反馈，范围调整）：** ① **搜索改为实时**——来源搜索不再需要点「搜索」
+> 按钮，输入关键词即搜，空词不发请求；② **新增创建接口页入口**——创建接口页 URL 框旁加一个**勾选开关**
+> （`EndpointWorkspace.tsx`）：勾上后 URL 框换成来源搜索框（`SpecSourceSearch.tsx`，复用
+> `.var-field` 浮层语汇），**实时搜全部来源**，点一条**预填**创建表单（name / description /
+> method / url + 参数 / body，**不含 tags**，不落库），预填后开关自动关闭、URL 框恢复显示填好的 url；
+> 导入弹窗的第四种格式「从来源搜索」**保留**（复用同一 `SpecSourceSearch` 组件：实时搜 + 来源范围 +
+> 来源标签，点一条经路由 state 预填创建表单）。搜索范围=全部来源（前端先拉 `GET
+> /spec-sources` 再带全部 id 调聚合搜，后端不改）。**边界 9 相应改写**：不再有「勾选来源」与
+> 「不勾不允许搜索」——全员可搜全部来源，管理面（建 / 改 / 删 / 刷新）仍 `requireSystemAdmin`。
+>
+> **增补 2026-10-10（性能 + 来源范围）：** ① 前端保险——防抖 300→450ms、**至少 2 字符**才发请求、
+> 用 `AbortController` 取消上一笔在途搜索；② **可限定来源范围**——搜索框左侧「来源 (已选/全部)」
+> 按钮点开小弹窗勾选来源（默认全选、记忆到本地 `apitest.specSourceSelection`），只搜勾中的来源，一个
+> 没勾则禁搜并提示；③ 结果**每条都标出来源**（`sources` 标签），同 `method+url`/同名跨来源也能分辨；
+> ④ **后端根治**——新增迁移 `078_spec_source_operations.sql`：把每个 operation 拆成一行
+> （`source_id, method, path, summary, search_text, payload`，`search_text` 是小写干草堆），刷新时
+> 事务内整来源重写，搜索只读 `search_text` 做 `strpos` 字面匹配、命中再取 `payload`，读写量与
+> **命中数**相关而非「全部来源快照之和」；`operationCount` 退化为 `count(*)`、列表不再读 `cache`；
+> 存量快照在迁移里回填进新表（无需重置库）。聚合搜对各来源**并发**执行（远端适配器不再串行叠加）。
+> `spec_sources.cache` 列保留但不再写入（置 NULL），驱动注册表 / `SourceOperation` 归一形状不变。
+
+**背景：** 现状的「导入」是一次性的——`apitest-web/src/lib/importers.ts` 在浏览器把 cURL / OpenAPI /
+Postman / 路径清单解析成 `EndpointInput[]`，POST 到 `routes/endpoints.ts` 的 `/endpoints/import`
+（`conflictStrategy` 判重）。平台侧**没有「来源」实体**：文档改了没有回流（8.13 已记「已有接口文档
+进不来第二次」）。本阶段把这个一次性解析升级为**可复用的来源**。
+
+**核心模型：**
+
+```
+来源（spec_sources）= 一个可取接口定义的地方
+  ├─ type='openapi'   静态文档 URL（GET → JSON/YAML → operations）
+  ├─ type='apifox'    Apifox 分享文档（llms.txt → 各接口页 OpenAPI → operations）
+  └─ type=<vendor>    远端平台适配器（远端自己的检索 API）
+        ↓ 统一归一
+SourceOperation（method / path / summary / headers / query / path / body；url 用 {{baseUrl}} 前缀）
+        ↓ 创建时搜索 → 预填（不落库）
+EndpointInput → 既有 POST /endpoints（人确认）
+```
+
+**边界与决策：**
+
+1. **两类来源都要，归一到同一个 `SourceOperation`。** 驱动接口
+   `SpecSourceDriver { type; list?(ctx); search?(ctx, keyword) }`，注册表照 `lib/adapters/index.ts`
+   的按需 `import()`（一个来源类型加载失败不带崩进程）。`list()` 有则拉快照本地搜，只有 `search()`
+   则实时透传。
+2. **全系统级 + 临时标记（2026-10-09 用户确认，撤销初稿的「两层」）。** 不设项目级来源：全部来源
+   存同一张系统级表、**全局可见可选**，只有**系统管理员**能建 / 改 / 删（正式与临时同权）。
+   `is_temporary` 只是**状态标记**——区分「公司统一平台的正式来源」与「临时贴的 URL」，不改变可见
+   性与权限，供管理员识别与清理。**不新增项目侧导航项、不新增项目级路由**（用户明确不把配置塞进
+   项目侧栏）。
+3. **两类来源都落真实驱动（2026-10-09 二次确认，扩边界 3）。** `openapi` 静态文档驱动；
+   另加**通用「远端平台检索适配器」**（`type=adapter`）——远端平台没有统一检索协议，所以不做
+   写死 vendor 的驱动，而是由来源 `config` **描述**检索端点、关键词参数、结果数组点路径与字段
+   映射（见 `lib/specDrivers/adapterConfig.ts`），换平台改配置即可。vendor 专属驱动仍不做
+   （通用适配器已覆盖）。**Apifox 专属驱动除外**：分享文档没有统一检索协议，且取数要读
+   `llms.txt` 再汇总各接口页，故 2026-10-09 增补 `apifox` 驱动（见上）。
+4. **取数 = 快照优先。** `openapi` 一次拉全量落 `cache`，创建时本地搜（离线可搜、不吃远端限流）；
+   adapter 只有检索能力时实时透传。**刷新是显式动作**（`POST .../refresh`），不做后台轮询。
+5. **预填不落库。** 搜索命中的 operation 转 `EndpointInput` 填表单，用户确认后才走既有创建路由
+   ——复用 `lib/validate.ts` 的 `validateEndpoint`，不新增第二套校验。
+6. **base URL 归环境变量。** 来源只定义「定义在哪」，operation 的 url 归一为 `{{baseUrl}}` + path
+   （与「路径清单」导入同形），多环境靠项目环境变量，不写死 host。
+7. **出站安全收口。** 所有来源取数走新 `lib/specFetch.ts`：仅 http(s)、禁内网段与
+   `169.254.169.254`、超时 + 体积上限（照 Runner 侧同名防线）。
+8. **凭证加密。** `credential_cipher` 走 `lib/crypto.ts` 的 `encryptSecret`（主密钥 AES-256-GCM），
+   读回**永不下发明文**（照 `environments` 只回键名）。
+9. **创建时搜索 = 创建接口页 URL 框旁勾选「从来源搜索」（2026-10-10 改写）。** 勾上后 URL 框
+   换成来源搜索框：**输入关键词即实时搜已选来源**（防抖 450ms、至少 2 字符、在途请求可取消）；来源范围
+   默认全选、可由「来源」小弹窗勾选缩小（记忆到本地）；结果每条打**来源标签**，`(method, url)` 多来源命中
+   去重保留一条、标签列出来源；点一条**预填**创建表单（不含 tags）。读 / 搜接口对全员开放，管理接口（建 / 改 / 删 /
+   刷新）`requireSystemAdmin`。服务端快照型来源走派生索引表（迁移 078）搜索，读写量与命中数相关。
+
+**落地清单：**
+
+- 迁移 `077_spec_sources.sql`：`spec_sources(id, name, type, url, credential_cipher BYTEA NULL,
+  config JSONB, is_temporary BOOLEAN NOT NULL DEFAULT false, cache JSONB NULL, cache_fetched_at,
+  cache_etag, status, created_by, created_at, updated_at)`；`name` 全局唯一。
+- 迁移 `078_spec_source_operations.sql`（2026-10-10 性能根治）：派生操作索引
+  `spec_source_operations(source_id, method, path, summary, search_text, payload)`，PK
+  `(source_id, method, path)`；刷新时事务内整来源重写；存量 `cache` 回填进本表。搜索只读
+  `search_text`（`strpos` 字面匹配）取命中行的 `payload`，`operationCount` = `count(*)`。
+- `lib/specFetch.ts`：安全出站（URL 校验 + 禁内网段 + 超时 / 体积上限）。
+- `lib/specDrivers/`：`types.ts`（`SpecSourceDriver` + `SourceOperation`）、`index.ts`（按需
+  `import()` 注册表）、`openapi.ts`（快照归一规则）、`apifox.ts`（Apifox 分享文档：llms.txt →
+  各接口页 OpenAPI → 复用 `normalizeOpenApi`）、`adapter.ts` + `adapterConfig.ts`（通用远端
+  检索适配器：`config` 描述检索端点/关键词参数/结果字段映射）；后端新增 `yaml` 依赖解析 YAML spec。
+- `routes/specSources.ts`：读 / 搜**全员可用**——`GET /api/v1/spec-sources`、
+  `GET /api/v1/spec-sources/:id/operations?keyword=`、多来源聚合搜
+  `GET /api/v1/spec-sources/search?keyword=&sourceIds=`；管理 `requireSystemAdmin`——
+  `POST/PATCH/DELETE /api/v1/spec-sources[/:id]`、`POST /:id/refresh`。
+- 前端：来源管理只在 `SystemPage` 新增 admin tab（建 / 改 / 删 / 刷新，正式与临时分段列）；
+  创建接口页（`EndpointWorkspace.tsx`）URL 框旁新增「**从来源搜索**」勾选（`SpecSourceSearch.tsx`）——
+  勾上后 URL 框即搜索框，**输入即实时**搜全部来源，点一条预填创建表单；导入弹窗
+  （`EndpointList.tsx`）保留第四种格式「**从来源搜索**」，复用同一 `SpecSourceSearch` 组件（点一条经
+  路由 state 预填创建表单）。**不开项目级导航项。**
+- i18n 中英双份 + `/docs` 说明。
+
+**明确不做（本期）：** 项目级来源（全系统级）；接口与来源的绑定关系（命中落库后不留来源痕）；
+文档变更回灌 / 漂移检测；来源命中的接口自动落库；来源 Webhook / 轮询推送；凭证聚合页；vendor
+专属适配器驱动（通用适配器已覆盖——远端没有统一检索协议时用 `config` 描述即可；**Apifox 除外**，
+2026-10-09 已按用户要求落地 `apifox` 驱动，见上增补）。
+
+**已知重复（记录在案）：** 前端 `importers.ts:parseOpenApi`（粘贴导入）与后端
+`lib/specDrivers/openapi.ts`（来源归一）是两处解析判据，需保持一致；后续如把前端粘贴导入迁到后端
+可合并。
+
+**新增依赖：** 后端 `yaml`（YAML spec 解析；前端已用同名包，后端首次引入）。零其它新增。
+
+---
+
 ## 十一、依赖安装清单
 
 ### 11.1 后端新增依赖
@@ -6771,6 +6903,7 @@ Token」过时表述修正。
 | P4.5 | `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` | 产物对象存储（MinIO/S3）；按需 `import()`，不进启动路径 |
 | P5   | `@modelcontextprotocol/server` v2 | MCP Server（协议 `2026-07-28`，无状态） |
 | P5   | `@modelcontextprotocol/node`      | `toNodeHandler` + host/origin 校验中间件 |
+| P17  | `yaml`                | 接口来源解析 YAML spec（`specDrivers/openapi`） |
 | ~~P5~~ | ~~`@fastify/swagger`~~          | **撤销**：原为「OpenAPI 文档生成」，与本阶段的 MCP 暴露无关；平台自身的 OpenAPI 输出没有需求方（前端读 `api.ts`，外部工具读 MCP 工具清单） |
 
 > 说明: P1-3 的执行进度推送用 **SSE**(`reply.hijack()` + `text/event-stream`)实现,
