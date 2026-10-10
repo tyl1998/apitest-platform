@@ -32,7 +32,8 @@
     "mssql": "^12.7.0",
     "mysql2": "^3.23.3",
     "oracledb": "^7.0.1",
-    "pg": "^8.22.0"
+    "pg": "^8.22.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/mssql": "^12.3.0",

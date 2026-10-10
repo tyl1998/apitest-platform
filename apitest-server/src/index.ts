@@ -45,6 +45,7 @@ import { accessRequestRoutes } from "./routes/accessRequests.js";
 import { specModuleRoutes } from "./routes/specModules.js";
 import { specCaseRoutes } from "./routes/specCases.js";
 import { specImportRoutes } from "./routes/specImport.js";
+import { specSourceRoutes } from "./routes/specSources.js";
 import { testPlanRoutes } from "./routes/testPlans.js";
 import { attributionRoutes } from "./routes/attributions.js";
 import { failureCategoryRoutes } from "./routes/failureCategories.js";
@@ -169,6 +170,9 @@ export async function buildApp(): Promise<FastifyInstance> {
   /* P7-4：文本用例导入（XMind 两代格式解析 + preview/commit 两阶段）。octet-stream
      的 content-type parser 在该插件作用域内注册，与 runners 那份互不越界。 */
   await app.register(specImportRoutes);
+  /* P17：接口来源（迁移 077）。读 / 搜全员可用（`GET /api/v1/spec-sources` 系列），
+     管理（建 / 改 / 删 / 刷新）requireSystemAdmin；全系统级，不挂项目前缀。 */
+  await app.register(specSourceRoutes);
   /* P7-7：测试计划（一批文本用例的一次手工执行记录）：建/列表/详情/改/删 + 项
      加/标/删 + CSV 导出（UTF-8 BOM）。五张表迁移 052 已建齐，零新迁移。 */
   await app.register(testPlanRoutes);

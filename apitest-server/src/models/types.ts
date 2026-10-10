@@ -3585,3 +3585,47 @@ export function mapAssistantProvider(row: Record<string, unknown>): AssistantPro
     updatedAt: new Date(String(row.updated_at)).toISOString(),
   };
 }
+
+/**
+ * 接口来源（P17，迁移 077）。全系统级、全局可见可选；`credentialConfigured` 只回
+ * 「有没有凭据」，明文永不下发（照 `environments` 的 secretKeys 只回键名）。
+ * `operationCount` 是派生索引表里的 operation 数（`count(*)`，迁移 078；列表/详情用）。
+ */
+export type SpecSource = {
+  id: string;
+  name: string;
+  type: string;
+  url: string;
+  credentialConfigured: boolean;
+  config: Record<string, unknown>;
+  isTemporary: boolean;
+  status: "ok" | "error";
+  operationCount: number;
+  cacheFetchedAt?: string;
+  createdByEmail?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function mapSpecSource(row: Record<string, unknown>): SpecSource {
+  /* operationCount 走派生索引表的 count(*)（SELECT_SOURCE 里算好），不再读整份快照
+     JSON；旧路径（直接拿 cache）保留兜底，避免漏改的调用点读成 0。 */
+  const count = row.operation_count !== undefined
+    ? Number(row.operation_count)
+    : Array.isArray(row.cache) ? row.cache.length : 0;
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    type: String(row.type),
+    url: String(row.url),
+    credentialConfigured: Boolean(row.credential_cipher),
+    config: (row.config ?? {}) as Record<string, unknown>,
+    isTemporary: row.is_temporary === true,
+    status: row.status === "error" ? "error" : "ok",
+    operationCount: count,
+    cacheFetchedAt: row.cache_fetched_at ? new Date(String(row.cache_fetched_at)).toISOString() : undefined,
+    createdByEmail: ownershipEmail(row.created_by_email),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+    updatedAt: new Date(String(row.updated_at)).toISOString(),
+  };
+}

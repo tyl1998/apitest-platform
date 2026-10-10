@@ -35,7 +35,7 @@ import { ZipWriter } from "./zipWriter.js";
  * | 用例         | `tc：` 前缀的节点                           | CASE_PREFIX_RE 剥前缀            |
  * | 优先级       | marker `priority-1..4`（P0..P3）            | markerPriority（marker 优先）    |
  * | 标签         | labels                                      | labels → tags                    |
- * | 前置条件     | `pc：` 子节点（多行拆多个）                 | pc 子节点正文 join("\n")         |
+ * | 前置条件     | 单个 `pc：` 子节点（正文按行折行）          | pc 子节点正文（含换行）          |
  * | 步骤         | tc 的其余子节点                             | 子节点 → 步骤                    |
  * | 预期结果     | 步骤节点的子节点（按行拆开）                | 孙节点标题 join("\n")            |
  *
@@ -101,15 +101,17 @@ function caseTopic(each: XmindExportCase): ExportTopic {
   const node = topic(`tc：${each.title}`);
   node.markers = [{ markerId: PRIORITY_MARKER[each.priority] }];
   if (each.tags.length) node.labels = [...each.tags];
-  /* 前置条件 = pc： 子节点（2026-09-08 用户反馈：notes 是角标不是内容，子节点
-     才是脑图的形状）；多行拆多个 pc 子节点，导入侧 join("\n") 精确还原。
+  /* 前置条件 = **一个** pc： 子节点（2026-09-08 用户反馈：notes 是角标不是内容，
+     子节点才是脑图的形状；2026-09-09 用户反馈：多条前置要合成一个分支按行展示，
+     而不是每条各占一个 pc 子节点）。标题形如 `pc：\n第一条\n第二条`——导入侧
+     PRECONDITION_PREFIX_RE 剥掉前缀后正文本身带换行，join("\n") 精确还原。
      pc 子节点排在步骤之前——读图顺序「先决条件 → 操作 → 预期」自然。 */
+  const preconditionLines = each.preconditions
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
   node.children.attached = [
-    ...each.preconditions
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => topic(`pc：${line}`)),
+    ...(preconditionLines.length ? [topic(`pc：\n${preconditionLines.join("\n")}`)] : []),
     ...each.steps.map((step) => {
       const stepNode = topic(step.step);
       /* 预期按行拆成子节点：导入侧 join("\n") 还原；单节点多行在 XMind 里会被
@@ -226,11 +228,12 @@ export function buildXmindTemplate(): Buffer {
     topic("检查首页展示当前用户名"), /* 步骤可以没有预期 */
   ];
 
-  /* 用例二：tc-pN： 优先级分段前缀 + 备注→前置 + 多行预期（多个预期子节点）。 */
+  /* 用例二：tc-pN： 优先级分段前缀 + 备注→前置 + 多行前置（单个 pc： 子节点按行折行）+
+     多行预期（多个预期子节点）。 */
   const second = topic("tc-p1：示例：连续输错密码后账号锁定");
   second.notes = { plain: { content: "备注文本会并入前置条件（与 pc： 子节点换行拼接）——不是被丢弃的描述。" } };
   second.children.attached = [
-    topic("pc：示例账号已存在且未被锁定"),
+    topic("pc：\n示例账号已存在\n账号未被锁定"),
     stepWithExpected("连续输错密码 5 次", ["账号锁定 30 分钟", "提示剩余解锁时间"]),
     stepWithExpected("锁定期间用正确密码登录", ["登录被拒绝，提示账号已锁定"]),
   ];

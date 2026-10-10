@@ -203,6 +203,15 @@ export const AUDIT_ACTIONS = {
    * `execution_partition_archives` 台账上。
    */
   executionPartitionDrop: "execution_partition.drop",
+  /**
+   * P17：接口来源（spec_source，全系统级，`project_id` 为空）。建 / 改 / 删 / 刷新四个
+   * 动作都留痕——来源是「平台会去 GET 一条 URL」的能力，改了 URL 就是改了出站目标。
+   * detail 只有字段名与类型/临时标记，**凭据明文与密文都不进**。
+   */
+  specSourceCreate: "spec_source.create",
+  specSourceUpdate: "spec_source.update",
+  specSourceDelete: "spec_source.delete",
+  specSourceRefresh: "spec_source.refresh",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];
