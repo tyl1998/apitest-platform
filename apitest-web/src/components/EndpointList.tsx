@@ -3,7 +3,7 @@ import { Drawer, Form, Input, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Download, CopyPlus, ListChecks, Pencil, Play, Plus, Trash2, X } from "lucide-react";
-import { api, noRunnerLabel, type BatchDebugResult, type Endpoint, type Execution } from "../api";
+import { api, noRunnerLabel, type BatchDebugResult, type Endpoint, type Execution, type SpecSourceOperation } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
@@ -15,6 +15,7 @@ import { ExecutionSnapshot } from "./ExecutionSnapshot";
 import { IconButton } from "./IconButton";
 import { OwnerCell } from "./OwnerCell";
 import { RunStatusTag } from "./RunStatusTag";
+import { SpecSourceSearch } from "./SpecSourceSearch";
 import { hasUnsupportedShell, parseCurl, parseOpenApi, parsePaths } from "../lib/importers";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
@@ -74,6 +75,21 @@ export function EndpointList() {
   /* 路径清单格式的行语法提示只在选中它时出现（Form.Item 的 extra 不随另一字段联动）。 */
   const importFormat = Form.useWatch("format", importForm);
   const previousProjectId = useRef(projectId);
+
+  /** 「从来源搜索」命中一条 → 预填进创建表单（经路由 state，不落库；用户确认后走既有 POST /endpoints）。 */
+  function prefillFromOperation(operation: SpecSourceOperation) {
+    if (!projectId) return;
+    setImportOpen(false);
+    navigate(`/projects/${projectId}/endpoints/new`, {
+      state: {
+        prefill: {
+          name: operation.name, description: operation.description, method: operation.method, url: operation.url,
+          headers: operation.headers, queryParams: operation.queryParams, pathParams: operation.pathParams,
+          bodyType: operation.bodyType, body: operation.body,
+        },
+      },
+    });
+  }
 
   /* Runs are queued and executed by a worker (P1-3); progress arrives here. */
   const stream = useExecutionStream(projectId);
@@ -267,6 +283,8 @@ export function EndpointList() {
   async function runImport() {
     if (!projectId) return;
     const values = await importForm.validateFields();
+    /* 「从来源搜索」走「点一条预填进创建表单」，不从这里批量导入（OK 按钮也不渲染）。 */
+    if (values.format === "source") return;
     const source: string = values.source.trim();
     let items;
     try { items = values.format === "curl" ? parseCurl(source) : values.format === "paths" ? parsePaths(source) : parseOpenApi(source); }
@@ -473,31 +491,37 @@ export function EndpointList() {
       onOk={() => void runImport()}
       okText={t("action.import")}
       cancelText={t("action.cancel")}
-      width={640}
+      width={680}
+      footer={importFormat === "source" ? <button className="btn" onClick={() => setImportOpen(false)}>{t("action.cancel")}</button> : undefined}
     >
       <Form form={importForm} layout="vertical" initialValues={{ strategy: "skip", format: "curl" }}>
         <Form.Item name="format" label={t("import.format")}>
-          <Select options={[{ value: "curl", label: t("import.curl") }, { value: "openapi", label: t("import.openapi") }, { value: "paths", label: t("import.paths") }]} />
+          <Select options={[{ value: "curl", label: t("import.curl") }, { value: "openapi", label: t("import.openapi") }, { value: "paths", label: t("import.paths") }, { value: "source", label: t("import.fromSource") }]} />
         </Form.Item>
-        <Form.Item
-          name="source"
-          label={t("import.source")}
-          rules={[{ required: true, message: t("import.sourceRequired") }]}
-          extra={importFormat === "paths" ? t("import.pathsHint") : undefined}
-        >
-          <Input.TextArea
-            rows={12}
-            className="mono"
-            placeholder={importFormat === "paths" ? "GET /users/{id} 查询用户\nPOST /orders 创建订单\n# 注释行" : undefined}
-          />
-        </Form.Item>
-        <Form.Item name="strategy" label={t("import.strategy")} extra={t("import.strategyHint")}>
-          <Select options={[
-            { value: "skip", label: t("import.skip") },
-            { value: "update", label: t("import.update") },
-            { value: "create", label: t("import.createAlways") },
-          ]} />
-        </Form.Item>
+        {importFormat === "source" ? <div>
+          <p className="form-note">{t("import.sourcePickHint")}</p>
+          {projectId ? <SpecSourceSearch projectId={projectId} onPick={prefillFromOperation} /> : <p className="muted">{t("import.noSources")}</p>}
+        </div> : <>
+          <Form.Item
+            name="source"
+            label={t("import.source")}
+            rules={[{ required: true, message: t("import.sourceRequired") }]}
+            extra={importFormat === "paths" ? t("import.pathsHint") : undefined}
+          >
+            <Input.TextArea
+              rows={12}
+              className="mono"
+              placeholder={importFormat === "paths" ? "GET /users/{id} 查询用户\nPOST /orders 创建订单\n# 注释行" : undefined}
+            />
+          </Form.Item>
+          <Form.Item name="strategy" label={t("import.strategy")} extra={t("import.strategyHint")}>
+            <Select options={[
+              { value: "skip", label: t("import.skip") },
+              { value: "update", label: t("import.update") },
+              { value: "create", label: t("import.createAlways") },
+            ]} />
+          </Form.Item>
+        </>}
       </Form>
     </Modal>
 

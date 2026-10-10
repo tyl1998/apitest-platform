@@ -16,6 +16,7 @@ import { ExecutionArchivePanel } from "./ExecutionArchivePanel";
 import { UsersPanel } from "./UsersPanel";
 import { AuditLogsPanel } from "./AuditLogsPanel";
 import { FailureCategoriesPanel } from "./FailureCategoriesPanel";
+import { SpecSourcesPanel } from "./SpecSourcesPanel";
 
 type GlobalPage = "dashboard" | "projects" | "system";
 
@@ -722,7 +723,7 @@ function ProjectsPage() {
   </>;
 }
 
-type SystemTab = "preferences" | "users" | "workers" | "runners" | "assistantProviders" | "failureCategories" | "auditLogs" | "executionArchive";
+type SystemTab = "preferences" | "users" | "workers" | "runners" | "assistantProviders" | "failureCategories" | "specSources" | "auditLogs" | "executionArchive";
 
 function SystemPage({ themePreference, onThemeChange, language }: { themePreference: ModePreference; onThemeChange: (mode: ModePreference) => void; language: "zh-CN" | "en" }) {
   const { t, i18n } = useTranslation();
@@ -774,7 +775,7 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
    * （那是 P2-8 的网段标签），面板首行会点明。
    */
   const tabs: [SystemTab, string][] = isAdmin
-    ? [["preferences", t("system.tabPreferences")], ["users", t("users.title")], ["workers", t("workers.title")], ["runners", t("runners.title")], ["assistantProviders", t("assistantProviders.title")], ["failureCategories", t("failureCategories.title")], ["auditLogs", t("audit.title")], ["executionArchive", t("executionArchive.title")]]
+    ? [["preferences", t("system.tabPreferences")], ["users", t("users.title")], ["workers", t("workers.title")], ["runners", t("runners.title")], ["assistantProviders", t("assistantProviders.title")], ["failureCategories", t("failureCategories.title")], ["specSources", t("specSources.title")], ["auditLogs", t("audit.title")], ["executionArchive", t("executionArchive.title")]]
     : [["preferences", t("system.tabPreferences")]];
 
   return <>
@@ -801,6 +802,7 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
     {tab === "runners" && isAdmin && <RunnerPoolPanel />}
     {tab === "assistantProviders" && isAdmin && <AssistantProvidersPanel />}
     {tab === "failureCategories" && isAdmin && <FailureCategoriesPanel />}
+    {tab === "specSources" && isAdmin && <SpecSourcesPanel />}
     {tab === "auditLogs" && isAdmin && <AuditLogsPanel />}
     {tab === "executionArchive" && isAdmin && <ExecutionArchivePanel />}
     </div>

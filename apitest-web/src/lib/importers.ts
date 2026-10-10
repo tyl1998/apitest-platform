@@ -60,6 +60,15 @@ export function hasUnsupportedShell(source: string) {
 }
 
 /**
+ * True when pasted text is a cURL command, so a URL box can recognize it
+ * (2026-10-09). A leading shell prompt (`$ `) is tolerated — people copy the
+ * line including it. A URL is required: a bare `curl` word is not a command.
+ */
+export function looksLikeCurl(source: string) {
+  return /^\s*\$?\s*curl\b/i.test(source) && /https?:\/\//i.test(source);
+}
+
+/**
  * 路径清单（批量粘贴，2026-08-30）：每行 `METHOD /path [名称]`，`#` 开头是注释。
  *
  * 服务仓库模式团队「为了覆盖率把仓库里已有的接口清单再抄一遍」的那一步：他们手里往往

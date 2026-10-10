@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams, useLocation } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Copy, CopyPlus, Crosshair, History, Maximize2, Play, Plus, Save, SaveAll, Trash2 } from "lucide-react";
-import { api, noRunnerLabel, type Assertion, type BodyType, type CaseUsage, type Endpoint, type EndpointAuth, type EndpointInput, type Execution, type ExecutionSourceFilter, type FlowExtract, type Paged, type PreRequestHook, type RequestSnapshot, type ResponseScript, type TestCase } from "../api";
+import { api, noRunnerLabel, type Assertion, type BodyType, type CaseUsage, type Endpoint, type EndpointAuth, type EndpointInput, type Execution, type ExecutionSourceFilter, type FlowExtract, type Paged, type PreRequestHook, type RequestSnapshot, type ResponseScript, type SpecSourceOperation, type TestCase } from "../api";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
 import { variableOptions } from "../lib/flowVariables";
+import { hasUnsupportedShell, looksLikeCurl, parseCurl } from "../lib/importers";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
 import { KeyValueEditor, fromPairs, toPairs, type Pair } from "./KeyValueEditor";
@@ -28,6 +29,7 @@ import { PreRequestHookEditor } from "./PreRequestHookEditor";
 import { ResponseScriptEditor, ResponseScriptResults } from "./ResponseScriptEditor";
 import { JsonPathPicker } from "./JsonPathPicker";
 import { HeaderPicker } from "./HeaderPicker";
+import { SpecSourceSearch } from "./SpecSourceSearch";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 /** Mac reads ⌘S; everything else reads Ctrl+S. Shown, never parsed. */
@@ -138,6 +140,33 @@ function toSnapshot(draft: Draft): RequestSnapshot | undefined {
   };
 }
 
+/**
+ * 接口来源命中的 operation → 新建草稿（P17）。导入弹窗的「从来源搜索」点一条后经路由
+ * state 带过来：预填**不落库**，用户确认后走既有创建路由。url 已是 `{{baseUrl}}` + path。
+ * **标签不预填**（来源 tags 是来源侧目录标记，不等于当前接口想打的标签）。
+ */
+type SourcePrefill = {
+  name?: string; description?: string; method?: string; url?: string;
+  headers?: Record<string, string>; queryParams?: Record<string, string>; pathParams?: Record<string, string>;
+  bodyType?: BodyType; body?: unknown;
+};
+
+function prefillToDraft(prefill: SourcePrefill): Draft {
+  return {
+    name: prefill.name ?? "",
+    description: prefill.description ?? "",
+    method: prefill.method ?? "GET",
+    url: prefill.url ?? "",
+    headers: toPairs(prefill.headers),
+    queryParams: toPairs(prefill.queryParams),
+    pathParams: toPairs(prefill.pathParams),
+    bodyType: prefill.bodyType ?? "none",
+    bodyText: prefill.bodyType === "json" && prefill.body !== undefined ? JSON.stringify(prefill.body, null, 2) : "",
+    tags: "",
+    auth: { type: "none" },
+  };
+}
+
 /** Loads a case's frozen request into the editor, keeping name/description/tags. */
 function snapshotToDraft(current: Draft, request: RequestSnapshot): Draft {
   return {
@@ -177,6 +206,7 @@ function toCurl(draft: Draft) {
 export function EndpointWorkspace() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
   const { projectId, endpointId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const isNew = endpointId === "new";
@@ -188,6 +218,9 @@ export function EndpointWorkspace() {
 
   const [draft, setDraft] = useState<Draft>(EMPTY);
   const [urlText, setUrlText] = useState("");
+  /* 创建接口页 URL 框的「从来源搜索」开关（P17，2026-10-10 反馈调整）：勾上后 URL
+     框换成来源搜索框，输入即搜全部来源，点一条预填整份表单（不落库）。 */
+  const [sourceSearchOn, setSourceSearchOn] = useState(false);
   const [tab, setTab] = useState<Tab>("params");
   const [responseTab, setResponseTab] = useState<ResponseTab>("body");
   const [pretty, setPretty] = useState(true);
@@ -300,7 +333,16 @@ export function EndpointWorkspace() {
   useEffect(() => { localStorage.setItem("apitest.historyOpen", String(historyOpen)); }, [historyOpen]);
 
   useEffect(() => {
-    if (isNew) { setDraft(EMPTY); setUrlText(""); setBaseline(JSON.stringify(EMPTY)); setLoading(false); return; }
+    if (isNew) {
+      /* 从来源搜索（导入弹窗入口）带 prefill 时直接进新建草稿；baseline 仍是空——它是未保存的。 */
+      const prefill = (location.state as { prefill?: SourcePrefill } | null)?.prefill;
+      const next = prefill ? prefillToDraft(prefill) : EMPTY;
+      setDraft(next);
+      setUrlText(composeUrl(next.url, next.queryParams));
+      setBaseline(JSON.stringify(EMPTY));
+      setLoading(false);
+      return;
+    }
     if (!projectId || !endpointId) return;
     setLoading(true);
     setResult(undefined);
@@ -409,6 +451,76 @@ export function EndpointWorkspace() {
   function editQuery(queryParams: Pair[]) {
     setDraft((current) => ({ ...current, queryParams }));
     setUrlText(composeUrl(draft.url, queryParams));
+  }
+
+  /**
+   * Recognizes a pasted cURL command and loads it into the request (2026-10-09).
+   *
+   * Returns false when the text is not a cURL carrying a URL, so the caller can
+   * let the paste land in the field unchanged. The parsed URL is split into the
+   * address bar + params table the same way `toDraft`/`editUrl` do, so the two
+   * views stay consistent. Name/description/tags are left alone — a cURL says
+   * nothing about them.
+   */
+  function applyCurl(source: string): boolean {
+    if (!looksLikeCurl(source)) return false;
+    const parsed = parseCurl(source)[0];
+    if (!parsed?.url) return false;
+    const { base, query } = splitUrl(parsed.url);
+    const bodyText = parsed.bodyType === "json"
+      ? (parsed.body === undefined ? "" : JSON.stringify(parsed.body, null, 2))
+      : parsed.bodyText ?? "";
+    setDraft((current) => ({
+      ...current,
+      method: parsed.method,
+      url: base,
+      queryParams: query,
+      headers: toPairs(parsed.headers ?? {}),
+      bodyType: parsed.bodyType ?? "none",
+      bodyText,
+      auth: parsed.auth ?? { type: "none" },
+    }));
+    setUrlText(parsed.url);
+    setBodyError(undefined);
+    setTab("params");
+    message.success(t("editor.curlLoaded"));
+    if (hasUnsupportedShell(source)) message.warning(t("editor.curlShellWarning"));
+    return true;
+  }
+
+  /* A pasted cURL describes the whole request, so it is caught before the
+     single-line field would flatten its line breaks into one URL string. */
+  function handleUrlPaste(event: React.ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>) {
+    if (applyCurl(event.clipboardData.getData("text"))) event.preventDefault();
+  }
+
+  /**
+   * 来源命中的 operation → 新建草稿（P17）。预填 name / description / method /
+   * url + 参数 / body（**不填 tags**），**不落库**——用户确认后走既有创建路由。url 已是
+   * `{{baseUrl}}` + path（边界 6），与「路径清单」导入同形。预填完关掉搜索态，
+   * URL 框恢复成地址栏显示填好的 url。
+   */
+  function applySourceOperation(operation: SpecSourceOperation) {
+    const next: Draft = {
+      name: operation.name ?? "",
+      description: operation.description ?? "",
+      method: operation.method,
+      url: operation.url,
+      headers: toPairs(operation.headers),
+      queryParams: toPairs(operation.queryParams),
+      pathParams: toPairs(operation.pathParams),
+      bodyType: operation.bodyType ?? "none",
+      bodyText: operation.bodyType === "json" && operation.body !== undefined ? JSON.stringify(operation.body, null, 2) : "",
+      auth: { type: "none" },
+      /* 标签不预填：来源的 tags 常是来源侧的目录标记，不等于当前接口想打的标签。 */
+      tags: "",
+      defaultEnvironmentId: draft.defaultEnvironmentId,
+    };
+    setDraft(next);
+    setUrlText(composeUrl(next.url, next.queryParams));
+    setBodyError(undefined);
+    setTab("params");
+    setSourceSearchOn(false);
   }
 
   function buildPayload(): EndpointInput | undefined {
@@ -990,15 +1102,22 @@ export function EndpointWorkspace() {
         <section className="panel">
           <div className="panel-body request-line">
             <Select value={draft.method} onChange={(method) => patch({ method })} options={METHODS.map((value) => ({ value }))} style={{ width: 104 }} />
-            <VariableField
-              value={urlText}
-              onChange={editUrl}
-              options={variableChoices}
-              className="input mono request-url"
-              placeholder="https://api.example.com/orders/:id?page=1"
-              aria-label={t("endpoints.url")}
-              spellCheck={false}
-            />
+            {isNew && <label className="source-search-toggle" title={t("editor.sourceSearchHint")}>
+              <input type="checkbox" checked={sourceSearchOn} onChange={(event) => setSourceSearchOn(event.target.checked)} />
+              {t("editor.sourceSearch")}
+            </label>}
+            {isNew && sourceSearchOn
+              ? <SpecSourceSearch projectId={projectId!} onPick={applySourceOperation} />
+              : <VariableField
+                value={urlText}
+                onChange={editUrl}
+                onPaste={handleUrlPaste}
+                options={variableChoices}
+                className="input mono request-url"
+                placeholder={t("endpoints.urlPlaceholder")}
+                aria-label={t("endpoints.url")}
+                spellCheck={false}
+              />}
             <Select
               value={draft.defaultEnvironmentId}
               onChange={(defaultEnvironmentId) => patch({ defaultEnvironmentId })}

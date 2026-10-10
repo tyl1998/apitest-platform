@@ -125,14 +125,16 @@ export function FailureCategoriesPanel() {
   if (!categories) return <p className="muted">{t("common.loading")}</p>;
 
   return <>
-    {/* 与项目侧「归因抽屉」的关系：这里管分类本身，打标发生在报告/执行记录的失败行上。 */}
-    <p className="form-note">{t("failureCategories.hint")}</p>
-
+    {/* 按钮在右、描述在按钮下面。 */}
     <div className="filter-bar">
+      <span className="filter-spacer" />
       <button className="btn btn-primary btn-with-icon" disabled={creating} onClick={() => { form.resetFields(); setCreating(true); }}>
         <Plus size={14} />{t("failureCategories.create")}
       </button>
     </div>
+
+    {/* 与项目侧「归因抽屉」的关系：这里管分类本身，打标发生在报告/执行记录的失败行上。 */}
+    <p className="form-note">{t("failureCategories.hint")}</p>
 
     {creating && <div className="panel" style={{ marginBottom: "var(--s4)" }}>
       <div className="panel-body">

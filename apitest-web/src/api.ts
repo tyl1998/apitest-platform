@@ -4203,6 +4203,27 @@ export const api = {
       结果落平台侧 elicit_log，历史回放时并回。失败静默——记录丢一条只是回放少一行。 */
   recordElicitOutcome: (conversationId: string, body: { tool: string; outcome: "confirmed" | "declined"; input?: Record<string, unknown> }) =>
     client.post(`/assistant/conversations/${conversationId}/elicit`, body).then(data<{ recorded: boolean }>),
+
+  /* ── P17：接口来源（全系统级；读 / 搜全员可用，管理仅系统管理员）───────────── */
+
+  /** 全部来源（全局可见）。`type` 缺省不过滤。 */
+  specSources: (type?: string) =>
+    client.get("/spec-sources", { params: { type } }).then(data<SpecSource[]>),
+  /** 单一来源的 operation 快照（本地搜，离线可用）。 */
+  specSourceOperations: (sourceId: string, keyword?: string) =>
+    client.get(`/spec-sources/${sourceId}/operations`, { params: { keyword } }).then(data<SpecSourceOperation[]>),
+  /** 多来源聚合搜：结果按 (method,url) 去重、标签列出来源。传 `signal` 可取消上一笔在途搜索。 */
+  searchSpecSources: (keyword: string, sourceIds: string[], signal?: AbortSignal) =>
+    client.get("/spec-sources/search", { params: { keyword, sourceIds: sourceIds.join(",") }, signal }).then(data<SpecSourceOperation[]>),
+  createSpecSource: (input: SpecSourceInput) =>
+    client.post("/spec-sources", input).then(data<SpecSource>),
+  updateSpecSource: (id: string, input: SpecSourceInput) =>
+    client.patch(`/spec-sources/${id}`, input).then(data<SpecSource>),
+  deleteSpecSource: (id: string) =>
+    client.delete(`/spec-sources/${id}`).then(data<{ id: string }>),
+  /** 显式刷新快照；取不到回 502（code 2008）。 */
+  refreshSpecSource: (id: string) =>
+    client.post(`/spec-sources/${id}/refresh`).then(data<SpecSource>),
 };
 
 /** 分享目标两类：套件报告与仓库执行报告。 */
@@ -4335,6 +4356,55 @@ export type AssistantProviderImport = {
   name: string;
   protocol: AssistantProtocol;
   userParams?: AssistantUserParam[];
+};
+
+/**
+ * 接口来源（P17）：一个「可以去取接口定义的地方」。全系统级、全局可见可选；只有系统
+ * 管理员能建 / 改 / 删。`credentialConfigured` 只回「有没有凭据」，明文永不下发。
+ * `operationCount` 是快照里的 operation 数（列表用，不把整份快照发给前端）。
+ */
+export type SpecSource = {
+  id: string;
+  name: string;
+  type: string;
+  url: string;
+  credentialConfigured: boolean;
+  config: Record<string, unknown>;
+  isTemporary: boolean;
+  status: "ok" | "error";
+  operationCount: number;
+  cacheFetchedAt?: string;
+  createdByEmail?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** 建 / 改来源的载荷。凭据三态：null 清除 / 字符串设置 / 缺省不动（改时）。 */
+export type SpecSourceInput = {
+  name: string;
+  type: string;
+  url: string;
+  credential?: string | null;
+  config?: Record<string, unknown>;
+  isTemporary?: boolean;
+};
+
+/** 搜索命中的 operation：EndpointInput 字段 + 来源标签，供创建表单预填（不落库）。 */
+export type SpecSourceOperation = {
+  method: string;
+  url: string;
+  path: string;
+  name: string;
+  description: string;
+  headers: Record<string, string>;
+  queryParams: Record<string, string>;
+  pathParams: Record<string, string>;
+  bodyType: BodyType;
+  body?: unknown;
+  tags: string[];
+  sourceId: string;
+  sourceName: string;
+  sources: string[];
 };
 
 /**

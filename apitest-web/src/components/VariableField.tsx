@@ -49,6 +49,8 @@ type Props = {
   /** `password` for credential fields; the完成 popover still works over the mask. */
   type?: "text" | "password";
   "aria-label"?: string;
+  /** Forwarded to the underlying field — the URL box uses it to detect a pasted cURL. */
+  onPaste?: React.ClipboardEventHandler<HTMLInputElement | HTMLTextAreaElement>;
 };
 
 export function VariableField({ value, onChange, options, multiline, className, placeholder, rows, spellCheck, type, ...rest }: Props) {

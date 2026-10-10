@@ -680,20 +680,21 @@ export function AssistantProvidersPanel() {
   const hasEnabledDefault = providers.some((provider) => provider.isDefault && provider.enabled);
 
   return <>
-    {/* 层级纪律写在最上面：这里管平台的上游模板；每个用户在抽屉「设置」里自配凭据。 */}
-    <p className="form-note">{t("assistantProviders.hint")}</p>
-
-    {/* 无默认 provider 的引导（边界 15 的系统侧）：用户第一次配置时没有预选项。 */}
-    {!hasEnabledDefault && providers.length > 0 && <p className="form-error">{t("assistantProviders.noDefaultWarning")}</p>}
-
+    {/* 按钮在右、描述在按钮下面：先动作后解释。 */}
     <div className="filter-bar">
+      <span className="muted mono">{t("assistantProviders.totalCount", { count: providers.length })}</span>
+      <span className="filter-spacer" />
       <button className="btn btn-primary btn-with-icon" onClick={openCreate}>
         <Plus size={14} />{t("assistantProviders.create")}
       </button>
       <button className="btn" onClick={() => setImportOpen(true)}>{t("assistantProviders.importAction")}</button>
-      <span className="filter-spacer" />
-      <span className="muted mono">{t("assistantProviders.totalCount", { count: providers.length })}</span>
     </div>
+
+    {/* 层级纪律：这里管平台的上游模板；每个用户在抽屉「设置」里自配凭据。 */}
+    <p className="form-note">{t("assistantProviders.hint")}</p>
+
+    {/* 无默认 provider 的引导（边界 15 的系统侧）：用户第一次配置时没有预选项。 */}
+    {!hasEnabledDefault && providers.length > 0 && <p className="form-error">{t("assistantProviders.noDefaultWarning")}</p>}
 
     {providers.length ? <div className="table-scroll"><table className="grid">
       <thead><tr>

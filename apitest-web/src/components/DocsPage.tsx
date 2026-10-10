@@ -23,6 +23,7 @@ const SECTIONS = [
   "intro",
   "projects",
   "endpoints",
+  "specSources",
   "environments",
   "dataSources",
   "flows",

@@ -4184,6 +4184,37 @@ button.attribution-entry:hover .chip { border-color: var(--accent); }
 .var-field-item .muted { font-size: 11px; min-width: 0; }
 .var-field-empty { margin: var(--s1) 0; padding: var(--s1) var(--s2); font-size: 12px; }
 
+/* 创建接口页「从来源搜索」开关与结果浮层（P17，2026-10-10 反馈调整）：
+   开关沿用既有表单语汇，浮层复用 .var-field-pop，只是行内多了方法徽标与来源标签。 */
+.source-search-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.source-search-pop { min-width: 420px; max-width: 560px; }
+/* 来源搜索行：范围按钮 + 搜索框（URL 框位）；在 request-line 与导入弹窗里都能撑满。 */
+.source-search-row { display: flex; align-items: center; gap: var(--s2); flex: 1 1 240px; min-width: 0; }
+.source-search-row > .var-field { flex: 1 1 auto; min-width: 0; }
+.source-search-item { align-items: center; }
+.source-search-name { flex: 0 0 auto; max-width: 40%; font-size: 13px; color: var(--ink); }
+.source-search-url { flex: 1 1 auto; min-width: 0; }
+.source-search-source { flex: 0 0 auto; }
+/* 来源范围按钮：贴搜索框左侧，显示「已选/全部」。 */
+.source-scope-btn { flex: 0 0 auto; white-space: nowrap; }
+.source-scope-count { margin-left: 6px; color: var(--ink-3); }
+.source-scope-pop { min-width: 300px; max-width: 420px; }
+.source-scope-head { display: flex; align-items: center; gap: var(--s2); padding: 0 var(--s2) var(--s1); border-bottom: 1px solid var(--line); margin-bottom: var(--s1); }
+.source-scope-head .cell-link { font-size: 12px; }
+.source-scope-list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; }
+.source-scope-item { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px var(--s2); font-size: 13px; cursor: pointer; }
+.source-scope-item:hover { background: var(--raised); }
+
 /* Script editor actions: one right-aligned group, so the row reads as
    "what this script is" on the left and "what you can do with it" on the right
    instead of three controls of three different weights. */
