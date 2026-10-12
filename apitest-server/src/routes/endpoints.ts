@@ -8,6 +8,7 @@ import { getSharedObjectStore, requestBaseUrl, storageDriverName } from "../lib/
 import { endpointSnapshot, recordAssetVersion } from "../lib/assetVersions.js";
 import { requireProjectAccess } from "../lib/rbac.js";
 import { fail, failNoRunner, success } from "../lib/response.js";
+import { detachSuiteMember } from "../lib/suiteMembers.js";
 import { isUuid } from "../lib/uuid.js";
 import { validateEndpoint, type EndpointInput } from "../lib/validate.js";
 import { mapBatchExecution, mapEndpoint, mapExecution, type Endpoint, type RequestSnapshot } from "../models/types.js";
@@ -161,6 +162,50 @@ export async function queueEndpointRun(projectId: string, endpointId: string, re
        都带同一个触发人（调用方传的就是按批量按钮的那个人）。 */
     triggeredBy: triggeredBy ?? null,
   });
+}
+
+/**
+ * Everything that disappears along with this endpoint (P2-4.5 增补).
+ *
+ * 删接口会连带抹掉两样东西，都必须在确认前说出来：
+ * - `test_cases.endpoint_id` 是 ON DELETE CASCADE（迁移 007），该接口下的用例一起消失。
+ *   其中被**手动套件**列为成员的用例若直接级联，会在套件里留下悬空成员行——所以这类
+ *   引用**拦截**（没有 `force` 就 409），force 之后在同一事务里把成员摘掉。
+ * - `executions.endpoint_id` 也是 ON DELETE CASCADE（迁移 066），执行历史一起消失。
+ *   这里只报数：`endpoint_id` 是 NOT NULL，没法像环境/用例那样 SET NULL 保留历史。
+ *
+ * 两类**不算引用**，既不拦也不列（与用例删除同款纪律）：
+ * - 流程请求节点的 `endpointId` 只是来源标记，节点自带完整请求快照，删掉接口流程照跑。
+ * - `spec_case_links` 的 `target_id` 是多态列、没有外键（迁移 052），删接口后绑定行悬空、
+ *   读时显示「目标已删除」。只报个数，供人判断有多少文本用例会变成「目标已删除」。
+ */
+async function endpointUsage(projectId: string, endpointId: string) {
+  const found = await pool.query("SELECT id FROM endpoints WHERE id = $1 AND project_id = $2", [endpointId, projectId]);
+  if (!found.rowCount) return undefined;
+  const cases = await pool.query("SELECT id, name FROM test_cases WHERE endpoint_id = $1 ORDER BY name", [endpointId]);
+  const caseIds = cases.rows.map((row) => String(row.id));
+  /* 手动套件成员里提到这些用例的 → 拦截。tag/all 按条件现算，不持有引用（边界决策 6）。 */
+  const suites = caseIds.length ? await pool.query(
+    `SELECT DISTINCT s.id, s.name FROM test_suites s
+      WHERE s.project_id = $1 AND s.selection_type = 'manual'
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(s.selection_config->'members') AS m
+           WHERE m->>'type' = 'case' AND m->>'id' = ANY($2::text[])
+        )
+      ORDER BY s.name`,
+    [projectId, caseIds],
+  ) : { rows: [] as Record<string, unknown>[], rowCount: 0 };
+  const executions = await pool.query("SELECT COUNT(*)::int AS total FROM executions WHERE endpoint_id = $1", [endpointId]);
+  const specLinks = await pool.query("SELECT COUNT(*)::int AS total FROM spec_case_links WHERE target_type = 'endpoint' AND target_id = $1", [endpointId]);
+  return {
+    endpointId,
+    caseCount: caseIds.length,
+    cases: cases.rows.map((row) => ({ id: String(row.id), name: String(row.name) })),
+    executionCount: Number(executions.rows[0].total),
+    suites: suites.rows.map((row) => ({ id: String(row.id), name: String(row.name) })),
+    specCaseLinkCount: Number(specLinks.rows[0].total),
+    blocked: Boolean(suites.rowCount),
+  };
 }
 
 export async function endpointRoutes(app: FastifyInstance) {
@@ -380,16 +425,68 @@ export async function endpointRoutes(app: FastifyInstance) {
     return reply.code(201).send(success(endpoint));
   });
 
-  app.delete<{ Params: { id: string; endpointId: string } }>("/api/v1/projects/:id/endpoints/:endpointId", async (request, reply) => {
+  /* Dependency scan, read before the confirm dialog so the user sees what breaks. */
+  app.get<{ Params: { id: string; endpointId: string } }>("/api/v1/projects/:id/endpoints/:endpointId/usage", async (request, reply) => {
+    const context = await requireProjectAccess(request, reply); if (!context) return;
+    if (!isUuid(request.params.endpointId)) return fail(reply, 404, 2001, "endpoint not found");
+    const usage = await endpointUsage(context.project.id, request.params.endpointId);
+    if (!usage) return fail(reply, 404, 2001, "endpoint not found");
+    return success(usage);
+  });
+
+  /**
+   * Deleting an endpoint cascades: cases under it go (迁移 007) and so does its run
+   * history (`executions.endpoint_id` is NOT NULL + ON DELETE CASCADE, 迁移 066 —
+   * unlike envs/cases it cannot null the id out and keep the row).
+   *
+   * 被手动套件引用的用例会拦（P2-4.5 增补）：直接级联会在套件里留下悬空成员，唯一合理
+   * 的后续动作就是摘掉它——所以 `?force=true` 之后，删除与「把这些用例从每个引用它们的
+   * 手动套件里摘掉」在同一个事务里完成，和删用例/删流程同一条纪律。
+   */
+  app.delete<{ Params: { id: string; endpointId: string }; Querystring: { force?: string } }>("/api/v1/projects/:id/endpoints/:endpointId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
     if (!isUuid(request.params.endpointId)) return fail(reply, 404, 2001, "endpoint not found");
-    const result = await pool.query("DELETE FROM endpoints WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.endpointId, context.project.id]);
-    if (!result.rowCount) return fail(reply, 404, 2001, "endpoint not found");
-    writeAuditLogAsync({
-      action: AUDIT_ACTIONS.endpointDelete, targetType: "endpoint", targetId: String(result.rows[0].id),
-      projectId: context.project.id, userId: context.user.id, ip: request.ip,
-    });
-    return success({ id: result.rows[0].id });
+    const usage = await endpointUsage(context.project.id, request.params.endpointId);
+    if (!usage) return fail(reply, 404, 2001, "endpoint not found");
+    if (usage.blocked && request.query.force !== "true") {
+      return reply.code(409).send({ code: 2003, message: "endpoint is referenced", data: usage });
+    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query("DELETE FROM endpoints WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.endpointId, context.project.id]);
+      if (!result.rowCount) { await client.query("ROLLBACK"); return fail(reply, 404, 2001, "endpoint not found"); }
+      /* 接口删除级联掉用例；被手动套件列为成员的那些必须同时摘掉，否则留下悬空行。
+         未拦截 = 没有手动套件引用这些用例，不必空跑一遍 UPDATE。 */
+      const detachedSuites: { id: string; name: string }[] = [];
+      if (usage.blocked) {
+        const seen = new Set<string>();
+        for (const item of usage.cases) {
+          for (const suite of await detachSuiteMember(client, context.project.id, "case", item.id, context.user.id)) {
+            if (seen.has(suite.id)) continue;
+            seen.add(suite.id);
+            detachedSuites.push(suite);
+          }
+        }
+      }
+      await client.query("COMMIT");
+      writeAuditLogAsync({
+        action: AUDIT_ACTIONS.endpointDelete, targetType: "endpoint", targetId: String(result.rows[0].id),
+        projectId: context.project.id, userId: context.user.id, ip: request.ip,
+      });
+      /* 摘成员也是套件的一次写入（同 cases/flows）：提交后逐条补 suite.update。 */
+      for (const suite of detachedSuites) {
+        writeAuditLogAsync({
+          action: AUDIT_ACTIONS.testSuiteUpdate, targetType: "test_suite", targetId: suite.id,
+          projectId: context.project.id, userId: context.user.id,
+          detail: { fields: ["selection_config"], detachedMember: { type: "case", endpointId: request.params.endpointId } }, ip: request.ip,
+        });
+      }
+      return success({ id: result.rows[0].id, detachedSuites });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      return fail(reply, 400, 1001, error instanceof Error ? error.message : "endpoint could not be deleted");
+    } finally { client.release(); }
   });
 
   app.post<{ Params: { id: string }; Body: { endpointIds?: string[] } }>("/api/v1/projects/:id/endpoints/batch-delete", async (request, reply) => {
@@ -406,7 +503,29 @@ export async function endpointRoutes(app: FastifyInstance) {
         await client.query("ROLLBACK");
         return fail(reply, 400, 1001, "all endpoints must belong to the project");
       }
-      const deleted = await client.query("DELETE FROM endpoints WHERE project_id = $1 AND id = ANY($2::uuid[]) RETURNING id", [context.project.id, endpointIds]);
+      /* 被手动套件引用的接口跳过而不是整批 409（P2-4.5 增补）：批量是显式的多选，逐项
+         结果比整批失败有用——删掉可安全删的，点名被拦的。被拦的接口整行保留（用例不级联，
+         套件成员也就不悬空）。 */
+      const blockedRows = await client.query(
+        `SELECT e.id, e.name,
+                (SELECT COUNT(DISTINCT s.id) FROM test_suites s
+                  WHERE s.project_id = e.project_id AND s.selection_type = 'manual'
+                    AND EXISTS (
+                      SELECT 1 FROM jsonb_array_elements(s.selection_config->'members') AS m
+                       JOIN test_cases tc ON tc.id = NULLIF(m->>'id', '')::uuid
+                      WHERE m->>'type' = 'case' AND tc.endpoint_id = e.id))::int AS suite_count
+           FROM endpoints e
+          WHERE e.project_id = $1 AND e.id = ANY($2::uuid[])`,
+        [context.project.id, endpointIds],
+      );
+      const blocked = blockedRows.rows
+        .filter((row) => Number(row.suite_count) > 0)
+        .map((row) => ({ id: String(row.id), name: String(row.name), suiteCount: Number(row.suite_count) }));
+      const blockedIds = new Set(blocked.map((item) => item.id));
+      const deletable = endpointIds.filter((id) => !blockedIds.has(id));
+      const deleted = deletable.length
+        ? await client.query("DELETE FROM endpoints WHERE project_id = $1 AND id = ANY($2::uuid[]) RETURNING id", [context.project.id, deletable])
+        : { rows: [] as Record<string, unknown>[], rowCount: 0 };
       await client.query("COMMIT");
       /* 批量删除落**一行**（边界 6）：target_id 没有单一落点（UUID 列），数量进 detail。 */
       const detail: AuditBatchDetail = { ids: deleted.rowCount ?? 0 };
@@ -415,7 +534,7 @@ export async function endpointRoutes(app: FastifyInstance) {
         projectId: context.project.id, userId: context.user.id,
         detail, ip: request.ip,
       });
-      return success({ ids: deleted.rows.map((row) => String(row.id)), deleted: deleted.rowCount });
+      return success({ ids: deleted.rows.map((row) => String(row.id)), deleted: deleted.rowCount, blocked });
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;

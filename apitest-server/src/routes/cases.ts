@@ -60,14 +60,16 @@ async function withLastRun(cases: TestCase[]): Promise<CaseWithRun[]> {
  * 只有**套件的 manual 成员**算引用：套件只存 `{type,id}`，用例定义现读，所以用例没了那个
  * 成员就是一条悬空引用。tag/all 按条件现算，不产生引用（边界决策 6）。
  *
- * 两类**不算**引用，所以既不拦也不列：
+ * 两类**不算引用**，所以既不拦，只在确认框里作**信息提示**（2026-10-12 增补）：
  *
  * - 流程请求节点的 `sourceCaseId` 只是**来源标记**。节点自己持有完整的请求/断言快照
  *   （改用例不影响已存下的流程，见 `RequestFlowNode.sourceCaseId` 的注释），删掉用例
  *   只让编辑器少显示一行「来自哪个用例」，运行结果一模一样。把它列进拦截清单会让人以为
- *   流程会跑坏。
+ *   流程会跑坏——所以只报「有几个节点以它作为来源」，不拦。
  * - 执行历史：`executions.case_id` 是 ON DELETE SET NULL 且快照了 `case_name`（迁移 007），
  *   删完历史仍然读得通。只报个数，供人判断这条用例跑过多少次。
+ * - 文本用例绑定：`spec_case_links.target_id` 是多态列、没有外键（迁移 052），删完绑定行
+ *   悬空、读时显示「目标已删除」，也不拦，只报个数。
  */
 async function caseUsage(projectId: string, caseId: string) {
   const found = await pool.query("SELECT id FROM test_cases WHERE id = $1 AND project_id = $2", [caseId, projectId]);
@@ -79,10 +81,16 @@ async function caseUsage(projectId: string, caseId: string) {
     [projectId, JSON.stringify({ members: [{ type: "case", id: caseId }] })],
   );
   const executions = await pool.query("SELECT COUNT(*)::int AS total FROM executions WHERE case_id = $1", [caseId]);
+  /* 流程来源标记与文本用例绑定：数出来放进确认框，不参与 blocked。 */
+  const flowBindings = await caseFlowBindings(projectId, caseId);
+  const flowNodeCount = flowBindings.reduce((sum, binding) => sum + binding.nodes.length, 0);
+  const specLinks = await pool.query("SELECT COUNT(*)::int AS total FROM spec_case_links WHERE target_type = 'case' AND target_id = $1", [caseId]);
   return {
     caseId,
     suites: suites.rows.map((row) => ({ id: String(row.id), name: String(row.name) })),
     executionCount: Number(executions.rows[0].total),
+    flowNodeCount,
+    specCaseLinkCount: Number(specLinks.rows[0].total),
     blocked: Boolean(suites.rowCount),
   };
 }
