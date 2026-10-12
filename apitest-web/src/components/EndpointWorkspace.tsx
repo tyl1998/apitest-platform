@@ -3,7 +3,7 @@ import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams, useLocation } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Copy, CopyPlus, Crosshair, History, Maximize2, Play, Plus, Save, SaveAll, Trash2 } from "lucide-react";
-import { api, noRunnerLabel, type Assertion, type BodyType, type CaseUsage, type Endpoint, type EndpointAuth, type EndpointInput, type Execution, type ExecutionSourceFilter, type FlowExtract, type Paged, type PreRequestHook, type RequestSnapshot, type ResponseScript, type SpecSourceOperation, type TestCase } from "../api";
+import { api, noRunnerLabel, type Assertion, type BodyType, type CaseUsage, type Endpoint, type EndpointAuth, type EndpointInput, type EndpointUsage, type Execution, type ExecutionSourceFilter, type FlowExtract, type Paged, type PreRequestHook, type RequestSnapshot, type ResponseScript, type SpecSourceOperation, type TestCase } from "../api";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
@@ -797,14 +797,18 @@ export function EndpointWorkspace() {
     catch { message.error(t("cases.usageFailed")); return; }
 
     const references = usage.suites.map((suite) => t("cases.usageSuite", { name: suite.name }));
-    const history = usage.executionCount > 0 ? t("cases.deleteHistoryNote", { count: usage.executionCount }) : undefined;
+    /* 信息性绑定：流程来源标记与文本用例绑定都不拦，只在确认框里说清「还有哪儿在用它」。 */
+    const notes: string[] = [];
+    if (usage.executionCount > 0) notes.push(t("cases.deleteHistoryNote", { count: usage.executionCount }));
+    if (usage.flowNodeCount > 0) notes.push(t("cases.deleteFlowBindingsNote", { count: usage.flowNodeCount }));
+    if (usage.specCaseLinkCount > 0) notes.push(t("cases.deleteSpecLinksNote", { count: usage.specCaseLinkCount }));
 
     Modal.confirm({
       title: usage.blocked ? t("cases.deleteBlockedTitle", { name: testCase.name }) : t("cases.deleteTitle", { name: testCase.name }),
       content: <div>
         <p>{usage.blocked ? t("cases.deleteBlockedHint") : t("cases.deleteHint")}</p>
         {references.length > 0 && <ul className="usage-list">{references.map((line, index) => <li key={`${line}:${index}`}>{line}</li>)}</ul>}
-        {history && <p className="form-note">{history}</p>}
+        {notes.map((line) => <p className="form-note" key={line}>{line}</p>)}
       </div>,
       okText: usage.blocked ? t("action.deleteAnyway") : t("action.delete"),
       cancelText: t("action.cancel"),
@@ -924,16 +928,41 @@ export function EndpointWorkspace() {
     if (run) setInspecting(run);
   }, [runs.items, searchParams, result]);
 
-  function remove() {
+  /**
+   * 删除前先扫描引用（P2-4.5 增补）：用例与执行历史随接口级联删除，确认框先说清数量；
+   * 该接口下的用例若是手动套件成员则拦截并列出清单，看过之后 force 删除，同一事务里摘成员。
+   */
+  async function remove() {
+    if (!projectId || !endpointId) return;
+    let usage: EndpointUsage;
+    try { usage = await api.endpointUsage(projectId, endpointId); }
+    catch { message.error(t("endpoints.usageFailed")); return; }
+
+    const notes: string[] = [];
+    if (usage.caseCount > 0) notes.push(t("endpoints.deleteCasesNote", { count: usage.caseCount }));
+    if (usage.executionCount > 0) notes.push(t("endpoints.deleteExecutionsNote", { count: usage.executionCount }));
+    if (usage.specCaseLinkCount > 0) notes.push(t("endpoints.deleteSpecLinksNote", { count: usage.specCaseLinkCount }));
+    const suiteList = usage.suites.map((suite) => t("endpoints.usageSuite", { name: suite.name }));
+
     Modal.confirm({
-      title: t("endpoints.deleteTitle", { name: draft.name }), content: t("endpoints.deleteHint"),
-      okText: t("action.delete"), cancelText: t("action.cancel"), okButtonProps: { danger: true },
+      title: usage.blocked ? t("endpoints.deleteBlockedTitle", { name: draft.name }) : t("endpoints.deleteTitle", { name: draft.name }),
+      content: <div>
+        <p>{usage.blocked ? t("endpoints.deleteBlockedHint") : t("endpoints.deleteHint")}</p>
+        {suiteList.length > 0 && <ul className="usage-list">{suiteList.map((line, index) => <li key={`${line}:${index}`}>{line}</li>)}</ul>}
+        {notes.map((line) => <p className="form-note" key={line}>{line}</p>)}
+      </div>,
+      okText: usage.blocked ? t("action.deleteAnyway") : t("action.delete"),
+      cancelText: t("action.cancel"), okButtonProps: { danger: true },
       onOk: async () => {
-        await api.deleteEndpoint(projectId!, endpointId!);
-        setGuard(null);
-        await reloadEndpoints();
-        message.success(t("endpoints.deleted"));
-        navigate(`/projects/${projectId}/endpoints`);
+        try {
+          const result = await api.deleteEndpoint(projectId, endpointId, usage.blocked);
+          setGuard(null);
+          await reloadEndpoints();
+          message.success(result.detachedSuites.length
+            ? t("endpoints.deletedDetached", { count: result.detachedSuites.length })
+            : t("endpoints.deleted"));
+          navigate(`/projects/${projectId}/endpoints`);
+        } catch { message.error(t("endpoints.deleteFailed")); }
       },
     });
   }

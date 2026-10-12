@@ -3,7 +3,7 @@ import { Drawer, Form, Input, Modal, Pagination, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Download, CopyPlus, ListChecks, Pencil, Play, Plus, Trash2, X } from "lucide-react";
-import { api, noRunnerLabel, type BatchDebugResult, type Endpoint, type Execution, type SpecSourceOperation } from "../api";
+import { api, noRunnerLabel, type BatchDebugResult, type Endpoint, type EndpointUsage, type Execution, type SpecSourceOperation } from "../api";
 import { useDebounced } from "../hooks/useDebounced";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
@@ -243,24 +243,57 @@ export function EndpointList() {
         setBatchDeleting(true);
         try {
           const outcome = await api.batchDeleteEndpoints(projectId, [...selected]);
-          setSelected(new Set());
+          /* 被套件引用的接口整行保留：把它们留在选中态，用户才看得到「这几个还没删」。 */
+          setSelected(new Set(outcome.blocked.map((item) => item.id)));
           await load();
           await reloadEndpoints();
-          message.success(t("endpoints.batchDeleted", { count: outcome.deleted }));
+          if (outcome.blocked.length) {
+            message.warning(t("endpoints.batchDeletedPartial", { deleted: outcome.deleted, blocked: outcome.blocked.length }));
+          } else {
+            message.success(t("endpoints.batchDeleted", { count: outcome.deleted }));
+          }
         } catch { message.error(t("endpoints.batchDeleteFailed")); }
         finally { setBatchDeleting(false); }
       },
     });
   }
 
-  function remove(endpoint: Endpoint) {
+  /**
+   * 删除前先扫描引用（P2-4.5 增补）。用例与执行历史随接口级联删除，用确认框说清数量；
+   * 该接口下的用例若是手动套件成员，则拦截并列出清单，主按钮换成「仍然删除」——force
+   * 是看过清单之后的决定，不是对 409 的重试。
+   */
+  async function remove(endpoint: Endpoint) {
+    if (!projectId) return;
+    let usage: EndpointUsage;
+    try { usage = await api.endpointUsage(projectId, endpoint.id); }
+    catch { message.error(t("endpoints.usageFailed")); return; }
+
+    const notes: string[] = [];
+    if (usage.caseCount > 0) notes.push(t("endpoints.deleteCasesNote", { count: usage.caseCount }));
+    if (usage.executionCount > 0) notes.push(t("endpoints.deleteExecutionsNote", { count: usage.executionCount }));
+    if (usage.specCaseLinkCount > 0) notes.push(t("endpoints.deleteSpecLinksNote", { count: usage.specCaseLinkCount }));
+    const suiteList = usage.suites.map((suite) => t("endpoints.usageSuite", { name: suite.name }));
+
     Modal.confirm({
-      title: t("endpoints.deleteTitle", { name: endpoint.name }),
-      content: t("endpoints.deleteHint"),
-      okText: t("action.delete"),
+      title: usage.blocked ? t("endpoints.deleteBlockedTitle", { name: endpoint.name }) : t("endpoints.deleteTitle", { name: endpoint.name }),
+      content: <div>
+        <p>{usage.blocked ? t("endpoints.deleteBlockedHint") : t("endpoints.deleteHint")}</p>
+        {suiteList.length > 0 && <ul className="usage-list">{suiteList.map((line, index) => <li key={`${line}:${index}`}>{line}</li>)}</ul>}
+        {notes.map((line) => <p className="form-note" key={line}>{line}</p>)}
+      </div>,
+      okText: usage.blocked ? t("action.deleteAnyway") : t("action.delete"),
       cancelText: t("action.cancel"),
       okButtonProps: { danger: true },
-      onOk: async () => { await api.deleteEndpoint(projectId!, endpoint.id); await load(); message.success(t("endpoints.deleted")); },
+      onOk: async () => {
+        try {
+          const result = await api.deleteEndpoint(projectId, endpoint.id, usage.blocked);
+          await load();
+          message.success(result.detachedSuites.length
+            ? t("endpoints.deletedDetached", { count: result.detachedSuites.length })
+            : t("endpoints.deleted"));
+        } catch { message.error(t("endpoints.deleteFailed")); }
+      },
     });
   }
 

@@ -65,6 +65,24 @@ export type EnvironmentUsage = {
   blocked: boolean;
 };
 
+/**
+ * What disappears if an endpoint is deleted, read before the confirm dialog (P2-4.5 增补).
+ *
+ * `blocked` = the endpoint's cases are manual suite members; `?force=true` then detaches
+ * them in the same transaction. Cases and run history cascade away regardless, so both are
+ * reported. Flow node `endpointId` is a snapshot source marker and
+ * `specCaseLinkCount` dangles to「目标已删除」 — neither blocks, both are shown as context.
+ */
+export type EndpointUsage = {
+  endpointId: string;
+  caseCount: number;
+  cases: { id: string; name: string }[];
+  executionCount: number;
+  suites: { id: string; name: string }[];
+  specCaseLinkCount: number;
+  blocked: boolean;
+};
+
 export type DataSourceType = "postgresql" | "mysql" | "sqlserver" | "oracle" | "mongodb" | "redis";
 export type DataSourceConfig = {
   host: string;
@@ -484,12 +502,15 @@ export type TestCaseInput = {
  * What breaks if a case is deleted, read before the confirm dialog (P2-4.5).
  *
  * 只有手动成员引用它的套件会拦。流程请求节点的 `sourceCaseId` 只是来源标记（节点自带
- * 完整快照），所以不在这里；`executionCount` 只报数，历史带着 `caseName` 快照。
+ * 完整快照），所以不拦；`flowNodeCount` / `specCaseLinkCount` 是信息性绑定（改好之后
+ * 还有哪儿在用它的定义），`executionCount` 只报数，历史带着 `caseName` 快照。
  */
 export type CaseUsage = {
   caseId: string;
   suites: { id: string; name: string }[];
   executionCount: number;
+  flowNodeCount: number;
+  specCaseLinkCount: number;
   blocked: boolean;
 };
 
@@ -3445,8 +3466,13 @@ export const api = {
   endpoint: (projectId: string, endpointId: string) => client.get(`/projects/${projectId}/endpoints/${endpointId}`).then(data<Endpoint>),
   createEndpoint: (projectId: string, endpoint: EndpointInput) => client.post(`/projects/${projectId}/endpoints`, endpoint).then(data<Endpoint>),
   updateEndpoint: (projectId: string, id: string, endpoint: Partial<EndpointInput>) => client.patch(`/projects/${projectId}/endpoints/${id}`, endpoint).then(data<Endpoint>),
-  deleteEndpoint: (projectId: string, id: string) => client.delete(`/projects/${projectId}/endpoints/${id}`).then(data<{ id: string }>),
-  batchDeleteEndpoints: (projectId: string, endpointIds: string[]) => client.post(`/projects/${projectId}/endpoints/batch-delete`, { endpointIds }).then(data<{ ids: string[]; deleted: number }>),
+  /** 引用清单，删除对话框先读它（P2-4.5 增补）。 */
+  endpointUsage: (projectId: string, endpointId: string) => client.get(`/projects/${projectId}/endpoints/${endpointId}/usage`).then(data<EndpointUsage>),
+  /** `force` 只在用户看过引用清单之后才发。返回被顺带摘掉成员的套件清单。 */
+  deleteEndpoint: (projectId: string, id: string, force = false) =>
+    client.delete(`/projects/${projectId}/endpoints/${id}`, { params: force ? { force: "true" } : undefined }).then(data<{ id: string; detachedSuites: { id: string; name: string }[] }>),
+  /** 逐项结果：被手动套件引用的接口跳过并列入 `blocked`（P2-4.5 增补）。 */
+  batchDeleteEndpoints: (projectId: string, endpointIds: string[]) => client.post(`/projects/${projectId}/endpoints/batch-delete`, { endpointIds }).then(data<{ ids: string[]; deleted: number; blocked: { id: string; name: string; suiteCount: number }[] }>),
   duplicateEndpoint: (projectId: string, id: string, name?: string) => client.post(`/projects/${projectId}/endpoints/${id}/duplicate`, { name }).then(data<Endpoint>),
   importEndpoints: (projectId: string, endpoints: EndpointInput[], conflictStrategy: "update" | "skip" | "create") =>
     client.post(`/projects/${projectId}/endpoints/import`, { endpoints, conflictStrategy }).then(data<{ imported: Endpoint[]; updated: Endpoint[]; skipped: string[] }>),
