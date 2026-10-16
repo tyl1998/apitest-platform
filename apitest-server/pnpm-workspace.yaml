@@ -1,3 +1,7 @@
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: true
+  oracledb: true
 onlyBuiltDependencies:
   - esbuild
   - msgpackr-extract
