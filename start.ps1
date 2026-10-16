@@ -85,11 +85,32 @@ if (Test-Path $EnvFile) {
         $value = $value.Substring(1, $value.Length - 2)
       }
     }
-    if (-not [Environment]::GetEnvironmentVariable($key, "Process")) {
+    # 大小写不敏感判断：避免 .env 里的 `https_proxy` 与系统已有的 `HTTPS_PROXY`
+    # 并列，否则后面 Start-Process 会因「同名大小写不同键共存」而失败（见下方归一化）。
+    $exists = $false
+    foreach ($ek in [Environment]::GetEnvironmentVariables("Process").Keys) { if ($ek -eq $key) { $exists = $true; break } }
+    if (-not $exists) {
       [Environment]::SetEnvironmentVariable($key, $value, "Process")
     }
   }
   Write-Host "[env] 已加载 $EnvFile"
+}
+
+# ── 归一化进程环境变量（Windows 专属坑）──────────────────────────────────
+# Windows 的变量名不区分大小写，但 PowerShell 进程环境里可能同时存在
+# `HTTPS_PROXY` 与 `https_proxy`（系统变量 + 别处注入的大小写变体）。一旦两个
+# 大小写不同的同名键共存，`Start-Process` 构造子进程环境块时会抛
+# 「字典中的关键字:…已添加的关键字:…」而失败 —— 表现为 Windows 上 start.ps1
+# 拉不起任何服务（Mac 没有这套大小写重复的变量，所以正常）。
+# 这里保留每个键的首次出现、删掉其余大小写变体，消除冲突后照常启动。
+$EnvSeen = @{}
+foreach ($ek in @([Environment]::GetEnvironmentVariables("Process").Keys)) {
+  $lk = $ek.ToLower()
+  if ($EnvSeen.ContainsKey($lk)) {
+    [Environment]::SetEnvironmentVariable($ek, $null, "Process")
+  } else {
+    $EnvSeen[$lk] = $ek
+  }
 }
 
 # Postgres/Redis 由外部常驻（OrbStack / 手动起的 docker），脚本不再负责。
