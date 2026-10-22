@@ -1,4 +1,3 @@
-import { acceptedContent, inputRequired } from "@modelcontextprotocol/server";
 import { AUDIT_ACTIONS, writeAuditLogAsync, type AuditAction } from "./audit.js";
 import type { McpIdentity } from "./mcpAuth.js";
 import type { McpToolResult } from "./mcpServer.js";
@@ -56,7 +55,7 @@ export function requiredUuidArg(args: Record<string, unknown>, key: string, labe
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
- * P5-5 写/执行工具的共用件：审计 + MRTR 删除确认。
+ * P5-5 写/执行工具的共用件：审计。
  * ──────────────────────────────────────────────────────────────────────── */
 
 /**
@@ -100,57 +99,5 @@ export function auditMcpResource(
     projectId: identity.projectId,
     userId: identity.createdBy ?? null,
     detail,
-  });
-}
-
-/** 工具 handler 的第三参：MRTR 重试回合里客户端带回来的 `inputResponses`（SDK 从
- *  per-request envelope 里挑出、已去掉 `{method,result}` 包装的裸结果）。 */
-export type MrtrContext = { inputResponses?: Record<string, unknown> } | undefined;/** 一次 delete_* 的 MRTR 闸门读数。 */
-export type MrtrGate =
-  /** 首次调用：还没有任何回应，该发确认回合。 */
-  | { phase: "first" }
-  /** 人拒绝/取消了确认（或回应形状不对）：降级为错误，不是再问一遍。 */
-  | { phase: "refused" }
-  /** 人确认了：执行删除。 */
-  | { phase: "confirmed" };
-
-/**
- * delete_* 的确认闸门（9.4.1）：`force` 不是工具入参——agent 无法单方面替人答。
- *
- * 三态判定：
- * - 没有任何 `inputResponses` → 首次调用，调用方接着返回 `mrtrRequired(...)`；
- * - 有回应且 `confirm === true`（accept 的 elicitation）→ 确认，执行；
- * - 有回应但不是确认（decline / cancel / 形状不对）→ 拒绝。降级而不是开洞：人说不删
- *   就不删，重问一遍等于把「取消」当成「没听见」。
- */
-export function mrtrGate(mcpReq: MrtrContext, key = "confirm"): MrtrGate {
-  const responses = mcpReq?.inputResponses;
-  if (!responses || Object.keys(responses).length === 0) return { phase: "first" };
-  const content = acceptedContent<{ confirm?: unknown }>(responses, key);
-  if (content && content.confirm === true) return { phase: "confirmed" };
-  return { phase: "refused" };
-}
-
-/** 「删除未确认」的错误文案：指向 UI 而不是 force（后者根本不是入参）。 */
-export const MRTR_REFUSED_MESSAGE =
-  "deletion was not confirmed by the human (declined or cancelled); if it is really intended, delete via the platform UI where the consequences are shown (1003)";
-
-/**
- * MRTR 确认回合（9.4.1 第一段）：`resultType: "input_required"` + 一个表单式 elicitation，
- * 客户端（agent 平台）把 message 转述给人——这就是聊天里的「确认删除吗」。SDK 的
- * `legacy: 'stateless'` 兼容腿会在 2025 系连接上用 elicitation 桥接同一份代码。
- */
-export function mrtrRequired(message: string): McpToolResult {
-  return inputRequired({
-    inputRequests: {
-      confirm: inputRequired.elicit({
-        message,
-        requestedSchema: {
-          type: "object",
-          properties: { confirm: { type: "boolean", description: "set to true to delete; anything else cancels" } },
-          required: ["confirm"],
-        },
-      }),
-    },
   });
 }

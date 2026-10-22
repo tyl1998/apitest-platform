@@ -3,9 +3,8 @@ import type { PoolClient } from "pg";
 import { pool } from "../db.js";
 import { AUDIT_ACTIONS, auditFields } from "./audit.js";
 import {
-  auditMcpAction, auditMcpResource, mrtrGate, mrtrRequired, MRTR_REFUSED_MESSAGE,
+  auditMcpAction, auditMcpResource,
   requiredUuidArg, stringArg, toolError, toolResult,
-  type MrtrContext,
 } from "./mcpToolResult.js";
 import type { McpToolDefinition } from "./mcpServer.js";
 import { scriptUsage } from "./scripts.js";
@@ -22,27 +21,17 @@ import { mapEndpoint, mapScript } from "../models/types.js";
  * **公共脚本**：`list_scripts` 从「只读」升级为完整 CRUD——create 幂等键
  * `(project, name)`（同 `create_suite` 先例：重名按更新处理，模型重述需求不该产出
  * 第二条同名脚本）；update 走 `lib/validateScript.ts` 同款校验（kind 不可改、库
- * 内容过 `inspectLibrarySource`、依赖整块替换且只能指 library）；delete 走 MRTR
- * 确认，message 带追随者清单（`scriptUsage` 的清单，REST force 删除的信息等价物）。
+ * 内容过 `inspectLibrarySource`、依赖整块替换且只能指 library）；delete 一次执行，
+ * 回执带追随者清单（`scriptUsage` 的清单，REST force 删除的信息等价物），确认由
+ * 客户端按 `destructiveHint` 在调用前完成。
  * 匿名脚本没有通路（它们是用例/流程的附属物，改公共脚本才是对追随者负责的动作）。
  *
  * **delete_environment**：`upsert_environment` 只补了变量通路，删除一直缺。删除
  * 语义照 REST——先扫独占变量引用（`scanUsage` 同款：只有本环境能供的变量被接口
- * 引用才算 blocked），MRTR 确认回合里把清单转述给人；历史执行的名字快照在删前
- * 回填（executions.environment_name），与 REST 删除路由同一条纪律。secret 管理仍
+ * 引用才算 blocked），回执里给清单；历史执行的名字快照在删前回填
+ * （executions.environment_name），与 REST 删除路由同一条纪律。secret 管理仍
  * 无通路（契约第 7 条：secret 只能人在 UI 里录）。
  */
-
-/** delete 的 MRTR 闸门三态（mcpToolsWriteCrud.gateDelete 同款，本文件内一份）。 */
-function gateDelete(mcpReq: MrtrContext, message: string):
-  | { refused: ReturnType<typeof toolError> }
-  | { required: ReturnType<typeof mrtrRequired> }
-  | { confirmed: true } {
-  const gate = mrtrGate(mcpReq);
-  if (gate.phase === "first") return { required: mrtrRequired(message) };
-  if (gate.phase === "refused") return { refused: toolError(MRTR_REFUSED_MESSAGE) };
-  return { confirmed: true };
-}
 
 /**
  * 重写脚本的依赖列表（REST replaceDependencies 同款：只能指本项目的 library、库
@@ -231,27 +220,20 @@ export const WRITE_EXTRA_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: "delete_script",
-    description: "Delete a named public script — changing every follower at once, so it always takes two rounds: the first call returns the follower list (cases, flows, dependent scripts) and asks the human behind the client to confirm; retry the identical call with the confirmed inputResponses to delete. Followers stop working at their next run with 'script content is missing' — that is the consequence being confirmed. There is no force parameter.",
+    description: "Delete a named public script — this changes every follower at once. Irreversible and marked destructive, so the client asks the human before calling; once called it deletes in one round. Followers stop working at their next run with 'script content is missing'. Use get_script-level reads or update_script's follower list first if the human needs to see the followers before deciding.",
     scope: "write",
     inputSchema: {
       type: "object",
       properties: { scriptId: { type: "string" } },
       required: ["scriptId"],
     },
-    handler: async (args, identity, mcpReq) => {
+    handler: async (args, identity) => {
       const id = requiredUuidArg(args, "scriptId", "script");
       if ("error" in id) return toolError(id.error);
       const existing = await pool.query("SELECT * FROM scripts WHERE id = $1 AND project_id = $2 AND name IS NOT NULL", [id.value, identity.projectId]);
       if (!existing.rowCount) return toolError("script not found (2001)");
-      const script = mapScript(existing.rows[0]);
 
       const followers = await scriptUsage(identity.projectId, id.value);
-      const summary = followers.length
-        ? `It is followed by ${followers.length} asset(s): ${followers.map((item) => `${item.kind} "${item.name}"`).join(", ")}. Those followers break at their next run.`
-        : "Nothing follows it.";
-      const gate = gateDelete(mcpReq, `Delete script "${script.name}"? ${summary}`);
-      if ("refused" in gate) return gate.refused;
-      if ("required" in gate) return gate.required;
 
       const result = await pool.query(
         "DELETE FROM scripts WHERE id = $1 AND project_id = $2 AND name IS NOT NULL RETURNING id",
@@ -260,7 +242,7 @@ export const WRITE_EXTRA_TOOLS: readonly McpToolDefinition[] = [
       if (!result.rowCount) return toolError("script not found (2001)");
       auditMcpAction("mcp_tool.write", "delete_script", identity, id.value, { outcome: "deleted", affectedFollowers: followers.length });
       auditMcpResource(AUDIT_ACTIONS.scriptDelete, "script", identity, id.value, { fields: [] });
-      return toolResult({ id: id.value, deleted: true, affectedFollowers: followers.length });
+      return toolResult({ id: id.value, deleted: true, affectedFollowers: followers.length, followers });
     },
   },
 
@@ -268,14 +250,14 @@ export const WRITE_EXTRA_TOOLS: readonly McpToolDefinition[] = [
 
   {
     name: "delete_environment",
-    description: "Delete an environment — irreversible, so it always takes two rounds: the first call reports the endpoints that reference variables ONLY this environment supplies (sibling environments providing the same key keep those endpoints working) plus how many executions ran with it, and asks the human behind the client to confirm; retry the identical call with the confirmed inputResponses to delete. Historical executions keep their environment name snapshot. Cannot delete or read secrets (secret values are entered by humans in the UI and never leave the server). There is no force parameter.",
+    description: "Delete an environment. Reports the endpoints that reference variables ONLY this environment supplies (sibling environments providing the same key keep those endpoints working) and how many executions ran with it; historical executions keep their environment name snapshot. Irreversible and marked destructive, so the client asks the human before calling; once called it deletes in one round. Cannot delete or read secrets (secret values are entered by humans in the UI and never leave the server).",
     scope: "write",
     inputSchema: {
       type: "object",
       properties: { environmentId: { type: "string" } },
       required: ["environmentId"],
     },
-    handler: async (args, identity, mcpReq) => {
+    handler: async (args, identity) => {
       const id = requiredUuidArg(args, "environmentId", "environment");
       if ("error" in id) return toolError(id.error);
       const environment = await pool.query("SELECT * FROM environments WHERE id = $1 AND project_id = $2", [id.value, identity.projectId]);
@@ -310,12 +292,6 @@ export const WRITE_EXTRA_TOOLS: readonly McpToolDefinition[] = [
       const summary = endpoints.length
         ? `${endpoints.length} endpoint(s) reference variables only this environment supplies: ${endpoints.map((endpoint) => `${endpoint.method} ${endpoint.url} (${endpoint.variables.join(", ")})`).join("; ")}.`
         : "No endpoint depends exclusively on this environment.";
-      const gate = gateDelete(
-        mcpReq,
-        `Delete environment "${String(row.name)}"? ${summary} ${Number(executions.rows[0].total)} execution(s) ran with it; they keep their name snapshot.`,
-      );
-      if ("refused" in gate) return gate.refused;
-      if ("required" in gate) return gate.required;
 
       /* 删前回填执行历史的名字快照（REST 删除同款）：FK 置空后名字仍在。 */
       await pool.query("UPDATE executions SET environment_name = COALESCE(environment_name, (SELECT name FROM environments WHERE id = $1)) WHERE environment_id = $1", [id.value]);
@@ -327,7 +303,7 @@ export const WRITE_EXTRA_TOOLS: readonly McpToolDefinition[] = [
         executionsTotal: Number(executions.rows[0].total),
       });
       auditMcpResource(AUDIT_ACTIONS.environmentDelete, "environment", identity, id.value, { fields: [] });
-      return toolResult({ id: id.value, deleted: true, affectedEndpoints: endpoints.length });
+      return toolResult({ id: id.value, deleted: true, affectedEndpoints: endpoints.length, endpointsWithExclusiveVariables: endpoints, consequence: summary });
     },
   },
 ];

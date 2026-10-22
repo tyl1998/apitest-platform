@@ -2,9 +2,8 @@ import { randomUUID } from "node:crypto";
 import { pool } from "../db.js";
 import { AUDIT_ACTIONS, auditFields } from "./audit.js";
 import {
-  auditMcpAction, auditMcpResource, mrtrGate, mrtrRequired, MRTR_REFUSED_MESSAGE,
+  auditMcpAction, auditMcpResource,
   pageArgs, requiredUuidArg, stringArg, toolError, toolResult,
-  type MrtrContext,
 } from "./mcpToolResult.js";
 import type { McpToolDefinition } from "./mcpServer.js";
 import {
@@ -18,25 +17,14 @@ import { mapSpecCase, mapSpecModule } from "../models/types.js";
  *
  * 语义与 REST 面（routes/specCases.ts / specModules.ts）逐字同源：校验走提取后的
  * `lib/validateSpecCase.ts`（边界 8），编号（item_key）服务端生成且不可改，删除语义
- * 照 REST——文本用例直接删（绑定行与计划项 CASCADE，无 409/force），模块带用例就
- * MRTR 确认回合（等价 REST 的 409/force，force 不是工具入参）。
+ * 照 REST——文本用例直接删（绑定行与计划项 CASCADE，无 409/force），一次调用执行，
+ * 确认由客户端按 `destructiveHint` 在调用前完成。
  *
  * 不做的（description 里写清）：模块改名/移动/重排（物化路径子树改写是对结构的
  * 大动作，REST 面的 depth/collision 检查复杂，先不复制）；批量更新/删除（一次
  * 调一个，模型本来就是逐条对话）；绑定（links）——绑定牵涉四类目标的归属判定与
  * repo_case 的 key 语义，REST 面专属；导入/导出（文件流，MCP 没有合理的载荷形态）。
  */
-
-/** delete_spec_module 的 MRTR 闸门三态（mcpToolsWriteCrud.gateDelete 同款，本文件内一份）。 */
-function gateDelete(mcpReq: MrtrContext, message: string):
-  | { refused: ReturnType<typeof toolError> }
-  | { required: ReturnType<typeof mrtrRequired> }
-  | { confirmed: true } {
-  const gate = mrtrGate(mcpReq);
-  if (gate.phase === "first") return { required: mrtrRequired(message) };
-  if (gate.phase === "refused") return { refused: toolError(MRTR_REFUSED_MESSAGE) };
-  return { confirmed: true };
-}
 
 export const READ_SPEC_TOOLS: readonly McpToolDefinition[] = [
   {
@@ -277,14 +265,14 @@ export const WRITE_SPEC_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: "delete_spec_case",
-    description: "Delete one text (spec) case — irreversible (its links and test plan items cascade with it; plan items keep title snapshots so plans stay readable), so it always asks the human behind the client to confirm first (retry the identical call with the confirmed inputResponses to delete). No dependency scan is needed: links and plan items are part of the case and never block deletion. There is no force parameter.",
+    description: "Delete one text (spec) case; its links and test plan items cascade with it (plan items keep title snapshots so plans stay readable). Irreversible and marked destructive, so the client asks the human before calling; once called it deletes in one round. No dependency scan is needed: links and plan items are part of the case and never block deletion.",
     scope: "write",
     inputSchema: {
       type: "object",
       properties: { caseId: { type: "string" } },
       required: ["caseId"],
     },
-    handler: async (args, identity, mcpReq) => {
+    handler: async (args, identity) => {
       const id = requiredUuidArg(args, "caseId", "spec case");
       if ("error" in id) return toolError(id.error);
       const existing = await pool.query(
@@ -296,14 +284,10 @@ export const WRITE_SPEC_TOOLS: readonly McpToolDefinition[] = [
       const row = existing.rows[0];
       const label = `${row.item_key ? `${String(row.item_key)} ` : ""}"${String(row.title)}"`;
 
-      const gate = gateDelete(mcpReq, `Delete spec case ${label}? It has ${Number(row.link_count)} link(s); links and test plan items referencing it cascade with it.`);
-      if ("refused" in gate) return gate.refused;
-      if ("required" in gate) return gate.required;
-
       const result = await pool.query("DELETE FROM spec_cases WHERE id = $1 AND project_id = $2 RETURNING id", [id.value, identity.projectId]);
       if (!result.rowCount) return toolError("spec case not found (2001)");
       auditMcpAction("mcp_tool.write", "delete_spec_case", identity, id.value, { outcome: "deleted" });
-      return toolResult({ id: id.value, deleted: true });
+      return toolResult({ id: id.value, deleted: true, title: String(row.title), cascadedLinks: Number(row.link_count), consequence: `${label} deleted; ${Number(row.link_count)} link(s) and its test plan items cascade with it.` });
     },
   },
 

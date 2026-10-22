@@ -3,14 +3,13 @@ import {
   McpServer,
   type AuthInfo,
   type CallToolResult,
-  type InputRequiredResult,
   type ToolAnnotations,
 } from "@modelcontextprotocol/server";
 import type { McpBinding, McpScope } from "../models/types.js";
 import {
   bindingScopeUnion, resolveBinding, type McpIdentity, type McpPrincipal,
 } from "./mcpAuth.js";
-import { toolError, type MrtrContext } from "./mcpToolResult.js";
+import { toolError } from "./mcpToolResult.js";
 import { READ_CORE_TOOLS } from "./mcpToolsReadCore.js";
 import { READ_TASKS_TOOLS } from "./mcpToolsReadTasks.js";
 import { READ_SPEC_TOOLS, WRITE_SPEC_TOOLS } from "./mcpToolsSpec.js";
@@ -47,14 +46,13 @@ import { ME_TOOLS } from "./mcpToolsMe.js";
  * description 决定调不调，写清边界比写清能力更能减少无效调用。
  */
 
-/** 工具回值：普通结果，或 delete_* 的 MRTR `input_required` 确认回合（9.4.1，P5-5b）。 */
-export type McpToolResult = CallToolResult | InputRequiredResult;
+/** 工具回值：普通结果，或工具错误（`isError: true`）。 */
+export type McpToolResult = CallToolResult;
 
 /**
  * 一条工具定义。`scope` 是它落入哪一档（read / write / execute，边界 1 的三值）；
  * `handler` 收到的第二个参数是**本次调用的上下文**——写与执行工具靠它重跑
- * `canAccess`（边界 2/3），读工具靠它限定 SQL 的项目范围。第三个参数只对 delete_*
- * 有意义：MRTR 重试回合里客户端带回的 `inputResponses`（9.4.1 的确认判据）。
+ * `canAccess`（边界 2/3），读工具靠它限定 SQL 的项目范围。
  */
 export type McpToolDefinition = {
   name: string;
@@ -62,7 +60,7 @@ export type McpToolDefinition = {
   scope: McpScope;
   /** 裸 JSON Schema（对象形态；无参工具写 `{"type":"object","properties":{}}`）。 */
   inputSchema: Record<string, unknown>;
-  handler: (args: Record<string, unknown>, identity: McpIdentity, mcpReq?: MrtrContext) => Promise<McpToolResult>;
+  handler: (args: Record<string, unknown>, identity: McpIdentity) => Promise<McpToolResult>;
 };
 
 /**
@@ -226,8 +224,8 @@ export function buildMcpServer(principal: McpPrincipal | undefined): McpServer {
     server.registerTool(
       tool.name,
       { description: tool.description, inputSchema: fromJsonSchema(schema), annotations: toolAnnotations(tool) },
-      /* 第二个参数是 SDK 的 ServerContext：MRTR 的 inputResponses 从 `ctx.mcpReq` 挑出
-         传给工具（delete_* 的确认判据，9.4.1）。其余 context 面本期工具用不到。 */
+      /* 第二个参数是 SDK 的 ServerContext：本期工具用不到它的任何面（删除确认已改为
+         客户端调用前确认，不再走协议回合）。 */
       async (args, ctx) => {
         const call = resolveCall(tool, (args ?? {}) as Record<string, unknown>, principal);
         if ("error" in call) return toolError(call.error);
@@ -235,7 +233,7 @@ export function buildMcpServer(principal: McpPrincipal | undefined): McpServer {
            update_endpoint 这类写工具实际收到什么形状的入参（如 body 变成字符串）。
            入参可能含业务数据——只进本地 .dev-logs/api.log（gitignore），不入库。 */
         console.log(`[mcp-call] ${tool.name} projectId=${call.identity.projectId || "-"}`, JSON.stringify(args ?? {}));
-        return tool.handler((args ?? {}) as Record<string, unknown>, call.identity, ctx?.mcpReq);
+        return tool.handler((args ?? {}) as Record<string, unknown>, call.identity);
       },
     );
   }

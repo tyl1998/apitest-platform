@@ -52,7 +52,7 @@ export const ME_TOOLS: readonly McpToolDefinition[] = [
       );
       return toolResult({
         projects: result.rows.map((row) => {
-          const scope = Array.isArray(row.scope) ? (row.scope as unknown[]).map(String) : [];
+          const scope = Array.isArray(row.scope) ? (row.scope as unknown[]).map(String) as McpScope[] : [];
           const granted = Array.isArray(row.granted_scope) ? (row.granted_scope as unknown[]).map(String) as McpScope[] : [];
           const role = isSystemAdmin ? "system_admin" : (row.role ? String(row.role) : null);
           /* 有效上限 = 角色上限 ∪ 本项目已批准的绑定许可（2026-09-21，`lib/mcpScopes.ts`）。 */

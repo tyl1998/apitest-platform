@@ -165,6 +165,16 @@ export async function queueEndpointRun(projectId: string, endpointId: string, re
 }
 
 /**
+ * 「流程里有请求节点用着这个接口」的 JSONPath。单条 usage、批量删除、删除拦截共用
+ * 这一份，三处各写一遍迟早会出现「扫描说没有、删除被拒」这种自相矛盾。
+ *
+ * JSONPath 的参数占位是**具名变量**（`$value`）而不是 `$1`：`$1` 在路径文本里会被当成
+ * 变量名去解析（报 `could not find jsonpath variable "2"`），值必须经
+ * `jsonb_build_object('value', …)` 传进去。
+ */
+const ENDPOINT_NODE_REF_PATH = '$.** ? (@.type == "request" && @.endpointId == $value)';
+
+/**
  * Everything that disappears along with this endpoint (P2-4.5 增补).
  *
  * 删接口会连带抹掉两样东西，都必须在确认前说出来：
@@ -174,10 +184,15 @@ export async function queueEndpointRun(projectId: string, endpointId: string, re
  * - `executions.endpoint_id` 也是 ON DELETE CASCADE（迁移 066），执行历史一起消失。
  *   这里只报数：`endpoint_id` 是 NOT NULL，没法像环境/用例那样 SET NULL 保留历史。
  *
- * 两类**不算引用**，既不拦也不列（与用例删除同款纪律）：
- * - 流程请求节点的 `endpointId` 只是来源标记，节点自带完整请求快照，删掉接口流程照跑。
- * - `spec_case_links` 的 `target_id` 是多态列、没有外键（迁移 052），删接口后绑定行悬空、
- *   读时显示「目标已删除」。只报个数，供人判断有多少文本用例会变成「目标已删除」。
+ * 流程请求节点的 `endpointId` **拦**（B 方案，2026-10-21 用户确认）：节点虽然自带请求
+ * 快照，但保存校验要求每个请求节点的 endpoint 在本项目存在（`trigger.ts:endpointsBelong`），
+ * 于是接口一删，引用它的流程就永远存不回去；而执行时 `executions.endpoint_id` 又是
+ * NOT NULL + CASCADE，悬空 id 连插库都过不去。所以这里与手动套件成员同一纪律：先列出
+ * 「哪些流程、哪些节点在用」，让用户改节点或删节点之后再删接口。force 不摘节点——
+ * 改节点是内容决策，不能由删接口的确认框代劳。
+ *
+ * 唯一**不算引用**的是文本用例绑定：`spec_case_links.target_id` 是多态列、没有外键
+ * （迁移 052），删接口后绑定行悬空、读时显示「目标已删除」。只报个数。
  */
 async function endpointUsage(projectId: string, endpointId: string) {
   const found = await pool.query("SELECT id FROM endpoints WHERE id = $1 AND project_id = $2", [endpointId, projectId]);
@@ -197,6 +212,7 @@ async function endpointUsage(projectId: string, endpointId: string) {
   ) : { rows: [] as Record<string, unknown>[], rowCount: 0 };
   const executions = await pool.query("SELECT COUNT(*)::int AS total FROM executions WHERE endpoint_id = $1", [endpointId]);
   const specLinks = await pool.query("SELECT COUNT(*)::int AS total FROM spec_case_links WHERE target_type = 'endpoint' AND target_id = $1", [endpointId]);
+  const flows = await flowsUsingEndpoint(projectId, endpointId);
   return {
     endpointId,
     caseCount: caseIds.length,
@@ -204,8 +220,40 @@ async function endpointUsage(projectId: string, endpointId: string) {
     executionCount: Number(executions.rows[0].total),
     suites: suites.rows.map((row) => ({ id: String(row.id), name: String(row.name) })),
     specCaseLinkCount: Number(specLinks.rows[0].total),
-    blocked: Boolean(suites.rowCount),
+    /* 每个流程带它引用的节点名：只说「流程 测试 在用」没法让人找到那张卡。 */
+    flows,
+    flowNodeCount: flows.reduce((sum, flow) => sum + flow.nodes.length, 0),
+    /* 与手动套件成员合并成同一个 409，客户端只需认一个 blocked + 两个清单。 */
+    blocked: Boolean(suites.rowCount) || flows.length > 0,
   };
+}
+
+/**
+ * 引用这个接口的流程请求节点，含循环体内的。
+ *
+ * 用 `$.**` 递归通配而不是 `nodes @> '[...]'`：循环体是内联子图，只扫顶层会把
+ * 躺在循环里的请求节点漏掉，于是「没人引用」这个结论是假的（同 `flowRefs.ts` 的
+ * `flowsReferencing`）。JSONPath 的参数占位是**具名变量**（`$value`），`$2` 在路径文本
+ * 里只会被当成变量名去解析，所以值经 `jsonb_build_object` 传进去，不进路径文本。
+ */
+async function flowsUsingEndpoint(projectId: string, endpointId: string) {
+  const result = await pool.query(
+    `SELECT id, name, (
+              SELECT jsonb_agg(node->>'name' ORDER BY node->>'name')
+                FROM jsonb_path_query(nodes, $2::jsonpath, jsonb_build_object('value', $3::text)) AS node
+            ) AS node_names
+       FROM flows
+      WHERE project_id = $1
+        AND jsonb_path_exists(nodes, $2::jsonpath, jsonb_build_object('value', $3::text))
+      ORDER BY name`,
+    [projectId, ENDPOINT_NODE_REF_PATH, endpointId],
+  );
+  return result.rows.map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    /* `$.**` 会同时命中循环体和它体内的同一张卡（内联子图在两处都存在），去重后再给人看。 */
+    nodes: [...new Set(((row.node_names ?? []) as string[]).filter(Boolean))],
+  }));
 }
 
 export async function endpointRoutes(app: FastifyInstance) {
@@ -439,9 +487,14 @@ export async function endpointRoutes(app: FastifyInstance) {
    * history (`executions.endpoint_id` is NOT NULL + ON DELETE CASCADE, 迁移 066 —
    * unlike envs/cases it cannot null the id out and keep the row).
    *
-   * 被手动套件引用的用例会拦（P2-4.5 增补）：直接级联会在套件里留下悬空成员，唯一合理
-   * 的后续动作就是摘掉它——所以 `?force=true` 之后，删除与「把这些用例从每个引用它们的
-   * 手动套件里摘掉」在同一个事务里完成，和删用例/删流程同一条纪律。
+   * 两种引用会拦，但只有套件成员能用 `?force=true` 继续：
+   * - 被手动套件引用的用例（P2-4.5 增补）：直接级联会在套件里留下悬空成员，唯一的后续
+   *   动作就是摘掉它——所以 force 之后，删除与「把这些用例从每个引用它的手动套件里摘掉」
+   *   在同一个事务里完成。
+   * - 被流程请求节点引用（B 方案，2026-10-21）：force **不**动流程节点。节点里是请求快照，
+   *   但保存校验要求 endpoint 在本项目存在，删掉接口等于让这些流程永远存不回去；改节点
+   *   或删节点是内容决策，不能由一个删除确认框代劳。前端因此把这类接口的删除入口做成
+   *   「去看这些流程」，而不是「仍然删除」。
    */
   app.delete<{ Params: { id: string; endpointId: string }; Querystring: { force?: string } }>("/api/v1/projects/:id/endpoints/:endpointId", async (request, reply) => {
     const context = await requireProjectAccess(request, reply, true); if (!context) return;
@@ -451,13 +504,18 @@ export async function endpointRoutes(app: FastifyInstance) {
     if (usage.blocked && request.query.force !== "true") {
       return reply.code(409).send({ code: 2003, message: "endpoint is referenced", data: usage });
     }
+    /* 流程节点引用不能靠 force 放过：那一侧没有可自动完成的后续动作。 */
+    if (usage.flows.length) {
+      return reply.code(409).send({ code: 2003, message: "endpoint is referenced by flow nodes", data: usage });
+    }
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       const result = await client.query("DELETE FROM endpoints WHERE id = $1 AND project_id = $2 RETURNING id", [request.params.endpointId, context.project.id]);
       if (!result.rowCount) { await client.query("ROLLBACK"); return fail(reply, 404, 2001, "endpoint not found"); }
       /* 接口删除级联掉用例；被手动套件列为成员的那些必须同时摘掉，否则留下悬空行。
-         未拦截 = 没有手动套件引用这些用例，不必空跑一遍 UPDATE。 */
+         流程节点引用在这里已经 409 拦掉，所以 `usage.blocked` 到这一步只可能来自套件成员；
+         但仍按清单走，免得将来多一种可放过时这里静默漏摘。 */
       const detachedSuites: { id: string; name: string }[] = [];
       if (usage.blocked) {
         const seen = new Set<string>();
@@ -503,9 +561,9 @@ export async function endpointRoutes(app: FastifyInstance) {
         await client.query("ROLLBACK");
         return fail(reply, 400, 1001, "all endpoints must belong to the project");
       }
-      /* 被手动套件引用的接口跳过而不是整批 409（P2-4.5 增补）：批量是显式的多选，逐项
-         结果比整批失败有用——删掉可安全删的，点名被拦的。被拦的接口整行保留（用例不级联，
-         套件成员也就不悬空）。 */
+      /* 被手动套件成员或流程请求节点引用的接口跳过而不是整批 409（P2-4.5 增补）：
+         批量是显式的多选，逐项结果比整批失败有用——删掉可安全删的，点名被拦的。
+         被拦的接口整行保留（用例不级联，套件成员与流程节点也就不悬空）。 */
       const blockedRows = await client.query(
         `SELECT e.id, e.name,
                 (SELECT COUNT(DISTINCT s.id) FROM test_suites s
@@ -513,14 +571,17 @@ export async function endpointRoutes(app: FastifyInstance) {
                     AND EXISTS (
                       SELECT 1 FROM jsonb_array_elements(s.selection_config->'members') AS m
                        JOIN test_cases tc ON tc.id = NULLIF(m->>'id', '')::uuid
-                      WHERE m->>'type' = 'case' AND tc.endpoint_id = e.id))::int AS suite_count
+                      WHERE m->>'type' = 'case' AND tc.endpoint_id = e.id))::int AS suite_count,
+                (SELECT COUNT(DISTINCT f.id) FROM flows f
+                  WHERE f.project_id = e.project_id
+                    AND jsonb_path_exists(f.nodes, $3::jsonpath, jsonb_build_object('value', e.id::text)))::int AS flow_count
            FROM endpoints e
           WHERE e.project_id = $1 AND e.id = ANY($2::uuid[])`,
-        [context.project.id, endpointIds],
+        [context.project.id, endpointIds, ENDPOINT_NODE_REF_PATH],
       );
       const blocked = blockedRows.rows
-        .filter((row) => Number(row.suite_count) > 0)
-        .map((row) => ({ id: String(row.id), name: String(row.name), suiteCount: Number(row.suite_count) }));
+        .filter((row) => Number(row.suite_count) > 0 || Number(row.flow_count) > 0)
+        .map((row) => ({ id: String(row.id), name: String(row.name), suiteCount: Number(row.suite_count), flowCount: Number(row.flow_count) }));
       const blockedIds = new Set(blocked.map((item) => item.id));
       const deletable = endpointIds.filter((id) => !blockedIds.has(id));
       const deleted = deletable.length

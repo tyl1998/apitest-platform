@@ -100,11 +100,17 @@ function flattenNodes(nodes: FlowNode[], into: FlowNode[] = []): FlowNode[] {
 
 async function endpointsBelong(projectId: string, nodes: FlowNode[]): Promise<string | undefined> {
   const flat = flattenNodes(nodes);
-  const ids = [...new Set(flat.filter((node) => node.type === "request").map((node) => node.endpointId))];
+  const requests = flat.filter((node) => node.type === "request");
+  const ids = [...new Set(requests.map((node) => node.endpointId))];
   if (!ids.length) return undefined;
   const result = await pool.query("SELECT id FROM endpoints WHERE id = ANY($1::uuid[]) AND project_id = $2", [ids, projectId]);
   if (result.rowCount === ids.length) return undefined;
-  return "a node references an endpoint that does not exist in this project";
+  /* 点名到节点：只说「有节点引用了不存在的接口」，用户还得在画布上一个个试。
+     `endpointId` 留空或不是 uuid 时会在 `node must reference an endpoint` 那一层被 rejects，
+     这里只会拿到「uuid 合法但接口已删/在别项目」的那批。 */
+  const found = new Set(result.rows.map((row) => String(row.id)));
+  const offenders = [...new Set(requests.filter((node) => !found.has(node.endpointId)).map((node) => node.name || node.id))];
+  return `a node references an endpoint that does not exist in this project: ${offenders.map((name) => `"${name}"`).join(", ")}`;
 }
 
 async function databaseResourcesBelong(projectId: string, nodes: FlowNode[]): Promise<string | undefined> {

@@ -3,9 +3,8 @@ import { pool } from "../db.js";
 import { AUDIT_ACTIONS, auditFields } from "./audit.js";
 import { notifySerializedQueue } from "./pipelineRun.js";
 import {
-  auditMcpAction, auditMcpResource, mrtrGate, mrtrRequired, MRTR_REFUSED_MESSAGE,
+  auditMcpAction, auditMcpResource,
   requiredUuidArg, toolError, toolResult,
-  type MrtrContext,
 } from "./mcpToolResult.js";
 import type { McpToolDefinition } from "./mcpServer.js";
 import {
@@ -30,30 +29,16 @@ import {
 
 /**
  * 全量 CRUD 工具（P5-5b，计划 9.4「写 17 个」的后 12 个）：套件 / 调度 / 告警规则 /
- * CI 任务。全部 delete_* 走 MRTR 确认回合（9.4.1）——`force` 不是工具入参，确认是协议
- * 回合：第一段返回依赖清单（`resultType: "input_required"` + 表单式 elicitation，内容 =
- * scanUsage 的依赖清单 + 后果摘要），客户端把它转述给人；人确认后带 `inputResponses`
- * 重试原调用，服务端这才执行删除（等价 REST 面的 `?force=true` 路径）。
+ * CI 任务。delete_* 一次调用直接执行（等价 REST 面的 `?force=true` 路径）：先扫引用者
+ * 再在事务里连带删除。**确认交给客户端**——`delete_*` 在 `tools/list` 里带
+ * `destructiveHint: true`，agent 平台据此在调用前向人确认；服务端不再走 MRTR
+ * 确认回合（2026-10-21 移除：多数 agent 不支持 elicitation，删除会被白卡一轮）。
  *
  * 校验全部复用 P5-5b 随本批提取到 `lib/validate*.ts` 的同一份函数（边界 8 的收尾）：
  * suites / schedules / alertRules / ciTasks 四个路由文件此刻与这些工具跑同一套判据。
  * 幂等键沿用：套件 `(project, name)`、调度 `(resource, cron, target)`、告警规则
  * `(project, name)`、CI 任务 `(repo, name)`。
  */
-
-/** delete_* 的共用闸门：MRTR 三态判定 + 对应的返回值。 */
-function gateDelete(
-  mcpReq: MrtrContext,
-  message: string,
-):
-  | { refused: ReturnType<typeof toolError> }
-  | { required: ReturnType<typeof mrtrRequired> }
-  | { confirmed: true } {
-  const gate = mrtrGate(mcpReq);
-  if (gate.phase === "first") return { required: mrtrRequired(message) };
-  if (gate.phase === "refused") return { refused: toolError(MRTR_REFUSED_MESSAGE) };
-  return { confirmed: true };
-}
 
 /** 套件/CI 任务删除的引用者清单（REST 删除路由同款两查询）。 */
 async function referencingRows(projectId: string, targetType: "suite" | "ci_task", targetId: string) {
@@ -71,12 +56,12 @@ async function referencingRows(projectId: string, targetType: "suite" | "ci_task
   };
 }
 
-/** 引用清单转一句人可读的转述文案（MRTR 的 message 就是聊天的「确认删除吗」正文）。 */
+/** 引用清单转一句人可读的后果摘要（回执里给调用方看「连带删了什么」）。 */
 function summarizeReferences(rows: { schedules: { id: string; name: string }[]; webhookTriggers: { id: string; name: string }[] }): string {
   const parts: string[] = [];
   if (rows.schedules.length) parts.push(`${rows.schedules.length} schedule(s): ${rows.schedules.map((row) => row.name).join(", ")}`);
   if (rows.webhookTriggers.length) parts.push(`${rows.webhookTriggers.length} webhook trigger(s): ${rows.webhookTriggers.map((row) => row.name).join(", ")}`);
-  return parts.length ? `It is referenced by ${parts.join("; ")}. Confirming will delete those referencing schedules and webhook triggers too.` : "Nothing else references it.";
+  return parts.length ? `It is referenced by ${parts.join("; ")}; those referencing schedules and webhook triggers are deleted too.` : "Nothing else references it.";
 }
 
 export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
@@ -211,25 +196,22 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: "delete_suite",
-    description: "Delete a suite — irreversible, so it ALWAYS takes two rounds: the first call returns the schedules and webhook triggers referencing it and asks the human behind the client to confirm; retry the identical call with the confirmed inputResponses to actually delete (referencing schedules/triggers are removed together, run history survives via name snapshots). There is no force parameter. If the human declines, nothing is deleted.",
+    description: "Delete a suite and the schedules / webhook triggers that reference it (run history survives via name snapshots). Irreversible and marked destructive, so the client asks the human before calling; once called it deletes in one round. This tool cannot preview the blast radius — list schedules/triggers first if the human wants to see them before deciding.",
     scope: "write",
     inputSchema: {
       type: "object",
       properties: { suiteId: { type: "string" } },
       required: ["suiteId"],
     },
-    handler: async (args, identity, mcpReq) => {
+    handler: async (args, identity) => {
       const id = requiredUuidArg(args, "suiteId", "suite");
       if ("error" in id) return toolError(id.error);
       const suite = await loadSuite(identity.projectId, id.value);
       if (!suite) return toolError("test suite not found (2001)");
 
       const references = await referencingRows(identity.projectId, "suite", id.value);
-      const gate = gateDelete(mcpReq, `Delete test suite "${suite.name}"? ${summarizeReferences(references)}`);
-      if ("refused" in gate) return gate.refused;
-      if ("required" in gate) return gate.required;
 
-      /* 确认回合：连带删除引用者（REST force 同款事务），审计记录「确认即决策」。 */
+      /* 连带删除引用者（REST force 同款事务）：确认已在客户端调用前完成。 */
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
@@ -384,23 +366,18 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: "delete_schedule",
-    description: "Delete a schedule — irreversible, so it always asks the human behind the client to confirm first (retry the identical call with the confirmed inputResponses to delete). Its firing history (schedule_runs) is deleted with it; executions it produced survive in the execution records. There is no force parameter.",
+    description: "Delete a schedule. Its firing history (schedule_runs) is deleted with it; executions it produced survive in the execution records. Irreversible and marked destructive, so the client asks the human before calling; once called it deletes in one round.",
     scope: "write",
     inputSchema: {
       type: "object",
       properties: { scheduleId: { type: "string" } },
       required: ["scheduleId"],
     },
-    handler: async (args, identity, mcpReq) => {
+    handler: async (args, identity) => {
       const id = requiredUuidArg(args, "scheduleId", "schedule");
       if ("error" in id) return toolError(id.error);
       const existing = await pool.query("SELECT * FROM schedules WHERE id = $1 AND project_id = $2", [id.value, identity.projectId]);
       if (!existing.rowCount) return toolError("schedule not found (2001)");
-      const row = existing.rows[0];
-
-      const gate = gateDelete(mcpReq, `Delete schedule "${String(row.name)}" (${String(row.cron)} ${String(row.timezone)})? Its firing history is deleted with it; executions it produced survive.`);
-      if ("refused" in gate) return gate.refused;
-      if ("required" in gate) return gate.required;
 
       const result = await pool.query("DELETE FROM schedules WHERE id = $1 AND project_id = $2 RETURNING id", [id.value, identity.projectId]);
       if (!result.rowCount) return toolError("schedule not found (2001)");
@@ -532,23 +509,18 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: "delete_alert_rule",
-    description: "Delete an alert rule — irreversible, so it always asks the human behind the client to confirm first (retry the identical call with the confirmed inputResponses to delete). Delivery evidence rows survive with the rule id nulled. There is no force parameter.",
+    description: "Delete an alert rule. Delivery evidence rows survive with the rule id nulled. Irreversible and marked destructive, so the client asks the human before calling; once called it deletes in one round. To pause alerts without losing the rule, use update_alert_rule with enabled:false instead.",
     scope: "write",
     inputSchema: {
       type: "object",
       properties: { ruleId: { type: "string" } },
       required: ["ruleId"],
     },
-    handler: async (args, identity, mcpReq) => {
+    handler: async (args, identity) => {
       const id = requiredUuidArg(args, "ruleId", "alert rule");
       if ("error" in id) return toolError(id.error);
       const existing = await pool.query("SELECT * FROM alert_rules WHERE id = $1 AND project_id = $2", [id.value, identity.projectId]);
       if (!existing.rowCount) return toolError("alert rule not found (2001)");
-      const row = existing.rows[0];
-
-      const gate = gateDelete(mcpReq, `Delete alert rule "${String(row.name)}" (${String(row.metric)})? It will stop firing; past delivery evidence survives.`);
-      if ("refused" in gate) return gate.refused;
-      if ("required" in gate) return gate.required;
 
       const result = await pool.query("DELETE FROM alert_rules WHERE id = $1 AND project_id = $2 RETURNING id", [id.value, identity.projectId]);
       if (!result.rowCount) return toolError("alert rule not found (2001)");
@@ -713,28 +685,21 @@ export const WRITE_CRUD_TOOLS: readonly McpToolDefinition[] = [
   },
   {
     name: "delete_ci_task",
-    description: "Delete a CI task — irreversible (its pipeline runs and logs cascade with it; keep history by disabling instead), so it always asks the human behind the client to confirm first. The first call lists the schedules and webhook triggers referencing it; retry the identical call with the confirmed inputResponses to delete them together. There is no force parameter.",
+    description: "Delete a CI task together with the schedules / webhook triggers referencing it; its pipeline runs and logs cascade with it. Irreversible and marked destructive, so the client asks the human before calling; once called it deletes in one round. To keep run history, use update_ci_task with enabled:false instead — this tool cannot preview the cascade, read the run count via get_ci_task first if the human wants it.",
     scope: "write",
     inputSchema: {
       type: "object",
       properties: { taskId: { type: "string" } },
       required: ["taskId"],
     },
-    handler: async (args, identity, mcpReq) => {
+    handler: async (args, identity) => {
       const id = requiredUuidArg(args, "taskId", "CI task");
       if ("error" in id) return toolError(id.error);
       const existing = await pool.query("SELECT * FROM ci_tasks WHERE id = $1 AND project_id = $2", [id.value, identity.projectId]);
       if (!existing.rowCount) return toolError("CI task not found (2001)");
-      const task = mapCiTask(existing.rows[0]);
 
       const references = await referencingRows(identity.projectId, "ci_task", id.value);
       const runTotal = await pool.query("SELECT COUNT(*)::int AS total FROM pipeline_runs WHERE ci_task_id = $1", [id.value]);
-      const gate = gateDelete(
-        mcpReq,
-        `Delete CI task "${task.name}"? It has ${Number(runTotal.rows[0].total)} pipeline run(s), and deleting cascades ALL of them (runs, logs, reports). ${summarizeReferences(references)} To keep history, disable the task instead.`,
-      );
-      if ("refused" in gate) return gate.refused;
-      if ("required" in gate) return gate.required;
 
       const client = await pool.connect();
       try {
