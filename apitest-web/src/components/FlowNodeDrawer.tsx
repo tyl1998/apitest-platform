@@ -338,9 +338,12 @@ function RequestNodeDrawer({ projectId, flowId, node, nodes, edges, variables, e
                        created out-of-band (MCP tool) after this page loaded, or
                        deleted after the flow was saved. Same fallback as the
                        case source below: a readable option instead of antd
-                       rendering the bare uuid as the value. */
+                       rendering the bare uuid as the value.
+                       但这里必须**写明已删除**：只补名称的话，下拉里显示的就是节点自己的
+                       名字，看起来和「接口还在、已选中」一模一样，用户会以为来源没问题，
+                       直到保存被拒才发现（2026-10-22 用户反馈）。 */
                     ...(current.endpointId && !endpoints.some((item) => item.id === current.endpointId)
-                      ? [{ value: current.endpointId, label: `${current.request.method}  ${current.name}` }]
+                      ? [{ value: current.endpointId, label: `${current.request.method}  ${current.name}${t("flows.sourceDeletedSuffix")}` }]
                       : []),
                     ...endpoints.map((item) => ({ value: item.id, label: `${item.method}  ${item.name}` })),
                   ]}
@@ -353,7 +356,11 @@ function RequestNodeDrawer({ projectId, flowId, node, nodes, edges, variables, e
                   options={[
                     /* The case can have been deleted after the flow was saved.
                        Keep its snapshotted name visible instead of showing an
-                       empty control that looks like the node lost its source. */
+                       empty control that looks like the node lost its source.
+                       **不加「已删除」尾缀**：用例清单是服务端分页 + 关键字搜索的
+                       （上面那个 effect），没出现在当前这一页并不等于被删——加了就会
+                       把活着的用例误报成已删除。接口来源可以用这个判据，是因为项目
+                       store 里的接口清单是全量不分页的。 */
                     ...(current.sourceCaseId && !cases.some((item) => item.id === current.sourceCaseId)
                       ? [{ value: current.sourceCaseId, label: current.sourceCaseName ?? current.sourceCaseId }]
                       : []),

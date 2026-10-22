@@ -5,7 +5,7 @@ import { ArrowDown, ChevronDown, ChevronRight, MoreHorizontal, Plus, TriangleAle
 import type { DataSource, FlowEdge, FlowNode, FlowSummary, LoopFlowNode } from "../api";
 import { byPosition } from "../lib/flowCanvas";
 import { KIND_BADGE, NodeKindIcon, stepSubtitle } from "./FlowStepPresentation";
-import { Method, type RunStatus } from "../ui";
+import { Method, Tip, type RunStatus } from "../ui";
 
 /**
  * 流程的列表模式（5.0.13）：同一份流程文档在画布之外的第二个投影。
@@ -285,8 +285,8 @@ export function FlowStepList({ steps, edges, order, stages, nodeStatus, deadSour
         ? <Method method={node.request.method} />
         : <span className="flow-node-kind mono"><NodeKindIcon type={node.type} size={12} />{KIND_BADGE[node.type]}</span>}
       <span className="flow-row-name truncate">{node.name || "—"}</span>
-      {/* 与画布同一个徽记：来源接口被删，保存能过但执行会失败。列表模式也不能藏起来。 */}
-      {deadSourceIds.has(node.id) && <span className="flow-node-warn" title={t("flows.deadSourceBadge")} aria-label={t("flows.deadSourceBadge")}><TriangleAlert size={12} /></span>}
+      {/* 与画布同一个徽记：来源接口被删，保存与执行都会失败。列表模式也不能藏起来。 */}
+      {deadSourceIds.has(node.id) && <Tip text={t("flows.deadSourceBadge")}><span className="flow-node-warn" aria-label={t("flows.deadSourceBadge")}><TriangleAlert size={12} /></span></Tip>}
       <span className="flow-row-sub mono truncate">{stepSubtitle(node, t, dataSourceName, bodyName)}</span>
       {branches.map((edge) => <span key={edge.id} className="chip mono">{t(edge.on === "true" ? "flows.conditionBranchTrue" : "flows.conditionBranchFalse")}</span>)}
       {hasChecks && (node.extracts.length > 0 || node.assertions.length > 0) && <>

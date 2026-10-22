@@ -13,7 +13,7 @@ import { usePageContext } from "../hooks/usePageContext";
 import { variableOptions } from "../lib/flowVariables";
 import { useNavGuardStore } from "../stores/navGuardStore";
 import { useProjectStore } from "../stores/projectStore";
-import { Empty, Method, toRunStatus, type RunStatus } from "../ui";
+import { Empty, Method, Tip, toRunStatus, type RunStatus } from "../ui";
 import { VersionHistoryDrawer } from "./VersionHistoryDrawer";
 import { DEFAULT_SCRIPT_NODE_TEMPLATE, FlowNodeDrawer } from "./FlowNodeDrawer";
 import { FlowRunDrawer } from "./FlowRunDrawer";
@@ -120,8 +120,10 @@ function StepNode({ data, selected }: NodeProps<Node<StepData>>) {
         : <span className="flow-node-kind mono"><NodeKindIcon type={node.type} size={12} />{KIND_BADGE[node.type]}</span>}
       <span className="flow-node-name truncate">{node.name || "—"}</span>
       {/* 来源接口已删：戴上警示徽记（悬停说明怎么修）。只标不拦——节点自带请求快照，
-          编辑照常，但执行会失败，所以必须让人在画布上就看见。 */}
-      {deadSource && <span className="flow-node-warn nodrag" title={t("flows.deadSourceBadge")} aria-label={t("flows.deadSourceBadge")}><TriangleAlert size={12} /></span>}
+          编辑照常，但保存与执行都会失败，所以必须让人在画布上就看见。
+          tooltip 用项目统一的 `Tip`（antd，100ms）而不是原生 title：原生延迟约 1s
+          且不可调，用户已经嫌慢。 */}
+      {deadSource && <Tip text={t("flows.deadSourceBadge")}><span className="flow-node-warn nodrag" aria-label={t("flows.deadSourceBadge")}><TriangleAlert size={12} /></span></Tip>}
       {/* Deleting a step should not require opening it first. `nodrag` keeps the
           click from being swallowed by the canvas pan handler. */}
       <button
@@ -721,13 +723,13 @@ function FlowCanvas() {
   /**
    * 来源接口已被删除的请求节点。
    *
-   * 保存本身不受影响——后端把请求节点的 `endpointId` 当来源标记（节点带请求快照），
-   * 但**执行**时会带着这个已删的 uuid 去写 `executions.endpoint_id`（NOT NULL + CASCADE），
-   * 外键违约让这一步必失败。所以保存成功后仍要提醒，并点出是哪几个节点：否则用户会以为
-   * 存下去就没事，直到某次运行才炸在那一步。
+   * 保存与执行**都会**失败：保存侧 `resourcesBelong` 要求每个请求节点的 endpoint 属于
+   * 本项目（`trigger.ts:endpointsBelong`，报错里点名节点）；执行侧 `executions.endpoint_id`
+   * 是 NOT NULL + CASCADE，带着已删 uuid 插行直接外键违约。节点自带请求快照不影响这两条，
+   * 所以画布上必须能一眼看见，而不是等保存被拒或某次运行才炸。
    *
    * 判断放在前端是因为接口清单在进入编辑器时现拉（`reloadEndpoints`），本项目的接口全集
-   * 就在手上，不必为每次保存多打一次请求。
+   * 就在手上，不必为每次渲染多打一次请求。
    */
   const deadSourceNodeIds = useMemo(
     () => new Set(flattenSteps(steps)
@@ -735,13 +737,6 @@ function FlowCanvas() {
       .filter((node) => node.type === "request" && node.endpointId && !knownEndpointIds.has(node.endpointId))
       .map((node) => node.id)),
     [steps, knownEndpointIds],
-  );
-  const deadSourceNodes = useMemo(
-    () => flattenSteps(steps)
-      .map(({ node }) => node)
-      .filter((node) => deadSourceNodeIds.has(node.id))
-      .map((node) => node.name || node.id),
-    [steps, deadSourceNodeIds],
   );
 
   /**
@@ -803,18 +798,12 @@ function FlowCanvas() {
       setSteps(saved.nodes);
       setTags(saved.tags);
       setBaseline(snapshot(saved.name, saved.environmentId ?? "none", saved.nodes, saved.edges, saved.variables, saved.tags));
-      /* 保存后端是放过的（`endpointId` 只当来源标记），但执行时会撞外键。静默存下去
-         等于把问题推到运行时才炸，所以这里必须说出来，并点名节点。 */
-      if (deadSourceNodes.length) {
-        message.warning(t("flows.savedWithDeadSource", { names: deadSourceNodes.join("、") }), 8);
-      } else {
-        message.success(t("flows.saved"));
-      }
+      message.success(t("flows.saved"));
     } catch (error) {
       const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
       message.error(detail ?? t("flows.saveFailed"));
     } finally { setSaving(false); }
-  }, [projectId, flowId, name, environmentId, documentNow, variables, tags, deadSourceNodes, t]);
+  }, [projectId, flowId, name, environmentId, documentNow, variables, tags, t]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
