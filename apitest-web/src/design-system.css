@@ -2364,7 +2364,7 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 .mindmap-node {
   position: relative; /* ⊕/⊖ 绝对定位的锚点（骑在右缘外的竖直中线，XMind 惯例） */
   display: flex; align-items: center; gap: 6px;
-  width: max-content; max-width: 300px;
+  width: max-content; max-width: 264px;
   height: 36px;
   padding: 0 11px;
   border: 1px solid var(--line);
@@ -2376,19 +2376,28 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
 /* 目录节点（㉔ 目录层进图）：与用例同级的结构行——边框稍强、半粗，区分
    「这里是结构」与「这里是内容」；计数与左树同口径。 */
 .mindmap-node.is-dir { height: 32px; border-color: var(--line-strong); font-weight: 500; }
-/* 用例/前置/步骤/预期完整折行（2026-09-08 第二轮反馈：阈值式「超两行切多行
+/* 用例/前置/步骤/预期按内容折行（2026-09-08 第二轮反馈：阈值式「超两行切多行
    态」仍漏——单行卡片模式里徽记/优先级把正文列挤到 ~90px，常见标题（15~30
    字）到不了阈值，线夹处照样省略；且用户心智是 XMind 话题框按内容折行）：
-   内容族一律块布局（.is-multiline → .mindmap-block），徽记首行、正文全宽完
-   整折行，无任何 line-clamp。高度由组件 nodeHeight 同一估算预留（CSS 只设
-   min-height 兜底，实际高度随内容——宁多留空不重叠）。悬停 Tip 保留（估算
-   极端偏差时看全）。目录/root 保持单行（结构行，名字短、还带计数）。 */
+   内容族一律块布局（.is-multiline → .mindmap-block），徽记首行、正文全宽折行。
+   高度由组件 nodeHeight 同一估算预留（CSS 只设 min-height 兜底）。
+
+   2026-10-21 补行数上限：正文最多 8 行（.is-clamped），与组件的 MAX_LINES 同
+   口径——`-webkit-line-clamp` 只收尾，不改变估算高度，所以不会漂。一条 20 行
+   的步骤展开后独占整屏、本来也读不完；收尾后悬停 Tips 给全文，双击进编辑态
+   看/改全量。未被截断的节点不加 .is-clamped，与旧行为一致。 */
 .mindmap-node.is-case { height: auto; min-height: 36px; padding: 4px 11px; }
 .mindmap-node.is-pre,
 .mindmap-node.is-step,
 .mindmap-node.is-exp { height: auto; min-height: 36px; font-size: 12px; padding: 4px 8px; color: var(--ink-2); }
 .mindmap-node.is-step { color: var(--ink); }
 .mindmap-node.is-multiline { display: block; }
+.mindmap-node.is-clamped .mindmap-block-body {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 8;
+  overflow: hidden;
+}
 .mindmap-node.is-more { height: 24px; font-size: 12px; color: var(--ink-3); }
 /* 「＋ 前置 / ＋ 步骤」占位槽（㉔）：空槽的邀约——虚线框、弱字，点了就补。 */
 .mindmap-node.is-add {
@@ -2549,6 +2558,13 @@ textarea.input { height: auto; padding: var(--s2) var(--s3); resize: vertical; l
   color: var(--ink-3);
   pointer-events: none;
 }
+
+/* 脑图左下控件组的第四枚（定位选中，2026-10-21）：沿用 xyflow Controls 的按钮
+   形制（见上一条 .react-flow__controls-button），只补禁用态——没有选中节点时灰着，
+   不做移除（位置跳动比灰按钮更让人困惑）。图标由组件给 lucide 12px，与缩放/整图
+   三枚同尺寸。 */
+.mindmap-canvas .react-flow__controls-button:disabled { color: var(--ink-3); opacity: .55; cursor: default; }
+.mindmap-canvas .react-flow__controls-button:disabled:hover { background: var(--surface); }
 
 /* 右键菜单（㉗）：fixed 定位跟随鼠标，手写小菜单（antd Dropdown 定位在
    子元素，右键场景自己摆更直接）。条目 hover 用 --t，danger 走 --fail 字
@@ -3192,6 +3208,18 @@ button.chip-action:hover { border-color: var(--accent); color: var(--ink); }
   color: var(--ink);
 }
 
+/* 只有一枚按钮的开关组（流程画布「框选/平移」）：不要组底与内边距——它旁边
+   是普通 .btn，带一层灰底的单独开关会读成「另一个控件」。选中态仍靠上方那条
+   `.is-active` 的描边表达，形状与相邻按钮同高（24px + 2px 边框 = 30px 行高对齐
+   由 .mode-switch 的 2px padding 补足）。 */
+.mode-switch.is-single {
+  padding: 2px;
+  border-color: transparent;
+  background: none;
+}
+.mode-switch.is-single .icon-btn { border-color: var(--line-strong); background: var(--surface); }
+.mode-switch.is-single .icon-btn:hover:not(:disabled) { border-color: var(--ink-3); background: var(--hover); }
+
 .kv-text { width: 100%; min-height: 160px; font-family: var(--mono); font-size: 12px; line-height: 1.6; resize: vertical; }
 
 /* The target cell pairs an input with 快速提取, so the button cannot be
@@ -3750,7 +3778,16 @@ button.attribution-entry:hover .chip { border-color: var(--accent); }
    our tokens so the canvas cannot become a second visual language. */
 .flow-canvas .react-flow__background { background: var(--raised); }
 .flow-canvas .react-flow__background-pattern { color: var(--line); }
-.flow-canvas .react-flow__edge-path { stroke: var(--line-strong); stroke-width: 1.5; }
+/* 正交折线（2026-10-21「线太长」反馈，类型见 toCanvasEdge / defaultEdgeOptions）：
+   竖链之间是一条直线而不是随距离放大的弧。拐点用圆角连接；箭头颜色跟随连线，
+   不落在 xyflow 默认的深灰上（暗色模式下会看不见）。 */
+.flow-canvas .react-flow__edge-path {
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+.flow-canvas .react-flow__edge .react-flow__arrowhead path,
+.flow-canvas marker path { fill: var(--line-strong); }
 .flow-canvas .react-flow__edge.selected .react-flow__edge-path,
 .flow-canvas .react-flow__connection-path { stroke: var(--accent); }
 .flow-canvas .react-flow__handle {
@@ -3804,6 +3841,18 @@ button.attribution-entry:hover .chip { border-color: var(--accent); }
 .flow-node-url { margin-top: 5px; font-size: 11px; color: var(--ink-3); }
 .flow-node-meta { display: flex; gap: var(--s1); margin-top: 7px; flex-wrap: wrap; }
 .flow-node-meta .chip { font-size: 10px; }
+
+/* 来源接口已删除：整条左缘换成警示色 + 卡片底色微染，并在头部挂一枚常驻徽记。
+   常驻而不是悬停才显形——这是「必须处理」的状态，不是可以等用户摸到才知道的细节。
+   状态色沿用保留色（fail），与列表里的失败行同一套读法。 */
+.flow-node.is-dead-source { border-left-color: var(--fail); background: var(--fail-bg); }
+.flow-node-warn {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--fail);
+  cursor: help;
+}
 .flow-condition-branches { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); margin-top: 8px; color: var(--ink-3); font-size: 10px; text-align: center; }
 .flow-canvas .react-flow__edge-text { fill: var(--ink-3); font-family: var(--font-mono); font-size: 10px; }
 .flow-canvas .react-flow__edge-textbg { fill: var(--raised); }
@@ -5643,3 +5692,7 @@ button.step-row:hover { background: var(--hover); }
 .diff-line.del .diff-sign { color: var(--fail); }
 .diff-line.same { background: var(--surface); }
 
+
+/* 列表模式的同一枚徽记：行底色与左缘沿用失败行，徽记常驻。
+   与画布 `.flow-node.is-dead-source` 同一读法，只是投影不同。 */
+.flow-row.is-dead-source { border-left-color: var(--fail); background: var(--fail-bg); }

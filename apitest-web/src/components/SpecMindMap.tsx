@@ -2,8 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { Input, Modal, message } from "antd";
-import { Check, ChevronLeft, ChevronRight, Minus, Plus } from "lucide-react";
-import { Background, Controls, Handle, Position, ReactFlow, ReactFlowProvider, useReactFlow, useStoreApi, type Edge, type Node, type NodeProps } from "@xyflow/react";
+import { Check, ChevronLeft, ChevronRight, LocateFixed, Minus, Plus } from "lucide-react";
+import { Background, ControlButton, Controls, Handle, Position, ReactFlow, ReactFlowProvider, useReactFlow, useStoreApi, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { api, type Paged, type SpecCase, type SpecCaseInput, type SpecCaseLink, type SpecCasePriority, type SpecCaseStatus, type SpecModule } from "../api";
 import { Empty, Tip } from "../ui";
@@ -46,11 +46,19 @@ import { SpecLinkPicker } from "./SpecLinkPicker";
    按 [graph, selectedId, edit] memo，且每个节点把 store 里的 measured 随身
    带回——adopt 时测量结果与 handleBounds 不清空，换代不再闪没。 */
 
-/** 列距（节点最大宽 300 + 连线通道）；节点横向定列，纵向 tidy tree 推开。
- *  第五轮加宽：224/280 → 300/360——长标题/步骤折行行数减半，编辑框也宽一倍。 */
-const PITCH = 360;
-const MAX_W = 300;
+/** 列距（节点最大宽 + 连线通道）；节点横向定列，纵向 tidy tree 推开。
+ *  第五轮曾加宽到 300/360（长标题折行行数减半）；2026-10-21 按「一屏看不完一条
+ *  用例」反馈收回到 264/300——一条用例是 root→用例→步骤→预期四级，列距就是
+ *  横向总宽的主要来源：4×360 + 节点宽 ≈ 1700px，收到 4×300 后约 1170px，普通
+ *  视野（≥1280 宽）能整条读完。折行变多由下面的行数上限兜住。 */
+const PITCH = 300;
+const MAX_W = 264;
 const GAP_Y = 12;
+
+/** 内容节点最多完整折行数（2026-10-21）：超过就按上限估高、节点内 CSS 收成
+ *  N 行 + 省略号，展开全文靠双击编辑态（无 clamp）与悬停 Tip。一条 20 行的
+ *  步骤此前会独占整屏高度，而它本来也读不完——上限换来「一条用例一屏」。 */
+const MAX_LINES = 8;
 
 /** 「加载更多」每批条数（目录级局部加载）：一批 50——够填一屏，不至于一次拉全。 */
 const LOAD_MORE_PAGE = 50;
@@ -70,19 +78,20 @@ function textUnits(text: string): number {
 }
 
 /** 节点高（CSS 同步钉死——布局按它算，CSS 不钉会漂）。root/dir/add/more 是
- *  固定高度的结构行；case/pre/step/exp **一律块布局完整折行**：徽记独占首行，
- *  正文全宽按估算行数完整折行，没有任何 line-clamp。高度由 estimateLines /
- *  nodeHeight 同一估算驱动（DOM 与布局共用，坐标不漂）。 */
+ *  固定高度的结构行；case/pre/step/exp 块布局：徽记独占首行，正文全宽折行，
+ *  最多 MAX_LINES 行（超出的由 CSS 线夹收尾，节点头部的悬停 Tips 给全文）。
+ *  高度由 estimateLines / nodeHeight 同一估算驱动（DOM 与布局共用，坐标不漂）。 */
 function estimateLines(label: string, kind: MindKind): number {
   const text = label || "—";
-  /* 每行容量按「正文吃满节点内容宽」估（300 − padding − border）：
-     case 13px → 276/13 ≈ 21 字，取 20；pre/step/exp 12px → 282/12 ≈ 23 字，取 22。 */
-  const perLine = kind === "case" ? 20 : 22;
+  /* 每行容量按「正文吃满节点内容宽」估（264 − padding 22 − border 2 = 240）：
+     case 13px → 240/13 ≈ 18 字，取 18；pre/step/exp 12px → 240/12 = 20，取 19
+     （两侧各留一点余量——低估行数会让 DOM 撑出估算的高度，压到下邻节点上）。 */
+  const perLine = kind === "case" ? 18 : 19;
   let lines = 0;
   for (const seg of text.split("\n")) {
     lines += Math.max(1, Math.ceil(textUnits(seg) / perLine));
   }
-  return lines;
+  return Math.min(MAX_LINES, lines);
 }
 function nodeHeight(kind: MindKind, label: string): number {
   if (kind === "root") return 36;
@@ -219,7 +228,7 @@ function MindEditInput({ seed, kind, selectAll, ariaLabel, onCommit, onCancel }:
   }, [draft]);
   return <textarea
     className="mindmap-input"
-    rows={estimateLines(draft, kind) || 1}
+    rows={Math.min(estimateLines(draft, kind), 12) || 1}
     value={draft}
     /* 就地编辑的焦点是交互本体：挂载即聚焦并全选，直接打字即覆盖。 */
     ref={focusOnce}
@@ -246,12 +255,15 @@ function MindNodeView({ data, selected }: NodeProps<MindFlowNode>) {
      救——单行模式里徽记把正文挤到 ~90px，常见标题仍被线夹省略）：徽记首行 +
      全宽正文完整折行，无 line-clamp。root/dir/add/more 维持旧行布局。 */
   const block = kind === "case" || kind === "pre" || kind === "step" || kind === "exp";
-  /* 内容族已经完整展示，不再需要悬停 Tip（2026-09-08 第四轮反馈③）；结构行
-     （root/dir 名字 + 计数）仍是单行截断，保留 Tip。编辑态草稿就在眼前。 */
-  const tip = block || editing ? undefined : (data.label || undefined);
+  /* 内容族：被 MAX_LINES 截断时用原生 title 给全文（正文仍是节点里可见的那几行）；
+     完整显示时与旧行为一致不弹。结构行（root/dir 名字 + 计数）仍是单行截断，保留
+     Tip。编辑态草稿就在眼前，且 textarea 完整显示，不弹。 */
+  const bodyClamped = block && estimateLines(data.label, kind) >= MAX_LINES;
+  const tip = editing || block ? undefined : (data.label || undefined);
   return <Tip text={tip}>
     <div
-      className={`mindmap-node is-${kind}${block && !editing ? " is-multiline" : ""}${selected ? " is-selected" : ""}${editing ? " is-editing" : ""}`}
+      title={bodyClamped && !editing ? data.label : undefined}
+      className={`mindmap-node is-${kind}${block && !editing ? " is-multiline" : ""}${bodyClamped && !editing ? " is-clamped" : ""}${selected ? " is-selected" : ""}${editing ? " is-editing" : ""}`}
       style={block && !editing ? { minHeight: nodeHeight(kind, data.label) } : undefined}
       data-removed={kind === "case" && data.status === "deprecated" ? "" : undefined}
     >
@@ -578,7 +590,7 @@ function MindMapCanvas({ projectId, rootLabel, rootModuleId, modules, keyword, m
   onSaved: () => void;
 }) {
   const { t } = useTranslation();
-  const { getViewport, setCenter } = useReactFlow();
+  const { getViewport, setCenter, fitView } = useReactFlow();
   const store = useStoreApi();
 
   const [data, setData] = useState<Paged<SpecCase>>({ items: [], page: 1, pageSize: 100, total: 0 });
@@ -893,6 +905,20 @@ function MindMapCanvas({ projectId, rootLabel, rootModuleId, modules, keyword, m
     if (!node) return;
     setSelectedId(nodeId);
     setEdit({ nodeId });
+  }
+
+  /**
+   * 画布导航（2026-10-21「线太长、一屏看不完」反馈）：长链/宽树里靠缩放自己
+   * 找回来太费劲，左下角控件组补一枚「定位选中」——把当前选中/正在编辑的节点
+   * 框进视野。整图沿用 xyflow Controls 自带的 fitView 按钮，不再另设一枚。
+   * 自动 fitView 仍只在挂载时发生；这里是**人明确点的动作**，不改变缩放纪律。
+   * 目标不在当前图里时禁用——点了没反应比灰着更让人困惑。
+   */
+  const focusNodeId = edit?.nodeId ?? selectedId;
+  const focusNode = focusNodeId ? graph.nodes.find((item) => item.id === focusNodeId) : undefined;
+  function focusSelected() {
+    if (!focusNode) return;
+    void fitView({ nodes: [focusNode], padding: 0.6, maxZoom: 1, duration: 200 });
   }
 
   /** 就地编辑落库：**最小提交**——只 PATCH 被改的字段（⑲：整份快照会把旧图
@@ -1672,7 +1698,19 @@ function MindMapCanvas({ projectId, rootLabel, rootModuleId, modules, keyword, m
       proOptions={{ hideAttribution: true }}
     >
       <Background gap={20} size={1} />
-      <Controls showInteractive={false} />
+      {/* 左下角控件组：缩放 + 整图（xyflow 自带 fitView 按钮）+ 定位选中（2026-10-21
+          增补，图标形制与前三枚一致，悬停给文案）。MiniMap 已撤——整图按钮已覆盖
+          「我在哪里」，再挂一张缩略图是重复。 */}
+      <Controls showInteractive={false}>
+        <ControlButton
+          onClick={focusSelected}
+          disabled={!focusNode}
+          title={t("specCases.mindmapFocusSelected")}
+          aria-label={t("specCases.mindmapFocus")}
+        >
+          <LocateFixed size={12} />
+        </ControlButton>
+      </Controls>
     </ReactFlow>
     {menu && (() => {
       /* 右缘翻转：菜单贴着窗口右边打开时，子菜单向左伸（避免溢出屏幕外）。 */

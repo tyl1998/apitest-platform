@@ -7,6 +7,7 @@ import { ArrowLeft, Bell, BookOpen, Dices, KeyRound, Languages, LogOut, MapPin, 
 import {
   api,
   classifyAssistantError,
+  isRateLimited,
   probeAssistantAvailability,
   streamAssistantMessage,
   type AssistantConversation,
@@ -698,7 +699,7 @@ export function AssistantDock() {
   /** 动作失败的弹窗（P9-8）：上游限流走专门口径（「稍后重试」——等一等就好），其余
       透出服务端的指向性文案，兜底各自的动作名。 */
   function errorToast(error: unknown, fallback: string) {
-    message.error(api.isRateLimited(error) ? t("assistantDrawer.rateLimited") : apiMessage(error) ?? fallback);
+    message.error(isRateLimited(error) ? t("assistantDrawer.rateLimited") : apiMessage(error) ?? fallback);
   }
 
   /** 建会话（显式 chip 与首条消息的隐式入口共用）：成功返回 id 并落进列表与切换器。 */

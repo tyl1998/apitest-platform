@@ -21,6 +21,14 @@ export type Located = { node: FlowNode; loopId?: string };
 /** 普通步骤卡的画布宽度（与 design-system.css 的 .flow-node 宽度一致）。 */
 const NODE_W = 240;
 const GAP = 16;
+/** 顶层链的起始横坐标（与 addNode / restackTopLevel 同一支左缘）。 */
+const DEFAULT_X = 80;
+/** 顶层竖链的纵向间距（2026-10-21）：比容器内间距（GAP）更紧——顶层是一条直线
+ *  链，卡与卡之间只需看清连线，8px 足够；10 步因此比原来少 80px。 */
+const ROW_GAP = 8;
+/** 循环体内的纵向间距（2026-10-21）：与顶层同口径收紧——框内一条竖链同样只需
+ *  看清连线；框的高度由 loopSize 按包围盒算，间距变小后框也跟着变矮。 */
+const LOOP_GAP = 8;
 const PAD = 16;
 /** 容器标题区高度：子节点从它下方开始摆放，不遮住循环自己的名字与按钮。 */
 export const LOOP_HEADER = 76;
@@ -100,7 +108,7 @@ export function addStep(steps: FlowNode[], step: FlowNode, loopId?: string): Flo
     if (node.id !== loopId || node.type !== "loop") return node;
     const body = node.body?.nodes ?? [];
     /* 摞在最后一张卡下面：按每张卡的实际高度累加，条件节点比请求卡高。 */
-    const stackedY = body.reduce((y, inner) => Math.max(y, (inner.position?.y ?? 0) + nodeHeight(inner) + GAP), LOOP_HEADER + PAD);
+    const stackedY = body.reduce((y, inner) => Math.max(y, (inner.position?.y ?? 0) + nodeHeight(inner) + LOOP_GAP), LOOP_HEADER + PAD);
     return {
       ...node,
       body: {
@@ -292,7 +300,7 @@ export function restackLoopBody(steps: FlowNode[], loopId: string, sequence: Flo
     let y = LOOP_HEADER + PAD;
     const nodes = sequence.map((step) => {
       const placed = { ...step, position: { x: PAD, y } };
-      y += nodeHeight(step) + GAP;
+      y += nodeHeight(step) + LOOP_GAP;
       return placed;
     });
     return { ...node, body: { ...node.body, nodes } };
@@ -313,7 +321,7 @@ export function restackTopLevel(steps: FlowNode[], sequence: FlowNode[]): FlowNo
   for (const node of sequence) {
     y.set(node.id, cursor);
     /* 循环占的高度是框的实际尺寸（框住体内步骤的最小包围盒），否则下一个节点会压在框上。 */
-    cursor += (node.type === "loop" ? loopSize(node).height : nodeHeight(node)) + GAP;
+    cursor += (node.type === "loop" ? loopSize(node).height : nodeHeight(node)) + ROW_GAP;
   }
   return steps.map((node) => (y.has(node.id) ? { ...node, position: { x: 80, y: y.get(node.id)! } } : node));
 }
@@ -471,8 +479,22 @@ export function splitEdges(steps: FlowNode[], edges: FlowEdge[]): { top: FlowEdg
  * 判定为移出循环。用户拉大过的框不会被自动缩回去。
  */
 export function loopSize(loop: LoopFlowNode): { width: number; height: number } {
-  let width = Math.max(LOOP_MIN_W, loop.size?.width ?? 0);
-  let height = Math.max(LOOP_MIN_H, loop.size?.height ?? 0);
+  /* 框紧贴内容（2026-10-21「循环内的线没有变短」的根因之一）：此前不存 size 时也
+     按 `max(保存尺寸, 内容包围盒 + PAD)` 叠，旧版本按 16px 间距算出的包围盒被画进
+     库里，卡片间距收紧后框仍拖着空白，出口离下一个节点就更远。现在没被显式拉过
+     （没有 size）的框一律按**当前**内容包围盒 + PAD 算，卡片收紧它跟着变矮；用户
+     拉过的框仍尊重那个尺寸（见上方注释：拉大过的不自动缩回）。 */
+  if (loop.size?.width && loop.size?.height) {
+    const boxed = loop.body?.nodes ?? [];
+    const right = boxed.reduce((value, inner) => Math.max(value, (inner.position?.x ?? 0) + NODE_W), 0);
+    const bottom = boxed.reduce((value, inner) => Math.max(value, (inner.position?.y ?? 0) + nodeHeight(inner)), 0);
+    return {
+      width: Math.max(LOOP_MIN_W, loop.size.width, right + PAD),
+      height: Math.max(LOOP_MIN_H, loop.size.height, bottom + PAD),
+    };
+  }
+  let width = LOOP_MIN_W;
+  let height = LOOP_MIN_H;
   for (const inner of loop.body?.nodes ?? []) {
     width = Math.max(width, (inner.position?.x ?? 0) + NODE_W + PAD);
     height = Math.max(height, (inner.position?.y ?? 0) + nodeHeight(inner) + PAD);
@@ -530,4 +552,87 @@ export function loopAt(steps: FlowNode[], center: XY, draggedId: string): string
 /** 子节点在框内的合法落点：不压住标题区，也不越出左上边界。 */
 export function clampInsideLoop(position: XY): XY {
   return { x: Math.max(PAD, position.x), y: Math.max(LOOP_HEADER + PAD, position.y) };
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * 连线长度（2026-10-21「线太长」反馈的第二处）：条件分叉的横向绕行、循环体内
+ * 默认间距。两件都是纯几何，读文档算，不依赖画布状态。
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/** 条件分叉的侧向错位：真相往下、假象往右各错半张卡——两条出线一眼分得开，
+ *  也不会叠在一条竖线上互相盖住。 */
+const BRANCH_OFFSET = NODE_W / 2 + 8;
+/** 循环体内右移这一条分支时用的横向间距（一张卡 + 一条连线通道）。 */
+const BRANCH_PITCH = NODE_W + GAP * 2;
+
+/** 作用域内某节点的出边（顶层或某个循环体，取决于节点在树里的位置）。 */
+function scopedEdges(steps: FlowNode[], id: string): FlowEdge[] {
+  for (const node of steps) {
+    if (node.type !== "loop") continue;
+    if ((node.body?.edges ?? []).some((edge) => edge.source === id || edge.target === id)) return node.body?.edges ?? [];
+  }
+  return [];
+}
+
+/** 一条链上最深的位置（跨循环框：框像「行」一样占一整段，取框内最深 + 1）。 */
+function depthOf(steps: FlowNode[], start: string, edges: FlowEdge[], seen = new Set<string>()): number {
+  let best = 0;
+  for (const edge of edges) {
+    if (edge.source !== start || seen.has(edge.target)) continue;
+    seen.add(edge.target);
+    if (!findStep(steps, edge.target)) continue;
+    best = Math.max(best, 1 + depthOf(steps, edge.target, edges, seen));
+  }
+  return best;
+}
+
+/**
+ * 条件节点两条出线的落点：谁能往下走。
+ *
+ * 条件卡下面有「真 / 假」两个出口，两条线最后汇到同一张卡时，那条**本应比另一条
+ * 更短**的分支不该被挤在别人后面。规则只有一条、不猜业务语义：**更深的那条分支
+ * 保持 DEFAULT_X 直下**（它后面步骤多，直下最省长度），另一条横向让开——它的终点
+ * 若与直下那条在同一条竖线上，就往右让到一条不重叠的列（让多少看直下分支的深度，
+ * 以及 x 方向上已经排着谁）。两条深度相同（典型是并行两路在下一张卡汇合）时保真
+ * 让假，与条件的阅读顺序一致。
+ *
+ * 只看**条件出口**，不看拖拽：用户手摆的位置永远优先，这里只在新增/插入节点时
+ * 调一次。返回 undefined 表示这个节点不是分叉点，调用方按普通落点处理。
+ */
+export function conditionBranchShift(
+  steps: FlowNode[],
+  allEdges: FlowEdge[],
+  conditionId: string,
+  branch: "true" | "false",
+): { x: number; y: number } | undefined {
+  const condition = findStep(steps, conditionId);
+  if (!condition || condition.node.type !== "condition") return undefined;
+  const edges = scopedEdges(steps, conditionId);
+  const outgoing = edges.filter((edge) => edge.source === conditionId);
+  if (!outgoing.length) return undefined;
+  /* 两条分支各自的走势深度：只沿本分支的出边数节点（分叉点自己的出边仍参与，
+     所以汇合点会被两条都数到——这是对的，汇合之后的路不计入比较）。 */
+  const branchEdges = (keep: "true" | "false") => edges.filter((edge) =>
+    edge.source !== conditionId || (edge.on ?? "true") === keep);
+  const trueDepth = depthOf(steps, conditionId, branchEdges("true"));
+  const falseDepth = depthOf(steps, conditionId, branchEdges("false"));
+  /* 直下的是更深的那条；一样深就保真（阅读顺序在上）。 */
+  const straight: "true" | "false" = falseDepth > trueDepth ? "false" : "true";
+  const baseX = condition.node.position?.x ?? DEFAULT_X;
+  const baseY = condition.node.position?.y ?? 0;
+  const straightOffset = (straight === "true" ? -BRANCH_OFFSET : BRANCH_OFFSET);
+  const detourOffset = (straight === "true" ? BRANCH_OFFSET : -BRANCH_OFFSET);
+  if (branch === straight) return { x: baseX + straightOffset, y: baseY + nodeHeight(condition.node) + ROW_GAP };
+
+  /* 让开的那条：先按半个卡位错开（与直下一左一右，两条出线一眼分得开），再逐列
+     右移，直到不落在任何已有卡的竖线附近——同一条竖线上还排着别人时，线会穿过
+     它们。只在同一作用域里找（循环体内看体内，顶层看顶层）。 */
+  const parentLoop = condition.loopId ? steps.find((node): node is LoopFlowNode => node.id === condition.loopId && node.type === "loop") : undefined;
+  const sameScope: FlowNode[] = parentLoop ? parentLoop.body?.nodes ?? [] : steps.filter((node) => node.type !== "loop");
+  const occupied = sameScope.map((node) => node.position?.x ?? DEFAULT_X);
+  const collides = (candidate: number) => occupied.some((x) => Math.abs(x - candidate) < NODE_W + GAP);
+  let x = baseX + detourOffset;
+  let guard = 0;
+  while (collides(x) && guard < 20) { x += BRANCH_PITCH; guard += 1; }
+  return { x, y: baseY + nodeHeight(condition.node) + ROW_GAP };
 }

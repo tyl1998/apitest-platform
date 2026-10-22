@@ -931,6 +931,7 @@ export function EndpointWorkspace() {
   /**
    * 删除前先扫描引用（P2-4.5 增补）：用例与执行历史随接口级联删除，确认框先说清数量；
    * 该接口下的用例若是手动套件成员则拦截并列出清单，看过之后 force 删除，同一事务里摘成员。
+   * 流程请求节点引用则硬拦（B 方案）：改节点是内容决策，只提供「去处理这些流程」。
    */
   async function remove() {
     if (!projectId || !endpointId) return;
@@ -943,6 +944,22 @@ export function EndpointWorkspace() {
     if (usage.executionCount > 0) notes.push(t("endpoints.deleteExecutionsNote", { count: usage.executionCount }));
     if (usage.specCaseLinkCount > 0) notes.push(t("endpoints.deleteSpecLinksNote", { count: usage.specCaseLinkCount }));
     const suiteList = usage.suites.map((suite) => t("endpoints.usageSuite", { name: suite.name }));
+    const flowList = usage.flows.map((flow) => t("endpoints.usageFlow", { name: flow.name, nodes: flow.nodes.join("、") }));
+
+    /* 流程节点引用硬拦（B 方案）：保存流程要求接口存在，force 修不好，只能去改节点。 */
+    if (usage.flows.length) {
+      Modal.confirm({
+        title: t("endpoints.deleteFlowsBlockedTitle", { name: draft.name }),
+        content: <div>
+          <p>{t("endpoints.deleteFlowsBlockedHint")}</p>
+          <ul className="usage-list">{flowList.map((line, index) => <li key={`${line}:${index}`}>{line}</li>)}</ul>
+        </div>,
+        okText: t("endpoints.goToFlows"),
+        cancelText: t("action.cancel"),
+        onOk: () => navigate(`/projects/${projectId}/flows`),
+      });
+      return;
+    }
 
     Modal.confirm({
       title: usage.blocked ? t("endpoints.deleteBlockedTitle", { name: draft.name }) : t("endpoints.deleteTitle", { name: draft.name }),

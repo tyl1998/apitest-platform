@@ -248,6 +248,7 @@ export function EndpointList() {
           await load();
           await reloadEndpoints();
           if (outcome.blocked.length) {
+            /* 被拦的原因可能是套件成员，也可能是流程节点引用（那次 force 也删不掉）。 */
             message.warning(t("endpoints.batchDeletedPartial", { deleted: outcome.deleted, blocked: outcome.blocked.length }));
           } else {
             message.success(t("endpoints.batchDeleted", { count: outcome.deleted }));
@@ -262,6 +263,10 @@ export function EndpointList() {
    * 删除前先扫描引用（P2-4.5 增补）。用例与执行历史随接口级联删除，用确认框说清数量；
    * 该接口下的用例若是手动套件成员，则拦截并列出清单，主按钮换成「仍然删除」——force
    * 是看过清单之后的决定，不是对 409 的重试。
+   *
+   * B 方案（2026-10-21）：流程请求节点引用是**硬拦**。节点里虽有请求快照，但保存流程
+   * 要求 endpoint 在本项目存在，删掉接口等于让那些流程永远存不回去；而改节点是内容决策，
+   * 不能被一个删除确认框代劳。所以这里不给「仍然删除」，只把人送去流程页处理。
    */
   async function remove(endpoint: Endpoint) {
     if (!projectId) return;
@@ -274,6 +279,22 @@ export function EndpointList() {
     if (usage.executionCount > 0) notes.push(t("endpoints.deleteExecutionsNote", { count: usage.executionCount }));
     if (usage.specCaseLinkCount > 0) notes.push(t("endpoints.deleteSpecLinksNote", { count: usage.specCaseLinkCount }));
     const suiteList = usage.suites.map((suite) => t("endpoints.usageSuite", { name: suite.name }));
+    const flowList = usage.flows.map((flow) => t("endpoints.usageFlow", { name: flow.name, nodes: flow.nodes.join("、") }));
+
+    /* 流程节点引用是**硬拦**：保存流程要求接口存在，force 也修不好，只能去改节点。 */
+    if (usage.flows.length) {
+      Modal.confirm({
+        title: t("endpoints.deleteFlowsBlockedTitle", { name: endpoint.name }),
+        content: <div>
+          <p>{t("endpoints.deleteFlowsBlockedHint")}</p>
+          <ul className="usage-list">{flowList.map((line, index) => <li key={`${line}:${index}`}>{line}</li>)}</ul>
+        </div>,
+        okText: t("endpoints.goToFlows"),
+        cancelText: t("action.cancel"),
+        onOk: () => { if (projectId) navigate(`/projects/${projectId}/flows`); },
+      });
+      return;
+    }
 
     Modal.confirm({
       title: usage.blocked ? t("endpoints.deleteBlockedTitle", { name: endpoint.name }) : t("endpoints.deleteTitle", { name: endpoint.name }),

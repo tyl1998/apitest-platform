@@ -2,11 +2,11 @@ import { startTransition, useCallback, useEffect, useMemo, useRef, useState } fr
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Background, Controls, Handle, NodeResizer, Position, ReactFlow, ReactFlowProvider, SelectionMode, addEdge, useEdgesState, useNodesState, useReactFlow, type Connection, type Edge, type Node, type NodeProps } from "@xyflow/react";
+import { Background, Controls, Handle, NodeResizer, Position, ReactFlow, ReactFlowProvider, MarkerType, SelectionMode, addEdge, useEdgesState, useNodesState, useReactFlow, type Connection, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Braces, Database, GitBranch, Globe2, Hand, History, LayoutList, MousePointer2, Play, Plus, Redo2, Repeat, Save, Square, Timer, Undo2, Workflow, X } from "lucide-react";
+import { Braces, Database, GitBranch, Globe2, Hand, History, LayoutList, MousePointer2, Play, Plus, Redo2, Repeat, Save, Square, Timer, TriangleAlert, Undo2, Workflow, X } from "lucide-react";
 import { api, noRunnerLabel, type DataSource, type Flow, type FlowEdge, type FlowExecution, type FlowExecutionDetail, type FlowNode, type FlowStepResult, type FlowSummary, type Paged } from "../api";
-import { addStep as addStepToTree, afterConditionTarget, clampInsideLoop, collectEdges, findStep as findStepIn, findFreePosition, flattenSteps, foldPositions, loopAt, loopSize, moveStepIntoLoop, moveStepOutOfLoop, moveStepOutAt, nodeFootprint, reorderStepEdges, removeStep as removeStepDeep, reparentStep, restackLoopBody, restackTopLevel, splitEdges, unlinkedSteps, updateStep as updateStepDeep, LOOP_MIN_SIZE } from "../lib/flowCanvas";
+import { addStep as addStepToTree, afterConditionTarget, clampInsideLoop, collectEdges, findStep as findStepIn, findFreePosition, flattenSteps, foldPositions, loopAt, loopSize, moveStepIntoLoop, moveStepOutOfLoop, moveStepOutAt, nodeFootprint, conditionBranchShift, reorderStepEdges, removeStep as removeStepDeep, reparentStep, restackLoopBody, restackTopLevel, splitEdges, unlinkedSteps, updateStep as updateStepDeep, LOOP_MIN_SIZE } from "../lib/flowCanvas";
 import { useExecutionStream } from "../hooks/useExecutionStream";
 import { useCanWrite } from "../hooks/useMyRole";
 import { usePageContext } from "../hooks/usePageContext";
@@ -44,6 +44,8 @@ type StepData = {
   onResize?: (loopId: string, size: { width: number; height: number }) => void;
   /** 点出口圆点：在这一步下面加一步（条件节点带上真/假分支）。 */
   onAddAfter?: (nodeId: string, handleId?: string) => void;
+  /** 来源接口已被删除：卡片上直接标出来，画布上一眼能看见，不必逐张卡打开抽屉查。 */
+  deadSource?: boolean;
 };
 type StepEdgeData = { flowEdge: FlowEdge };
 
@@ -99,7 +101,7 @@ function SourceHandle({ nodeId, handleId, style, onAddAfter }: {
  */
 function StepNode({ data, selected }: NodeProps<Node<StepData>>) {
   const { t } = useTranslation();
-  const { node, dataSourceName, bodyName, index, status, onOpen, onDelete, onAddAfter } = data;
+  const { node, dataSourceName, bodyName, index, status, deadSource, onOpen, onDelete, onAddAfter } = data;
   const hasChecks = node.type === "request" || node.type === "database";
 
   /* 循环是画布容器：这个节点只画「框 + 标题 + 加步骤」，被它框住的步骤是真正的
@@ -109,7 +111,7 @@ function StepNode({ data, selected }: NodeProps<Node<StepData>>) {
     return <LoopContainerNode data={data} selected={selected} />;
   }
 
-  return <div className={`flow-node${selected ? " is-selected" : ""}`} data-status={status} onDoubleClick={() => onOpen(node.id)}>
+  return <div className={`flow-node${selected ? " is-selected" : ""}${deadSource ? " is-dead-source" : ""}`} data-status={status} onDoubleClick={() => onOpen(node.id)}>
     <Handle type="target" position={Position.Top} />
     <div className="flow-node-head">
       {index !== undefined && <span className="flow-node-index mono">{index + 1}</span>}
@@ -117,6 +119,9 @@ function StepNode({ data, selected }: NodeProps<Node<StepData>>) {
         ? <Method method={node.request.method} />
         : <span className="flow-node-kind mono"><NodeKindIcon type={node.type} size={12} />{KIND_BADGE[node.type]}</span>}
       <span className="flow-node-name truncate">{node.name || "—"}</span>
+      {/* 来源接口已删：戴上警示徽记（悬停说明怎么修）。只标不拦——节点自带请求快照，
+          编辑照常，但执行会失败，所以必须让人在画布上就看见。 */}
+      {deadSource && <span className="flow-node-warn nodrag" title={t("flows.deadSourceBadge")} aria-label={t("flows.deadSourceBadge")}><TriangleAlert size={12} /></span>}
       {/* Deleting a step should not require opening it first. `nodrag` keeps the
           click from being swallowed by the canvas pan handler. */}
       <button
@@ -421,6 +426,15 @@ function FlowCanvas() {
    * projection deliberately excludes the large mutable request object. Detail
    * edits stay in `steps` for save/run but no longer tear down canvas nodes.
    */
+
+  /**
+   * 本项目接口 id 全集（进入编辑器时现拉，`reloadEndpoints`）。
+   *
+   * 判「来源已删」唯一可靠的口径：节点上的 `endpointId` 不在这个集合里。不能靠
+   * 「接口清单里找不到就删了」——清单本身是分页/store 态，缺一行并不等于被删。
+   */
+  const knownEndpointIds = useMemo(() => new Set(endpoints.map((item) => item.id)), [endpoints]);
+
   const canvasSignature = useMemo(
     () => JSON.stringify(flattenSteps(steps).map(({ node: step, loopId }) => ({
       id: step.id,
@@ -431,8 +445,10 @@ function FlowCanvas() {
       descriptor: nodeDescriptor(step),
       extracts: step.type === "request" || step.type === "database" ? step.extracts.map((extract) => extract.name) : [],
       assertionCount: step.type === "request" || step.type === "database" ? step.assertions.length : 0,
+      /* 来源接口被删（含被删后再拉一次/被重新创建）要立刻换卡面，所以进签名。 */
+      deadSource: step.type === "request" && Boolean(step.endpointId) && !knownEndpointIds.has(step.endpointId),
     }))),
-    [steps],
+    [steps, knownEndpointIds],
   );
 
   /* The stage a node runs in, shown instead of a sequential index so two
@@ -468,6 +484,7 @@ function FlowCanvas() {
           /* 阶段号只对顶层节点有意义：循环体每次迭代都跑一遍，编号会误导。 */
           index: loopId ? undefined : (stageByNode.has(step.id) ? stageByNode.get(step.id)! : (order.indexOf(step.id) === -1 ? undefined : order.indexOf(step.id))),
           status: nodeStatus[step.id],
+          deadSource: step.type === "request" && Boolean(step.endpointId) && !knownEndpointIds.has(step.endpointId),
           onOpen: openDrawer,
           onDelete: removeStep,
           onAddInside: step.type === "loop" ? openLoopPicker : undefined,
@@ -476,7 +493,7 @@ function FlowCanvas() {
         },
       }));
     }));
-  }, [canvasSignature, order, stages, stageByNode, nodeStatus, dataSources, projectFlows, setNodes, openDrawer, openLoopPicker, resizeLoop, addAfterNode]);
+  }, [canvasSignature, order, stages, stageByNode, nodeStatus, dataSources, projectFlows, knownEndpointIds, setNodes, openDrawer, openLoopPicker, resizeLoop, addAfterNode]);
 
   /**
    * 画布 → 文档。
@@ -702,6 +719,32 @@ function FlowCanvas() {
   }, [flow, name, environmentId, documentNow, variables, tags, baseline]);
 
   /**
+   * 来源接口已被删除的请求节点。
+   *
+   * 保存本身不受影响——后端把请求节点的 `endpointId` 当来源标记（节点带请求快照），
+   * 但**执行**时会带着这个已删的 uuid 去写 `executions.endpoint_id`（NOT NULL + CASCADE），
+   * 外键违约让这一步必失败。所以保存成功后仍要提醒，并点出是哪几个节点：否则用户会以为
+   * 存下去就没事，直到某次运行才炸在那一步。
+   *
+   * 判断放在前端是因为接口清单在进入编辑器时现拉（`reloadEndpoints`），本项目的接口全集
+   * 就在手上，不必为每次保存多打一次请求。
+   */
+  const deadSourceNodeIds = useMemo(
+    () => new Set(flattenSteps(steps)
+      .map(({ node }) => node)
+      .filter((node) => node.type === "request" && node.endpointId && !knownEndpointIds.has(node.endpointId))
+      .map((node) => node.id)),
+    [steps, knownEndpointIds],
+  );
+  const deadSourceNodes = useMemo(
+    () => flattenSteps(steps)
+      .map(({ node }) => node)
+      .filter((node) => deadSourceNodeIds.has(node.id))
+      .map((node) => node.name || node.id),
+    [steps, deadSourceNodeIds],
+  );
+
+  /**
    * Variables a seed value may reference.
    *
    * Step extracts are filtered out: a seed is read before anything has run, so
@@ -760,12 +803,18 @@ function FlowCanvas() {
       setSteps(saved.nodes);
       setTags(saved.tags);
       setBaseline(snapshot(saved.name, saved.environmentId ?? "none", saved.nodes, saved.edges, saved.variables, saved.tags));
-      message.success(t("flows.saved"));
+      /* 保存后端是放过的（`endpointId` 只当来源标记），但执行时会撞外键。静默存下去
+         等于把问题推到运行时才炸，所以这里必须说出来，并点名节点。 */
+      if (deadSourceNodes.length) {
+        message.warning(t("flows.savedWithDeadSource", { names: deadSourceNodes.join("、") }), 8);
+      } else {
+        message.success(t("flows.saved"));
+      }
     } catch (error) {
       const detail = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
       message.error(detail ?? t("flows.saveFailed"));
     } finally { setSaving(false); }
-  }, [projectId, flowId, name, environmentId, documentNow, variables, tags, t]);
+  }, [projectId, flowId, name, environmentId, documentNow, variables, tags, deadSourceNodes, t]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -806,9 +855,18 @@ function FlowCanvas() {
      */
     const anchor = insertAfter ? findStepIn(stepsRef.current, insertAfter.nodeId) : undefined;
     const center = viewportCenter();
-    const start = anchor
+    /**
+     * 条件出口的落点（2026-10-21「两条分支最后汇到一处」反馈）：点「真 / 假」圆点新增
+     * 时，**更深的那条分支直下、另一条横向让开**，两条线不会叠在一起、也不会为了绕
+     * 过对方而变长。规则与深度都在 `conditionBranchShift`；拿不到分叉信息时退回普通
+     * 锚点落点。用户手摆过位置的节点不参与这个判断。
+     */
+    const branchPoint = anchor && anchor.node.type === "condition" && insertAfter?.handleId
+      ? conditionBranchShift(stepsRef.current, toFlowEdges(edges), anchor.node.id, insertAfter.handleId === "false" ? "false" : "true")
+      : undefined;
+    const start = branchPoint ?? (anchor
       ? { x: anchor.node.position?.x ?? 80, y: (anchor.node.position?.y ?? 60) + nodeFootprint(anchor.node).height + 24 }
-      : { x: center.x - 120, y: center.y - 60 };
+      : { x: center.x - 120, y: center.y - 60 });
     const base = { id, name: "", position: findFreePosition(start, occupiedRects()), onFailure: "stop" as const };
     const step: FlowNode = type === "request" ? {
       ...base, type: "request", endpointId: "",
@@ -1020,16 +1078,19 @@ function FlowCanvas() {
             onClick={() => setViewMode("list")}
           ><LayoutList size={14} /></button>
         </div>
-        {/* 框选是画布专属交互：左键拖拽画选择框、多选整组拖动，列表模式没有这个概念。 */}
-        {viewMode === "canvas" && <button
-          className={`btn btn-with-icon${selectMode ? " is-active" : ""}`}
-          aria-pressed={selectMode}
-          title={t("flows.selectModeHint")}
-          onClick={() => setSelectMode((current) => !current)}
-        >
-          {selectMode ? <MousePointer2 size={14} /> : <Hand size={14} />}
-          {selectMode ? t("flows.selectMode") : t("flows.panMode")}
-        </button>}
+        {/* 框选是画布专属交互：左键拖拽画选择框、多选整组拖动，列表模式没有这个概念。
+            按钮只留图标：宽流程的工具栏已经很挤（2026-10-21），文案进 title/aria；
+            .btn 的 30px × 13px padding 给足点击区，icon-only 用 .btn-icon 收成方形。 */}
+        {viewMode === "canvas" && <div className="mode-switch is-single" role="group" aria-label={t("flows.panMode")}>
+          <button
+            className={`icon-btn${selectMode ? " is-active" : ""}`}
+            aria-pressed={selectMode}
+            title={t("flows.selectModeHint")}
+            onClick={() => setSelectMode((current) => !current)}
+          >
+            {selectMode ? <MousePointer2 size={14} /> : <Hand size={14} />}
+          </button>
+        </div>}
           <IconButton icon={<Undo2 size={15} />} label={t("action.undo")} disabled={!historyDepth.past} onClick={undo} />
           <IconButton icon={<Redo2 size={15} />} label={t("action.redo")} disabled={!historyDepth.future} onClick={redo} />
           {canWrite && <IconButton icon={<History size={15} />} label={t("version.history")} onClick={() => setChangeHistoryOpen(true)} />}
@@ -1075,6 +1136,7 @@ function FlowCanvas() {
           order={order}
           stages={stages}
           nodeStatus={nodeStatus}
+          deadSourceIds={deadSourceNodeIds}
           dataSources={dataSources}
           projectFlows={projectFlows}
           active={activeRow}
@@ -1209,6 +1271,9 @@ function FlowCanvas() {
          panActivationKeyCode={null}
          onNodesDelete={(deleted) => { for (const item of deleted) removeStep(item.id); }}
         nodeTypes={NODE_TYPES}
+        /* 连线一律走正交折线：竖链之间是一段直线而不是随距离变长的弧（见
+           toCanvasEdge 的注释）。markerEnd 给箭头，长链上「往哪个方向」不靠猜。 */
+        defaultEdgeOptions={{ type: "smoothstep", markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 } }}
         fitView
         proOptions={{ hideAttribution: true }}
       >
@@ -1380,6 +1445,12 @@ function toCanvasEdge(edge: FlowEdge, t: (key: string) => string): Edge {
     id: edge.id,
     source: edge.source,
     target: edge.target,
+    /* 正交折线（2026-10-21「线太长」反馈）：默认 bezier 用 source→target 的中心
+       距离的一半做弯曲量，卡与卡离得越远、弧越夸张，一条竖链读起来全是长弧。
+       smoothstep 只用「出口向下 → 入口向上」两段直线 + 一个短圆角，长间距就只是
+       一段直上直下的线，谁的下一步一目了然。全局默认见 ReactFlow 的
+       defaultEdgeOptions（条件分支同样适用）。 */
+    type: "smoothstep",
     sourceHandle: branch,
     label: branch ? t(branch === "true" ? "flows.conditionBranchTrue" : "flows.conditionBranchFalse") : undefined,
     data: { flowEdge: edge },

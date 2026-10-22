@@ -68,10 +68,11 @@ export type EnvironmentUsage = {
 /**
  * What disappears if an endpoint is deleted, read before the confirm dialog (P2-4.5 增补).
  *
- * `blocked` = the endpoint's cases are manual suite members; `?force=true` then detaches
- * them in the same transaction. Cases and run history cascade away regardless, so both are
- * reported. Flow node `endpointId` is a snapshot source marker and
- * `specCaseLinkCount` dangles to「目标已删除」 — neither blocks, both are shown as context.
+ * `blocked` = the endpoint's cases are manual suite members, or a flow request node still
+ * points at it. Manual-suite members can be detached by `?force=true`; flow nodes cannot —
+ * the server keeps refusing until those nodes are re-pointed or removed, because saving the
+ * flow requires its endpoint to exist. Cases and run history cascade away regardless, so
+ * both are reported. `specCaseLinkCount` dangles to「目标已删除」.
  */
 export type EndpointUsage = {
   endpointId: string;
@@ -80,6 +81,9 @@ export type EndpointUsage = {
   executionCount: number;
   suites: { id: string; name: string }[];
   specCaseLinkCount: number;
+  /** 引用该接口的流程请求节点（B 方案）：force 也不会放过，必须先改节点或删节点。 */
+  flows: { id: string; name: string; nodes: string[] }[];
+  flowNodeCount: number;
   blocked: boolean;
 };
 
@@ -3472,7 +3476,7 @@ export const api = {
   deleteEndpoint: (projectId: string, id: string, force = false) =>
     client.delete(`/projects/${projectId}/endpoints/${id}`, { params: force ? { force: "true" } : undefined }).then(data<{ id: string; detachedSuites: { id: string; name: string }[] }>),
   /** 逐项结果：被手动套件引用的接口跳过并列入 `blocked`（P2-4.5 增补）。 */
-  batchDeleteEndpoints: (projectId: string, endpointIds: string[]) => client.post(`/projects/${projectId}/endpoints/batch-delete`, { endpointIds }).then(data<{ ids: string[]; deleted: number; blocked: { id: string; name: string; suiteCount: number }[] }>),
+  batchDeleteEndpoints: (projectId: string, endpointIds: string[]) => client.post(`/projects/${projectId}/endpoints/batch-delete`, { endpointIds }).then(data<{ ids: string[]; deleted: number; blocked: { id: string; name: string; suiteCount: number; flowCount: number }[] }>),
   duplicateEndpoint: (projectId: string, id: string, name?: string) => client.post(`/projects/${projectId}/endpoints/${id}/duplicate`, { name }).then(data<Endpoint>),
   importEndpoints: (projectId: string, endpoints: EndpointInput[], conflictStrategy: "update" | "skip" | "create") =>
     client.post(`/projects/${projectId}/endpoints/import`, { endpoints, conflictStrategy }).then(data<{ imported: Endpoint[]; updated: Endpoint[]; skipped: string[] }>),

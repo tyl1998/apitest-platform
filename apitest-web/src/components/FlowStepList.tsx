@@ -1,7 +1,7 @@
 import { useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { Dropdown, type MenuProps } from "antd";
 import { useTranslation } from "react-i18next";
-import { ArrowDown, ChevronDown, ChevronRight, MoreHorizontal, Plus, X } from "lucide-react";
+import { ArrowDown, ChevronDown, ChevronRight, MoreHorizontal, Plus, TriangleAlert, X } from "lucide-react";
 import type { DataSource, FlowEdge, FlowNode, FlowSummary, LoopFlowNode } from "../api";
 import { byPosition } from "../lib/flowCanvas";
 import { KIND_BADGE, NodeKindIcon, stepSubtitle } from "./FlowStepPresentation";
@@ -14,7 +14,7 @@ import { Method, type RunStatus } from "../ui";
  * 画布所在的那一层），保存 / 运行 / 撤销 / 脏检查因此天然跨模式一致。顺序即语义：
  * 列表不渲染连线本身，顶层按服务端计划的执行顺序排，条件分支用行上的 chip 表达。
  */
-export function FlowStepList({ steps, edges, order, stages, nodeStatus, dataSources, projectFlows, active, onActive, onOpen, onDelete, onAddAfter, onAddInside, onAddTop, onMoveIntoLoop, onMoveOut, onMoveOutAt, onAddAfterCondition, onReorder }: {
+export function FlowStepList({ steps, edges, order, stages, nodeStatus, deadSourceIds, dataSources, projectFlows, active, onActive, onOpen, onDelete, onAddAfter, onAddInside, onAddTop, onMoveIntoLoop, onMoveOut, onMoveOutAt, onAddAfterCondition, onReorder }: {
   /** 流程文档树（顶层节点，循环体存在 loop.body 里）。 */
   steps: FlowNode[];
   /** 画布可见的全部连线（顶层 + 循环体内），已转回 FlowEdge 形状。 */
@@ -23,6 +23,8 @@ export function FlowStepList({ steps, edges, order, stages, nodeStatus, dataSour
   order: string[];
   stages: string[][];
   nodeStatus: Record<string, RunStatus>;
+  /** 来源接口已删除的节点（判据在 FlowWorkspace 的 `knownEndpointIds`）：行上常驻警示。 */
+  deadSourceIds: Set<string>;
   dataSources: DataSource[];
   projectFlows: FlowSummary[];
   /** 「所选行」（最后点过的行）：列表新增步骤默认接在它后面。 */
@@ -271,7 +273,7 @@ export function FlowStepList({ steps, edges, order, stages, nodeStatus, dataSour
     const moveItems = moveMenuItems(node, opts.loopId);
     return <div
       key={node.id}
-      className={`flow-row${active === node.id ? " is-active" : ""}${rowDragClass(node.id)}`}
+      className={`flow-row${active === node.id ? " is-active" : ""}${deadSourceIds.has(node.id) ? " is-dead-source" : ""}${rowDragClass(node.id)}`}
       data-status={status}
       onClick={() => { onActive(node.id); onOpen(node.id); }}
       {...dragProps(node, opts.loopId)}
@@ -283,6 +285,8 @@ export function FlowStepList({ steps, edges, order, stages, nodeStatus, dataSour
         ? <Method method={node.request.method} />
         : <span className="flow-node-kind mono"><NodeKindIcon type={node.type} size={12} />{KIND_BADGE[node.type]}</span>}
       <span className="flow-row-name truncate">{node.name || "—"}</span>
+      {/* 与画布同一个徽记：来源接口被删，保存能过但执行会失败。列表模式也不能藏起来。 */}
+      {deadSourceIds.has(node.id) && <span className="flow-node-warn" title={t("flows.deadSourceBadge")} aria-label={t("flows.deadSourceBadge")}><TriangleAlert size={12} /></span>}
       <span className="flow-row-sub mono truncate">{stepSubtitle(node, t, dataSourceName, bodyName)}</span>
       {branches.map((edge) => <span key={edge.id} className="chip mono">{t(edge.on === "true" ? "flows.conditionBranchTrue" : "flows.conditionBranchFalse")}</span>)}
       {hasChecks && (node.extracts.length > 0 || node.assertions.length > 0) && <>
