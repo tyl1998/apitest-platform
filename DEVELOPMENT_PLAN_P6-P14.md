@@ -2832,6 +2832,11 @@ POST   /api/v1/notifications/read-all                   全部已读
   system 行（前端 i18n 渲染），回放后确认记录仍在；② agent 回复里 agent-vendor 的
   `<markdown-custom-process>` 过程标记在 `AssistantMarkdown` 渲染层剥离（工具状态
   我们已有工具行呈现，标记是重复噪音；只剥该已知标记不泛化清洗）。
+- **2026-10-21 撤销（用户决策）**：`/mcp` 的 MRTR 闸门整体移除，`delete_*` 改为一次
+  调用即执行、由客户端按 `tools/list` 的 `destructiveHint: true` 在调用前向人确认
+  （见 `DEVELOPMENT_PLAN.md` 9.4.1）。因此前端不再会收到 `elicit` 事件：
+  `AssistantElicitationCard` 与 `sse.elicit` 映射成为**死路径**，保留只为回放历史
+  会话里已存的 elicit 行；不要再为它新增工具枚举。
 
 #### 13.4.8 P9-6 实现状态（2026-09-16，人物生成器）
 

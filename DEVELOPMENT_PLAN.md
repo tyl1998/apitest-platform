@@ -79,8 +79,8 @@
 > JSON 导入导出 + 测试连接），adapter 契约 + 注册表（形制照 `lib/adapters`），v1
 > 仅 `agent-vendor` 一个 adapter、**只接 agent 平台不接裸 LLM**（资格线：建会话 + 流式 +
 > 历史）；多轮上下文与历史全由 agent 方持有、平台只代理展示；新增 13.6「agent 方
-> 接入要求与对接契约」（含 MCP 工具面接线、`apitest-proposal` 草稿格式、elicitation/
-> MRTR 三层职责拆解与实测方法）。迁移顺延 **057**（P11 顺延 058）。详见
+> 接入要求与对接契约」（含 MCP 工具面接线、`apitest-proposal` 草稿格式、按会话注入凭据
+> 的实测方法；原 elicitation/MRTR 转述部分随 MRTR 移除，见 9.4.1）。迁移顺延 **057**（P11 顺延 058）。详见
 > `DEVELOPMENT_PLAN_P6-P14.md` 十三章 13.0 修订与 13.4 批次重排。
 > **P9-1（迁移 057 + 057b + inbox + 铃铛 + 通知列表页 + 五个生产源）已于
 > 2026-09-11 实现**（状态见该文件 13.4.1）。收件口径（同日用户确认修订）：
@@ -117,12 +117,20 @@
 > 姿态——SDK v2 默认 `legacy: 'stateless'`，智能体平台 rmcp-soddygo 1.5.0 的 Streamable
 > HTTP（2025-06-18）走兼容腿、零状态，老 SSE 传输（rmcp 0.10）不支持、平台侧用
 > `STREAMABLE_HTTP` 注册；工具面从 16 个扩到 **43 个封顶**（读 21 / 写 17 / 执行 5）——新增
-> 套件/调度/告警/CI 任务完整 CRUD（delete 走 MRTR 确认）、任务与报告读取、命名资产触发、
+> 套件/调度/告警/CI 任务完整 CRUD、任务与报告读取、命名资产触发、
 > 单用例调试、`get_project_overview`；**边界 3 由「不给 execute/delete」重写为动作分级**
-> （可逆写直接执行 / 不可逆写 MRTR 确认回合、force 不再是入参 / 执行只跑已保存资产且不接受
-> overrides）；scope 增第三种 `execute`（表结构零改动）；授权分三层——Token scope、MRTR
-> 动作确认、站内助手身份绑定（9.8 三选一）。P5-3 增两条实测：elicitation/MRTR 转述、按会话
-> 注入凭据。
+> （可逆写直接执行 / 不可逆写删除一次执行、确认由客户端按 `destructiveHint` 在调用前完成、
+> force 不是入参 / 执行只跑已保存资产且不接受
+> overrides）；scope 增第三种 `execute`（表结构零改动）；授权分三层——Token scope、
+> 删除前客户端确认、站内助手身份绑定（9.8 三选一）。
+> ~~P5-3 增两条实测：elicitation/MRTR 转述~~（2026-10-21 撤销：MRTR 已移除，见 9.4.1）；
+> 「按会话注入凭据」实测保留。
+>
+> **MCP 删除确认改由客户端承担（2026-10-21 用户确认，见 9.4.1）**：`delete_*` 不再走 MRTR
+> 两段式（多数 agent 不转述 elicitation），改为一次调用即执行、靠 `tools/list` 的
+> `destructiveHint: true` 让客户端在调用前向人确认；回执附带连带后果（引用者 / 跟随者 /
+> 独占变量引用清单）。`lib/mcpToolResult.ts` 的 `mrtrGate` / `mrtrRequired` /
+> `MRTR_REFUSED_MESSAGE` 与 handler 第三参 `mcpReq` 一并删除。
 >
 > **v0.8.10 增量（验收 2026-09-03 第二批，见 8.17）**：一项缺陷一项口径两项交互——
 > ① 树×报告匹配键形态缺陷（allure fullName 是 `pkg.Mod#test`，非 nodeid；Runner 侧
@@ -5923,7 +5931,7 @@ commit 只去重同一次 CI run 的重投）。2026-09-03 用户改口径（同
 > 复查、闸门重排五道。本节及 9.1 /
 > 9.3 描述的项目级 token（`project_id` / scope 挂 token 行）以
 > `DEVELOPMENT_PLAN_P6-P14.md` 十八章 18.0 边界为准；`/mcp` 端点、无状态模型、
-> 前缀收窄 + scrypt、MRTR 确认、读时脱敏等机制性决策不变。
+> 前缀收窄 + scrypt、删除前客户端确认（原 MRTR，见 9.4.1）、读时脱敏等机制性决策不变。
 
 **问题**
 
@@ -5944,7 +5952,7 @@ P5 要的是**把平台自身能力暴露成 MCP 工具，让平台之外的 AI 
 **平台是 MCP Server（工具提供方），不是 MCP Client。一条无状态 `POST /mcp` 端点，
 `apimcp_` Token 鉴权，Token 带 `read` / `write` / `execute` 三种 scope；读工具照搬既有
 mapper 出数，写工具复用既有校验后落库，执行工具只跑已保存的命名资产；不可逆动作（delete）
-走 MCP 协议原生的 MRTR 确认回合；执行证据在读取时重新脱敏。**
+一次调用即执行，确认由客户端按 `destructiveHint` 在调用前完成（9.4.1）；执行证据在读取时重新脱敏。**
 
 三条与既有实现的关系必须一开始就说清，否则会写出第二套并行机制：
 
@@ -5975,16 +5983,14 @@ mapper 出数，写工具复用既有校验后落库，执行工具只跑已保�
    true)`。签发者被降成 `viewer` 或被移出项目后，他的 Token 立刻写不动——**权限的事实在
    `user_project_roles`，Token 只是一把钥匙，不是一份权限快照**。这一条同时决定了 Token 不存
    角色副本：存了就会与那张表分叉。
-3. **动作分级取代一刀切（2026-09-04 重写；原版把 execute 与 delete 整类排除，理由是「agent
-   没有『看到后果再决定』的能力」——MRTR 之后这个前提不成立，确认是协议回合而不是入参）**：
-   - **可逆写**（全部资产的 `create_*` / `update_*`）：`write` scope 直接执行、全审计，幂等键
-     沿用（`(project, method, url)`、`(endpoint, name)`、`(project, name)`、`(resource,
-     cron, target)`）。
-   - **不可逆写**（全部 `delete_*`）：`write` scope + **MRTR 确认回合**（9.4.1）——
-     `scanUsage`（`environments.ts:48`）的依赖清单就是确认内容，服务端返回 `resultType:
-     "input_required"`，客户端把问题转述给人、人确认后带 `inputResponses` 重试原调用才执行。
-     **`force` 不再是入参**：agent 照 409 提示「自动补 force=true」的路径从根上消失——不确认
-     就删不掉。
+3. **动作分级取代一刀切（2026-09-04 重写；2026-10-21 删除确认改由客户端承担）**：
+    - **可逆写**（全部资产的 `create_*` / `update_*`）：`write` scope 直接执行、全审计，幂等键
+      沿用（`(project, method, url)`、`(endpoint, name)`、`(project, name)`、`(resource,
+      cron, target)`）。
+    - **不可逆写**（全部 `delete_*`）：`write` scope + **客户端调用前确认**——`tools/list`
+      里 `delete_*` 带 `destructiveHint: true`（9.4.2），agent 平台据此在调用前向人确认；
+      工具本身**一次调用即执行**，回执里带连带后果（引用者清单 / 跟随者 / 独占变量引用）。
+      **`force` 不是入参**，也不存在「第二次重试才删」的协议回合（9.4.1）。
    - **执行**（`run_endpoint` / `run_case` / `run_flow` / `trigger_suite_run` /
      `trigger_ci_task_run`）：独立 `execute` scope + 在途去重（同目标已有排队/在途 run 时直接
      返回那个 run id，不排第二个）+ 审计。**只跑已保存的命名资产、不接受任何 overrides**——
@@ -6036,7 +6042,7 @@ mapper 出数，写工具复用既有校验后落库，执行工具只跑已保�
     另一个不愿意，是正常状态。
 13. **只审计写入、执行与拒绝，不审计读取**。一次对话会产生 3~10 次读调用，那个量级的读日志
     是噪音，还会把 `audit_logs` 冲成一张日志表。要复盘的是「谁改了什么」「谁触发了什么」「谁
-    被拒了」；delete 的 MRTR 确认回合同样落审计（确认即决策）。Token 的「还有人在用吗」由行上
+    被拒了」；delete 的写审计里带上连带后果计数（与 REST 面同一份证据）。Token 的「还有人在用吗」由行上
     的 `last_used_at` 回答（照 `lib/ingestAuth.ts:77`：**不进业务事务**，业务回滚了不该让
     「用过」这件事消失）。
 14. **Token 哈希存储，不加密**（照搬 P4 边界 17 的推理）：只需比对就该哈希，scrypt +
@@ -6122,8 +6128,10 @@ session / 状态」）。
 | `STREAMABLE_HTTP`（rmcp-soddygo 1.5.0） | 2025-06-18 Streamable HTTP | **支持**——默认兼容腿，零状态 |
 | `SSE`（rmcp 0.10，传统 SSE + POST） | 2024-11-05 老传输 | **不支持**——SDK v2 明确「never serves the HTTP+SSE transport」，冻结版在 `@modelcontextprotocol/server-legacy/sse` 且已定 v3 移除；平台侧用 `STREAMABLE_HTTP` 方式注册 |
 
-**新规范里用与不用的**：用 **MRTR**（delete 确认回合，9.4.1）与 `ttlMs` / `cacheScope`
-（工具清单缓存提示，SDK 自动携带）。不用 Tasks 扩展（无长任务）、`subscriptions/listen`
+**新规范里用与不用的**：用 `ttlMs` / `cacheScope`
+（工具清单缓存提示，SDK 自动携带）与 ToolAnnotations（调用前确认提示，9.4.2）。**不用 MRTR / elicitation**
+（2026-10-21 移除：多数 agent 不转述确认表单，delete 会被白卡一轮；确认改由客户端按
+`destructiveHint` 在调用前完成）。不用 Tasks 扩展（无长任务）、`subscriptions/listen`
 （不做推送）、sampling / roots / logging（已废弃且从未需要）、OAuth（见下）。
 
 **挂载方式（必须照这个写）**：
@@ -6153,8 +6161,7 @@ app.all("/mcp", async (request, reply) => {
   也正好与「一个请求一份鉴权身份」对齐。
 
 **响应形态**：`responseMode` 不写死，用默认——单条 JSON 响应，只在工具发进度通知时升级为 SSE。
-本阶段的工具全部是「查一次库 / 写一次库 / 入一次队就返回」，没有长任务（delete 的 MRTR
-`input_required` 也是普通 JSON 结果，不是流），所以实际上永远是单条 JSON。
+本阶段的工具全部是「查一次库 / 写一次库 / 入一次队就返回」，没有长任务，所以实际上永远是单条 JSON。
 
 **OAuth 不做**。规范里 authorization 是 `OPTIONAL`，完整实现要 OAuth 2.1 + PKCE + 资源元数据
 + 客户端注册（`RFC 9728` / `RFC 8707` / `RFC 7591`），那是给「任意第三方客户端接入公网 MCP
@@ -6271,8 +6278,8 @@ id）——没有 id，AI 把两跳连不起来，「快」就无从谈起；②
 | `create_spec_module`（2026-09-09 增补） | `specModules.ts` 建 | `(parent, name)` = 同 path 重读既有行；深 6 层；`'/'` 拒入名字 |
 | `create_script`（2026-09-09 增补） | 提取后的 `validateScript()` + `scripts.ts` 建 | `(project, name)`：重名按更新处理（改公共脚本＝改全部追随者，回执带 outcome）；kind 只可 hook/response/library/node；库内容过 `inspectLibrarySource`；依赖整块替换只指 library |
 | `update_script`（2026-09-09 增补） | `scripts.ts` PATCH | 按 id；**kind 不可改**（return 语义随 kind 变，REST 同款纪律）；回执带 followers 清单 |
-| `delete_script`（2026-09-09 增补） | `scripts.ts` DELETE（409/force 的 MRTR 等价） | 按 id；delete 走 9.4.1，message 带 `scriptUsage` 追随者清单 |
-| `delete_environment`（2026-09-09 增补） | `environments.ts` DELETE（scanUsage + force 的 MRTR 等价） | 按 id；delete 走 9.4.1，message 带独占变量引用的接口清单；删前回填 `executions.environment_name` 快照；secret 仍无通路 |
+| `delete_script`（2026-09-09 增补） | `scripts.ts` DELETE（409/force 的一次执行等价物） | 按 id；delete 走 9.4.1（确认在客户端），回执带 `scriptUsage` 追随者清单 |
+| `delete_environment`（2026-09-09 增补） | `environments.ts` DELETE（scanUsage + force 的一次执行等价物） | 按 id；delete 走 9.4.1（确认在客户端），回执带独占变量引用的接口清单；删前回填 `executions.environment_name` 快照；secret 仍无通路 |
 
 **执行工具（`execute` scope，5 个）**
 
@@ -6284,21 +6291,24 @@ id）——没有 id，AI 把两跳连不起来，「快」就无从谈起；②
 | `trigger_suite_run` | `lib/trigger.ts` 的 `triggerSuite`（P3-4 统一触发路径） | 在途去重同上 |
 | `trigger_ci_task_run` | `triggerCiTaskRun`（P4.5-12） | 在途去重同上——任务级串行本来就排队，返回排队中那个 run id |
 
-#### 9.4.1 删除确认语义（MRTR）
+#### 9.4.1 删除确认语义（2026-10-21 改为客户端调用前确认）
 
-全部 `delete_*` 工具两段式：
+全部 `delete_*` 工具**一次调用即执行**（等价 REST 面的 `force=true` 路径）：
 
-1. **第一段返回 `resultType: "input_required"`**：内容 = `scanUsage` 的依赖清单（哪些调度在
-   引用、多少用例挂在下面）+ 后果摘要。客户端（agent 平台）把它转述给人——这就是聊天里的
-   「确认删除吗」。
-2. **确认后带 `inputResponses` 重试原调用**，服务端这才执行删除（等价于 REST 面的
-   `force=true` 路径）。**`force` 不是工具入参**——agent 无法单方面替人答：确认是协议回合，
-   取决于客户端是否把问题交给人。
+- **确认在调用前，由客户端做**：`tools/list` 里 `delete_*` 带 `destructiveHint: true`
+  （9.4.2），agent 平台据此弹窗/提示让人确认，用户点了才发起这次调用。
+- **服务端只负责把后果写进回执**：连带删掉的引用者数量、受影响跟随者清单、独占变量引用
+  的接口清单等，随删除结果一起返回（`removedSchedules` / `affectedFollowers` /
+  `endpointsWithExclusiveVariables` / `cascadedLinks` 等字段），供 agent 在回复里转述。
+- **`force` 不是入参**，也没有「第二次重试才删」的协议回合。
 
-旧客户端（2025 系）走 SDK 的 elicitation 桥接（`legacyInputRequiredShim`）；客户端没有
-elicitation 能力时 delete **降级为拒绝**并提示走 UI——降级而不是开洞。智能体平台是否真的
-转述 elicitation / MRTR 是 P5-3 实测项；不转述则 delete 在聊天里不可用，可逆写与执行不受
-影响。
+> **为什么删掉原 MRTR 方案（2026-09-15 落地，2026-10-21 移除）**：原设计是两段式——
+> 首轮返回 `resultType: "input_required"` + elicitation 表单（依赖清单 + 后果摘要），
+> 客户端转述给人、人确认后带 `inputResponses` 重试同一调用才删。实测下来**多数 agent
+> 不转述 elicitation**，于是删除要么被拒绝、要么白卡一轮，体验远不如客户端自己的
+> 「这个工具会改数据，确认执行吗」弹窗。现在确认职责回到客户端，`/mcp` 不再有任何
+> MRTR / `input_required` 代码路径（`mrtrGate` / `mrtrRequired` 已删，handler 第三参
+> `mcpReq` 一并移除）。
 
 #### 9.4.2 工具安全标注（ToolAnnotations，2026-09-28 增补）
 
@@ -6307,9 +6317,8 @@ elicitation 能力时 delete **降级为拒绝**并提示走 UI——降级而�
 `destructiveHint === true` 一律判为危险动作。声明不逐条手写，从工具既有的 `scope` 派生
 （`mcpServer.ts` 的 `toolAnnotations`）：`read` → `readOnlyHint: true` + `destructiveHint:
 false`；`write` 里只有 `delete_*` → `destructiveHint: true`；`execute` → `openWorldHint:
-true`（真的打到被测系统）。于是读工具免弹窗，写/执行仍一律要人确认。这是**调用前**的声明式
-提示，与 9.4.1 的 MRTR **调用中**确认回合互补：前者让客户端不为只读工具弹无用窗，后者用于
-运行时才知道要不要确认的删除。
+true`（真的打到被测系统）。于是读工具免弹窗，写/执行仍一律要人确认。**这是删除类工具
+唯一的确认机制**（9.4.1）：客户端弹不弹窗由它决定，服务端不再有调用中的确认回合。
 
 **明确不提供的工具，只剩三类**（写进 `get_script_contract` 的说明里，模型问起来能自己读到）：
 
@@ -6411,13 +6420,13 @@ request 完全一致（`types.ts:212`）：一页 20 条执行、每条几十 KB
 | --- | --- | --- |
 | P5-1 | 迁移 050 + `mapMcpToken` + `lib/mcpAuth.ts`（scope 三值） | **已实现**（2026-09-05：`mcp_tokens` 表 + 部分索引、`project_settings.mcp_enabled`（含 9.1 点名的 COALESCE 护住）、`McpScope`/`McpToken`/`mapMcpToken`、`lib/mcpAuth.ts`（`apimcp_` 前缀 + scope/createdBy 透传）、`routes/mcpTokens.ts` 列表/签发/吊销 + `mcp_token.create`/`revoke` 审计、settings GET/PUT 接 `mcpEnabled`；`GET …/mcp/tools` 留给 P5-4 与工具一起落，`/mcp` 端点在 P5-3） |
 | P5-2 | 校验函数提取到 `lib/`（边界 8），**不改行为** | **已实现**（2026-09-06：新 `lib/validate.ts` —— `validateEndpoint` / `validateCase` + `EndpointInput` / `CaseInput` 类型，函数体从 `routes/endpoints.ts:63` / `routes/cases.ts:28` 原样搬移，签名与 `partial` 语义零改动；两条路由改 import 并删就地副本；顺手补 P5-1 漏登记的 `AUDIT_ACTIONS` 两值 `mcp_token.create` / `mcp_token.revoke`（`mcpTokens.ts` 已在用，`pnpm check` 因此红）。`pnpm check` / `pnpm build` 均过，REST 面行为不变） |
-| P5-3 | `/mcp` 端点 + SDK 挂载（默认 `legacy: 'stateless'`）+ 四道闸门 + `tools/list` 按 scope 裁剪 | **已实现**（2026-09-06：装 `@modelcontextprotocol/server` + `@modelcontextprotocol/node` 2.0.0。`routes/mcp.ts` 按 9.2 三条细节挂载——`createMcpHandler`（`legacy: 'stateless'` 显式写出）+ `toNodeHandler` + Fastify 已解析 body 作第三参 + 身份挂 raw request（SDK 读作 `ctx.authInfo`）；四道闸门全在 SDK handler 之前、兼容腿同被罩住——401（RFC 6750 带 `WWW-Authenticate`）/ 404（回 Fastify 默认 404 体，与未知路由同形）/ `-32601`（in-band HTTP 200，与「工具不存在」不可区分）/ 403（按 `createdBy` 重跑 `canAccess`，签发人被删一律拒）。`lib/mcpServer.ts`：工具注册表（`McpToolDefinition` + 裸 JSON Schema + `fromJsonSchema` 自带 vendored ajv，边界 7 零新校验库）+ `buildMcpServer` 工厂**注册时**按 scope 裁剪（P5-3 清单为空，工具自 P5-4a 起登记，43 封顶）。DNS rebinding 防护用 SDK 纯校验函数 `validateHostHeader`/`validateOriginHeader`（不用 node 包的 raw 写回中间件，避免与 Fastify 接管流程打架）：Host 白名单 = localhost 三件套 + `PUBLIC_BASE_URL` 主机名 + `MCP_ALLOWED_HOSTS`（`*` 逃生门，默认不开），Origin 白名单刻意为空（/mcp 调用方是服务端 agent，带 Origin 的只有 rebinding）。拒绝审计 `mcp.call_rejected`（边界 13，只落第 3/4 道闸门：第 1 道无可归属身份、第 2 道是通道关闭）。`pnpm check` 过；**两条实测待用户在智能体平台侧执行**（STREAMABLE_HTTP 真接一次、确认 elicitation/MRTR 转述与按会话注入凭据——9.8 L3 选型输入） |
+| P5-3 | `/mcp` 端点 + SDK 挂载（默认 `legacy: 'stateless'`）+ 四道闸门 + `tools/list` 按 scope 裁剪 | **已实现**（2026-09-06：装 `@modelcontextprotocol/server` + `@modelcontextprotocol/node` 2.0.0。`routes/mcp.ts` 按 9.2 三条细节挂载——`createMcpHandler`（`legacy: 'stateless'` 显式写出）+ `toNodeHandler` + Fastify 已解析 body 作第三参 + 身份挂 raw request（SDK 读作 `ctx.authInfo`）；四道闸门全在 SDK handler 之前、兼容腿同被罩住——401（RFC 6750 带 `WWW-Authenticate`）/ 404（回 Fastify 默认 404 体，与未知路由同形）/ `-32601`（in-band HTTP 200，与「工具不存在」不可区分）/ 403（按 `createdBy` 重跑 `canAccess`，签发人被删一律拒）。`lib/mcpServer.ts`：工具注册表（`McpToolDefinition` + 裸 JSON Schema + `fromJsonSchema` 自带 vendored ajv，边界 7 零新校验库）+ `buildMcpServer` 工厂**注册时**按 scope 裁剪（P5-3 清单为空，工具自 P5-4a 起登记，43 封顶）。DNS rebinding 防护用 SDK 纯校验函数 `validateHostHeader`/`validateOriginHeader`（不用 node 包的 raw 写回中间件，避免与 Fastify 接管流程打架）：Host 白名单 = localhost 三件套 + `PUBLIC_BASE_URL` 主机名 + `MCP_ALLOWED_HOSTS`（`*` 逃生门，默认不开），Origin 白名单刻意为空（/mcp 调用方是服务端 agent，带 Origin 的只有 rebinding）。拒绝审计 `mcp.call_rejected`（边界 13，只落第 3/4 道闸门：第 1 道无可归属身份、第 2 道是通道关闭）。`pnpm check` 过；**实测待用户在智能体平台侧执行**（STREAMABLE_HTTP 真接一次、按会话注入凭据——9.8 L3 选型输入） |
 | P5-4a | 核心资产读：原 11 工具 + `get_project_overview` + `list_executions` 补 `since` + `lib/mcpRedact.ts` | **已实现**（2026-09-06：`lib/mcpToolsReadCore.ts` 12 工具——`list_endpoints`（keyword/method/分页，行带 caseCount）/ `get_endpoint` / `list_cases`（TestCaseSummary，行带 endpointId）/ `get_case` / `get_execution`（读时脱敏）/ `list_executions`（caseId/endpointId/status/since 过滤，行带来源 id，**不回 body**）/ `get_script_contract`（`SCRIPT_CTX_SCHEMAS` + 五条运行时规则：脚本断言已废弃、secret 只走 `{ secret: "NAME" }`、三类不提供的工具）/ `list_scripts`（kind/keyword/分页）/ `list_environments`（只回 secretKeys）/ `list_flows`（nodeCount 不带 nodes）/ `get_flow` / `get_project_overview`（六类计数 + 覆盖率 + 最近 100 条已判执行的通过率 + 失败 top 10，失败行只带定位字段，错误详情走 get_execution 的读时脱敏）。`lib/mcpRedact.ts` 落 9.5 判定顺序：环境在→按**当前** secret 重跑 sanitizeHeaders/sanitizeValue（request/responseHeaders/responseBody/error/四类证据数组全覆盖）+ responseBody 64KB 按字节截断；环境没了（SET NULL 或没带环境）→ 证据字段整体不给，回 bodyOmitted 说明；store_plaintext 不参与判定。共用件 `lib/mcpToolResult.ts`：回值双通道（structuredContent + content 文本块，MCP 规范对结构化结果的兼容建议）、错误走 `isError` + 消息文本带业务码（1001/2001，不套 REST 信封）。`pnpm check` 过） |
 | P5-4b | 任务与报告读：套件 / CI 任务 / run / 报告 / 日志 / 仓库用例 9 工具 | **已实现**（2026-09-06：`lib/mcpToolsReadTasks.ts` 9 工具——`list_suites`（keyword/分页，DISTINCT ON 最近一次运行随行）/ `get_suite`（完整定义 + 其全部调度，schedules.ts 同款双 LEFT JOIN，省一个 list_schedules）/ `list_ci_tasks`（keyword/分页，两段 LATERAL 在途 + 最近 run 与 REST 列表同一份 SQL）/ `get_ci_task`（完整定义 + 调度 + runTotal/lastRun；**env 只回 envKeys 不回值**——9.5 把 env 值当日志遮蔽素材，不该从另一个工具流出，凭据本身加密存储只回引用）/ `list_runs`（kind=ci 走 pipeline_runs、kind=suite 走 suite_executions，行带资源 id；套件行不带 member_snapshot）/ `get_run_report`（`lib/reportPayload.ts` 同一份拼装：套件走 loadSuiteReport（成员行去掉 input/output 快照，证据经 httpExecutionId 走 get_execution 读时脱敏）、ci 走 loadRunnerReport（**不带 allure 全量视图**，cases 失败优先、只带定位字段，明细是 get_run_case 的事））/ `get_run_case`（pipeline_run_cases + allure 步骤树/trace/参数，按 CI 任务 env 当前值脱敏：message 64KB、trace 8KB、步骤树超 32KB 整体不给并注明）/ `get_run_logs`（tail 默认 200 行 + 64KB **尾部优先**（从切点前进到整行边界）、CI env 值脱敏、totalBytes 与 truncatedAtHead 随行）/ `list_repo_cases`（扁平行带 repositoryId + endpoint 路径，keyword 跨用例与接口字段，unplacedCaseTotal 单独给数防「上报 36 条树上 31 条」被当 bug）。遮蔽集 = CI 任务 env 当前值，**< 8 字符不进遮蔽集**（`TEST_ENV=stg` 这类短配置值遮掉会把日志打成 `***`，短串不携带值得保护的熵）。另落 P5-1 预留的 `GET …/mcp/tools`（mcpTokens.ts，读 `MCP_TOOLS` 注册表单一事实，名字/说明/scope，前端展示用非协议面）。`pnpm check` 过；**实测待用户在智能体平台侧执行**（tools/list 可见集、get_execution 脱敏与截断、日志尾部优先） |
 | P5-5a | 核心写：endpoint / case / flow 5 工具 + 幂等 + 字面量 secret 拒绝 + 写审计 | **已实现**（2026-09-06：`lib/mcpToolsWriteCore.ts` 5 工具——`create_endpoint`（幂等键 `(project, method, url)`，`conflictStrategy: update\|skip` 与 import 语义逐字同款）/ `update_endpoint`（PATCH 语义，body/bodyText/defaultEnvironmentId 三态：缺省不动、null 清空、有值写入）/ `create_case`（幂等键 `(endpoint, name)`，冻结 request 快照 + 生命周期脚本同事务，`persistCaseLifecycleScripts` 复用）/ `update_case`（部分更新，`FOR UPDATE` 归属先于脚本写入）/ `upsert_flow`（幂等键 `(project, name)`，写库前跑 `validateFlowGraph` 拓扑校验 + `resourcesBelong` + `checkFlowReferences` 跨流程环检测，节点树经 `persistFlowScripts` 归一）。**字面量 secret 拒绝** `lib/mcpSecretGuard.ts`（边界 4）：headers/queryParams 命中 `authorization\|cookie\|x-api-key` 且值非 `{{var}}` 引用、auth 字段（token/username/password/value）非引用、body 对象键命中 `token\|secret\|password\|apikey\|credential` 正则且值非引用——一律拒绝并指向「环境里建 secret，用 `{{name}}` 引用」；`Bearer {{auth}}`（前缀+引用）放行；判据刻意宽于脱敏的 `SENSITIVE_HEADERS`，宁可误伤可改名字段。校验全部复用 P5-2 提取的 `lib/validate.ts`；每个写落 `mcp_tool.write` 审计（detail 只带目标 id 与 outcome，不带 payload）。`pnpm check` 过；**实测待用户在智能体平台侧执行**（幂等键 8、secret 拒绝 9 两条门槛） |
-| P5-5b | 全量 CRUD（套件 / 调度 / 告警 / CI 任务 12 工具）+ MRTR 删除确认（9.4.1）+ execute 5 工具 + 在途去重 | **已实现**（2026-09-06：先按边界 8 把四个路由文件的私有校验原样提取到 `lib/validateSuite.ts` / `validateSchedule.ts` / `validateAlertRule.ts` / `validateCiTask.ts`（函数体逐字搬移，REST 路由改 import），再落三块——① `lib/mcpToolsWriteCrud.ts` 12 工具：套件（幂等 `(project, name)`，selection/execution/notify 整块替换）、调度（幂等 `(target, cron, targetType)`，软上限 50，`computeNextRunAt` 认领锚点跟配置走，PUT 对合并后的 targetType+targetId 判归属）、告警规则（幂等 `(project, name)`，窗口约束对合并后配置判：事件型无窗口、窗口型必带）、CI 任务（幂等 `(repo, name)`，`mergeDraft` 草稿合并 + `assertCredentialOwned` 凭据只引用既有条目 + 关串行补 `notifySerializedQueue` 唤醒）；② **MRTR 删除确认**：`mcpToolResult.ts` 的 `mrtrGate`（三态：无回应=首问、accept+confirm=true=确认、decline/cancel/形状不对=拒绝并指 UI——降级不开洞）+ `mrtrRequired`（`inputRequired.elicit` 表单式 boolean 确认，message = scanUsage 依赖清单 + 后果摘要；`force` 不是入参）；四个 delete_* 全走两段式，套件/CI 连带删引用的 schedules/webhook_triggers（事务），CI 的 message 先报 pipeline_runs 级联数并给「保历史请禁用」的替代；SDK 的 `legacy: 'stateless'` 兼容腿自动桥接 2025 系；③ `lib/mcpToolsExecute.ts` 5 工具（execute scope）：`run_endpoint`（复用导出的 `queueEndpointRun`，环境链显式→接口默认→项目默认，**不去重**——调试连点是正常用法）/ `run_case`（冻结快照整行入队，**不接受 overrides**，产物一条 executions 行）/ `run_flow`（`triggerFlowRun` 已存定义路径，`variableOverrides` 触发语义与调度/Webhook 同一套合并规则；在途去重：`flow_executions` 有 queued/running 时返回那个 id）/ `trigger_suite_run`（同款去重 `suite_executions`）/ `trigger_ci_task_run`（去重集 = pipeline_runs 四态 queued/claimed/running/cancelling；`triggeredBy` = Token 签发人，`IdempotentReplayError` 回首次 run 不算失败）。触发上下文与 REST 手动路径一致（不传 trigger），「谁经哪把钥匙触发」由 `mcp_tool.execute` 审计行回答。工具总数 **21 读 + 5 + 12 + 5 = 43**，到位封顶。`pnpm check` 过；**实测待用户在智能体平台侧执行**（门槛 10 确认回合、11 在途去重、12 execute 触发通知+审计） |
+| P5-5b | 全量 CRUD（套件 / 调度 / 告警 / CI 任务 12 工具）+ execute 5 工具 + 在途去重 | **已实现**（2026-09-06：先按边界 8 把四个路由文件的私有校验原样提取到 `lib/validateSuite.ts` / `validateSchedule.ts` / `validateAlertRule.ts` / `validateCiTask.ts`（函数体逐字搬移，REST 路由改 import），再落两块——① `lib/mcpToolsWriteCrud.ts` 12 工具：套件（幂等 `(project, name)`，selection/execution/notify 整块替换）、调度（幂等 `(target, cron, targetType)`，软上限 50，`computeNextRunAt` 认领锚点跟配置走，PUT 对合并后的 targetType+targetId 判归属）、告警规则（幂等 `(project, name)`，窗口约束对合并后配置判：事件型无窗口、窗口型必带）、CI 任务（幂等 `(repo, name)`，`mergeDraft` 草稿合并 + `assertCredentialOwned` 凭据只引用既有条目 + 关串行补 `notifySerializedQueue` 唤醒）；② 四个 delete_* 一次调用即执行（2026-10-21 起，9.4.1：原 MRTR 两段式已移除），套件/CI 连带删引用的 schedules/webhook_triggers（事务），CI 的回执先报 pipeline_runs 级联数并给「保历史请禁用」的替代；③ `lib/mcpToolsExecute.ts` 5 工具（execute scope）：`run_endpoint`（复用导出的 `queueEndpointRun`，环境链显式→接口默认→项目默认，**不去重**——调试连点是正常用法）/ `run_case`（冻结快照整行入队，**不接受 overrides**，产物一条 executions 行）/ `run_flow`（`triggerFlowRun` 已存定义路径，`variableOverrides` 触发语义与调度/Webhook 同一套合并规则；在途去重：`flow_executions` 有 queued/running 时返回那个 id）/ `trigger_suite_run`（同款去重 `suite_executions`）/ `trigger_ci_task_run`（去重集 = pipeline_runs 四态 queued/claimed/running/cancelling；`triggeredBy` = Token 签发人，`IdempotentReplayError` 回首次 run 不算失败）。触发上下文与 REST 手动路径一致（不传 trigger），「谁经哪把钥匙触发」由 `mcp_tool.execute` 审计行回答。工具总数 **21 读 + 5 + 12 + 5 = 43**。`pnpm check` 过；**实测待用户在智能体平台侧执行**（门槛：在途去重、execute 触发通知+审计） |
 | P5-5c | `upsert_environment`（普通变量，上限 43→44）+ 无环境执行证据放行（9.5 修订，见当节） | **已实现**（2026-09-06，用户验收反馈两项：① agent 建完接口需要顺手补 `{{baseUrl}}` 一类普通变量 → `mcpToolsWriteCore.ts` 增 `upsert_environment`：幂等键 `(project, name)` 大小写不敏感（REST 判重同口径），`variables` 整块替换（REST PATCH 同语义，description 提醒先 `list_environments` 读再合并），`cleanVariables` 同款归一（trim 键/丢空键/值必须字符串），**secrets 无参数位**（入参出现 `secrets` 键即拒并指 UI），凭据名变量（token/secret/password/apiKey/credential 正则）被 `mcpSecretGuard.rejectCredentialNamedVariables` 指名拒绝（明文变量所有工具可读，不是放敏感值的通道），runnerLabel/defaultHeaders 用列默认值保持 UI-only；写审计同款。② 同日早些时候的 9.5 修订（无环境执行按项目 secret 并集脱敏后返回）记录在 9.5 节内。工具总数 **44（21 读 + 18 写 + 5 执行）**。`pnpm check` 过；实测待用户在智能体平台侧执行） |
-| P5-7 | 文本用例 / 公共脚本 / 环境删除工具（上限 44→55，用户 2026-09-09 要求：文本 case 与环境变量、公共脚本增删改查） | **已实现**（2026-09-09：先按边界 8 把 `specCases.ts` 的 `validateSpecCase`/`normalizeSteps`/`normalizeTags`/`nextItemKey` 提取到 `lib/validateSpecCase.ts`、`scripts.ts` 的 `validate` 提取到 `lib/validateScript.ts`（函数体逐字搬移，REST 路由改 import），再落两批——① `lib/mcpToolsSpec.ts` 7 工具：读侧 `list_spec_cases`（列表路由同款 SQL：keyword/moduleId/path/priority/status/automation 过滤，行带 modulePath/linkCount/automated）+ `get_spec_case`（完整定义 + links[] 名字读时 JOIN，不带 lastResult 拼串）+ `list_spec_modules`（树全量 + 直属三计数）；写侧 `create_spec_case`（item_key 服务端生成、23505 重试 ≤3、**刻意不做幂等去重**——重复合并只属导入路径，description 写明）+ `update_spec_case`（PATCH 同款，itemKey/source 不可改）+ `delete_spec_case`（CASCADE 无 409，MRTR 确认带 link 数）+ `create_spec_module`（幂等 `(parent, name)` = 同 path 重读既有行，深 6 层）。② `lib/mcpToolsWriteExtra.ts` 4 工具：`create_script`（幂等 `(project, name)` 重名按更新处理，kind 只可 hook/response/library/node，库内容过 `inspectLibrarySource`，依赖经 `replaceDependencies` 同判据复刻只指 library）+ `update_script`（kind 不可改、回执带 `scriptUsage` followers 清单）+ `delete_script`（MRTR message 带追随者清单）+ `delete_environment`（scanUsage 独占变量口径复刻：兄弟环境同名键不算阻塞，message 带接口清单；删前回填 `executions.environment_name` 快照；secret 仍无通路）。`mcpServer.ts` 注册 `READ_SPEC_TOOLS`/`WRITE_SPEC_TOOLS`/`WRITE_EXTRA_TOOLS`，上限注释 44→55；`list_scripts`/`upsert_environment` 的 description 同步改口（旧「不能建/改/删」边界已失效）。**顺手修缺陷**：`upsert_environment` UPDATE 分支写不存在的 `environments.updated_at` 列致已存在环境的变量替换必 500（见 `issue_fix/问题记录-MCP环境更新分支updated_at列缺失.md`，删该 SET 子句）。工具总数 **55（25 读 + 25 写 + 5 执行）**。`pnpm check` 过；实测待用户在智能体平台侧执行） |
+| P5-7 | 文本用例 / 公共脚本 / 环境删除工具（上限 44→55，用户 2026-09-09 要求：文本 case 与环境变量、公共脚本增删改查） | **已实现**（2026-09-09：先按边界 8 把 `specCases.ts` 的 `validateSpecCase`/`normalizeSteps`/`normalizeTags`/`nextItemKey` 提取到 `lib/validateSpecCase.ts`、`scripts.ts` 的 `validate` 提取到 `lib/validateScript.ts`（函数体逐字搬移，REST 路由改 import），再落两批——① `lib/mcpToolsSpec.ts` 7 工具：读侧 `list_spec_cases`（列表路由同款 SQL：keyword/moduleId/path/priority/status/automation 过滤，行带 modulePath/linkCount/automated）+ `get_spec_case`（完整定义 + links[] 名字读时 JOIN，不带 lastResult 拼串）+ `list_spec_modules`（树全量 + 直属三计数）；写侧 `create_spec_case`（item_key 服务端生成、23505 重试 ≤3、**刻意不做幂等去重**——重复合并只属导入路径，description 写明）+ `update_spec_case`（PATCH 同款，itemKey/source 不可改）+ `delete_spec_case`（CASCADE 无 409，回执带 link 数）+ `create_spec_module`（幂等 `(parent, name)` = 同 path 重读既有行，深 6 层）。② `lib/mcpToolsWriteExtra.ts` 4 工具：`create_script`（幂等 `(project, name)` 重名按更新处理，kind 只可 hook/response/library/node，库内容过 `inspectLibrarySource`，依赖经 `replaceDependencies` 同判据复刻只指 library）+ `update_script`（kind 不可改、回执带 `scriptUsage` followers 清单）+ `delete_script`（回执带追随者清单）+ `delete_environment`（scanUsage 独占变量口径复刻：兄弟环境同名键不算阻塞，回执带接口清单；删前回填 `executions.environment_name` 快照；secret 仍无通路）。`mcpServer.ts` 注册 `READ_SPEC_TOOLS`/`WRITE_SPEC_TOOLS`/`WRITE_EXTRA_TOOLS`，上限注释 44→55；`list_scripts`/`upsert_environment` 的 description 同步改口（旧「不能建/改/删」边界已失效）。**顺手修缺陷**：`upsert_environment` UPDATE 分支写不存在的 `environments.updated_at` 列致已存在环境的变量替换必 500（见 `issue_fix/问题记录-MCP环境更新分支updated_at列缺失.md`，删该 SET 子句）。工具总数 **55（25 读 + 25 写 + 5 执行）**。`pnpm check` 过；实测待用户在智能体平台侧执行） |
 | P5-6 | 前端 MCP 管理页 + i18n 两语言（签发弹窗三勾选） | **已实现**（2026-09-06：`McpPage.tsx` 独立页（路由 `/projects/:projectId/mcp`，导航入「接口资产」组、`PAGES`/`NAV_ICONS`/nav 三处齐改、`Bot` 图标）——页头启停开关（`check-field` 与环境页明文开关同款；store 增 `mcpEnabled` + `updateMcpEnabled`，settings PUT 只带要改的字段——`storePlaintext` 缺省由服务端 COALESCE 保留，`defaultEnvironmentId` 恒随行当前值防清空）+ 服务与端点面板（`/mcp` 根地址 code-block + CopyButton + STREAMABLE_HTTP 注册与浏览器视角说明）+ Token 面板（名字 / 前缀 / scope chip / 最后使用 / 签发时间 / 吊销 `Modal.confirm`）+ 工具清单只读表（segmented 按 scope 过滤带计数，read→write→execute 排序，description 给模型读的原文不翻译）。**签发弹窗两段式**：表单段（名字 + scope 三勾选——read 勾死 disabled、write / execute 显式，勾中即现边界 2 的「权限跟着签发人走」警示）；明文段无 X、无遮罩关闭，唯一出口「我已保存，关闭」。`api.ts` 落 `McpScope`/`McpToken`/`McpToolSummary` + 四接口（列表 / 签发 / 吊销 / 工具清单），`ProjectSettings` 补 `mcpEnabled`；i18n 两语言 `mcp.*` 全套。`pnpm check` 过；验收门槛「签发 / 吊销 / 开关可用」待用户实测 |
 
 **P5-2 必须在 P5-5a 之前独立成一步**：它是纯重构，混进写工具那一步之后，一旦 REST 面出现
@@ -6505,8 +6514,9 @@ canvas，动画只留眨眼并遵守 `prefers-reduced-motion`。两个产品决�
 3. **外部 agent 平台的四项能力**（不满足则方案退化）：能配置连接任意外部 MCP Server（不满足
    则整个方案作废，平台得自己做 function calling）；HTTP API 支持流式（不满足则体验退化成
    整段返回，架构不变）；能接受外部传入的会话 id（不满足则平台自存 transcript 每次全量重发）；
-   **能转述 elicitation / MRTR**（不满足则 delete 在聊天里不可用，降级提示走 UI——9.4.1）
-   **与按会话注入凭据**（不满足则 L3 退 proposal-first）。后两项均为 P5-3 实测项。
+   ~~**能转述 elicitation / MRTR**（不满足则 delete 在聊天里不可用，降级提示走 UI——9.4.1）~~
+   （2026-10-21 撤销：MRTR 已移除，删除确认改由客户端按 `destructiveHint` 在调用前做）
+   **与按会话注入凭据**（不满足则 L3 退 proposal-first）。后者为 P5-3 实测项。
 
 **助手代理落地时才需要的两样东西**（本阶段不建）：`project_settings` 上的 agent 平台地址 +
 API Key（Key 走 `lib/crypto.ts:19` 的 AES-GCM，与 Webhook 密钥同款——那把 Key 要拿出明文去
@@ -6974,7 +6984,7 @@ EndpointInput → 既有 POST /endpoints（人确认）
 | M3     | P3      | 套件调度 + Webhook 触发 + 套件执行报告 + 告警 + 趋势 | 定时执行（漏跑不补但留痕）+ HMAC 触发 + 报告名 `套件名_日期` 且带触发源与耗时 + 失败通知 + 趋势图 |
 | M4     | P4      | 仓库用例上报 + `apitrack-sdk` | 既有 pytest 仓库「装包 + 两个环境变量 + 原样跑」即可让用例挂上覆盖树；范围级对账不误删 |
 | M5     | P4.5    | 自研 Runner + CI 任务 + 勾选执行 + 调度通知 | 自托管 Runner 只出站 443 即可拉代码执行；日志实时可看、可取消、掉线判 `aborted`；树上勾选可触发；任务可定时跑、终态可通知、同任务串行不踩数据 |
-| M6     | P5      | 平台 MCP Server 对外暴露 | 外部 AI/工具经 `/mcp` 可读全部资产（接口/用例/流程/套件/CI 任务/报告/日志）与脚本契约，可写全部资产（删除走 MRTR 确认），可触发已保存资产执行；read/write/execute 三 scope 分离，执行证据读时脱敏 |
+| M6     | P5      | 平台 MCP Server 对外暴露 | 外部 AI/工具经 `/mcp` 可读全部资产（接口/用例/流程/套件/CI 任务/报告/日志）与脚本契约，可写全部资产（删除一次调用即执行，确认由客户端在调用前向人确认），可触发已保存资产执行；read/write/execute 三 scope 分离，执行证据读时脱敏 |
 | M8     | P6      | 注册 + 成员与角色 + 三级权限 + 审计可读 | 邀请码注册即入项目；viewer 界面无写入口；成员变更可审计（`DEVELOPMENT_PLAN_P6-P14.md` 十章） |
 | M9     | P7      | 文本用例库 + XMind/Excel 导入 + 绑定 + 测试计划 | 300 条 XMind 导入正确；自动化覆盖率可读；计划可标结果可导出（同文件十一章） |
 | M10    | P8      | 口径收口 + 失败归因 + 全局/项目统计 + 下钻 | 四处通过率一致；归因分布与覆盖率同屏；图表 hover/下钻可用；零图表库（同文件十二章） |
