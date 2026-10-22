@@ -1,6 +1,6 @@
 /**
  * 页面上下文（P9-4c）：把前端随消息送来的「用户正站在哪」元数据归一、封
- * `apitest-page-context` 围栏前缀拼进转发 message；历史回放时把围栏剥掉。
+ * `apitest-page-context` 围栏**后缀**拼进转发 message；历史回放时把围栏剥掉。
  *
  * 形状是给 agent 看的提示材料，不是受信输入——消费终点是「用户自己的 agent 收到的
  * 一段文本」，不进任何 SQL / 权限判断。因此校验只做两件事：顶层键白名单（未知键
@@ -9,7 +9,7 @@
  * （上下文只带标识符与面包屑）；这里再压一道长度上限兜底。
  */
 
-/** 序列化后的上下文 JSON 封顶：围栏是消息前缀，不该喧宾夺主。 */
+/** 序列化后的上下文 JSON 封顶：围栏是消息后缀，不该喧宾夺主。 */
 const MAX_CONTEXT_JSON_CHARS = 2048;
 
 /** 单个值（实体名 / URL / 筛选词）封顶。 */
@@ -18,8 +18,9 @@ const MAX_VALUE_CHARS = 256;
 /** 勾选行 id 的条数封顶（批量调试一次最多 100 接口，留一半余量）。 */
 const MAX_SELECTION_ITEMS = 50;
 
-/** 历史行剥离围栏用：JSON.stringify 无裸换行，非贪婪到第一个收尾围栏即止。 */
-const CONTEXT_FENCE_PATTERN = /^```apitest-page-context\n[\s\S]*?\n```\n\n?/;
+/** 围栏标记：拼装与剥离共用，避免两处字面量漂移。 */
+const CONTEXT_FENCE_OPEN = "```apitest-page-context\n";
+const CONTEXT_FENCE_CLOSE = "\n```";
 
 export type PageContext = {
   page: string;
@@ -83,15 +84,30 @@ export function normalizePageContext(input: unknown): PageContext | undefined {
 }
 
 /**
- * 转发 message = 围栏（紧凑 JSON）+ 空行 + 用户原文。协议配置零改动：`{{message}}`
+ * 转发 message = 用户原文 + 空行 + 围栏（紧凑 JSON）。协议配置零改动：`{{message}}`
  * 渲染的就是这里拼好的全文——只有一个 message 字段的上游（agent-vendor）也能吃。
+ *
+ * 围栏放**末尾**：上游拿首条消息当会话标题/摘要时，标题取的是开头的用户原文，
+ * 而不是一段机器元数据。agent 语义上对「块在前后」不敏感，读末尾同样能解析指代。
  */
 export function composeForwardedMessage(message: string, context: PageContext | undefined): string {
   if (!context) return message;
-  return `\`\`\`apitest-page-context\n${JSON.stringify(context)}\n\`\`\`\n\n${message}`;
+  return `${message}\n\n${CONTEXT_FENCE_OPEN}${JSON.stringify(context)}${CONTEXT_FENCE_CLOSE}`;
 }
 
-/** 历史回放剥围栏：气泡永远只显示用户打的字（live 气泡本来就没有前缀，这里管上游回放）。 */
-export function stripContextPrefix(text: string): string {
-  return text.replace(CONTEXT_FENCE_PATTERN, "");
+/** 历史回放剥围栏：气泡永远只显示用户打的字（live 气泡本来就没有后缀，这里管上游回放）。
+ *  以**最后一个**起始标记为准，且要求其后的内容确实是一个完整闭合的 JSON 围栏块——
+ *  用户原文里自带的同类围栏不会被误剥。 */
+export function stripContextSuffix(text: string): string {
+  const at = text.lastIndexOf(CONTEXT_FENCE_OPEN);
+  if (at < 0) return text;
+  const body = text.slice(at + CONTEXT_FENCE_OPEN.length);
+  const normalized = body.replace(/\s+$/, "");
+  if (!normalized.endsWith(CONTEXT_FENCE_CLOSE)) return text;
+  try {
+    JSON.parse(normalized.slice(0, -CONTEXT_FENCE_CLOSE.length));
+  } catch {
+    return text;
+  }
+  return text.slice(0, at).replace(/\s+$/, "");
 }

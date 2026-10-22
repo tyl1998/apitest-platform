@@ -3,7 +3,7 @@ import type { ServerResponse } from "node:http";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { pool } from "../db.js";
 import { currentUser } from "../lib/auth.js";
-import { composeForwardedMessage, normalizePageContext, stripContextPrefix } from "../lib/assistant/context.js";
+import { composeForwardedMessage, normalizePageContext, stripContextSuffix } from "../lib/assistant/context.js";
 import { engineCreateConversation, engineDeleteConversation, engineHistory, engineStop, engineStreamMessage, upstreamRateLimit } from "../lib/assistant/engine.js";
 import { loadEnabledDefaultUserAgent, loadProviderById, loadUserAgentForProvider } from "../lib/assistant/providers.js";
 import type { AssistantEvent, AssistantProviderRuntime, AssistantUserAgentRuntime } from "../lib/assistant/types.js";
@@ -246,9 +246,10 @@ export async function assistantRoutes(app: FastifyInstance) {
           ...(typeof attachment.fileName === "string" && attachment.fileName ? { fileName: attachment.fileName } : {}),
           mimeType: String(attachment.mimeType).trim(),
         }));
-        /* 页面上下文（P9-4c）：归一后封围栏前缀拼进转发 message——「当前接口」类指代
-           靠它解析；协议配置零改动（{{message}} 渲染拼好的全文）。topic 仍用原文
-           （下面的 fire-and-forget 读的就是 body.message，不受这里拼接影响）。 */
+        /* 页面上下文（P9-4c）：归一后封围栏**后缀**拼进转发 message——「当前接口」类
+           指代靠它解析；协议配置零改动（{{message}} 渲染拼好的全文）。放末尾是为了
+           上游按首条消息生成会话标题/摘要时取到的是用户原文，不是机器元数据。
+           topic 仍用原文（下面的 fire-and-forget 读的就是 body.message，不受拼接影响）。 */
         const userMessage = String(request.body?.message).trim();
         stream = await engineStreamMessage(resolved.provider, resolved.agent, String(conversation.upstream_conversation_id), {
           message: composeForwardedMessage(userMessage, normalizePageContext(request.body?.context)),
@@ -410,7 +411,7 @@ export async function assistantRoutes(app: FastifyInstance) {
          没时间（或格式不认）就缀尾——宁可次序保守也不丢记录。有确认记录时关掉
          短缓存：刚记的确认被 60s 缓存吞掉，用户看到的还是「没有这个记录」。 */
       const elicitLog = Array.isArray(conversation.elicit_log) ? conversation.elicit_log as Record<string, unknown>[] : [];
-      const rows: { id: string; role: string; text: string; time?: string; elicit?: unknown }[] = messages.map((row) => ({ ...row, text: stripContextPrefix(row.text) }));
+      const rows: { id: string; role: string; text: string; time?: string; elicit?: unknown }[] = messages.map((row) => ({ ...row, text: stripContextSuffix(row.text) }));
       for (const [indexAt, entry] of elicitLog.entries()) {
         const at = typeof entry.at === "string" ? new Date(entry.at).getTime() : Number.NaN;
         const record = {
