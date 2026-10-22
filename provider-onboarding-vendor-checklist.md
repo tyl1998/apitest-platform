@@ -245,7 +245,7 @@ data:{"eventType":"HEART_BEAT"}
 
 ### 5.3 What we inject on your behalf
 
-- **Page-context prefix**: before `{{message}}`, we prepend a fenced ` ```apitest-page-context ` block (current page, project, endpoint, etc., ≤ 2KB). Your agent can use it or ignore it.
+- **Page-context block**: we append a fenced ` ```apitest-page-context ` block **after** `{{message}}` (current page, project, endpoint, etc., ≤ 2KB), so the message always starts with the user's own text. Your agent can use it or ignore it.
 - **Attachments array**: only when `attachments` is enabled and the user actually attached files.
 
 ---

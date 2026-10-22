@@ -2109,11 +2109,12 @@ session / token / function call**，链路是
      只带 route（路径里的实体 id 仍在）；全局层页面没有抽屉，不采不注。
    - **透明**（前端）：输入区上方上下文 chip（面包屑摘要 + 点开看全量 JSON +
      「本条不带上下文」开关）——用户看得见 agent 会拿到什么，信任的关键。
-   - **注入**（后端）：消息路由把 context 压成紧凑 JSON、封 ```apitest-page-context
-     围栏、前缀拼进转发 message——**协议配置零改动**（`{{message}}` 渲染的就是拼好
-     的全文，只有 message 一个字段的上游也能吃）。topic 生成仍用用户原文；历史代理
-     回放时服务端把围栏剥掉（气泡永远只显示用户打的字）；序列化封顶 ~2KB + 顶层键
-     白名单 + 值浅校验。
+- **注入**（后端）：消息路由把 context 压成紧凑 JSON、封 ```apitest-page-context
+      围栏、**后缀**拼进转发 message——**协议配置零改动**（`{{message}}` 渲染的就是拼好
+      的全文，只有 message 一个字段的上游也能吃）。围栏放末尾是为了让上游按首条消息
+      生成的会话标题/摘要取到用户原文而非机器元数据（2026-10-22 修订，原为前缀）。
+      topic 生成仍用用户原文；历史代理回放时服务端把围栏剥掉（气泡永远只显示用户打的
+      字）；序列化封顶 ~2KB + 顶层键白名单 + 值浅校验。
    - **消费**（agent 方，13.6 契约补条）：收到 page-context 块必须优先按它解析
      「当前/这个/刚才」类指代（拿 ID 调 MCP read 工具取全量），块里没有的信息要
      反问用户，不许猜。
@@ -2704,10 +2705,11 @@ POST   /api/v1/notifications/read-all                   全部已读
     降级为不注入（宁缺毋滥，不配 400）。尺寸预算 2048 字符：超标先丢 selection
     再丢 filters，仍超则不注入。
   - `composeForwardedMessage`：紧凑 JSON 封 ` ```apitest-page-context ` 围栏、
-    前缀拼进转发 message——**协议配置零改动**（`{{message}}` 渲染拼好的全文）；
+    **后缀**拼进转发 message——**协议配置零改动**（`{{message}}` 渲染拼好的全文）；
     topic 生成仍用原文（fire-and-forget 读 body.message，不受拼接影响）。
-  - 历史代理：`stripContextPrefix` 剥掉每行开头的围栏——气泡永远只显示用户打的
-    字（live 气泡本来就没有前缀，这里管上游回放；本批之前的旧消息无围栏，no-op）。
+  - 历史代理：`stripContextSuffix` 剥掉行尾的围栏——气泡永远只显示用户打的
+    字（live 气泡本来就没有后缀，这里管上游回放；本批之前的旧消息带的是前缀，
+    围栏闭合在中间、不以 ` ``` ` 收尾，判定不成立即原样返回，不误剥）。
 - **前端采集（`stores/pageContextStore.ts` + `hooks/usePageContext.ts` 新文件）**：
   - store 持 `PageContext`（page/entities/focus/filters/selection——只放标识符与
     面包屑，**secret 值绝不进**）；hook 内容序列化后才进 effect 依赖（组件每轮
@@ -3114,9 +3116,10 @@ P9-5 的指令通道只在**回车发送时**解析：老手够用，新用户�
 ```
 ~~~
 
-**页面上下文块（P9-4c，2026-09-15）**：平台在每条用户消息前缀一个
-` ```apitest-page-context ` 围栏（紧凑 JSON：page / route / entities / focus /
-filters / selection——标识符 + 面包屑，无 secret 值）。agent 方约定：**必须优先
+**页面上下文块（P9-4c，2026-09-15；2026-10-22 改挂消息末尾）**：平台在每条用户
+消息的**末尾**附一个 ` ```apitest-page-context ` 围栏（紧凑 JSON：page / route /
+entities / focus / filters / selection——标识符 + 面包屑，无 secret 值），原文在前，
+上游按首条消息生成的会话标题因此仍是用户原文。agent 方约定：**必须优先
 按该块解析「当前/这个/刚才」类指代**（拿 ID 调 MCP read 工具取全量），块里没有的
 信息要反问用户，不许猜；用户侧展示与历史回放已由平台剥掉该块，agent 不要在回复里
 复述它的原文。
