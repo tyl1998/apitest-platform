@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, Download, Pencil, Plus, Trash2 } from "lucide-react";
-import { api, streamAssistantProviderTest, type AssistantCapabilities, type AssistantEvent, type AssistantProvider, type AssistantProtocol, type AssistantUserParam } from "../api";
+import { ArrowLeft, Download, Pencil, Plus, Trash2, Upload } from "lucide-react";
+import { api, streamAssistantProviderTest, type AssistantCapabilities, type AssistantEvent, type AssistantProvider, type AssistantProtocol, type AssistantSuccessRule, type AssistantUserParam } from "../api";
 import { useAuthStore } from "../stores/authStore";
 import { Empty, Status } from "../ui";
 import { IconButton } from "./IconButton";
@@ -32,6 +32,8 @@ type Draft = {
   authValue: string;
   successField: string;
   successValue: string;
+  /** 信封失败判定（2026-10-22）：JSON 文本 `{field, ok?, not?}`；空 = 不配。 */
+  successRuleText: string;
   createMethod: string;
   createPath: string;
   createIdPath: string;
@@ -40,6 +42,10 @@ type Draft = {
   chatPath: string;
   chatBodyText: string;
   attachments: boolean;
+  /** 附件数组在发消息请求体里的字段名（空 = 缺省 attachments）。 */
+  attachmentsField: string;
+  /** 终帧后上游仍不断流：close（缺省）/ continue。 */
+  streamEnd: "close" | "continue";
   hasStop: boolean;
   stopMethod: string;
   stopPath: string;
@@ -52,21 +58,100 @@ type Draft = {
   historyMessages: string;
   historyQueryText: string;
   historyFieldsText: string;
+  /** 历史片段（2026-10-22）：配了它，刷新历史时工具卡/思考能回到原位（可空）。 */
+  historyPartsPath: string;
+  historyPartsType: string;
+  historyPartsText: string;
+  historyPartsToolPath: string;
+  /** 分页（2026-10-22，全可选）：游标/条数参数名 + 方向 + 总条数路径。不填 indexParam
+      就是「一次全量取」——上游没有游标也能用。 */
+  historyIndexParam: string;
+  historyLimitParam: string;
+  historyLimitValue: string;
+  historyCursorParam: string;
+  historyMaxPages: string;
+  historyDirection: "cursor" | "offset" | "cursorFromEnd";
+  historyTotalPath: string;
   sseEventField: string;
   tokenOn: string;
   tokenText: string;
+  /** token 首帧即失败信封的判定（JSON 文本，空 = 不配）。 */
+  tokenSuccessText: string;
   doneOn: string;
   doneText: string;
   doneSuccess: string;
+  /** done 的失败判定（JSON 文本）：`{field, ok[]}` / `{field, not}`；只有"COMPLETE 才算成功"这类方言用。 */
+  doneSuccessRuleText: string;
   errorOn: string;
   errorMessagePath: string;
+  /** error 事件带成功标记时的判定（JSON 文本，空 = 不配）。 */
+  errorSuccessText: string;
   toolOn: string;
   toolName: string;
   toolStatus: string;
   toolFallback: string;
   ignoreText: string;
+  /** 确认表单映射（可选）：事件名 + 判别字段/取值 + 文案/工具/表单/可确认 路径。 */
+  hasElicit: boolean;
+  elicitOn: string;
+  elicitType: string;
+  elicitTypeValue: string;
+  elicitText: string;
+  elicitTool: string;
+  elicitSchema: string;
+  elicitAllowResume: string;
+  elicitConfirmId: string;
+  elicitExpiresAt: string;
+  elicitSource: string;
+  elicitInputSummary: string;
+  elicitDuplicate: string;
+  toolCallId: string;
+  toolKind: string;
+  toolOutput: string;
+  thinkingOn: string;
+  thinkingText: string;
+  thinkingNewSegment: string;
+  /** 确认答复端点（可选）：勾上后「确认」会先回传上游，上游继续跑同一条流。 */
+  hasAutoApprove: boolean;
+  autoApprovePath: string;
+  autoApproveBodyText: string;
+  autoApproveResult: string;
+  hasElicitRespond: boolean;
+  elicitRespondMethod: string;
+  elicitRespondPath: string;
+  elicitRespondBodyText: string;
+  elicitRespondApplied: string;
+  elicitRespondId: string;
   userParams: AssistantUserParam[];
 };
+
+/** 失败判定草稿 → 协议值：空文本 = 不配；解析失败返回错误串（含字段名）。 */
+function readSuccessRule(text: string, what: string): AssistantSuccessRule | undefined | string {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return `${what} 必须是 JSON 对象`;
+    return parsed as AssistantSuccessRule;
+  } catch (error) {
+    return `${what} 不是合法 JSON：${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+function ruleText(rule: AssistantSuccessRule | undefined): string {
+  return rule ? JSON.stringify(rule, null, 2) : "";
+}
+
+/** 历史列映射的草稿文本：只显示四个基础列（parts 那几列走单独输入框，避免同一件事
+    在两个地方各写一半）。 */
+function historyFieldsDraft(fields: Record<string, string> | undefined): Record<string, string> {
+  const source = fields ?? { id: "id", role: "role", text: "text", time: "time" };
+  const base: Record<string, string> = {};
+  for (const key of ["id", "role", "text", "time"]) {
+    base[key] = source[key] ?? "";
+  }
+  return base;
+}
 
 function toDraft(provider?: AssistantProvider): Draft {
   const protocol = provider?.protocol;
@@ -78,6 +163,7 @@ function toDraft(provider?: AssistantProvider): Draft {
     authValue: protocol?.auth?.value ?? "Bearer {{user.apiKey}}",
     successField: protocol?.successCode?.field ?? "",
     successValue: protocol?.successCode?.value ?? "",
+    successRuleText: ruleText(protocol?.success),
     createMethod: protocol?.createConversation.method ?? "POST",
     createPath: protocol?.createConversation.path ?? "",
     createIdPath: protocol?.createConversation.conversationId ?? "data",
@@ -86,6 +172,8 @@ function toDraft(provider?: AssistantProvider): Draft {
     chatPath: protocol?.chat.path ?? "",
     chatBodyText: JSON.stringify(protocol?.chat.body ?? {}, null, 2),
     attachments: protocol?.attachments ?? false,
+    attachmentsField: protocol?.attachmentsField ?? "",
+    streamEnd: protocol?.streamEnd ?? "close",
     hasStop: Boolean(protocol?.stop),
     stopMethod: protocol?.stop?.method ?? "POST",
     stopPath: protocol?.stop?.path ?? "",
@@ -97,20 +185,63 @@ function toDraft(provider?: AssistantProvider): Draft {
     historyPath: protocol?.history?.path ?? "",
     historyMessages: protocol?.history?.messages ?? "data",
     historyQueryText: JSON.stringify(protocol?.history?.query ?? {}, null, 2),
-    historyFieldsText: JSON.stringify(protocol?.history?.fields ?? { id: "id", role: "role", text: "text", time: "time" }, null, 2),
+    historyFieldsText: JSON.stringify(historyFieldsDraft(protocol?.history?.fields), null, 2),
+    historyPartsPath: protocol?.history?.fields?.parts ?? "",
+    historyPartsType: protocol?.history?.fields?.partsType ?? "",
+    historyPartsText: protocol?.history?.fields?.partsText ?? "",
+    historyPartsToolPath: protocol?.history?.fields?.partsTool ?? "",
+    historyIndexParam: protocol?.history?.indexParam ?? "",
+    historyLimitParam: protocol?.history?.pageSizeParam ?? protocol?.history?.limitParam ?? "",
+    historyLimitValue: String(protocol?.history?.pageSize ?? protocol?.history?.limitValue ?? ""),
+    historyCursorParam: protocol?.history?.cursorParam ?? "",
+    historyMaxPages: String(protocol?.history?.maxPages ?? ""),
+    historyDirection: protocol?.history?.direction ?? "cursor",
+    historyTotalPath: protocol?.history?.totalPath ?? "",
     sseEventField: protocol?.sse.eventField ?? "eventType",
     tokenOn: protocol?.sse.token?.on ?? "",
     tokenText: protocol?.sse.token?.text ?? "data.text",
+    tokenSuccessText: ruleText(protocol?.sse.token?.success),
     doneOn: protocol?.sse.done?.on ?? "",
     doneText: protocol?.sse.done?.text ?? "data.outputText",
     doneSuccess: protocol?.sse.done?.success ?? "",
+    doneSuccessRuleText: ruleText(protocol?.sse.done?.successRule),
     errorOn: protocol?.sse.error?.on ?? "",
     errorMessagePath: protocol?.sse.error?.message ?? "data.error",
+    errorSuccessText: ruleText(protocol?.sse.error?.success),
     toolOn: protocol?.sse.tool?.on ?? "",
     toolName: protocol?.sse.tool?.name ?? "data.name",
     toolStatus: protocol?.sse.tool?.status ?? "data.status",
     toolFallback: protocol?.sse.tool?.nameFallback ?? "",
     ignoreText: (protocol?.sse.ignore ?? []).join(", "),
+    hasElicit: Boolean(protocol?.sse.elicit),
+    elicitOn: protocol?.sse.elicit?.on ?? "",
+    elicitType: protocol?.sse.elicit?.type ?? "",
+    elicitTypeValue: protocol?.sse.elicit?.typeValue ?? "",
+    elicitText: protocol?.sse.elicit?.text ?? "data.text",
+    elicitTool: protocol?.sse.elicit?.tool ?? "data.toolCallId",
+    elicitSchema: protocol?.sse.elicit?.schema ?? "",
+    elicitAllowResume: protocol?.sse.elicit?.allowResume ?? "",
+    elicitConfirmId: protocol?.sse.elicit?.confirmId ?? "",
+    elicitDuplicate: protocol?.sse.elicit?.duplicate ?? "",
+    toolCallId: protocol?.sse.tool?.callId ?? "",
+    toolKind: protocol?.sse.tool?.kind ?? "",
+    toolOutput: protocol?.sse.tool?.output ?? "",
+    thinkingOn: protocol?.sse.thinking?.on ?? "",
+    thinkingText: protocol?.sse.thinking?.text ?? "",
+    thinkingNewSegment: protocol?.sse.thinking?.newSegment ?? "",
+    elicitExpiresAt: protocol?.sse.elicit?.expiresAt ?? "",
+    elicitSource: protocol?.sse.elicit?.source ?? "",
+    elicitInputSummary: protocol?.sse.elicit?.inputSummary ?? "",
+    hasAutoApprove: Boolean(protocol?.autoApprove),
+    autoApprovePath: protocol?.autoApprove?.path ?? "",
+    autoApproveBodyText: JSON.stringify(protocol?.autoApprove?.body ?? { enabled: "{{autoApprove:boolean}}" }, null, 2),
+    autoApproveResult: protocol?.autoApprove?.result ?? "data.autoApprove",
+    hasElicitRespond: Boolean(protocol?.elicitRespond),
+    elicitRespondMethod: protocol?.elicitRespond?.method ?? "POST",
+    elicitRespondPath: protocol?.elicitRespond?.path ?? "",
+    elicitRespondBodyText: JSON.stringify(protocol?.elicitRespond?.body ?? {}, null, 2),
+    elicitRespondApplied: protocol?.elicitRespond?.applied ?? "data.applied",
+    elicitRespondId: protocol?.elicitRespond?.id ?? "",
     userParams: provider?.userParams ? provider.userParams.map((param) => ({ ...param })) : [],
   };
 }
@@ -138,10 +269,46 @@ function buildInput(draft: Draft, base?: AssistantProtocol): { name: string; pro
   const historyFields = parse(draft.historyFieldsText, "历史字段映射");
   if (typeof historyFields === "string") return historyFields;
 
+  /* 失败判定三处（2026-10-22）：两套形状并存——JSON 文本域写 `{field, ok[], not}` 的
+     新形状优先；老的单值对（successField/successValue）仍在，两者只保留一个（保存时
+     新形状覆盖老形状，避免同一条规则被两个来源各说一半）。 */
+  const successRule = readSuccessRule(draft.successRuleText, "信封失败判定");
+  if (typeof successRule === "string") return successRule;
+  const doneSuccessRule = readSuccessRule(draft.doneSuccessRuleText, "done 失败判定");
+  if (typeof doneSuccessRule === "string") return doneSuccessRule;
+  const tokenSuccess = readSuccessRule(draft.tokenSuccessText, "token 首帧失败判定");
+  if (typeof tokenSuccess === "string") return tokenSuccess;
+  const errorSuccess = readSuccessRule(draft.errorSuccessText, "error 事件失败判定");
+  if (typeof errorSuccess === "string") return errorSuccess;
+  const respondBody = parse(draft.elicitRespondBodyText, "确认答复请求体");
+  if (typeof respondBody === "string" && draft.hasElicitRespond) return respondBody;
+  const autoApproveBody = parse(draft.autoApproveBodyText, "自动批准开关请求体");
+  if (typeof autoApproveBody === "string" && draft.hasAutoApprove) return autoApproveBody;
+  const legacySuccessCode = !successRule && draft.successField.trim() && draft.successValue.trim()
+    ? { field: draft.successField.trim(), value: draft.successValue.trim() }
+    : undefined;
+
+  /* 确认表单（可选）：勾上才出现；判别字段与取值成对（服务端同款规则），文案/工具路径
+     必填，schema / allowResume 可空。 */
+  const elicit = draft.hasElicit ? {
+    on: draft.elicitOn.trim(),
+    ...(draft.elicitType.trim() ? { type: draft.elicitType.trim(), typeValue: draft.elicitTypeValue.trim() } : {}),
+    text: draft.elicitText.trim(),
+    tool: draft.elicitTool.trim(),
+    ...(draft.elicitSchema.trim() ? { schema: draft.elicitSchema.trim() } : {}),
+    ...(draft.elicitAllowResume.trim() ? { allowResume: draft.elicitAllowResume.trim() } : {}),
+    /* 回传上游所需（2026-10-22）：id 与截止时刻；source / inputSummary 只影响文案与定位。 */
+    ...(draft.elicitConfirmId.trim() ? { confirmId: draft.elicitConfirmId.trim() } : {}),
+    ...(draft.elicitExpiresAt.trim() ? { expiresAt: draft.elicitExpiresAt.trim() } : {}),
+    ...(draft.elicitSource.trim() ? { source: draft.elicitSource.trim() } : {}),
+    ...(draft.elicitInputSummary.trim() ? { inputSummary: draft.elicitInputSummary.trim() } : {}),
+    ...(draft.elicitDuplicate.trim() ? { duplicate: draft.elicitDuplicate.trim() } : {}),
+  } : undefined;
+
   const protocol: AssistantProtocol = {
     baseUrl: draft.baseUrl.trim(),
     ...(draft.authHeader.trim() && draft.authValue.trim() ? { auth: { header: draft.authHeader.trim(), value: draft.authValue.trim() } } : {}),
-    ...(draft.successField.trim() && draft.successValue.trim() ? { successCode: { field: draft.successField.trim(), value: draft.successValue.trim() } } : {}),
+    ...(successRule ? { success: successRule } : legacySuccessCode ? { successCode: legacySuccessCode } : {}),
     createConversation: {
       method: draft.createMethod.trim() || "POST",
       path: draft.createPath.trim(),
@@ -153,39 +320,99 @@ function buildInput(draft: Draft, base?: AssistantProtocol): { name: string; pro
       path: draft.chatPath.trim(),
       ...(Object.keys(chatBody).length ? { body: chatBody } : {}),
     },
-    ...(draft.hasStop && draft.stopPath.trim() ? { stop: { method: draft.stopMethod.trim() || "POST", path: draft.stopPath.trim() } } : {}),
-    ...(draft.hasDelete && draft.deletePath.trim() ? { delete: { method: draft.deleteMethod.trim() || "POST", path: draft.deletePath.trim() } } : {}),
+    ...(draft.hasStop && draft.stopPath.trim() ? { stop: { ...(base?.stop ?? {}), method: draft.stopMethod.trim() || "POST", path: draft.stopPath.trim() } } : {}),
+    ...(draft.hasDelete && draft.deletePath.trim() ? { delete: { ...(base?.delete ?? {}), method: draft.deleteMethod.trim() || "POST", path: draft.deletePath.trim() } } : {}),
     ...(draft.hasHistory && draft.historyPath.trim() ? {
       history: {
+        ...(base?.history ?? { messages: "data", fields: {} }),
         method: draft.historyMethod.trim() || "GET",
         path: draft.historyPath.trim(),
-        ...(Object.keys(historyQuery).length ? { query: historyQuery as Record<string, string> } : {}),
         messages: draft.historyMessages.trim() || "data",
-        fields: historyFields as Record<string, string>,
+        fields: {
+          ...(historyFields as Record<string, string>),
+          /* 片段（2026-10-22）：只写填了的键——留空 = 历史只有正文（旧行为）。 */
+          ...(draft.historyPartsPath.trim() ? { parts: draft.historyPartsPath.trim() } : {}),
+          ...(draft.historyPartsType.trim() ? { partsType: draft.historyPartsType.trim() } : {}),
+          ...(draft.historyPartsText.trim() ? { partsText: draft.historyPartsText.trim() } : {}),
+          ...(draft.historyPartsToolPath.trim() ? { partsTool: draft.historyPartsToolPath.trim() } : {}),
+        },
+        ...(Object.keys(historyQuery).length ? { query: historyQuery as Record<string, string> } : { query: undefined }),
+        /* 分页三件：`indexParam` 为空时不写任何分页键（= 全量式），防止服务端形状校验拒收
+           「配了 direction 却没有游标参数」这种半截配置。 */
+        ...(draft.historyIndexParam.trim() ? {
+          indexParam: draft.historyIndexParam.trim(),
+          ...(draft.historyLimitParam.trim() ? { pageSizeParam: draft.historyLimitParam.trim() } : {}),
+          ...(Number(draft.historyLimitValue) > 0 ? { pageSize: Math.trunc(Number(draft.historyLimitValue)) } : {}),
+          ...(draft.historyCursorParam.trim() ? { cursorParam: draft.historyCursorParam.trim() } : {}),
+          ...(Number(draft.historyMaxPages) > 0 ? { maxPages: Math.trunc(Number(draft.historyMaxPages)) } : {}),
+          ...(draft.historyDirection !== "cursor" ? { direction: draft.historyDirection } : {}),
+        } : {}),
+        ...(draft.historyTotalPath.trim() ? { totalPath: draft.historyTotalPath.trim() } : {}),
       },
     } : {}),
     ...(draft.attachments ? { attachments: true } : {}),
+    ...(draft.attachmentsField.trim() ? { attachmentsField: draft.attachmentsField.trim() } : {}),
+    ...(draft.streamEnd === "continue" ? { streamEnd: "continue" as const } : {}),
+    /* 会话级自动批准端点：勾了才写（服务端只要求 method + path）。 */
+    ...(draft.hasAutoApprove && draft.autoApprovePath.trim() ? {
+      autoApprove: {
+        method: "POST",
+        path: draft.autoApprovePath.trim(),
+        ...(Object.keys(autoApproveBody as Record<string, unknown>).length ? { body: autoApproveBody as Record<string, unknown> } : {}),
+        ...(draft.autoApproveResult.trim() ? { result: draft.autoApproveResult.trim() } : {}),
+      },
+    } : {}),
+    /* 确认答复端点：勾了才写（服务端要求 method + path + applied 齐全）。 */
+    ...(draft.hasElicitRespond && draft.elicitRespondPath.trim() ? {
+      elicitRespond: {
+        method: draft.elicitRespondMethod.trim() || "POST",
+        path: draft.elicitRespondPath.trim(),
+        ...(Object.keys(respondBody as Record<string, unknown>).length ? { body: respondBody as Record<string, unknown> } : {}),
+        applied: draft.elicitRespondApplied.trim() || "data.applied",
+        ...(draft.elicitRespondId.trim() ? { id: draft.elicitRespondId.trim() } : {}),
+      },
+    } : {}),
     sse: {
       eventField: draft.sseEventField.trim(),
-      ...(draft.tokenOn.trim() ? { token: { on: draft.tokenOn.trim(), text: draft.tokenText.trim() } } : {}),
-      ...(draft.doneOn.trim() ? { done: { on: draft.doneOn.trim(), text: draft.doneText.trim(), ...(draft.doneSuccess.trim() ? { success: draft.doneSuccess.trim() } : {}) } } : {}),
-      ...(draft.errorOn.trim() ? { error: { on: draft.errorOn.trim(), message: draft.errorMessagePath.trim() } } : {}),
+      ...(draft.tokenOn.trim() ? { token: { ...(base?.sse.token ?? {}), on: draft.tokenOn.trim(), text: draft.tokenText.trim(), ...(tokenSuccess ? { success: tokenSuccess } : { success: undefined }) } } : {}),
+      ...(draft.doneOn.trim() ? { done: {
+        on: draft.doneOn.trim(),
+        /* text 可省：没有全文的方言留空 ⇒ 引擎用累计 delta 收尾。 */
+        ...(draft.doneText.trim() ? { text: draft.doneText.trim() } : {}),
+        ...(draft.doneSuccess.trim() ? { success: draft.doneSuccess.trim() } : {}),
+        ...(doneSuccessRule ? { successRule: doneSuccessRule } : {}),
+      } } : {}),
+      ...(draft.errorOn.trim() ? { error: { on: draft.errorOn.trim(), message: draft.errorMessagePath.trim(), ...(errorSuccess ? { success: errorSuccess } : { success: undefined }) } } : {}),
       /* tool：表单管理的四个字段覆盖，其余子键（input——elicit 卡拿删除目标的
          来源）从原映射保留；表单清空 toolOn 才是「删掉 tool 映射」的意图。 */
       ...(draft.toolOn.trim() ? { tool: {
         ...(base?.sse.tool ?? {}),
         on: draft.toolOn.trim(),
         name: draft.toolName.trim(),
-        status: draft.toolStatus.trim(),
+        /* status 可省（2026-10-22）：上游工具帧没有状态字段时留空，渲染成 unknown——
+           不写空串，免得 JSON 里出现 `"status": ""` 让读者以为配过。 */
+        ...(draft.toolStatus.trim() ? { status: draft.toolStatus.trim() } : {}),
         ...(draft.toolFallback.trim() ? { nameFallback: draft.toolFallback.trim() } : {}),
+        ...(draft.toolCallId.trim() ? { callId: draft.toolCallId.trim() } : {}),
+        ...(draft.toolKind.trim() ? { kind: draft.toolKind.trim() } : {}),
+        ...(draft.toolOutput.trim() ? { output: draft.toolOutput.trim() } : {}),
+      } } : {}),
+      /* 思考增量（2026-10-22）：配了 `on` 才算有思考帧；`newSegment` 可空。 */
+      ...(draft.thinkingOn.trim() ? { thinking: {
+        on: draft.thinkingOn.trim(),
+        text: draft.thinkingText.trim() || "text",
+        ...(draft.thinkingNewSegment.trim() ? { newSegment: draft.thinkingNewSegment.trim() } : {}),
       } } : {}),
       ...(draft.ignoreText.trim() ? { ignore: draft.ignoreText.split(/[,，]/).map((item) => item.trim()).filter(Boolean) } : {}),
-      ...(base?.sse.elicit ? { elicit: base.sse.elicit } : {}),
+      ...(elicit && elicit.on && elicit.text && elicit.tool ? { elicit: { ...(base?.sse.elicit ?? {}), ...elicit } } : base?.sse.elicit ? { elicit: base.sse.elicit } : {}),
     },
   };
+  /* 设计上与 draft 同构，但 `query: undefined` / `success: undefined` 是显式「清空」。
+     服务端只做形状校验，多余的空键会被 JSON.stringify 丢掉——这里先剔除，避免把
+     「清空」表达成 `"query": undefined` 这种语义模糊的形状。 */
   return {
     name: draft.name.trim(),
-    protocol,
+    protocol: stripUndefined(protocol) as AssistantProtocol,
     userParams: draft.userParams
       .filter((param) => param.key.trim())
       .map((param) => ({ ...param, key: param.key.trim(), label: param.label.trim() || param.key.trim() })),
@@ -193,14 +420,29 @@ function buildInput(draft: Draft, base?: AssistantProtocol): { name: string; pro
   };
 }
 
+/** 递归剔除 `undefined` 值（只处理对象；数组元素不动）。 */
+function stripUndefined(value: unknown): unknown {
+  if (Array.isArray(value)) return value;
+  if (value === null || typeof value !== "object") return value;
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (item === undefined) continue;
+    result[key] = stripUndefined(item);
+  }
+  return result;
+}
+
 function toLine(event: AssistantEvent): TestLine {
   if (event.type === "token") return { kind: "token", text: event.text };
-  if (event.type === "tool") return { kind: "tool", text: `⟐ ${event.name} · ${event.status}` };
+  /* 思考增量：测试连接的回显里截断显示——它是过程，不是结论。 */
+  if (event.type === "thinking") return { kind: "tool", text: `… ${event.text.length > 160 ? `${event.text.slice(0, 160)}…` : event.text}` };
+  if (event.type === "tool") return { kind: "tool", text: `⟐ ${event.name} · ${event.status}${event.kind ? ` · ${event.kind}` : ""}` };
   /* elicit（MRTR 确认表单）：测试连接的回显按工具行语汇显示——确认卡在抽屉里，
      这里只回显「哪个工具在等确认」。 */
   if (event.type === "elicit") return { kind: "tool", text: `⟐ ${event.tool} · elicitation` };
   if (event.type === "done") return { kind: "done", text: event.fullText };
-  return { kind: "error", text: event.message };
+  if (event.type === "error") return { kind: "error", text: event.message };
+  return { kind: "error", text: "" };
 }
 
 function apiMessage(error: unknown): string | undefined {
@@ -210,6 +452,11 @@ function apiMessage(error: unknown): string | undefined {
 
 function safeFileName(name: string): string {
   return name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "provider";
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 function saveBlob(blob: Blob, fileName: string) {
@@ -242,8 +489,10 @@ export function AssistantProvidersPanel() {
   const stopTestRef = useRef<(() => void) | undefined>(undefined);
 
   const [importOpen, setImportOpen] = useState(false);
-  const [importText, setImportText] = useState("");
+  const [importFile, setImportFile] = useState<File>();
+  const [importDragging, setImportDragging] = useState(false);
   const [importing, setImporting] = useState(false);
+  const importInput = useRef<HTMLInputElement>(null);
 
   async function load() {
     setFailed(false);
@@ -386,10 +635,33 @@ export function AssistantProvidersPanel() {
     setView("list");
   }
 
+  function pickImportFile(candidate: File | undefined) {
+    if (!candidate) return;
+    if (!/\.json$/i.test(candidate.name)) {
+      message.error(t("assistantProviders.importFileOnly"));
+      return;
+    }
+    setImportFile(candidate);
+  }
+
+  function closeImport() {
+    setImportOpen(false);
+    setImportFile(undefined);
+    setImportDragging(false);
+  }
+
   async function doImport() {
+    if (!importFile) { message.error(t("assistantProviders.importNoFile")); return; }
     let parsed: { name?: unknown; protocol?: unknown; userParams?: unknown };
+    let raw: string;
     try {
-      parsed = JSON.parse(importText) as typeof parsed;
+      raw = await importFile.text();
+    } catch {
+      message.error(t("assistantProviders.importReadFailed"));
+      return;
+    }
+    try {
+      parsed = JSON.parse(raw) as typeof parsed;
     } catch (error) {
       message.error(t("assistantProviders.importJsonInvalid", { message: error instanceof Error ? error.message : String(error) }));
       return;
@@ -406,8 +678,7 @@ export function AssistantProvidersPanel() {
         ...(Array.isArray(parsed.userParams) ? { userParams: parsed.userParams as AssistantUserParam[] } : {}),
       });
       message.success(t("assistantProviders.imported", { name: created.name }));
-      setImportOpen(false);
-      setImportText("");
+      closeImport();
       await load();
     } catch (error) {
       message.error(apiMessage(error) ?? t("assistantProviders.importFailed"));
@@ -476,7 +747,7 @@ export function AssistantProvidersPanel() {
         <input className="input" value={draft.name} onChange={(event) => patch({ name: event.target.value })} placeholder={t("assistantProviders.namePlaceholder")} />
       </Field>
       <Field label={t("assistantProviders.baseUrl")} hint={t("providerStep.hint.baseUrl")}>
-        <input className="input mono" value={draft.baseUrl} onChange={(event) => patch({ baseUrl: event.target.value })} placeholder="http://stgstplatform.example:8089" />
+        <input className="input mono" value={draft.baseUrl} onChange={(event) => patch({ baseUrl: event.target.value })} placeholder="http://agent.example.internal:8080" />
       </Field>
       <div className="provider-grid-2">
         <Field label={t("assistantProviders.authHeader")} hint={t("providerStep.hint.authHeader")}>
@@ -494,6 +765,11 @@ export function AssistantProvidersPanel() {
           <input className="input mono" value={draft.successValue} onChange={(event) => patch({ successValue: event.target.value })} placeholder="0000" />
         </Field>
       </div>
+      {/* 新形状（2026-10-22）：单值对说不清「多码成功 / 布尔标记」的方言。两者只留一个
+         生效——填了这条，上面那对就不随保存一起提交。 */}
+      <Field label={t("assistantProviders.successRule")} hint={t("providerStep.hint.successRule")}>
+        <textarea className="input mono" rows={3} value={draft.successRuleText} onChange={(event) => patch({ successRuleText: event.target.value })} placeholder={'{"field": "code", "ok": ["0"]}'} />
+      </Field>
       <label className="check-field" style={{ marginTop: "var(--s3)" }}>
         <input type="checkbox" checked={draft.enabled} onChange={(event) => patch({ enabled: event.target.checked })} />
         {t("assistantProviders.enableProvider")}
@@ -534,6 +810,17 @@ export function AssistantProvidersPanel() {
         {t("assistantProviders.attachments")}
         <span className="field-hint" style={{ marginLeft: "var(--s2)" }}>{t("providerStep.hint.attachments")}</span>
       </label>
+      <div className="provider-grid-2">
+        <Field label={t("assistantProviders.attachmentsField")} hint={t("providerStep.hint.attachmentsField")}>
+          <input className="input mono" value={draft.attachmentsField} onChange={(event) => patch({ attachmentsField: event.target.value })} placeholder="attachments" disabled={!draft.attachments} />
+        </Field>
+        <Field label={t("assistantProviders.streamEnd")} hint={t("providerStep.hint.streamEnd")}>
+          <Select value={draft.streamEnd} onChange={(next) => patch({ streamEnd: next })} options={[
+            { value: "close", label: t("assistantProviders.streamEndClose") },
+            { value: "continue", label: t("assistantProviders.streamEndContinue") },
+          ]} style={{ width: "100%" }} />
+        </Field>
+      </div>
 
       <p className="label" style={{ margin: "var(--s4) 0 var(--s2)" }}>{t("assistantProviders.sseSection")}</p>
       <Field label={t("assistantProviders.sseEventField")} hint={t("providerStep.hint.eventField")}>
@@ -547,6 +834,9 @@ export function AssistantProvidersPanel() {
           <input className="input mono" value={draft.tokenText} onChange={(event) => patch({ tokenText: event.target.value })} placeholder="data.text" />
         </Field>
       </div>
+      <Field label={t("assistantProviders.tokenSuccess")} hint={t("providerStep.hint.tokenSuccess")}>
+        <textarea className="input mono" rows={2} value={draft.tokenSuccessText} onChange={(event) => patch({ tokenSuccessText: event.target.value })} placeholder={'{"field": "code", "ok": ["0"]}'} />
+      </Field>
       <div className="provider-grid-2">
         <Field label={t("assistantProviders.doneOn")} hint={t("providerStep.hint.done")}>
           <input className="input mono" value={draft.doneOn} onChange={(event) => patch({ doneOn: event.target.value })} placeholder="FINAL_RESULT" />
@@ -557,10 +847,13 @@ export function AssistantProvidersPanel() {
         <Field label={t("assistantProviders.doneSuccess")}>
           <input className="input mono" value={draft.doneSuccess} onChange={(event) => patch({ doneSuccess: event.target.value })} placeholder="data.success" />
         </Field>
-        <Field label={t("assistantProviders.ignoreList")} hint={t("providerStep.hint.ignore")}>
-          <input className="input mono" value={draft.ignoreText} onChange={(event) => patch({ ignoreText: event.target.value })} placeholder="HEART_BEAT" />
-        </Field>
       </div>
+      <Field label={t("assistantProviders.doneSuccessRule")} hint={t("providerStep.hint.doneSuccessRule")}>
+        <textarea className="input mono" rows={2} value={draft.doneSuccessRuleText} onChange={(event) => patch({ doneSuccessRuleText: event.target.value })} placeholder={'{"field": "finishReason", "ok": ["COMPLETE"]}'} />
+      </Field>
+      <Field label={t("assistantProviders.ignoreList")} hint={t("providerStep.hint.ignore")}>
+        <input className="input mono" value={draft.ignoreText} onChange={(event) => patch({ ignoreText: event.target.value })} placeholder="HEART_BEAT" />
+      </Field>
       <div className="provider-grid-2">
         <Field label={t("assistantProviders.errorOn")} hint={t("providerStep.hint.error")}>
           <input className="input mono" value={draft.errorOn} onChange={(event) => patch({ errorOn: event.target.value })} placeholder="ERROR" />
@@ -580,7 +873,126 @@ export function AssistantProvidersPanel() {
         <Field label={t("assistantProviders.toolFallback")}>
           <input className="input mono" value={draft.toolFallback} onChange={(event) => patch({ toolFallback: event.target.value })} placeholder="data.type" />
         </Field>
+        <Field label={t("assistantProviders.toolCallId")} hint={t("providerStep.hint.toolCallId")}>
+          <input className="input mono" value={draft.toolCallId} onChange={(event) => patch({ toolCallId: event.target.value })} placeholder="data.callId" />
+        </Field>
+        <Field label={t("assistantProviders.toolKind")} hint={t("providerStep.hint.toolKind")}>
+          <input className="input mono" value={draft.toolKind} onChange={(event) => patch({ toolKind: event.target.value })} placeholder="data.kind" />
+        </Field>
+        <Field label={t("assistantProviders.toolOutput")} hint={t("providerStep.hint.toolOutput")}>
+          <input className="input mono" value={draft.toolOutput} onChange={(event) => patch({ toolOutput: event.target.value })} placeholder="data.output" />
+        </Field>
       </div>
+
+      {/* 思考增量（可选）：上游把模型的思考过程也流进来时配这块——显示成折叠块。 */}
+      <div className="provider-grid-2">
+        <Field label={t("assistantProviders.thinkingOn")} hint={t("providerStep.hint.thinking")}>
+          <input className="input mono" value={draft.thinkingOn} onChange={(event) => patch({ thinkingOn: event.target.value })} placeholder="thinking" />
+        </Field>
+        <Field label={t("assistantProviders.thinkingText")}>
+          <input className="input mono" value={draft.thinkingText} onChange={(event) => patch({ thinkingText: event.target.value })} placeholder="text" />
+        </Field>
+        <Field label={t("assistantProviders.thinkingNewSegment")} hint={t("providerStep.hint.thinkingNewSegment")}>
+          <input className="input mono" value={draft.thinkingNewSegment} onChange={(event) => patch({ thinkingNewSegment: event.target.value })} placeholder="newSegment" />
+        </Field>
+      </div>
+      <Field label={t("assistantProviders.errorSuccess")} hint={t("providerStep.hint.errorSuccess")}>
+        <textarea className="input mono" rows={2} value={draft.errorSuccessText} onChange={(event) => patch({ errorSuccessText: event.target.value })} placeholder={'{"field": "success", "not": false}'} />
+      </Field>
+
+      {/* 确认表单（可选）：上游把"要不要执行"做成流里的一张表单时配这块。不配则该类
+          事件按 token 处理（万一上游不发，配置不会凭空产生确认卡）。 */}
+      <label className="check-field" style={{ margin: "var(--s4) 0 var(--s2)" }}>
+        <input type="checkbox" checked={draft.hasElicit} onChange={(event) => patch({ hasElicit: event.target.checked })} />
+        {t("assistantProviders.hasElicit")}
+        <span className="field-hint" style={{ marginLeft: "var(--s2)" }}>{t("providerStep.hint.elicit")}</span>
+      </label>
+      {draft.hasElicit && <>
+        <div className="provider-grid-2">
+          <Field label={t("assistantProviders.elicitOn")}>
+            <input className="input mono" value={draft.elicitOn} onChange={(event) => patch({ elicitOn: event.target.value })} placeholder="MESSAGE" />
+          </Field>
+          <Field label={t("assistantProviders.elicitType")} hint={t("providerStep.hint.elicitType")}>
+            <input className="input mono" value={draft.elicitType} onChange={(event) => patch({ elicitType: event.target.value })} placeholder="data.type" />
+          </Field>
+          <Field label={t("assistantProviders.elicitTypeValue")}>
+            <input className="input mono" value={draft.elicitTypeValue} onChange={(event) => patch({ elicitTypeValue: event.target.value })} placeholder="ELICITATION" />
+          </Field>
+          <Field label={t("assistantProviders.elicitTool")}>
+            <input className="input mono" value={draft.elicitTool} onChange={(event) => patch({ elicitTool: event.target.value })} placeholder="data.toolCallId" />
+          </Field>
+          <Field label={t("assistantProviders.elicitText")}>
+            <input className="input mono" value={draft.elicitText} onChange={(event) => patch({ elicitText: event.target.value })} placeholder="data.text" />
+          </Field>
+          <Field label={t("assistantProviders.elicitSchema")}>
+            <input className="input mono" value={draft.elicitSchema} onChange={(event) => patch({ elicitSchema: event.target.value })} placeholder="data.elicitationSchema" />
+          </Field>
+          <Field label={t("assistantProviders.elicitAllowResume")}>
+            <input className="input mono" value={draft.elicitAllowResume} onChange={(event) => patch({ elicitAllowResume: event.target.value })} placeholder="data.allowResume" />
+          </Field>
+          <Field label={t("assistantProviders.elicitConfirmId")} hint={t("providerStep.hint.elicitConfirmId")}>
+            <input className="input mono" value={draft.elicitConfirmId} onChange={(event) => patch({ elicitConfirmId: event.target.value })} placeholder="data.confirmId" />
+          </Field>
+          <Field label={t("assistantProviders.elicitExpiresAt")} hint={t("providerStep.hint.elicitExpiresAt")}>
+            <input className="input mono" value={draft.elicitExpiresAt} onChange={(event) => patch({ elicitExpiresAt: event.target.value })} placeholder="data.expiresAt" />
+          </Field>
+          <Field label={t("assistantProviders.elicitInputSummary")} hint={t("providerStep.hint.elicitInputSummary")}>
+            <input className="input mono" value={draft.elicitInputSummary} onChange={(event) => patch({ elicitInputSummary: event.target.value })} placeholder="data.inputSummary" />
+          </Field>
+          <Field label={t("assistantProviders.elicitSource")}>
+            <input className="input mono" value={draft.elicitSource} onChange={(event) => patch({ elicitSource: event.target.value })} placeholder="data.source" />
+          </Field>
+          <Field label={t("assistantProviders.elicitDuplicate")} hint={t("providerStep.hint.elicitDuplicate")}>
+            <input className="input mono" value={draft.elicitDuplicate} onChange={(event) => patch({ elicitDuplicate: event.target.value })} placeholder="data.duplicate" />
+          </Field>
+        </div>
+
+        {/* 自动批准端点：配了就等于「让上游别问」，没配则退回本地代点确认。 */}
+        <label className="check-field" style={{ margin: "var(--s4) 0 var(--s2)" }}>
+          <input type="checkbox" checked={draft.hasAutoApprove} onChange={(event) => patch({ hasAutoApprove: event.target.checked })} />
+          {t("assistantProviders.hasAutoApprove")}
+          <span className="field-hint" style={{ marginLeft: "var(--s2)" }}>{t("providerStep.hint.autoApprove")}</span>
+        </label>
+        {draft.hasAutoApprove && <>
+          <Field label={t("assistantProviders.path")} hint={t("providerStep.hint.autoApprovePath")}>
+            <input className="input mono" value={draft.autoApprovePath} onChange={(event) => patch({ autoApprovePath: event.target.value })} placeholder="/open/v1/conversations/{{conversationId}}/auto-approve" />
+          </Field>
+          <Field label={t("assistantProviders.bodyTemplate")} hint={t("providerStep.hint.autoApproveBody")}>
+            <textarea className="input mono" rows={3} value={draft.autoApproveBodyText} onChange={(event) => patch({ autoApproveBodyText: event.target.value })} placeholder={'{"enabled": "{{autoApprove:boolean}}"}'} />
+          </Field>
+          <Field label={t("assistantProviders.autoApproveResult")} hint={t("providerStep.hint.autoApproveResult")}>
+            <input className="input mono" value={draft.autoApproveResult} onChange={(event) => patch({ autoApproveResult: event.target.value })} placeholder="data.autoApprove" />
+          </Field>
+        </>}
+
+        {/* 答复端点：只在上游「要用户点头」时才有意义。不配 ⇒ 卡片走本地 REST（旧行为）。 */}
+        <label className="check-field" style={{ margin: "var(--s4) 0 var(--s2)" }}>
+          <input type="checkbox" checked={draft.hasElicitRespond} onChange={(event) => patch({ hasElicitRespond: event.target.checked })} />
+          {t("assistantProviders.hasElicitRespond")}
+          <span className="field-hint" style={{ marginLeft: "var(--s2)" }}>{t("providerStep.hint.elicitRespond")}</span>
+        </label>
+        {draft.hasElicitRespond && <>
+          <div className="provider-grid-2">
+            <Field label={t("assistantProviders.method")}>
+              <Select value={draft.elicitRespondMethod} onChange={(next) => patch({ elicitRespondMethod: next })} options={["POST", "PUT", "PATCH"].map((method) => ({ value: method, label: method }))} style={{ width: "100%" }} />
+            </Field>
+            <Field label={t("assistantProviders.path")} hint={t("providerStep.hint.elicitRespondPath")}>
+              <input className="input mono" value={draft.elicitRespondPath} onChange={(event) => patch({ elicitRespondPath: event.target.value })} placeholder="/open/v1/conversations/{{conversationId}}/confirm" />
+            </Field>
+          </div>
+          <Field label={t("assistantProviders.bodyTemplate")} hint={t("providerStep.hint.elicitRespondBody")}>
+            <textarea className="input mono" rows={3} value={draft.elicitRespondBodyText} onChange={(event) => patch({ elicitRespondBodyText: event.target.value })} placeholder={'{"confirmId": "{{confirmId}}", "accepted": "{{accepted:boolean}}"}'} />
+          </Field>
+          <div className="provider-grid-2">
+            <Field label={t("assistantProviders.elicitRespondApplied")} hint={t("providerStep.hint.elicitRespondApplied")}>
+              <input className="input mono" value={draft.elicitRespondApplied} onChange={(event) => patch({ elicitRespondApplied: event.target.value })} placeholder="data.applied" />
+            </Field>
+            <Field label={t("assistantProviders.elicitRespondId")} hint={t("providerStep.hint.elicitRespondId")}>
+              <input className="input mono" value={draft.elicitRespondId} onChange={(event) => patch({ elicitRespondId: event.target.value })} placeholder="data.id" />
+            </Field>
+          </div>
+        </>}
+      </>}
     </>}
 
     {step === 3 && <>
@@ -639,6 +1051,46 @@ export function AssistantProvidersPanel() {
           </Field>
           <Field label={t("assistantProviders.fieldsMapping")} hint={t("providerStep.hint.fieldsMapping")}>
             <textarea className="input mono" rows={4} value={draft.historyFieldsText} onChange={(event) => patch({ historyFieldsText: event.target.value })} placeholder={'{"id": "id", "role": "role", "text": "text", "time": "time"}'} />
+          </Field>
+          <Field label={t("assistantProviders.historyParts")} hint={t("providerStep.hint.historyParts")}>
+            <input className="input mono" value={draft.historyPartsPath} onChange={(event) => patch({ historyPartsPath: event.target.value })} placeholder="parts" />
+          </Field>
+          <Field label={t("assistantProviders.historyPartsType")}>
+            <input className="input mono" value={draft.historyPartsType} onChange={(event) => patch({ historyPartsType: event.target.value })} placeholder="type" />
+          </Field>
+          <Field label={t("assistantProviders.historyPartsText")}>
+            <input className="input mono" value={draft.historyPartsText} onChange={(event) => patch({ historyPartsText: event.target.value })} placeholder="text" />
+          </Field>
+          <Field label={t("assistantProviders.historyPartsTool")} hint={t("providerStep.hint.historyPartsTool")}>
+            <input className="input mono" value={draft.historyPartsToolPath} onChange={(event) => patch({ historyPartsToolPath: event.target.value })} placeholder="（缺省 = 元素本身）" />
+          </Field>
+        </div>
+        {/* 分页（可选）：不填游标参数 = 一次全量取；上游分页方言靠 direction 表达。 */}
+        <div className="provider-grid-2" style={{ marginTop: "var(--s3)" }}>
+          <Field label={t("assistantProviders.historyIndexParam")} hint={t("providerStep.hint.historyIndexParam")}>
+            <input className="input mono" value={draft.historyIndexParam} onChange={(event) => patch({ historyIndexParam: event.target.value })} placeholder="index" />
+          </Field>
+          <Field label={t("assistantProviders.historyLimitParam")}>
+            <input className="input mono" value={draft.historyLimitParam} onChange={(event) => patch({ historyLimitParam: event.target.value })} placeholder="limit" disabled={!draft.historyIndexParam.trim()} />
+          </Field>
+          <Field label={t("assistantProviders.historyDirection")} hint={t("providerStep.hint.historyDirection")}>
+            <Select value={draft.historyDirection} onChange={(next) => patch({ historyDirection: next })} options={[
+              { value: "cursor", label: t("assistantProviders.historyDirectionCursor") },
+              { value: "offset", label: t("assistantProviders.historyDirectionOffset") },
+              { value: "cursorFromEnd", label: t("assistantProviders.historyDirectionFromEnd") },
+            ]} style={{ width: "100%" }} disabled={!draft.historyIndexParam.trim()} />
+          </Field>
+          <Field label={t("assistantProviders.historyTotalPath")} hint={t("providerStep.hint.historyTotalPath")}>
+            <input className="input mono" value={draft.historyTotalPath} onChange={(event) => patch({ historyTotalPath: event.target.value })} placeholder="data.hasMore" />
+          </Field>
+          <Field label={t("assistantProviders.historyLimitValue")} hint={t("providerStep.hint.historyLimitValue")}>
+            <input className="input mono" value={draft.historyLimitValue} onChange={(event) => patch({ historyLimitValue: event.target.value })} placeholder="500" disabled={!draft.historyIndexParam.trim()} />
+          </Field>
+          <Field label={t("assistantProviders.historyCursorParam")} hint={t("providerStep.hint.historyCursorParam")}>
+            <input className="input mono" value={draft.historyCursorParam} onChange={(event) => patch({ historyCursorParam: event.target.value })} placeholder="（缺省 = 消息 id）" disabled={!draft.historyIndexParam.trim()} />
+          </Field>
+          <Field label={t("assistantProviders.historyMaxPages")} hint={t("providerStep.hint.historyMaxPages")}>
+            <input className="input mono" value={draft.historyMaxPages} onChange={(event) => patch({ historyMaxPages: event.target.value })} placeholder="10" disabled={!draft.historyIndexParam.trim()} />
           </Field>
         </div>
       </div>}
@@ -717,7 +1169,8 @@ export function AssistantProvidersPanel() {
           <td className="col-status">
             <Status status={provider.enabled ? "pass" : "skip"} label={t(provider.enabled ? "assistantProviders.enabled" : "assistantProviders.disabled")} />
           </td>
-          {/* 能力面从协议形状派生（定义了端点 = 有该能力）。 */}
+          {/* 能力面从协议形状派生（定义了端点 = 有该能力）。键名是协议键、稳定可读；
+              新增能力只需在协议里落一个端点，这里自动列出来。 */}
           <td className="mono muted">
             {(Object.keys(provider.capabilities) as (keyof AssistantCapabilities)[])
               .filter((key) => provider.capabilities[key])
@@ -745,18 +1198,42 @@ export function AssistantProvidersPanel() {
       <button className="btn" onClick={() => setImportOpen(true)}>{t("assistantProviders.importAction")}</button>
     </>} />}
 
-    {/* JSON 导入是小动作（粘贴即确认），保留弹窗形态。 */}
+    {/* 导入走文件（拖入或点选导出的 .json），不上传服务端：读成文本在本地解析后
+        走与手工新建同一个接口，失败信息也指向具体字段。 */}
     <Modal
       open={importOpen}
       title={t("assistantProviders.importTitle")}
       okText={t("action.import")}
+      okButtonProps={{ disabled: !importFile }}
       cancelText={t("action.cancel")}
       confirmLoading={importing}
       onOk={() => void doImport()}
-      onCancel={() => setImportOpen(false)}
+      onCancel={closeImport}
+      destroyOnHidden
     >
       <p className="form-note">{t("assistantProviders.importHint")}</p>
-      <textarea className="input mono" rows={10} value={importText} onChange={(event) => setImportText(event.target.value)} placeholder={t("assistantProviders.importPlaceholder")} />
+      <div
+        className={`import-drop${importDragging ? " is-dragging" : ""}`}
+        role="button"
+        tabIndex={0}
+        aria-label={t("assistantProviders.importPickFile")}
+        onClick={() => importInput.current?.click()}
+        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); importInput.current?.click(); } }}
+        onDragOver={(event) => { event.preventDefault(); setImportDragging(true); }}
+        onDragLeave={() => setImportDragging(false)}
+        onDrop={(event) => { event.preventDefault(); setImportDragging(false); pickImportFile(event.dataTransfer.files[0]); }}
+      >
+        <Upload size={18} />
+        <span>{importFile ? importFile.name : t("assistantProviders.importDropHint")}</span>
+        {importFile && <span className="import-file-meta mono">{formatFileSize(importFile.size)} · {t("assistantProviders.importRepick")}</span>}
+      </div>
+      <input
+        ref={importInput}
+        type="file"
+        accept=".json,application/json"
+        className="visually-hidden"
+        onChange={(event) => { pickImportFile(event.target.files?.[0]); event.target.value = ""; }}
+      />
     </Modal>
   </>;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Drawer, Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
@@ -10,6 +10,7 @@ import {
   isRateLimited,
   probeAssistantAvailability,
   streamAssistantMessage,
+  type AssistantChatMessage,
   type AssistantConversation,
   type AssistantErrorCode,
   type AssistantEvent,
@@ -40,7 +41,7 @@ import { requestThemePreference } from "../theme";
 import { Tip } from "../ui";
 import i18nSingleton from "../i18n";
 import { Avatar, type AvatarPulseKind } from "./Avatar";
-import { AssistantElicitationCard, type ElicitSettled } from "./AssistantElicitationCard";
+import { AssistantElicitationCard, type ElicitCardState, type ElicitSettled } from "./AssistantElicitationCard";
 import { AssistantMarkdown } from "./AssistantMarkdown";
 import { AssistantProposalCard, splitProposalSegments, type ProposalSettled } from "./AssistantProposalCard";
 import { IconButton } from "./IconButton";
@@ -97,14 +98,32 @@ import { newAvatarSeed } from "../lib/avatar";
 
 /** 消息流的一个块。助手回复是块序列（工具行/文本/错误/确认表单），归一事件按到达顺序落块。 */
 type ChatBlock =
-  | { kind: "tool"; name: string; status: string }
+  /** 工具行：`input`/`output` 只有**历史回放**能拿到（流式事件不带），有就折叠展示。
+   *  `callId` 是上游的工具调用 id（2026-10-22）：同一 id 的多帧是状态流转，合并成一行。 */
+  | { kind: "tool"; name: string; status: string; callId?: string; toolKind?: string; input?: string; output?: string }
   | { kind: "text"; text: string }
+  /** 思考片段：历史回放来自 `parts`，实时来自 `thinking` 增量（2026-10-22）——同一种块，
+   *  刷新前后渲染一致。 */
+  | { kind: "thinking"; text: string }
   /** 错误气泡：`code`（P9-8）是平台判定的失败类别，渲染时换成本地化文案；上游
    *  自己报的错不带码，`text` 原样显示。 */
   | { kind: "error"; text: string; code?: AssistantErrorCode }
   /** MRTR 确认表单（2026-09-15）：agent 的删除类工具被 /mcp 闸门拦下、上游转述的
    *  确认请求——渲染成 ElicitationCard（确认走本人 JWT 的既有 REST）。 */
-  | { kind: "elicit"; text: string; tool: string; input?: Record<string, unknown>; schema?: unknown };
+  | {
+    kind: "elicit";
+    text: string;
+    tool: string;
+    input?: Record<string, unknown>;
+    schema?: unknown;
+    /** 回传上游所需（2026-10-22）：id + 截止时刻 + 触发方；`inputSummary` 是上游原文。 */
+    confirmId?: string;
+    expiresAt?: string;
+    source?: string;
+    inputSummary?: string;
+    /** 「同轮重复执行」：卡片提示这次会再跑一次。 */
+    duplicate?: boolean;
+  };
 
 type ChatEntry =
   | { role: "user"; text: string }
@@ -132,17 +151,76 @@ function applyEvent(thread: ChatEntry[], event: AssistantEvent): ChatEntry[] {
     const tail = blocks[blocks.length - 1];
     if (tail && tail.kind === "text") blocks[blocks.length - 1] = { kind: "text", text: tail.text + event.text };
     else blocks.push({ kind: "text", text: event.text });
+  } else if (event.type === "thinking") {
+    /* 思考增量（2026-10-22）：`newSegment` 段首开新块，否则并进最后一个思考块；
+       中间被文本/工具隔断时同样另起（顺序如实保留，不重排）。 */
+    const tail = blocks[blocks.length - 1];
+    if (!event.newSegment && tail && tail.kind === "thinking") {
+      blocks[blocks.length - 1] = { kind: "thinking", text: tail.text + event.text };
+    } else {
+      blocks.push({ kind: "thinking", text: event.text });
+    }
   } else if (event.type === "tool") {
-    blocks.push({ kind: "tool", name: event.name, status: event.status });
+    /* 同一次调用会推多帧（RUNNING → SUCCESS/ERROR）：有 callId 就**就地更新**那一行；
+       没有 id 的旧上游按「同名工具」合并——名字不同才新增一行。 */
+    const mergeKey = event.callId ?? event.name;
+    const existing = blocks.map((block) => block.kind === "tool" && (block.callId ?? block.name) === mergeKey).lastIndexOf(true);
+    /* 结果正文只在带它的那一帧出现（通常就是 SUCCESS/ERROR 帧）：合并时**沿用**上一帧的
+       输出，免得后到的状态帧把已经显示的结果抹掉。 */
+    const previous = existing >= 0 ? blocks[existing] : undefined;
+    const previousOutput = previous && previous.kind === "tool" ? previous.output : undefined;
+    const output = event.output ?? previousOutput;
+    const next: ChatBlock = {
+      kind: "tool",
+      name: event.name,
+      status: event.status,
+      ...(event.callId ? { callId: event.callId } : {}),
+      ...(event.kind ? { toolKind: event.kind } : {}),
+      ...(output ? { output } : {}),
+    };
+    if (existing >= 0) blocks[existing] = next;
+    else blocks.push(next);
   } else if (event.type === "elicit") {
     /* MRTR 确认表单：落独立块（不进文本——token 流里不掺结构化卡）。 */
-    blocks.push({ kind: "elicit", text: event.text, tool: event.tool, ...(event.input ? { input: event.input } : {}), ...(event.schema !== undefined ? { schema: event.schema } : {}) });
+    blocks.push({
+      kind: "elicit",
+      text: event.text,
+      tool: event.tool,
+      ...(event.input ? { input: event.input } : {}),
+      ...(event.schema !== undefined ? { schema: event.schema } : {}),
+      ...(event.confirmId ? { confirmId: event.confirmId } : {}),
+      ...(event.expiresAt ? { expiresAt: event.expiresAt } : {}),
+      ...(event.source ? { source: event.source } : {}),
+      /* 上游原文摘要（已抹敏、可能截断）：`input` 缺失时卡片尝试解析它定位对象。 */
+      ...(event.inputSummary ? { inputSummary: event.inputSummary } : {}),
+      ...(event.duplicate ? { duplicate: true } : {}),
+    });
   } else if (event.type === "done") {
-    /* fullText 是权威全文（引擎在 done 映射的 text 缺失时已退回 token 累计值）：
-       以它为准替换累计值，不让拼接漂移留在气泡里。 */
-    const textIndex = blocks.map((block) => block.kind).lastIndexOf("text");
-    if (textIndex >= 0) blocks[textIndex] = { kind: "text", text: event.fullText };
-    else if (event.fullText) blocks.push({ kind: "text", text: event.fullText });
+    /* fullText 是权威全文（引擎在 done 映射的 text 缺失时已退回 token 累计值）。
+       **正文已经在流里出现过就不再追加**（2026-10-22 用户反馈「结束后正文又被追加一遍」）：
+       fullText 通常等于已渲染的所有文本块之和，按块替换会把同一段话写在两处
+       （工具卡前后的正文被拆成两块时尤其明显）。
+       归一空白再比——token 拼接与全文的换行/空格常差一两个字符，严格相等会误判。 */
+    const flatten = (value: string) => value.replace(/\s+/g, " ").trim();
+    const renderedText = flatten(blocks.filter((block) => block.kind === "text").map((block) => block.kind === "text" ? block.text : "").join(""));
+    const authoritative = flatten(event.fullText);
+    if (!authoritative) {
+      /* 空全文：什么都别加（上游没给正文时不该凭空多出一个气泡）。 */
+    } else if (!renderedText) {
+      /* 流里一个字符都没落（只有工具/思考帧）：全文就是这一轮的正文，补在最前最合适。 */
+      blocks.unshift({ kind: "text", text: event.fullText });
+    } else if (renderedText !== authoritative && authoritative.startsWith(renderedText)) {
+      /* 流里只有前半截（末尾 token 丢过）：补上差额，不整块替换。差额按原文长度算
+         （归一化只用来比较，落块用原文切片）。 */
+      const textIndex = blocks.map((block) => block.kind).lastIndexOf("text");
+      const tailBlock = textIndex >= 0 ? blocks[textIndex] : undefined;
+      if (tailBlock && tailBlock.kind === "text") {
+        const missing = event.fullText.trim().slice(renderedText.length);
+        if (missing) blocks[textIndex] = { kind: "text", text: tailBlock.text + missing };
+      }
+    }
+    /* 其余不一致（顺序/增删对不上）：保留流里的真实到达顺序，不以全文覆盖——
+       覆盖会把工具卡前的正文挪到末尾，反而造假。 */
   } else {
     blocks.push({ kind: "error", text: event.message, ...(event.code ? { code: event.code } : {}) });
   }
@@ -200,14 +278,51 @@ const THEME_LABEL_KEY: Record<ThemeValue, string> = { light: "system.themeLight"
 const LANGUAGE_LABEL: Record<LanguageValue, string> = { "zh-CN": "简体中文", en: "English" };
 
 /** MRTR 确认卡的内容键（工具名+入参）：终态按它索引，同一确认在重渲染间不换键。 */
-function elicitKey(block: { tool: string; input?: Record<string, unknown> }): string {
-  return `${block.tool}:${JSON.stringify(block.input ?? {})}`;
+function elicitKey(block: { tool: string; input?: Record<string, unknown>; confirmId?: string; inputSummary?: string }): string {
+  /* 有 confirmId 就按它做键（同一工具一轮里可能出现两次，入参相同也会撞）；
+     没有（旧路径）才退回「工具 + 入参」——与接入前的行为一致。 */
+  if (block.confirmId) return `${block.tool}:${block.confirmId}`;
+  return `${block.tool}:${JSON.stringify(block.input ?? block.inputSummary ?? {})}`;
 }
 
 /** 回放/落记录共用的确认结果文案（i18n 单例取——历史回放渲染时语言可能是切换后的）。 */
-function elicitRecordText(elicit?: { tool: string; outcome: "confirmed" | "declined"; input?: Record<string, unknown> }): string {
+function elicitRecordText(elicit?: { tool: string; outcome: "confirmed" | "declined"; input?: Record<string, unknown>; upstream?: boolean; by?: "auto" }): string {
   if (!elicit) return "";
-  return i18nSingleton.t(elicit.outcome === "confirmed" ? "assistantElicit.recordConfirmed" : "assistantElicit.recordDeclined", { tool: elicit.tool });
+  /* 回传上游（2026-10-22）：确认的后果是「上游继续跑」，不是「平台以你身份执行」——
+     两句话不能混用，否则历史回放会读成错误的因果。自动批准（`by:"auto"`）的话术
+     再退一档：回执必须说「是系统替你点的」，不能冒充用户本人点过。 */
+  const key = elicit.outcome === "declined"
+    ? "assistantElicit.recordDeclined"
+    : elicit.by === "auto" ? "assistantElicit.recordAutoApproved"
+      : elicit.upstream ? "assistantElicit.recordConfirmedUpstream" : "assistantElicit.recordConfirmed";
+  return i18nSingleton.t(key, { tool: elicit.tool });
+}
+
+/**
+ * 历史行 → 块序列（2026-10-22）。上游把「正文 / 思考 / 工具卡」拍平在 `parts[]` 里
+ * （doubleA 的 `?parts=timeline`），顺序就是当时的出现顺序——**按它渲染，不重排**。
+ * 没配 `parts` 的 provider 走旧路径：整段正文一个块。
+ *
+ * 正文片段按**紧邻合并**成块（`TEXT` 后面又是 `TEXT` 时并进同一段），避免长回复被切
+ * 成一堆碎片气泡；工具卡/思考各自独立成块，位置如实保留。
+ */
+function historyBlocks(row: AssistantChatMessage): ChatBlock[] {
+  if (!row.parts?.length) return row.text ? [{ kind: "text", text: row.text }] : [];
+  const blocks: ChatBlock[] = [];
+  const pushText = (text: string) => {
+    if (!text) return;
+    const tail = blocks[blocks.length - 1];
+    if (tail && tail.kind === "text") blocks[blocks.length - 1] = { kind: "text", text: tail.text + text };
+    else blocks.push({ kind: "text", text });
+  };
+  for (const part of row.parts) {
+    if (part.type === "text") pushText(part.text);
+    else if (part.type === "thinking") blocks.push({ kind: "thinking", text: part.text });
+    else blocks.push({ kind: "tool", name: part.name, status: part.status, ...(part.input ? { input: part.input } : {}), ...(part.output ? { output: part.output } : {}) });
+  }
+  /* 上游给了片段但里面没有正文（只有卡片）：正文兜底一次，免得整条消息"消失"。 */
+  if (!blocks.some((block) => block.kind === "text") && row.text) pushText(row.text);
+  return blocks;
 }
 
 /** 通知行的相对时间（列表页同款）：今天给「HH:mm」，更早给日期——速览里精确到
@@ -241,6 +356,29 @@ function clampDrawerWidth(width: number): number {
 
 /** 「刚登录」的入口小跳一次/会话：模块级标记——路由切壳/重挂不重演。 */
 let greetedThisSession = false;
+
+/** 确认卡的渲染兜底：上游事件形状不对时只让这张卡降级成一行提示，不拖垮整个抽屉。
+    普通类 + 静态 getDerivedStateFromError，错误只在 console 留痕。 */
+class ElicitBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown) {
+    console.error("[assistant] elicitation card failed", error);
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <div className="chat-proposal chat-proposal-settled">
+        <span className="chat-proposal-kind">{i18nSingleton.t("assistantElicit.renderFailed")}</span>
+      </div>;
+    }
+    return this.props.children;
+  }
+}
 
 export function AssistantDock() {
   const { t, i18n } = useTranslation();
@@ -359,8 +497,13 @@ export function AssistantDock() {
    *  重渲染间不丢终态；历史回放换桶后自然复位（草稿重新出现重新确认）。 */
   const [proposalStates, setProposalStates] = useState<Record<string, ProposalSettled>>({});
   /** MRTR 确认卡终态（confirmed/declined），按「工具名+入参」键索引（同 proposal 卡）。 */
-  const [elicitStates, setElicitStates] = useState<Record<string, ElicitSettled>>({});
-
+  const [elicitStates, setElicitStates] = useState<Record<string, ElicitCardState>>({});
+  /* 自动批准（2026-10-22）：会话级。协议配了 `autoApprove` 端点时状态在上游（停发
+     confirm），否则退回本地代点；两种情况都只活在本次显示态——刷新/换会话复位为关，
+     自动代确认是**用户当下授权**，不该跨会话偷偷延续。 */
+  const [autoApprove, setAutoApprove] = useState(false);
+  const [autoApproveBusy, setAutoApproveBusy] = useState(false);
+  const [autoApproveError, setAutoApproveError] = useState<string>();
   /* ── 人物头像（P9-6）────────────────────────────────────────────────────────── */
   /** 头像种子：avatarSeed 覆盖 > users.id > 兜底。preferences 是直通存储（PUT 不
       校验），非字符串/空白脏值按无覆盖处理，别让脏 key 进 hashSeed。 */
@@ -405,6 +548,26 @@ export function AssistantDock() {
   const stopCapable = Boolean(streamingConversation?.providerCapabilities.stop);
   /* 当前显示的会话（上游标签用）：与 streamingConversation 同一取法。 */
   const activeConversation = conversations?.find((conversation) => conversation.id === activeId);
+  /* 确认卡能否回传上游（2026-10-22）：能力面随会话行带出（协议配了 elicitRespond 才有）；
+     不在会话列表里（刚建、尚未刷新）时保守判 false——卡片走本地 REST 的旧路径。 */
+  const activeProviderSupportsElicitReply = Boolean(activeConversation?.providerCapabilities.elicitReply);
+
+  const activeProviderSupportsAutoApprove = Boolean(activeConversation?.providerCapabilities.autoApprove);
+
+  /** 开关切换唯一入口：配了上游端点就下发（失败要报出来，不能显示开着实际弹卡）。 */
+  async function toggleAutoApprove(next: boolean) {
+    setAutoApproveError(undefined);
+    if (!activeProviderSupportsAutoApprove || !activeId) { setAutoApprove(next); return; }
+    setAutoApproveBusy(true);
+    try {
+      const result = await api.setAssistantAutoApprove(activeId, next);
+      setAutoApprove(result.enabled);
+    } catch (error) {
+      setAutoApproveError(apiMessage(error) ?? t("assistantElicit.autoApproveFailed"));
+    } finally {
+      setAutoApproveBusy(false);
+    }
+  }
 
   /* 发送时刻的页面上下文（P9-4c）：页面注册内容 + 当刻 route（在此合成，页面不填）。
      未注册页面也带 route——路径里的实体 id 仍在；全局层页面没有抽屉，不采不注。 */
@@ -530,22 +693,33 @@ export function AssistantDock() {
              载荷按 i18n 渲染成系统气泡——回放后确认记录仍在。 */
           : row.role === "system"
             ? { role: "system", text: elicitRecordText(row.elicit) }
-            : { role: "assistant", blocks: row.text ? [{ kind: "text", text: row.text }] : [], streaming: false }),
+            : { role: "assistant", blocks: historyBlocks(row), streaming: false }),
       }));
       setHistoryState("idle");
     }).catch(() => { if (alive) setHistoryState("failed"); });
     return () => { alive = false; };
   }, [open, activeId, historyNonce]);
 
+  /* 自动批准是「这一次对话里我同意被代点」：换会话就复位，不让授权漂到别的会话
+     （上游那一侧是会话级且会过期，两边都不延续）。 */
+  useEffect(() => { setAutoApprove(false); setAutoApproveError(undefined); }, [activeId]);
+
   /* 抽屉打开后聚焦输入（对话用户级化后人人可发——不看项目角色）。 */
   useEffect(() => {
     if (open && view === "chat") inputRef.current?.focus();
   }, [open, view]);
 
-  /* 新内容跟随滚动：只在用户本来就在底部时拽底（上翻历史不被打扰）。 */
-  useEffect(() => {
+  /* 新内容跟随滚动：只在用户本来就在底部时拽底（上翻历史不被打扰）。
+     `useLayoutEffect` + 逐帧两跳（2026-10-22）：确认卡落定会「收扁卡片 + 追加系统
+     回执」两次状态更新，折叠/展开块（工具行、思考）高度也要等布局算完——只拽一次
+     的话会停在旧高度上，正文被推出去一屏。 */
+  useLayoutEffect(() => {
     const node = scrollRef.current;
-    if (node && followRef.current) node.scrollTop = node.scrollHeight;
+    if (!node || !followRef.current) return;
+    const pin = () => { if (followRef.current) node.scrollTop = node.scrollHeight; };
+    pin();
+    const frame = requestAnimationFrame(pin);
+    return () => cancelAnimationFrame(frame);
   }, [entries, open]);
 
   /* 设置视图的数据：上游目录 + 我的 agent；预选「我的默认 → 系统推荐 → 第一个」。 */
@@ -739,11 +913,62 @@ export function AssistantDock() {
   /** MRTR 确认卡落定（2026-09-15）：终态记本地 + **平台侧持久化**（上游 transcript
       不知道确认动作，elicit_log 并回历史回放——「确认删除后聊天记录里要有这条」）
       + 即时系统气泡。记录失败静默：业务事实以删除本身的审计为准，回放少一行不撒谎。 */
-  function settleElicit(block: { text: string; tool: string; input?: Record<string, unknown>; schema?: unknown }, state: ElicitSettled, conversationId?: string) {
+  /**
+   * 确认卡落定的**本地**那一半（2026-10-22 拆分）：记 UI 终态 + fire-and-forget 落
+   * `elicit_log`。回传上游由 {@link replyElicit} 负责——两条路径都要落同一份记录，
+   * 所以记录动作收在这里，避免两处各写一遍。
+   *
+   * **不再追加系统气泡**（2026-10-22 用户反馈）：终态已经由卡片收扁成一行
+   * （「已删除 / 已确认 / 已自动批准」），再补一条「已确认 xxx ——以你的身份执行」是
+   * 同一件事说两遍，一轮里确认几次就堆几行把正文挤走。持久化记录照旧落库，
+   * 刷新后由历史回放成一行系统回执——那是**记录**，不是对话里的通知。
+   */
+  function settleElicit(
+    block: { text: string; tool: string; input?: Record<string, unknown>; inputSummary?: string; confirmId?: string },
+    state: ElicitCardState,
+    conversationId?: string,
+  ) {
     setElicitStates((current) => ({ ...current, [elicitKey(block)]: state }));
-    if (!conversationId) return;
-    appendLocalEntries([{ role: "system", text: elicitRecordText({ tool: block.tool, outcome: state, input: block.input }) }]);
-    void api.recordElicitOutcome(conversationId, { tool: block.tool, outcome: state, ...(block.input ? { input: block.input } : {}) }).catch(() => undefined);
+    if (!conversationId || state === "expired") return;
+    void api.recordElicitOutcome(conversationId, {
+      tool: block.tool,
+      outcome: state,
+      ...(block.input ? { input: block.input } : {}),
+      ...(block.confirmId ? { confirmId: block.confirmId } : {}),
+    }).catch(() => undefined);
+  }
+
+  /**
+   * 回传上游（2026-10-22）：有 `confirmId` 且当前 provider 配了答复端点时，服务端先把
+   * 答复转给上游（上游继续跑同一条流），**再由这里**落本地记录。
+   * 返回值交给卡片决定「已确认 / 已失效（applied:false）」。
+   *
+   * 落记录的时机：成功才记。上游报错时抛给卡片显示错误，不留一条"已确认"的假记录。
+   */
+  async function replyElicit(
+    block: { text: string; tool: string; input?: Record<string, unknown>; inputSummary?: string; confirmId?: string },
+    state: ElicitSettled,
+    conversationId?: string,
+    by?: "auto",
+  ): Promise<{ applied?: boolean }> {
+    if (!conversationId || !block.confirmId) return {};
+    const result = await api.recordElicitOutcome(conversationId, {
+      tool: block.tool,
+      outcome: state,
+      confirmId: block.confirmId,
+      ...(block.input ? { input: block.input } : {}),
+    });
+    /* applied:false = 没人在等这个 id（超时/已被处理）：上游口径是**正常终局**，
+       不补系统回执（那一轮已经自行收尾，回执会误导成"我们的操作生效了"）。 */
+    if (result.applied === false) {
+      setElicitStates((current) => ({ ...current, [elicitKey(block)]: "expired" }));
+      return result;
+    }
+    /* 终态落在卡片上就够读了（卡会收扁成一行「已确认 / 已自动批准」），**不再追加
+       系统气泡**：一轮里连续几次工具确认时，那串回执会把正文一路挤下去
+       （2026-10-22 用户反馈）。持久化记录照旧落 `elicit_log`，刷新后回放成一行。 */
+    setElicitStates((current) => ({ ...current, [elicitKey(block)]: state }));
+    return result;
   }
 
   async function send() {
@@ -1435,6 +1660,24 @@ export function AssistantDock() {
               {t("assistantDrawer.upstreamNew", { name: defaultUpstream.name })}
             </span>
           ) : null}
+          {/* 自动批准（2026-10-22 用户反馈：会话级开关不该长在一次性卡片上）：
+              属**当前会话**，所以跟着会话选择器走。仅当当前上游配了 `autoApprove`
+              端点（开关下发上游、上游不再发确认）或配了答复端点（本地代点）时出现。 */}
+          {activeId && (activeProviderSupportsAutoApprove || activeProviderSupportsElicitReply) && (
+            <label
+              className={`assistant-auto-approve${autoApprove ? " is-on" : ""}`}
+              title={t(activeProviderSupportsAutoApprove ? "assistantElicit.autoApproveHintUpstream" : "assistantElicit.autoApproveHint")}
+            >
+              <input
+                type="checkbox"
+                checked={autoApprove}
+                disabled={autoApproveBusy || !canWrite}
+                onChange={(event) => void toggleAutoApprove(event.target.checked)}
+              />
+              <span>{t("assistantElicit.autoApprove")}</span>
+              {autoApproveBusy && <span className="assistant-auto-approve-busy" aria-hidden>…</span>}
+            </label>
+          )}
           {/* 删除当前会话（清脏数据）：图标钮随选择器，空列表不渲染。对话用户级化
               （2026-09-16）后会话是本人的，不看项目角色。 */}
           {activeId && conversations?.some((row) => row.id === activeId) && (
@@ -1450,6 +1693,9 @@ export function AssistantDock() {
           )}
         </div>
 
+        {/* 开关下发失败的唯一落点：不贴在每张确认卡下面重复，也不弹 toast 抢焦点。 */}
+        {autoApproveError && <p className="assistant-auto-approve-error" role="status">{autoApproveError}</p>}
+
         <div ref={scrollRef} className="assistant-messages" onScroll={onScroll}>
           {historyState === "unavailable" && <p className="assistant-note muted">{t("assistantDrawer.historyUnavailable")}</p>}
           {entries.length ? entries.map((entry, index) => {
@@ -1457,7 +1703,7 @@ export function AssistantDock() {
                不是对话方，样式与用户/助手气泡都拉开。 */
             if (entry.role === "system") {
               return <div key={index} className="chat-entry chat-entry-system">
-                <div className="chat-system">{entry.text}</div>
+                <div className="chat-system" title={entry.text}>{entry.text}</div>
               </div>;
             }
             if (entry.role === "user") {
@@ -1469,8 +1715,19 @@ export function AssistantDock() {
               <div key={index} className="chat-entry chat-entry-assistant">
                 {entry.blocks.map((block, blockIndex) => block.kind === "tool" ? (
                   /* 工具行如实显示 name · status（门槛 3），与 provider 测试回显同一套
-                     图标语汇（⟐ + mono）。 */
-                  <div key={blockIndex} className="chat-tool mono">⟐ {block.name} · {block.status}</div>
+                     图标语汇（⟐ + mono）。历史回放能带入参/输出 ⇒ 收进 <details>
+                     折叠（默认收起，不占版面；流式事件没有这两项，行为不变）。 */
+                  <details key={blockIndex} className="chat-tool mono">
+                    <summary>⟐ {block.name} · {block.status}{block.toolKind ? ` · ${block.toolKind}` : ""}</summary>
+                    {block.input && <div className="chat-tool-detail"><span className="chat-tool-label">{t("assistantDrawer.toolInput")}</span>{block.input}</div>}
+                    {block.output && <div className="chat-tool-detail"><span className="chat-tool-label">{t("assistantDrawer.toolOutput")}</span>{block.output}</div>}
+                  </details>
+                ) : block.kind === "thinking" ? (
+                  /* 思考片段（实时与历史同一套）：折叠，默认收起——它是过程，不是结论。 */
+                  <details key={blockIndex} className="chat-thinking">
+                    <summary>{t("assistantDrawer.thinking")}</summary>
+                    <div className="chat-thinking-body mono">{block.text}</div>
+                  </details>
                 ) : block.kind === "error" ? (
                   <div key={blockIndex} className="chat-error">{block.code ? t(ASSISTANT_ERROR_KEYS[block.code]) : block.text}</div>
                 ) : block.kind === "elicit" ? (
@@ -1478,14 +1735,19 @@ export function AssistantDock() {
                      后果 + 确认/放弃；确认走本人 JWT 的既有 REST，落定后平台侧留
                      记录（settleElicit）。conversationId 取渲染时的 activeId——卡
                      片只在正显示的会话里可点。 */
-                  <AssistantElicitationCard
-                    key={blockIndex}
-                    projectId={projectId}
-                    block={block}
-                    settled={elicitStates[elicitKey(block)]}
-                    canWrite={Boolean(projectId) && canWrite}
-                    onSettled={(state) => settleElicit(block, state, activeId)}
-                  />
+                  <ElicitBoundary key={blockIndex}>
+                    <AssistantElicitationCard
+                      projectId={projectId}
+                      block={block}
+                      settled={elicitStates[elicitKey(block)]}
+                      canWrite={Boolean(projectId) && canWrite}
+                      upstreamReply={Boolean(block.confirmId) && activeProviderSupportsElicitReply}
+                      autoApprove={autoApprove}
+                      autoApproveMode={activeProviderSupportsAutoApprove ? "upstream" : "local"}
+                      onReplyUpstream={(state, by) => replyElicit(block, state, activeId, by)}
+                      onSettled={(state) => settleElicit(block, state, activeId)}
+                    />
+                  </ElicitBoundary>
                 ) : (
                   renderAssistantText(block.text, blockIndex)
                 ))}

@@ -766,7 +766,7 @@ function SystemPage({ themePreference, onThemeChange, language }: { themePrefere
    * 审计出现正好构成「数据从哪来 → 谁改了它」的阅读顺序。
    *
    * 助手 provider（P9-3）排在 Runner 与归因类型之间：同是「平台依赖的外部系统」
-   * （agent 平台之于 agent-vendor，如 Runner 之于执行机），读者与处置动作（运维配置）
+   * （agent 平台之于助手，如 Runner 之于执行机），读者与处置动作（运维配置）
    * 与 workers/runners 一类。
    *
    * 执行历史归档（P10-2）排在审计之后：它是**数据本身**的存储面板（哪一季还在、

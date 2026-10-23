@@ -2,7 +2,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 /**
- * 上游的「工具过程」富标记（2026-09-15 用户实测发现）：agent-vendor 的 outputText 里夹
+ * 上游的「工具过程」富标记（2026-09-15 用户实测发现）：某些上游的终态全文里夹
  * `<div><markdown-custom-process …></markdown-custom-process></div>`，其自家 UI 把
  * 它渲染成过程组件；我们不解析原始 HTML，不剥就会整段裸标签进气泡。工具执行状态
  * 我们已有自己的呈现（PROCESSING 事件 → 工具行），这里剥掉即可——覆盖自闭合与

@@ -4225,14 +4225,31 @@ export const api = {
   /** 停止生成（协议没定义 stop 端点时 400——按钮本就不该出现，这是兜底）。 */
   stopAssistantConversation: (conversationId: string) =>
     client.post(`/assistant/conversations/${conversationId}/stop`).then(data<{ stopped: boolean }>),
-  /** 历史代理（transcript 在上游；index/limit 是上游的分页游标）。 */
-  assistantHistory: (conversationId: string, options?: { index?: string; limit?: number }) =>
-    client.get(`/assistant/conversations/${conversationId}/messages`, { params: { index: options?.index, limit: options?.limit } })
-      .then(data<AssistantChatMessage[]>),
+  /**
+   * 历史代理（transcript 在上游）。`from` / `cursor` / `limit` 由调用方给——
+   * **分页怎么落到上游参数上由 provider 协议决定**（`history.indexParam` / `direction`），
+   * 前端不再假设「index 一定是数字」。协议没配分页时，平台一次全量取（上限 500 条）。
+   */
+  assistantHistory: (conversationId: string, options?: { index?: string; limit?: number; from?: "end" | "start"; cursor?: string }) =>
+    client.get(`/assistant/conversations/${conversationId}/messages`, {
+      params: { index: options?.index, limit: options?.limit, from: options?.from, cursor: options?.cursor },
+    }).then(data<AssistantChatMessage[]>),
   /** 记录 MRTR 确认结果（2026-09-15）：确认动作走既有 REST，上游 transcript 不知道；
       结果落平台侧 elicit_log，历史回放时并回。失败静默——记录丢一条只是回放少一行。 */
-  recordElicitOutcome: (conversationId: string, body: { tool: string; outcome: "confirmed" | "declined"; input?: Record<string, unknown> }) =>
-    client.post(`/assistant/conversations/${conversationId}/elicit`, body).then(data<{ recorded: boolean }>),
+  recordElicitOutcome: (conversationId: string, body: {
+    tool: string;
+    outcome: "confirmed" | "declined";
+    input?: Record<string, unknown>;
+    /** 有它且 provider 配了答复端点 ⇒ 服务端会先回传上游（见「确认应答接入」）。 */
+    confirmId?: string;
+  }) =>
+    client.post(`/assistant/conversations/${conversationId}/elicit`, body)
+      .then(data<{ recorded: boolean; applied?: boolean; repliedUpstream?: boolean }>),
+
+  /** 会话级自动批准开关（2026-10-22）：让上游在本会话里停发确认（协议配了 autoApprove 才有）。 */
+  setAssistantAutoApprove: (conversationId: string, enabled: boolean) =>
+    client.post(`/assistant/conversations/${conversationId}/auto-approve`, { enabled })
+      .then(data<{ enabled: boolean }>),
 
   /* ── P17：接口来源（全系统级；读 / 搜全员可用，管理仅系统管理员）───────────── */
 
@@ -4310,7 +4327,7 @@ export type UserNotification = {
 /* ── P9-3/P9-4b：助手 provider（通用协议）+ 用户级 agent ───────────────────── */
 
 /** 能力面（P9-4b 起按协议形状派生：定义了对应端点 = 有该能力）。 */
-export type AssistantCapabilities = { stop: boolean; history: boolean; attachments: boolean };
+export type AssistantCapabilities = { stop: boolean; history: boolean; attachments: boolean; elicitReply: boolean; autoApprove: boolean };
 
 /** 用户参数模式（管理员在 provider 上定义；抽屉「设置」卡按它渲染表单）。 */
 export type AssistantUserParam = {
@@ -4326,26 +4343,98 @@ export type AssistantUserParam = {
  * 历史）+ SSE 事件映射 + 认证模板。换平台 = 管理员填一份这个，零开发。形状与服务端
  * `lib/assistant/types.ts` 同源；深校验归测试连接（真上游回答）。
  */
+export type AssistantSuccessRule = {
+  field: string;
+  /** 成功取值集合（缺省 = 不按取值判成功）。 */
+  ok?: string[];
+  /** 该字段等于 `not` 即失败（布尔/字符串两形态都认）。 */
+  not?: boolean;
+};
+
 export type AssistantProtocol = {
   baseUrl: string;
   auth?: { header: string; value: string };
+  /** 旧版业务码形状（= `{ field, ok: [value] }` 的简写）。 */
   successCode?: { field: string; value: string };
+  /** 信封失败判定（可选；不配只看 HTTP 状态码）。 */
+  success?: AssistantSuccessRule;
   createConversation: { method: string; path: string; body?: Record<string, unknown>; conversationId: string };
   chat: { method: string; path: string; body?: Record<string, unknown> };
   stop?: { method: string; path: string; body?: Record<string, unknown> };
   /** 删上游会话本体（可选；用户删除会话时顺带清上游，没有则只删本地映射行）。 */
   delete?: { method: string; path: string; body?: Record<string, unknown> };
-  history?: { method: string; path: string; query?: Record<string, string>; messages: string; fields: Record<string, string> };
+  history?: {
+    method: string;
+    path: string;
+    query?: Record<string, string>;
+    messages: string;
+    /** 列路径：`id`/`role`/`text`/`time` 必填；`parts`（片段数组）+ `partsType`/
+        `partsText`/`partsTool`/`partsToolName`/`partsToolStatus`/`partsToolInput`/
+        `partsToolOutput` 可选（配了历史才能把工具卡/思考放回原位）。 */
+    fields: Record<string, string>;
+    /** 分页开关：游标参数名（不配 = 一次全量取）。 */
+    indexParam?: string;
+    /** 上游单次条数参数名（`limitParam` 为旧名，仍认）。 */
+    pageSizeParam?: string;
+    limitParam?: string;
+    /** 每次请求给上游的条数；上游有硬上限时配它，客户端要更多时引擎逐页聚合。 */
+    pageSize?: number;
+    limitValue?: number;
+    /** 下一轮游标的点路径：既可写响应根（`data.nextCursor`），也可写行内列（`id`）。 */
+    cursorParam?: string;
+    cursorSource?: "envelope" | "rows";
+    /** 聚合最多取几页（缺省 10）。 */
+    maxPages?: number;
+    /** 上游游标与「更早/更新」的关系：cursor（原样透传）/ offset / cursorFromEnd。 */
+    direction?: "cursor" | "offset" | "cursorFromEnd";
+    /** 「还有没有更早的 / 总数」的点路径：布尔 ⇒ hasMore，数字 ⇒ total。 */
+    totalPath?: string;
+  };
   attachments?: boolean;
+  /** 附件数组并进 chat 请求体的字段名（缺省 attachments）。 */
+  attachmentsField?: string;
+  /** 终帧之后上游仍不断流时：`close`（缺省）主动断，`continue` 读到流结束。 */
+  streamEnd?: "close" | "continue";
+  /** 会话级自动批准端点（可选；配了就不再是本地代点，而是让上游停发 confirm）。 */
+  autoApprove?: { method: string; path: string; body?: Record<string, unknown>; result?: string };
+  /** 确认答复端点（可选；不配则确认不走上游，卡片走本地 REST）。 */
+  elicitRespond?: {
+    method: string;
+    path: string;
+    body?: Record<string, unknown>;
+    /** 「是否真的生效」的响应路径（`false` = 没人在等，正常终局）。 */
+    applied: string;
+    /** 响应里的会话 id 路径（可选，仅自检）。 */
+    id?: string;
+  };
   sse: {
     eventField: string;
-    token?: { on: string; text: string };
-    /** `input`（2026-09-15）：工具调用入参的点路径——elicit 事件靠它带出删除目标。 */
-    tool?: { on: string; name: string; status: string; nameFallback?: string; input?: string };
-    /** MRTR 确认表单的识别（2026-09-15）：与 token 同 kind，靠判别字段区分。 */
-    elicit?: { on: string; type: string; typeValue: string; text: string; tool: string; schema: string };
-    done?: { on: string; text: string; success?: string };
-    error?: { on: string; message: string };
+    /** `on` 可写 `NAME@event`：种类来自 SSE `event:` 行而非 JSON。文本路径可写 `a|b` 候选。 */
+    token?: { on: string; text: string; success?: AssistantSuccessRule };
+    /** 思考增量（可选）：`text` 增量文本路径，`newSegment` 段首标记路径。 */
+    thinking?: { on: string; text: string; newSegment?: string };
+    /** 工具帧映射：`status` 可省（缺 ⇒ unknown）；`callId` 用于同一次调用多帧合并；
+     *  `kind` 是工具来源字面量；`input` 供 elicit 卡定位对象。 */
+    tool?: { on: string; name: string; status?: string; nameFallback?: string; input?: string; callId?: string; kind?: string; output?: string };
+    /** 确认表单的识别：`type`/`typeValue` 可全省（省了则该事件名整类都是表单）。 */
+    elicit?: {
+      on: string;
+      type?: string;
+      typeValue?: string;
+      text: string;
+      tool: string;
+      schema?: string;
+      allowResume?: string;
+      /** 确认 id / 截止时刻 / 触发方 / 入参摘要 的点路径（有 id 才能回传上游）。 */
+      confirmId?: string;
+      expiresAt?: string;
+      source?: string;
+      inputSummary?: string;
+      /** 「同轮重复执行」标记的点路径（可选）。 */
+      duplicate?: string;
+    };
+    done?: { on: string; text?: string; success?: string; successRule?: AssistantSuccessRule };
+    error?: { on: string; message: string; success?: AssistantSuccessRule };
     ignore?: string[];
   };
 };
@@ -4485,11 +4574,18 @@ export type AssistantConversation = {
  * `system` 行（2026-09-15）是平台自己的记录（MRTR 确认结果并回，text 为空、结构化
  * 载荷在 elicit 里——前端按 i18n 渲染，不落服务端硬编码文案）。
  */
+/** 历史里一条消息的片段（协议配了 `history.fields.parts` 才有）。 */
+export type AssistantMessagePart =
+  | { type: "text"; text: string }
+  | { type: "thinking"; text: string }
+  | { type: "tool"; name: string; status: string; input?: string; output?: string };
+
 export type AssistantChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
   time?: string;
+  parts?: AssistantMessagePart[];
   elicit?: { tool: string; outcome: "confirmed" | "declined"; input?: Record<string, unknown> };
 };
 
@@ -4506,8 +4602,28 @@ export type AssistantErrorCode = "rate_limited" | "upstream_silent" | "stream_in
 
 export type AssistantEvent =
   | { type: "token"; text: string }
-  | { type: "tool"; name: string; status: string }
-  | { type: "elicit"; text: string; tool: string; input?: Record<string, unknown>; schema?: unknown }
+  /** 思考增量（2026-10-22）：`newSegment` 只在段首帧出现——开一个新的折叠块。 */
+  | { type: "thinking"; text: string; newSegment?: boolean }
+  /** 工具状态更新：同一 `callId` 多帧是**状态流转**，按 id 合并成一行。 */
+  | { type: "tool"; name: string; status: string; callId?: string; kind?: string; output?: string }
+  | {
+    type: "elicit";
+    text: string;
+    tool: string;
+    input?: Record<string, unknown>;
+    schema?: unknown;
+    allowResume?: boolean;
+    /** 上游给这次确认的唯一 id：有它 + provider 配了 `elicitRespond` 才能回传上游。 */
+    confirmId?: string;
+    /** 等待截止时刻（ISO 8601）——倒计时只读它。 */
+    expiresAt?: string;
+    /** 触发方（若上游给），只用于文案。 */
+    source?: string;
+    /** 上游给的入参摘要原文（已抹敏、可能截断）：卡片靠它定位对象。 */
+    inputSummary?: string;
+    /** 「同轮重复执行」：卡片提示这次会再跑一次（2026-10-22）。 */
+    duplicate?: boolean;
+  }
   | { type: "done"; fullText: string }
   | { type: "error"; message: string; code?: AssistantErrorCode };
 
