@@ -2,7 +2,6 @@ import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
 import Fastify, { type FastifyInstance } from "fastify";
 import { seedAdmin } from "./lib/auth.js";
-import { seedAssistantProvider } from "./lib/assistant/providers.js";
 import { invalidateProjects } from "./lib/queryCache.js";
 import { success } from "./lib/response.js";
 import { isUuid } from "./lib/uuid.js";
@@ -209,8 +208,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 if (process.env.NODE_ENV !== "test") {
   const app = await buildApp();
   await seedAdmin();
-  /* 空库的默认上游（agent-vendor-agent，见 lib/assistant/providers.ts）：按名字幂等插入，
-     已有 provider 不改；agent-vendor_BASE_URL 未配置则跳过。 */
-  await seedAssistantProvider();
+  /* 助手上游（assistant_providers）**不预置**：协议与凭据模式全部由管理员在
+     系统管理里按需配置（2026-10-22 去掉内建厂商默认行）。 */
   await app.listen({ port: Number(process.env.PORT ?? 3000), host: "0.0.0.0" });
 }

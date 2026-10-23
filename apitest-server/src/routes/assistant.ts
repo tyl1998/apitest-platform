@@ -4,7 +4,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { pool } from "../db.js";
 import { currentUser } from "../lib/auth.js";
 import { composeForwardedMessage, normalizePageContext, stripContextSuffix } from "../lib/assistant/context.js";
-import { engineCreateConversation, engineDeleteConversation, engineHistory, engineStop, engineStreamMessage, upstreamRateLimit } from "../lib/assistant/engine.js";
+import { engineCreateConversation, engineDeleteConversation, engineHistory, engineRespondElicitation, engineSetAutoApprove, engineStop, engineStreamMessage, upstreamRateLimit } from "../lib/assistant/engine.js";
 import { loadEnabledDefaultUserAgent, loadProviderById, loadUserAgentForProvider } from "../lib/assistant/providers.js";
 import type { AssistantEvent, AssistantProviderRuntime, AssistantUserAgentRuntime } from "../lib/assistant/types.js";
 import { fail, success } from "../lib/response.js";
@@ -342,12 +342,21 @@ export async function assistantRoutes(app: FastifyInstance) {
   );
 
   /**
-   * 记录 MRTR 确认结果（2026-09-15，P9-5 增补）：确认卡的动作走本人 JWT 的既有
-   * REST（删除本身有自己的审计），上游 transcript 不知道这件事——结果落映射行的
-   * elicit_log，历史回放时由 messages 路由并回。追加式 append；失败不回滚删除
-   * （记录丢一条只是回放少一行，业务事实以删除的审计为准）。
+   * 记录 / 回传确认结果（2026-09-15 起；2026-10-22 增「回传上游」）。
+   *
+   * 两条腿，由**协议**决定走哪条（不在前端写死）：
+   * - 请求带 `confirmId` **且** provider 配了 `elicitRespond` 端点 ⇒ 先调上游答复，
+   *   上游继续跑同一条聊天流；**上游 200 + `applied:false` 是正常终局**（没人再等这个
+   *   id：超时/已被处理/迟到点击），如实记进 `elicit_log` 并回成功，不当失败；
+   * - 否则（旧路径）⇒ 只记本地日志：确认动作本身已由前端走本人 JWT 的 REST 完成
+   *   （删除有自己的审计），上游 transcript 不知道这件事，结果只在历史回放时并回。
+   *
+   * 追加式 append；记录失败不回滚业务（记录丢一条只是回放少一行，业务事实以审计为准）。
    */
-  app.post<{ Params: { conversationId: string }; Body: { tool?: unknown; input?: unknown; outcome?: unknown } }>(
+  app.post<{
+    Params: { conversationId: string };
+    Body: { tool?: unknown; input?: unknown; outcome?: unknown; confirmId?: unknown; applied?: unknown };
+  }>(
     "/api/v1/assistant/conversations/:conversationId/elicit",
     async (request, reply) => {
       const user = await currentUser(request, reply); if (!user) return;
@@ -362,21 +371,108 @@ export async function assistantRoutes(app: FastifyInstance) {
       if (input !== undefined && (typeof input !== "object" || Array.isArray(input))) {
         return fail(reply, 400, 1001, "input must be an object");
       }
-      const entry = { tool, ...(input ? { input } : {}), outcome, at: new Date().toISOString() };
+      const confirmId = typeof request.body?.confirmId === "string" ? request.body.confirmId.trim() : "";
+      if (request.body?.confirmId !== undefined && !confirmId) return fail(reply, 400, 1001, "confirmId must be a non-empty string");
+      if (confirmId.length > 200) return fail(reply, 400, 1001, "confirmId is too long");
+
+      /* 回传上游：只有「有 confirmId + 协议配了端点」才走；否则维持本地记录。 */
+      let upstreamApplied: boolean | null = null;
+      if (confirmId) {
+        const resolved = await resolveConversationEndpoints(conversation);
+        if (!("error" in resolved) && resolved.provider.protocol.elicitRespond) {
+          try {
+            const answered = await engineRespondElicitation(resolved.provider, resolved.agent, String(conversation.upstream_conversation_id), {
+              confirmId,
+              tool,
+              accepted: outcome === "confirmed",
+            });
+            upstreamApplied = answered.applied;
+            request.log.info(
+              { conversationId: conversation.id, confirmId, applied: answered.applied, upstreamConversationId: answered.conversationId },
+              "assistant elicitation answered upstream",
+            );
+          } catch (error) {
+            /* 上游没接受（非 2xx / 信封失败）：如实回错误，**不改**本地日志——
+               否则历史回放会把一次没生效的确认显示成已确认。 */
+            return failUpstream(reply, error);
+          }
+        }
+      }
+
+      const entry = {
+        tool,
+        ...(input ? { input } : {}),
+        outcome,
+        ...(confirmId ? { confirmId } : {}),
+        /* `applied` 只在真的问了上游时才有意义：false = 没人在等（正常终局）。 */
+        ...(upstreamApplied === null ? {} : { applied: upstreamApplied }),
+        at: new Date().toISOString(),
+      };
       await pool.query(
         "UPDATE assistant_conversations SET elicit_log = elicit_log || $2::jsonb, last_active_at = now() WHERE id = $1",
         [conversation.id, JSON.stringify([entry])],
       );
-      return success({ recorded: true });
+      return success({
+        recorded: true,
+        ...(upstreamApplied === null ? {} : { applied: upstreamApplied }),
+        repliedUpstream: upstreamApplied !== null,
+      });
+    },
+  );
+
+  /**
+   * 会话级自动批准开关（2026-10-22）：上游提供 `autoApprove` 端点时，把「本会话不再
+   * 逐个确认」交给上游记状态（我们不用每次请求都带字段，也不会因为漏带而悄悄恢复
+   * 弹卡）。协议没配端点 ⇒ 400——前端那时用**本地代点确认**那一档，不会走到这里。
+   *
+   * 权限面：开关只作用于**本人 session 的上游会话**（`loadMyConversation` 已验归属）；
+   * 能否真的开启由上游看 Key 的自动批准权限，被禁时它的 403 原样透出（`failUpstream`）。
+   */
+  app.post<{ Params: { conversationId: string }; Body: { enabled?: unknown } }>(
+    "/api/v1/assistant/conversations/:conversationId/auto-approve",
+    async (request, reply) => {
+      const user = await currentUser(request, reply); if (!user) return;
+      if (!isUuid(request.params.conversationId)) return fail(reply, 404, 2001, "conversation not found");
+      if (typeof request.body?.enabled !== "boolean") return fail(reply, 400, 1001, "enabled must be a boolean");
+      const conversation = await loadMyConversation(request.params.conversationId, user.id);
+      if (!conversation) return fail(reply, 404, 2001, "conversation not found");
+      const resolved = await resolveConversationEndpoints(conversation);
+      if ("error" in resolved) {
+        return resolved.error === "conversation not found"
+          ? fail(reply, 404, 2001, "conversation not found")
+          : fail(reply, 503, CODE_NOT_CONFIGURED, resolved.error);
+      }
+      if (!resolved.provider.protocol.autoApprove) {
+        return fail(reply, 400, 1001, "this provider does not support auto-approving confirmations");
+      }
+      let applied: boolean | null;
+      try {
+        const answered = await engineSetAutoApprove(
+          resolved.provider,
+          resolved.agent,
+          String(conversation.upstream_conversation_id),
+          request.body.enabled,
+        );
+        applied = answered.enabled;
+      } catch (error) {
+        return failUpstream(reply, error);
+      }
+      request.log.info(
+        { conversationId: conversation.id, requested: request.body.enabled, replied: applied },
+        "assistant auto-approve toggled upstream",
+      );
+      return success({ enabled: applied ?? request.body.enabled });
     },
   );
 
   /**
    * 历史代理——转发上游按会话查历史（平台不存 transcript，刷新/换设备的回放全靠
-   * 它）。index/limit 是上游的分页游标，这里只校验形状后透传。带缓存头：历史是
-   * 已发生的事实，允许浏览器短暂缓存省一次代理往返。
+   * 它）。`from` / `cursor` / `limit` 由前端给（`from=start` = 往前翻），**分页怎么
+   * 落到上游参数上由协议配置决定**（`history.indexParam` / `direction`，见
+   * engine.ts#engineHistory）；不配分页就是「一次全量取」。带缓存头：历史是已发生的
+   * 事实，允许浏览器短暂缓存省一次代理往返。
    */
-  app.get<{ Params: { conversationId: string }; Querystring: { index?: string; limit?: string } }>(
+  app.get<{ Params: { conversationId: string }; Querystring: { index?: string; limit?: string; from?: string; cursor?: string } }>(
     "/api/v1/assistant/conversations/:conversationId/messages",
     async (request, reply) => {
       const user = await currentUser(request, reply); if (!user) return;
@@ -392,15 +488,29 @@ export async function assistantRoutes(app: FastifyInstance) {
       }
       /* 历史能力 = 协议里定义了 history 端点。 */
       if (!resolved.provider.protocol.history) return fail(reply, 400, 1001, "this provider does not support message history");
-      const { index, limit } = request.query;
-      if (index !== undefined && !/^\d+$/.test(index)) return fail(reply, 400, 1001, "index must be a numeric cursor");
+      const { index, limit, from, cursor } = request.query;
+      /* `index` 是旧参数（等价于 `cursor`）；游标形状不再限定纯数字——上游的
+         index 可能是任意字符串（时间戳 / 消息 id），校验形状只会把方言挡在门外。 */
+      if (index !== undefined && index.length > 200) return fail(reply, 400, 1001, "index is too long");
+      if (cursor !== undefined && (cursor.length > 200 || !cursor.trim())) return fail(reply, 400, 1001, "cursor must be a non-empty string");
+      if (from !== undefined && from !== "end" && from !== "start") return fail(reply, 400, 1001, 'from must be "end" or "start"');
       const historyLimit = limit === undefined ? 50 : Number(limit);
       if (!Number.isInteger(historyLimit) || historyLimit < 1 || historyLimit > 100) {
         return fail(reply, 400, 1001, "limit must be an integer between 1 and 100");
       }
       let messages;
+      let upstreamTotal: number | null = null;
+      let upstreamHasMore: boolean | null = null;
       try {
-        messages = await engineHistory(resolved.provider, resolved.agent, String(conversation.upstream_conversation_id), { index, limit: historyLimit });
+        const page = await engineHistory(resolved.provider, resolved.agent, String(conversation.upstream_conversation_id), {
+          index,
+          limit: historyLimit,
+          ...(from ? { from } : {}),
+          ...(cursor ?? index ? { cursor: cursor ?? index } : {}),
+        });
+        messages = page.messages;
+        upstreamTotal = page.total;
+        upstreamHasMore = page.hasMore;
       } catch (error) {
         return failUpstream(reply, error);
       }
@@ -411,7 +521,10 @@ export async function assistantRoutes(app: FastifyInstance) {
          没时间（或格式不认）就缀尾——宁可次序保守也不丢记录。有确认记录时关掉
          短缓存：刚记的确认被 60s 缓存吞掉，用户看到的还是「没有这个记录」。 */
       const elicitLog = Array.isArray(conversation.elicit_log) ? conversation.elicit_log as Record<string, unknown>[] : [];
-      const rows: { id: string; role: string; text: string; time?: string; elicit?: unknown }[] = messages.map((row) => ({ ...row, text: stripContextSuffix(row.text) }));
+      /* `parts` 原样带下去（2026-10-22）：history.fields.parts 配了才有；stripContextSuffix
+         只作用于正文，片段里的工具卡/思考不该被改写。 */
+      const rows: { id: string; role: string; text: string; time?: string; parts?: unknown; elicit?: unknown }[] =
+        messages.map((row) => ({ ...row, text: stripContextSuffix(row.text) }));
       for (const [indexAt, entry] of elicitLog.entries()) {
         const at = typeof entry.at === "string" ? new Date(entry.at).getTime() : Number.NaN;
         const record = {
@@ -432,7 +545,13 @@ export async function assistantRoutes(app: FastifyInstance) {
         rows.splice(position, 0, record);
       }
       reply.header("Cache-Control", elicitLog.length ? "no-store" : "private, max-age=60");
-      return success(rows, { total: rows.length });
+      /* 分页语义（2026-10-22）：`hasMore` 优先——上游只报"还有没有更早的"时（如
+         `data.hasMore`）只有它可信；`totalPath` 取到数字才给 `total`，否则退回本页行数。
+         前端拿 `hasMore` 决定「继续往上翻」，不要自己拿 total 减本页数推。 */
+      return success(rows, {
+        total: upstreamTotal ?? rows.length,
+        hasMore: upstreamHasMore ?? (upstreamTotal === null ? undefined : rows.length < (upstreamTotal ?? 0)),
+      });
     },
   );
 

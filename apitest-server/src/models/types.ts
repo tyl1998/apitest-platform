@@ -3467,7 +3467,7 @@ export function mapUserNotification(row: Record<string, unknown>): UserNotificat
  * 一行「平台 ↔ 上游会话」映射（P9-2，计划 13.1/13.2）。对话正文不落库（边界 2）：
  * transcript 在 agent 平台侧，这里只存「哪个人在哪个 provider 开了哪个会话」
  * （2026-09-16 用户级化：会话是「人」的，不挂项目——迁移 062 删了 project_id）。
- * `upstreamConversationId` 是上游的会话 id（agent-vendor 为 Long 文本）。
+ * `upstreamConversationId` 是上游的会话 id（一律按文本存，数字型 id 也照原样）。
  */
 export type AssistantConversation = {
   id: string;
@@ -3481,18 +3481,22 @@ export type AssistantConversation = {
    * 与历史是否加载。查询用 `p.protocol AS provider_protocol` 随行带出；创建路由在
    * 调用点显式补上。
    */
-  providerCapabilities: { stop: boolean; history: boolean; attachments: boolean };
+  providerCapabilities: { stop: boolean; history: boolean; attachments: boolean; elicitReply: boolean; autoApprove: boolean };
   createdAt: string;
   lastActiveAt: string;
 };
 
 /** 能力面从协议形状派生：定义了对应端点 = 有该能力（P9-4b，取代 type 预设收窄）。 */
-function capabilitiesFromProtocol(value: unknown): { stop: boolean; history: boolean; attachments: boolean } {
+function capabilitiesFromProtocol(value: unknown): { stop: boolean; history: boolean; attachments: boolean; elicitReply: boolean; autoApprove: boolean } {
   const protocol = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   return {
     stop: Boolean(protocol.stop),
     history: Boolean(protocol.history),
     attachments: protocol.attachments === true,
+    /* 确认卡能否回传上游（2026-10-22）：配了答复端点才走上游，否则卡片走本地 REST。 */
+    elicitReply: Boolean(protocol.elicitRespond),
+    /* 是否有会话级自动批准（2026-10-22）：配了端点 = 开关由上流记状态，前端不再代点。 */
+    autoApprove: Boolean(protocol.autoApprove),
   };
 }
 

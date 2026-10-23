@@ -17,7 +17,7 @@ import { mapAssistantProvider } from "../models/types.js";
  *
  * **通用模式**（2026-09-14 修订）：provider 不再是「类型 + adapter 代码」，而是一份
  * **协议配置**——4 个接口（建会话 / 发消息 SSE / 停止 / 历史）+ SSE 事件映射 + 认证
- * 模板，外加 `userParams`（用户选择这个上游时要填哪些参数，如 agent-vendor 的 agentId /
+ * 模板，外加 `userParams`（用户选择这个上游时要填哪些参数，如上游的 agentId /
  * apiKey / mcpToken）。换平台 = 填一份配置，零开发。
  *
  * 写入侧只做浅校验（baseUrl / 必备端点 / 事件字段），深对错由测试连接用真上游回答
@@ -75,6 +75,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * 协议浅校验（深对错归测试连接）：baseUrl 必须是 http(s)；建会话与发消息端点必须有
  * 方法 + 路径；SSE 映射必须有事件字段且至少配了 token 或 done（一条流连「完成」都
  * 认不出就没法收尾）。返回错误串或归一后的协议对象。
+ *
+ * 2026-10-22 通用化：新增的可选字段（`success` / `attachmentsField` / `streamEnd` /
+ * `sse.*.success` / `elicit` 的判别字段与 `allowResume`）只做**形状**校验，形状不对
+ * 就整份拒掉——半根配置（例如 `success.ok` 写成字符串）在运行期会静默失效，比直接
+ * 拒收更难查。旧的 `successCode` 一律接受（它的形状本来就由这里的老规则管）。
  */
 function readProtocol(input: unknown): AssistantProtocol | string {
   if (!isRecord(input)) return "protocol must be an object";
@@ -104,7 +109,116 @@ function readProtocol(input: unknown): AssistantProtocol | string {
   if (!isRecord(sse.token) && !isRecord(sse.done)) {
     return "protocol.sse must define at least a token or done mapping";
   }
+
+  /* 可选字段的形状（2026-10-22）。 */
+  const shapeError =
+    checkSuccessRule(protocol.success, "protocol.success")
+    ?? checkSuccessRule(isRecord(sse.token) ? sse.token.success : undefined, "protocol.sse.token.success")
+    ?? checkSuccessRule(isRecord(sse.error) ? sse.error.success : undefined, "protocol.sse.error.success")
+    ?? checkSuccessRule(isRecord(sse.done) ? (sse.done as Record<string, unknown>).successRule : undefined, "protocol.sse.done.successRule");
+  if (shapeError) return shapeError;
+  if (protocol.attachmentsField !== undefined && (typeof protocol.attachmentsField !== "string" || !protocol.attachmentsField.trim())) {
+    return "protocol.attachmentsField must be a non-empty field name";
+  }
+  if (protocol.streamEnd !== undefined && protocol.streamEnd !== "close" && protocol.streamEnd !== "continue") {
+    return 'protocol.streamEnd must be "close" or "continue"';
+  }
+  /* 思考增量（2026-10-22，可选）：`text` 必填，`newSegment` 可空。 */
+  if (sse.thinking !== undefined) {
+    const thinking = sse.thinking as Record<string, unknown>;
+    if (typeof thinking.text !== "string" || !thinking.text.trim()) return "protocol.sse.thinking.text must be a non-empty path";
+    if (thinking.newSegment !== undefined && (typeof thinking.newSegment !== "string" || !thinking.newSegment.trim())) {
+      return "protocol.sse.thinking.newSegment must be a non-empty path";
+    }
+  }
+  if (sse.tool !== undefined) {
+    const tool = sse.tool as Record<string, unknown>;
+    for (const key of ["status", "callId", "kind", "nameFallback", "input", "output"] as const) {
+      if (tool[key] !== undefined && typeof tool[key] !== "string") return `protocol.sse.tool.${key} must be a string`;
+    }
+  }
+  /* 会话级自动批准端点（2026-10-22，可选）：与 stop/delete 同款形状 + 可选响应路径。 */
+  if (protocol.autoApprove !== undefined) {
+    const endpoint = protocol.autoApprove as Record<string, unknown>;
+    if (typeof endpoint.method !== "string" || !endpoint.method.trim() || typeof endpoint.path !== "string" || !endpoint.path.trim().startsWith("/")) {
+      return 'protocol.autoApprove must define a method and a path starting with "/"';
+    }
+    if (endpoint.result !== undefined && (typeof endpoint.result !== "string" || !endpoint.result.trim())) {
+      return "protocol.autoApprove.result must be a non-empty response path";
+    }
+  }
+  if (sse.elicit !== undefined) {
+    const elicit = sse.elicit as Record<string, unknown>;
+    for (const key of ["on", "text", "tool"] as const) {
+      if (typeof elicit[key] !== "string" || !(elicit[key] as string).trim()) return `protocol.sse.elicit.${key} must be a non-empty path`;
+    }
+    for (const key of ["type", "typeValue", "schema", "allowResume", "confirmId", "expiresAt", "source", "inputSummary", "duplicate"] as const) {
+      if (elicit[key] !== undefined && typeof elicit[key] !== "string") return `protocol.sse.elicit.${key} must be a string`;
+    }
+    /* 判别字段与取值成对出现：只填一个等于永远命中/永远不命中，都是配置事故。 */
+    if ((elicit.type === undefined) !== (elicit.typeValue === undefined)) {
+      return "protocol.sse.elicit.type and typeValue must be defined together";
+    }
+  }
+  /* 确认答复端点（2026-10-22，可选）：与 stop/delete/history 同款形状校验 + 两个响应路径。 */
+  if (protocol.elicitRespond !== undefined) {
+    const endpoint = protocol.elicitRespond as Record<string, unknown>;
+    if (typeof endpoint.method !== "string" || !endpoint.method.trim() || typeof endpoint.path !== "string" || !endpoint.path.trim().startsWith("/")) {
+      return 'protocol.elicitRespond must define a method and a path starting with "/"';
+    }
+    if (endpoint.body !== undefined && (!isRecord(endpoint.body) || Array.isArray(endpoint.body))) {
+      return "protocol.elicitRespond.body must be an object";
+    }
+    for (const key of ["applied", "id"] as const) {
+      if (endpoint[key] !== undefined && (typeof endpoint[key] !== "string" || !(endpoint[key] as string).trim())) {
+        return `protocol.elicitRespond.${key} must be a non-empty response path`;
+      }
+    }
+    if (endpoint.applied === undefined) {
+      return "protocol.elicitRespond.applied is required (it tells whether the answer actually took effect)";
+    }
+  }
+  /* 历史分页（2026-10-22）：`indexParam` 是「走分页」的开关，`limitParam` / `direction` /
+     `totalPath` 只在开关打开时有意义——开关关着还配它们说明作者想的分页没生效。 */
+  const history = protocol.history as Record<string, unknown> | undefined;
+  if (history) {
+    for (const key of ["indexParam", "limitParam", "pageSizeParam", "cursorParam", "totalPath"] as const) {
+      if (history[key] !== undefined && (typeof history[key] !== "string" || !(history[key] as string).trim())) {
+        return `protocol.history.${key} must be a non-empty parameter name`;
+      }
+    }
+    if (history.cursorSource !== undefined && !["envelope", "rows"].includes(String(history.cursorSource))) {
+      return 'protocol.history.cursorSource must be "envelope" or "rows"';
+    }
+    for (const key of ["limitValue", "pageSize", "maxPages"] as const) {
+      const value = history[key];
+      if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value < 1)) {
+        return `protocol.history.${key} must be a positive integer`;
+      }
+    }
+    if (history.direction !== undefined && !["cursor", "offset", "cursorFromEnd"].includes(String(history.direction))) {
+      return 'protocol.history.direction must be "cursor", "offset" or "cursorFromEnd"';
+    }
+    if (history.indexParam === undefined && (history.limitParam !== undefined || history.pageSizeParam !== undefined || history.direction !== undefined)) {
+      return "protocol.history.limitParam / pageSizeParam / direction require history.indexParam (otherwise history is read in one shot)";
+    }
+  }
   return { ...protocol, baseUrl };
+}
+
+/** 失败判定规则的形状校验：`{field, ok?: string[], not?: boolean}`（见 AssistantSuccessRule）。 */
+function checkSuccessRule(rule: unknown, label: string): string | undefined {
+  if (rule === undefined) return undefined;
+  if (!isRecord(rule)) return `${label} must be an object`;
+  if (typeof rule.field !== "string" || !rule.field.trim()) return `${label}.field must be a non-empty path`;
+  if (rule.ok !== undefined) {
+    if (!Array.isArray(rule.ok) || !rule.ok.length || rule.ok.some((item) => typeof item !== "string" && typeof item !== "number")) {
+      return `${label}.ok must be a non-empty array of strings`;
+    }
+  }
+  if (rule.not !== undefined && typeof rule.not !== "boolean") return `${label}.not must be a boolean`;
+  if (rule.ok === undefined && rule.not === undefined) return `${label} must define ok or not`;
+  return undefined;
 }
 
 /** 用户参数模式校验：键是模板占位符的词汇（字母开头 + 字母数字下划线）、唯一、≤20 个。 */

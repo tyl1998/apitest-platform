@@ -85,7 +85,7 @@ export function normalizePageContext(input: unknown): PageContext | undefined {
 
 /**
  * 转发 message = 用户原文 + 空行 + 围栏（紧凑 JSON）。协议配置零改动：`{{message}}`
- * 渲染的就是这里拼好的全文——只有一个 message 字段的上游（agent-vendor）也能吃。
+ * 渲染的就是这里拼好的全文——只有一个 message 字段的上游也能吃。
  *
  * 围栏放**末尾**：上游拿首条消息当会话标题/摘要时，标题取的是开头的用户原文，
  * 而不是一段机器元数据。agent 语义上对「块在前后」不敏感，读末尾同样能解析指代。
