@@ -1,13 +1,15 @@
-"""P9-2/P9-4b 联调种子（测试数据）：agent-vendor provider 行（通用协议）+ 种子管理员的
-用户 agent。
+"""P9-2/P9-4b 联调种子（测试数据）：一行上游 provider（通用协议）+ 种子管理员的用户 agent。
 
 2026-09-14（P9-4b 修订）：上游通用化——provider 行带 protocol（4 接口 + SSE 映射 +
 认证模板）与 user_params（用户要填什么）；凭据从系统行挪到用户级，种子管理员经
 PUT /api/v1/assistant/my-agents/:providerId 自配（API 侧加密，不再需要借
 lib/crypto.ts 在本地做密文）。
 
+2026-10-22：平台不再内建任何厂商的默认 provider（启动种子已删除）；本脚本是
+**测试夹具**，自己提供一份示例协议。地址与凭据全部从环境变量来，仓库里没有真实值。
+
 做什么（幂等，可重复跑）：
-  1. upsert `assistant_providers` 一行 agent-vendor（protocol + user_params，is_default=true，
+  1. upsert `assistant_providers` 一行（protocol + user_params，is_default=true，
      其余默认 provider 一并取消默认，保住「默认唯一」）。
   2. find-or-create e2e 项目（走 API，与 pytest 同一个登录通道）。
   3. 为种子管理员配置用户 agent（agentId 明文参数 + apiKey 密文参数，走 API）。
@@ -16,8 +18,9 @@ lib/crypto.ts 在本地做密文）。
 
 用法：
   source env.local.sh && python3 setup/seed_assistant.py
-可覆盖（环境变量）：agent-vendor_BASE_URL / agent-vendor_AGENT_ID / PROJECT_NAME / PROVIDER_NAME /
-APITEST_BASE_URL / APITEST_EMAIL / APITEST_PASSWORD / SERVER_DIR
+可覆盖（环境变量）：ASSISTANT_BASE_URL / ASSISTANT_AGENT_ID / ASSISTANT_API_KEY /
+PROJECT_NAME / PROVIDER_NAME / APITEST_BASE_URL / APITEST_EMAIL / APITEST_PASSWORD /
+SERVER_DIR
 """
 import json
 import os
@@ -33,24 +36,23 @@ BASE_URL = os.environ.get("APITEST_BASE_URL", "http://localhost:3000").rstrip("/
 EMAIL = os.environ.get("APITEST_EMAIL", "admin@local.test")
 PASSWORD = os.environ.get("APITEST_PASSWORD", "admin123")
 
-# agent-vendor stg 平台（2026-09-11 联调口径；agentId 是 ak- Key 绑定的智能体——每把 Key
-# 绑一个 agent，建会话必须传同一个 id，见第三方接口文档 §鉴权/§2.2）。
-# 主机名不入库（内网地址不是仓库资产）：默认串是掩码，**必须**用 agent-vendor_BASE_URL
-# 覆盖成真实地址（env.local.sh 里 export 一次即可）；漏了会以一个解析不了的主机
-# 直接连接失败，不会静默打到别处。
-agent-vendor_BASE_URL = os.environ.get("agent-vendor_BASE_URL", "http://stgstplatform.***.net:8089")
-agent-vendor_AGENT_ID = os.environ.get("agent-vendor_AGENT_ID", "26")
-agent-vendor_API_KEY = os.environ.get("agent-vendor_API_KEY") or sys.exit(
-    "需要 agent-vendor_API_KEY（source env.local.sh 或直接 export；Key 由 agent-vendor 平台管理后台签发）"
+# 示例上游（测试夹具）：地址、智能体 id、Key 全部来自环境变量——仓库里只有占位。
+# 不漏配置就直接退出，避免把请求打到一个解析不了的主机。
+ASSISTANT_BASE_URL = os.environ.get("ASSISTANT_BASE_URL") or sys.exit(
+    "需要 ASSISTANT_BASE_URL（source env.local.sh 或直接 export）"
+)
+ASSISTANT_AGENT_ID = os.environ.get("ASSISTANT_AGENT_ID", "1")
+ASSISTANT_API_KEY = os.environ.get("ASSISTANT_API_KEY") or sys.exit(
+    "需要 ASSISTANT_API_KEY（source env.local.sh 或直接 export）"
 )
 
 PROJECT_NAME = os.environ.get("PROJECT_NAME", "e2e-assistant")
-PROVIDER_NAME = os.environ.get("PROVIDER_NAME", "agent-vendor-stg")
+PROVIDER_NAME = os.environ.get("PROVIDER_NAME", "assistant-stg")
 
-# agent-vendor 的标准通用协议（与迁移 059 的存量翻译同一份）：管理员在系统管理里手填的就是
-# 这份形状——种子只是把它直插进库。
-agent-vendor_PROTOCOL = {
-    "baseUrl": agent-vendor_BASE_URL,
+# 一份示例通用协议（管理员在系统管理里手填的就是这个形状）：种子只是把它直插进库。
+# 路径与事件名是**这家上游的取值**，换成别家时改这里（引擎只认协议，不认厂商）。
+ASSISTANT_PROTOCOL = {
+    "baseUrl": ASSISTANT_BASE_URL,
     "auth": {"header": "Authorization", "value": "Bearer {{user.apiKey}}"},
     "successCode": {"field": "code", "value": "0000"},
     "createConversation": {
@@ -84,7 +86,7 @@ agent-vendor_PROTOCOL = {
     },
 }
 
-agent-vendor_USER_PARAMS = [
+ASSISTANT_USER_PARAMS = [
     {"key": "agentId", "label": "agentId", "secret": False, "required": True},
     {"key": "apiKey", "label": "API Key", "secret": True, "required": True},
     {"key": "mcpToken", "label": "MCP Token", "secret": True, "required": False},
@@ -132,7 +134,7 @@ def find_or_create_project(session: requests.Session) -> str:
 
 def main() -> None:
     print(f"[seed] server: {SERVER_DIR}")
-    print(f"[seed] agent-vendor:  {agent-vendor_BASE_URL} (agentId={agent-vendor_AGENT_ID})")
+    print(f"[seed] upstream: {ASSISTANT_BASE_URL} (agentId={ASSISTANT_AGENT_ID})")
 
     psql(
         """
@@ -143,8 +145,8 @@ def main() -> None:
           enabled = true, is_default = true, updated_at = now();
         """,
         name=PROVIDER_NAME,
-        protocol=json.dumps(agent-vendor_PROTOCOL),
-        params=json.dumps(agent-vendor_USER_PARAMS),
+        protocol=json.dumps(ASSISTANT_PROTOCOL),
+        params=json.dumps(ASSISTANT_USER_PARAMS),
     )
     # 默认唯一：别的 provider 一并摘掉默认帽（直插时代保不住唯一约束，脚本里保）。
     psql("UPDATE assistant_providers SET is_default = false, updated_at = now() WHERE is_default AND name <> :'name';", name=PROVIDER_NAME)
@@ -158,7 +160,7 @@ def main() -> None:
     # 用户级凭据：agentId 明文参数 + apiKey 密文参数（API 侧 AES-GCM 加密落库）。
     agent = session.put(
         f"{BASE_URL}/api/v1/assistant/my-agents/{provider_id}",
-        json={"params": {"agentId": agent-vendor_AGENT_ID}, "secrets": {"apiKey": agent-vendor_API_KEY}},
+        json={"params": {"agentId": ASSISTANT_AGENT_ID}, "secrets": {"apiKey": ASSISTANT_API_KEY}},
         timeout=15,
     )
     agent.raise_for_status()

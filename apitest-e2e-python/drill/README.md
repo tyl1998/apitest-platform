@@ -18,14 +18,14 @@ cd apitest-e2e-python
 python3 drill/stub_upstream.py --port 8099
 
 # 3. 把 provider 指向桩（复用种子脚本，只换 baseUrl；桩不校验 Key，随便给一个）
-agent-vendor_BASE_URL=http://127.0.0.1:8099 agent-vendor_AGENT_ID=1 agent-vendor_API_KEY=drill \
+ASSISTANT_BASE_URL=http://127.0.0.1:8099 ASSISTANT_AGENT_ID=1 ASSISTANT_API_KEY=drill \
   python3 setup/seed_assistant.py
 ```
 
 桩与 apitest-server 在同一台机器时 `127.0.0.1` 即可；分开部署就填后端能出站访问到的地址。
 
 浏览器里打开任意页面 → 顶栏助手头像 → 抽屉即为观察窗口。**收尾**：把 baseUrl 换回真
-上游（再跑一次种子脚本，去掉 `agent-vendor_BASE_URL` 覆盖即可）——别让开发环境一直指着桩。
+上游（再跑一次种子脚本，去掉 `ASSISTANT_BASE_URL` 覆盖即可）——别让开发环境一直指着桩。
 
 切模式（全局，管家公的）：
 
@@ -52,7 +52,7 @@ curl -s localhost:8099/__mode                                 # 查看
 | mode | 操作 | 期望（后端） | 期望（界面） |
 | --- | --- | --- | --- |
 | `error_event` | 发消息 | 流末 `ERROR` 帧；**不是** 5xx | 半截文字 + 错误气泡，文案 `drill stub: upstream reported an error` |
-| `fail_result` | 发消息 | `FINAL_RESULT success:false` 被映射成 error 终态（agent-vendor 实际用的失败形态，它不发 ERROR） | 半截文字 + 错误气泡 `drill stub: the platform refused this request` |
+| `fail_result` | 发消息 | `FINAL_RESULT success:false` 被映射成 error 终态（只发终态、不发 ERROR 的失败形态） | 半截文字 + 错误气泡 `drill stub: the platform refused this request` |
 
 ### 3. 断流（连接不再给结果——四种形态各有各的收尾）
 

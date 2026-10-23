@@ -13,7 +13,7 @@ apitest-e2e-python/
 ├── req/
 │   └── http_req.py      # HTTP 请求封装
 ├── setup/
-│   └── seed_assistant.py # P9-2 助手联调种子（agent-vendor provider 行 + 用户 agent 凭据；手工跑）
+│   └── seed_assistant.py # P9-2 助手联调种子（示例 provider 行 + 用户 agent 凭据；手工跑）
 ├── drill/               # P9-8 上游异常演练（stub 假上游 + 逐项清单，非 pytest）
 ├── test_case/
 │   ├── auth/            # /api/v1/auth/*
@@ -29,7 +29,7 @@ apitest-e2e-python/
 
 助手行为**不再有 pytest 用例**（2026-09-16 用户决策）。原因两条：
 
-- 会话用例必须在真实上游（agent-vendor stg，经 apitest-server 代理）上建会话、发消息，测完
+- 会话用例必须在真实上游（由 `ASSISTANT_BASE_URL` 指定，经 apitest-server 代理）上建会话、发消息，测完
   留下一堆会话/消息映射脏数据；
 - 「发消息并读 SSE 到底」那类断言读的是真实上游的收尾，而服务端每 15s 发一行 SSE
   注释保活（`routes/assistant.ts` 的 `HEARTBEAT_MS`），客户端读超时永不触发——上游卡在
@@ -43,7 +43,7 @@ apitest-e2e-python/
 ## 上游异常演练（P9-8）
 
 上游坏法（断流 / 限流 / ERROR 事件）的操练不走 pytest：`drill/stub_upstream.py` 是
-一个零依赖的假 agent 平台（按迁移 059 的 agent-vendor 方言实现同一份协议，把 provider 的
+一个零依赖的假 agent 平台（按种子脚本的示例协议实现同一份形状，把 provider 的
 `baseUrl` 指过去即可、不动协议配置），12 个故障模式按需切换；
 `drill/README.md` 是逐项清单（期望后端 / 期望界面 + 验收门槛对应项）。见那份文档。
 

@@ -2,8 +2,8 @@
 """上游异常演练桩（P9-8）：一个零依赖的假 agent 平台，按 `mode` 制造各类上游异常，
 用来验证「断流 / 限流 / ERROR 事件」三类上游故障在平台侧怎么收尾（错误码 + 前端气泡）。
 
-协议形状与迁移 059 的 agent-vendor 通用协议一致（`setup/seed_assistant.py` 的
-`agent-vendor_PROTOCOL` 就是这一份），所以只要把 provider 的 `baseUrl` 指到本桩即可，
+协议形状与 `setup/seed_assistant.py` 里的示例协议一致（`ASSISTANT_PROTOCOL`），
+所以只要把 provider 的 `baseUrl` 指到本桩即可，
 **不需要动协议配置**：本桩实现那 5 条接口 + `eventType` SSE 方言。
 
     python3 drill/stub_upstream.py --port 8099            # 起桩（前台，请求日志打在终端）
@@ -18,7 +18,7 @@
     drop             先发两段字再**直接掐断连接**（→ upstream_stream_failed）
     empty            一个事件都不发、干净收尾（→ stream_incomplete）
     error_event      发字后 ERROR 事件（上游自报错，文案原样透出、不带码）
-    fail_result      发字后 FINAL_RESULT success:false（agent-vendor 实际用的失败形态）
+    fail_result      发字后 FINAL_RESULT success:false（只发终态的失败形态）
     ratelimit        发消息腿 429 + Retry-After: 30（→ 429/2007 + 限流文案）
     ratelimit_create 建会话腿 429（→ 新建会话时同一条限流文案）
     http500          发消息腿 500 + JSON message（→ 502/2006，带诊断文案）
