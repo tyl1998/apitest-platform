@@ -8,12 +8,15 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 PID_FILE="$ROOT/.dev-pids"
 
 # 服务名 → 兜底清理的模式。tsx watch 与 vite 进程树在 pidfile 之外也可能有活口。
+# 模式必须锚定到本项目路径：pgrep -f 匹配整条命令行，裸模式 "watch src/index.ts"
+# 会连带杀掉同机其他项目（如 doubleA 的 `tsx watch src/index.ts` 后端）。
 pattern_of() {
+  local server="$ROOT/apitest-server" web="$ROOT/apitest-web"
   case "$1" in
-    api)       echo "watch src/index.ts" ;;
-    worker)    echo "watch src/worker.ts" ;;
-    scheduler) echo "watch src/scheduler.ts" ;;
-    web)       echo "--port 5173" ;;
+    api)       echo "$server.*watch src/index.ts" ;;
+    worker)    echo "$server.*watch src/worker.ts" ;;
+    scheduler) echo "$server.*watch src/scheduler.ts" ;;
+    web)       echo "$web.*--port 5173" ;;
   esac
 }
 
@@ -69,12 +72,7 @@ cleanup() {
   fi
 }
 for name in "${NAMES[@]}"; do
-  case "$name" in
-    api)       cleanup "watch src/index.ts" "API" ;;
-    worker)    cleanup "watch src/worker.ts" "worker" ;;
-    scheduler) cleanup "watch src/scheduler.ts" "调度器" ;;
-    web)       cleanup "--port 5173" "前端" ;;
-  esac
+  cleanup "$(pattern_of "$name")" "$name"
 done
 
 # Postgres/Redis 由外部常驻, 需要手动停止时执行:

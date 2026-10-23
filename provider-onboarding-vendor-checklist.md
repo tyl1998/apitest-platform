@@ -5,7 +5,8 @@
 > `browser → assistant proxy (SSE pass-through) → your agent platform → this platform's /mcp → database`.
 > Onboarding = an administrator fills one **protocol config** (4 endpoints + SSE event mapping + auth template). No code change on our side.
 >
-> See `智能体平台-第三方接入接口文档.md` for a worked example (agent-vendor).
+> This document is vendor-neutral: the platform ships **no built-in vendor provider** (2026-10-22).
+> Every upstream is one administrator-entered protocol config.
 > This document answers: **what must your platform hand over before it can be configured as a working provider?**
 
 ---
@@ -156,21 +157,25 @@ data: {"requestId":"...","eventType":"MESSAGE","data":{"text":"你"},"completed"
 
 - Standard SSE parsing: **events separated by a blank line**, only `data:` lines are read (one leading space after `data:` is optional);
 - Each `data:` payload must be **single-line JSON** (multi-line payloads are joined with `\n` and parsed as a whole — please avoid);
-- `event:` and `: comment` lines are **not used** (we send our own keep-alive), so "what event is this" must live inside the JSON;
+- `: comment` (keep-alive) lines are ignored. `event:` lines are supported only when you configure `on: "NAME@event"`; otherwise "what event is this" must live inside the JSON;
 - We send a keep-alive comment every 15s regardless of yours.
 
 ### 4.2 Event mapping (fill in dot paths)
 
-| Mapping | Required | What to tell us | Example (agent-vendor) |
+| Mapping | Required | What to tell us | Example |
 |---|---|---|---|
-| `sse.eventField` | Yes | Field that names the event type | `eventType` |
-| `sse.token` | token or done required | Delta event name + text field | `on: MESSAGE`, `text: data.text` |
+| `sse.eventField` | Yes | Field that names the event type. If the kind rides on the SSE `event:` line instead of the JSON, set `eventField` and write `on` as `NAME@event` | `eventType` |
+| `sse.token` | token or done required | Delta event name + text field (**text path may list alternatives separated by `\|`**) | `on: MESSAGE`, `text: data.text\|data.content` |
 | `sse.done` | token or done required | Completion event name + full-text field | `on: FINAL_RESULT`, `text: data.outputText` |
 | `sse.done.success` | Optional, recommended | Success flag; `false` becomes an error | `data.success` |
-| `sse.error` | Recommended | Error event name + user-facing message field | (agent-vendor sends none; errors ride `done` + `success:false`) |
+| `sse.token.success` / `sse.error.success` | Optional | Envelope-level failure rule for a 200 body: `{field, ok: [..]}` or `{field, not: false}` | `{field: "code", ok: ["0"]}` |
+| `sse.error` | Recommended | Error event name + user-facing message field | (some runtimes send none; errors ride `done` + `success:false`) |
 | `sse.tool` | Recommended | Tool event name + name/status fields + fallback name + **input** field | `on: PROCESSING`, `name: data.name`, `status: data.status`, `input: data.result.input` |
 | `sse.ignore` | Optional | Events not to forward | `["HEART_BEAT"]` |
-| `sse.elicit` | No (deprecated) | We no longer send elicitation; replay of old sessions only | — |
+| `sse.elicit` | Optional | Confirmation-form event: event name (+ optional discriminator `type`/`typeValue`), text/tool paths, optional `schema` / `allowResume` | `on: MESSAGE`, `type: data.type`, `typeValue: ELICITATION` |
+| `protocol.success` / `successCode` | Optional | Envelope failure rule for JSON endpoints (create / stop / delete / history) | `{field: "code", ok: ["0000"]}` |
+| `protocol.attachmentsField` | Optional | Chat body field that carries the attachment array | `attachments` |
+| `protocol.streamEnd` | Optional | `close` (default: drop the connection after the terminal event) or `continue` (read until the upstream closes) | `close` |
 
 ### 4.3 Semantics we must have answers to
 
@@ -196,11 +201,11 @@ based on MCP `tools/list` annotations** — in particular `destructiveHint: true
 If the answer is "no dialog", deletes in chat have no human confirmation step — decide your
 Token scopes accordingly.
 
-### 4.5 Example: the agent-vendor event set
+### 4.5 Example: a typical event set
 
 ```
 data:{"eventType":"MESSAGE","data":{"text":"你"},"completed":false}
-data:{"eventType":"PROCESSING","data":{"type":"Knowledge","status":"EXECUTING","name":"知识库检索","result":{"input":{"id":12}}}}
+data:{"eventType":"PROCESSING","data":{"type":"Search","status":"EXECUTING","name":"知识库检索","result":{"input":{"id":12}}}}
 data:{"eventType":"MESSAGE","data":{"type":"ELICITATION","text":"确认删除？","toolCallId":"call-1","elicitationSchema":{"type":"boolean"}}}
 data:{"eventType":"FINAL_RESULT","completed":true,"data":{"success":true,"outputText":"完整回复"}}
 data:{"eventType":"HEART_BEAT"}

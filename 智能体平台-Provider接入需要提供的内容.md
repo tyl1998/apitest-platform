@@ -4,7 +4,7 @@
 > 本平台不实现 agent，只做代理：`浏览器 → 平台助手代理（只转发 SSE）→ 你的 agent 平台 → 平台 /mcp → 库`。
 > 接入 = 管理员在系统管理里填一份**协议配置**（4 个接口 + SSE 事件映射 + 认证模板）。平台不改代码。
 >
-> 机制概览见 `智能体平台-第三方接入接口文档.md`（以 agent-vendor 为例的接口原文）。
+> 平台**不内建任何厂商的默认 provider**（2026-10-22）：每一家上游都是一份管理员手填/导入的协议配置。
 > 本文回答的是：**你的平台要交付给我们什么，才能被配成一份可用的 provider。**
 
 ---
@@ -172,16 +172,19 @@ data: {"requestId":"...","eventType":"MESSAGE","data":{"text":"你"},"completed"
 ### 4.2 事件映射表（请逐项填写并给出点路径）
 
 
-| 映射项             | 必填                 | 需要你说明                                                   | 示例（agent-vendor）                                                                          |
+| 映射项             | 必填                 | 需要你说明                                                   | 示例                                                                                    |
 | -------------------- | ---------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `sse.eventField`   | 是                   | 表示事件类型的字段名                                         | `eventType`                                                                            |
-| `sse.token`        | 至少配 token 或 done | 文字增量事件名 + 文字在哪个字段                              | `on: MESSAGE`，`text: data.text`                                                       |
+| `sse.eventField`   | 是                   | 表示事件类型的字段名；若种类在 SSE 的 `event:` 行而不在 JSON 里，事件名写 `名字@event` | `eventType`                                                                            |
+| `sse.token`        | 至少配 token 或 done | 文字增量事件名 + 文字在哪个字段（可写 `a\|b` 候选路径）       | `on: MESSAGE`，`text: data.text\|data.content`                                         |
 | `sse.done`         | 至少配 token 或 done | 结束事件名 + 完整回复在哪个字段                              | `on: FINAL_RESULT`，`text: data.outputText`                                            |
 | `sse.done.success` | 可选但**强烈建议**   | 「成功/失败」标记字段，值为 false 时按失败处理               | `data.success`                                                                         |
-| `sse.error`        | 建议                 | 报错事件名 + 给用户看的文案字段                              | （agent-vendor 实际不发，错误落在 done+success:false）                                        |
+| `sse.error`        | 建议                 | 报错事件名 + 给用户看的文案字段                              | `on: ERROR`，`message: data.error`（有的上游不发，错误落在 done+success:false）        |
 | `sse.tool`         | 建议                 | 工具执行事件名 + 工具名 / 状态字段 + 兜底名 + **入参**字段   | `on: PROCESSING`，`name: data.name`，`status: data.status`，`input: data.result.input` |
 | `sse.ignore`       | 可选                 | 无需转发的事件名                                             | `["HEART_BEAT"]`                                                                       |
-| `sse.elicit`       | 否（已废弃）         | 平台不再发送 elicitation；仅历史会话回放用，新接入不必提供   | —                                                                                      |
+| `sse.elicit`       | 可选                 | 确认表单事件：事件名（+ 可选判别字段 `type`/`typeValue`）、文案/工具路径、可选 `schema` | `on: MESSAGE`，`type: data.type`，`typeValue: ELICITATION`                              |
+| `protocol.success` | 可选                 | 一问一答接口的信封失败判定（`{field, ok:[...]}` 或 `{field, not}`） | `{"field": "code", "ok": ["0"]}`                                                    |
+| `attachmentsField` | 可选                 | 发消息请求体里承载附件数组的字段名                           | `attachments`                                                                          |
+| `streamEnd`        | 可选                 | 终帧后上游仍不断流时：`close`（默认，平台主动断开）或 `continue` | `close`                                                                                |
 
 ### 4.3 事件语义必须明确回答的问题
 
@@ -207,7 +210,7 @@ data: {"requestId":"...","eventType":"MESSAGE","data":{"text":"你"},"completed"
 若答「不弹窗」，删除动作在聊天里就没有任何人工确认环节——请据此决定是否限制 write
 scope 的 Token。
 
-### 4.5 示例：agent-vendor 形态的事件全集
+### 4.5 示例：一份典型的事件全集
 
 ```
 data:{"eventType":"MESSAGE","data":{"text":"你"},"completed":false}
