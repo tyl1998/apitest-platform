@@ -2398,7 +2398,17 @@ export type Paged<T> = { items: T[]; page: number; pageSize: number; total: numb
 
 /* 缺省走相对路径 `/api/v1`（同源）——dev 由 Vite proxy、生产由 Nginx 反代到后端，避免跨源/CORS。
    设了 `VITE_API_BASE_URL`（绝对地址）时改为直连该地址（双域名不反代的逃生口）。 */
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
+/**
+ * `VITE_API_BASE_URL` 为空串/纯空白时视同**未配置**。生产镜像的 Dockerfile 默认把它注入成
+ * 空串（「留空即同源」的意图），而空串是「已定义」——`??` 不会回退，于是 bundle 里
+ * `baseURL` 编译成 `""`，所有请求都丢掉 `/api/v1` 前缀（登录打到 `/auth/login` 404/401）。
+ */
+export function configuredApiBaseUrl(): string | undefined {
+  const value = import.meta.env.VITE_API_BASE_URL?.trim();
+  return value ? value : undefined;
+}
+
+const BASE_URL = configuredApiBaseUrl() ?? "/api/v1";
 
 const client = axios.create({ baseURL: BASE_URL });
 
@@ -3087,7 +3097,7 @@ export type SqlQuickCall = { keyId: string; token: string; method: "POST"; param
  * 线上访问时复制出来的地址对外部调用方不可用。末尾去掉多余斜杠。
  */
 export function sqlQuickCallBaseUrl() {
-  const base = import.meta.env.VITE_API_BASE_URL ?? `${window.location.origin.replace(/:\d+$/, ":3000")}/api/v1`;
+  const base = configuredApiBaseUrl() ?? `${window.location.origin.replace(/:\d+$/, ":3000")}/api/v1`;
   return String(base).replace(/\/$/, "");
 }
 

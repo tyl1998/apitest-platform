@@ -3,7 +3,7 @@ import { Modal, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 import { ShieldPlus, Unlink } from "lucide-react";
-import { api, type McpBindingRequest, type McpProjectBinding, type McpScope, type McpToolSummary } from "../api";
+import { api, configuredApiBaseUrl, type McpBindingRequest, type McpProjectBinding, type McpScope, type McpToolSummary } from "../api";
 import { useCanManageProject, useMyRole } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, PageToolbar, Status } from "../ui";
@@ -33,7 +33,7 @@ import { CopyButton } from "./CopyButton";
 /** MCP 端点挂在根上（与 `/ingest` 同层），不带 `/api/v1` 前缀——与 Runner 的根地址同一拼法。
  *  个人中心的 MCP tab 复用这一份（两处展示同一个地址，不引出第二份拼法）。 */
 export function mcpEndpointUrl() {
-  const base = import.meta.env.VITE_API_BASE_URL ?? `${window.location.origin.replace(/:\d+$/, ":3000")}/api/v1`;
+  const base = configuredApiBaseUrl() ?? `${window.location.origin.replace(/:\d+$/, ":3000")}/api/v1`;
   return `${String(base).replace(/\/api\/v1\/?$/, "")}/mcp`;
 }
 

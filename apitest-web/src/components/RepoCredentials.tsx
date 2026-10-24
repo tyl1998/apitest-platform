@@ -3,7 +3,7 @@ import { Modal, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { useParams } from "react-router-dom";
 import { Copy, Plus, Trash2 } from "lucide-react";
-import { api, type GitCredential, type IngestToken, type Repository } from "../api";
+import { api, configuredApiBaseUrl, type GitCredential, type IngestToken, type Repository } from "../api";
 import { useCanWrite } from "../hooks/useMyRole";
 import { useProjectStore } from "../stores/projectStore";
 import { Empty, PageToolbar } from "../ui";
@@ -29,7 +29,7 @@ import { apiMessage } from "./DataSourceList";
 
 /** SDK 的 base URL：平台 API 的 `/api/v1` 前缀不属于上报入口（`POST /ingest` 在根上）。 */
 function ingestBaseUrl() {
-  const base = import.meta.env.VITE_API_BASE_URL ?? `${window.location.origin.replace(/:\d+$/, ":3000")}/api/v1`;
+  const base = configuredApiBaseUrl() ?? `${window.location.origin.replace(/:\d+$/, ":3000")}/api/v1`;
   return String(base).replace(/\/api\/v1\/?$/, "");
 }
 

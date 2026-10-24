@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Modal, Select, message } from "antd";
 import { useTranslation } from "react-i18next";
 import { Copy, Plus, Trash2 } from "lucide-react";
-import { api, type Runner, type RunnerFleet, type RunnerToken } from "../api";
+import { api, configuredApiBaseUrl, type Runner, type RunnerFleet, type RunnerToken } from "../api";
 import { Empty, Readout, Status } from "../ui";
 import { CopyButton, writeClipboard } from "./CopyButton";
 import { IconButton } from "./IconButton";
@@ -48,7 +48,7 @@ function deployCommand(baseUrl: string, token: string, labels: string[], transpo
 
 /** 平台对外根地址：Runner 拨的是根地址而不是 `/api/v1`（协议路由挂在根上）。 */
 function runnerBaseUrl(): string {
-  const base = import.meta.env.VITE_API_BASE_URL ?? `${window.location.origin.replace(/:\d+$/, ":3000")}/api/v1`;
+  const base = configuredApiBaseUrl() ?? `${window.location.origin.replace(/:\d+$/, ":3000")}/api/v1`;
   return String(base).replace(/\/api\/v1\/?$/, "");
 }
 
