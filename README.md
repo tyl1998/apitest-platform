@@ -102,4 +102,6 @@ ApiTrack 是一个面向 API 测试与编排的一体化自动化平台，覆盖
 
 Windows 使用 `start.ps1` / `stop.ps1`（或双击 `start.cmd` / `stop.cmd`）。
 
-各子仓的接入、部署与开发说明见对应仓库 README：`apitrack-sdk` 的零改动接入与发布流程、`apitest-runner` 的自托管部署与安全边界、`apitest-e2e-python` 的测试运行方式。
+各子仓的接入、部署与开发说明见对应仓库 README：`apitest-server`（后端三进程与迁移）、
+`apitest-web`（前端 SPA 与同源反代）、`apitest-runner`（自托管部署与安全边界）、
+`apitrack-sdk`（零改动接入与发布流程）、`apitest-e2e-python`（测试运行方式）。

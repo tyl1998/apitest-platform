@@ -88,9 +88,10 @@ docker build -t apitest-web:latest apitest-web
 #   docker build -t apitest-web:latest \
 #     --build-arg VITE_API_BASE_URL=https://api.example.com/api/v1 apitest-web
 
-# runner：默认不带 docker CLI（容器档用 api 通道即可）；需要 cli 通道时加 build-arg
+# runner：默认已带 docker CLI，容器档开箱可用（默认即支持容器档）。
 docker build -t apitest-runner:latest apitest-runner
-#   docker build -t apitest-runner:latest --build-arg INSTALL_DOCKER_CLI=true apitest-runner
+#   只跑进程档、想瘦身：--build-arg INSTALL_DOCKER_CLI=false
+#   内网仓库覆盖 CLI 来源镜像：--build-arg DOCKER_CLI_IMAGE=<私有 registry>/docker:27-cli
 ```
 
 ---
@@ -222,7 +223,7 @@ docker run -d --name runner \
 
 ### 7b. 容器档（把测试跑进独立容器）
 
-runner 在容器里跑容器 = docker-in-docker。挂宿主 socket 时，**测试容器是宿主上的兄弟容器**（跟 runner 并排，不在 runner 容器内），隔离是共享宿主级别，需显式豁免 DIND 检测。
+runner 在容器里跑容器 = docker-in-docker。挂宿主 socket 时，**测试容器是宿主上的兄弟容器**（跟 runner 并排，不在 runner 容器内），隔离是共享宿主级别。镜像默认已带 docker CLI，且 DIND 检测默认豁免，所以容器档开箱可用。
 
 关键约束（务必满足，否则起得来容器也读不到 workspace）：
 
@@ -236,7 +237,6 @@ docker run -d --name runner \
   -e APITRACK_RUNNER_URL=https://apitest.example.com \
   -e APITRACK_RUNNER_TOKEN=apirunner_xxxxxxxx \
   -e APITRACK_RUNNER_LABELS=default \
-  -e APITRACK_RUNNER_ALLOW_DIND=yes \
   -e APITRACK_RUNNER_DOCKER_TRANSPORT=api \
   -e APITRACK_RUNNER_DATA_DIR=/srv/apitrack-runner \
   -v /srv/apitrack-runner:/srv/apitrack-runner \
@@ -246,9 +246,9 @@ docker run -d --name runner \
 ```
 
 说明：
-- `APITRACK_RUNNER_DOCKER_TRANSPORT=api` 走 Engine API over socket，镜像无需 docker CLI。要用 `cli` 通道请改这里为 `cli`，并用 `--build-arg INSTALL_DOCKER_CLI=true` 重建镜像。
-- `--group-add <docker gid>` 让容器内的非 root `node` 用户能读写宿主 `docker.sock`（socket 通常是 `root:docker`）。
-- `APITRACK_RUNNER_ALLOW_DIND=yes` 是承认「共享宿主、隔离是假的」后的显式放行。若追求真隔离，把 runner 直接部署在宿主机上而非容器里。
+- 容器档**默认开启**（镜像带 docker CLI、DIND 默认豁免），无需再设 `APITRACK_RUNNER_ALLOW_DIND`。追求真隔离（只跑进程档）时设 `APITRACK_RUNNER_ALLOW_DIND=no`，或把 runner 部署在宿主机上。
+- `APITRACK_RUNNER_DOCKER_TRANSPORT=api` 走 Engine API over socket；要用 `cli` 通道改成 `cli` 即可（镜像已带 CLI）。
+- `--group-add <docker gid>` 让容器内的非 root `node` 用户能读写宿主 `docker.sock`（socket 通常是 `root:docker`）。Docker Desktop / OrbStack 上该 socket 在容器内常映射为 `root:root 660`，用 `--group-add 0` 更直接。
 
 ---
 
