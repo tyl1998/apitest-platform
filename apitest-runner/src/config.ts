@@ -38,6 +38,13 @@ export type RunnerConfig = {
   imageShell: string;
   /** 容器档：是否给容器挂缓存卷（缓存目录直挂，不靠软链——容器里软链指向宿主路径不通）。 */
   containerCacheEnabled: boolean;
+  /**
+   * docker-in-docker 豁免（8.5）。Runner 自己跑在容器里、socket 是宿主挂进来的时候，
+   * 「容器隔离」实为共享宿主（兄弟容器）——检测默认会挡下 container 档。默认**开**：
+   * 我们的 runner 镜像本来就是容器部署，默认必须支持容器档（约定「默认即带 Docker」）。
+   * 追求真隔离的部署把 APITRACK_RUNNER_ALLOW_DIND=no（或 false/off/0）关掉。
+   */
+  allowDind: boolean;
 };
 
 /**
@@ -175,6 +182,9 @@ export function loadConfig(): { config?: RunnerConfig; errors: string[] } {
       dockerSocket: (process.env.APITRACK_RUNNER_DOCKER_SOCKET ?? "").trim() || "/var/run/docker.sock",
       imageShell: (process.env.APITRACK_RUNNER_IMAGE_SHELL ?? "").trim() || "/bin/sh",
       containerCacheEnabled: readBool("APITRACK_RUNNER_CONTAINER_CACHE", true),
+      /* DinD 豁免默认开（约定「默认即支持容器档」）：镜像就是容器部署，默认要能自报
+         container。显式 no/false/off/0 关掉它，回到「只干净地跑进程档」。 */
+      allowDind: readBool("APITRACK_RUNNER_ALLOW_DIND", true),
     },
     errors,
   };

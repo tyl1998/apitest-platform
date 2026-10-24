@@ -7,6 +7,20 @@ ApiTrack 平台的自研 CI Runner（P4.5）。部署在**能访问被测服务*
 协议是冻结的 Runner 协议 v1.0（`DEVELOPMENT_PLAN.md` §8.2）：`POST /runner/register | claim | jobs/:id/heartbeat | jobs/:id/logs | jobs/:id/complete`，认证
 `Authorization: Bearer apirunner_…`。
 
+## 技术栈
+
+| 项 | 选型 |
+|---|---|
+| 语言 / 运行时 | TypeScript 5 + Node.js ≥ 20（ESM） |
+| 依赖 | **零运行时依赖** |
+| HTTP | Node 内置 `fetch`（Engine API 的 socket 通道用 `node:http` 的 `socketPath`，不引 dockerode） |
+| 进程控制 | `node:child_process`（detached + 负 pid 杀整个进程组） |
+| 加密 / 哈希 | `node:crypto` |
+| 沙箱 | 进程档（信任声明，无隔离）/ 容器档（docker CLI 或 Engine API，资源限额 + 出站 deny） |
+| 镜像 | 多阶段 node 构建；运行层含 git / ssh / tini / **docker CLI（默认装，容器档开箱可用）** |
+
+协议类型在 `src/protocol.ts`，与 `apitest-server/src/lib/jobSpec.ts` 的 `JobSpec` 由人眼对齐（无共享包）。
+
 ## 部署
 
 前置：Node ≥ 20、`git`（每个任务都要 clone，硬前置）、`ssh`（只有 `ssh_key` 拉取方式的
@@ -68,7 +82,7 @@ Windows 没有 POSIX `SIGTERM`：停止是 `taskkill /T`（进程树）——先
 | `APITRACK_RUNNER_DOCKER_SOCKET`          | `/var/run/docker.sock`   | 仅`api` 通道读；远程 `DOCKER_HOST=tcp://` + TLS 明确不支持                                                            |
 | `APITRACK_RUNNER_IMAGE_SHELL`            | `/bin/sh`                | 容器内跑 script.sh 的 shell（镜像文件系统与宿主无关，busybox 没有 bash）                                              |
 | `APITRACK_RUNNER_CONTAINER_CACHE`        | `yes`                    | 容器档是否挂缓存卷                                                                                                    |
-| `APITRACK_RUNNER_ALLOW_DIND`             | —                       | Runner 自身跑在容器里时豁免 docker-in-docker 检测、仍自报 container（确认过隔离语义再设）                             |
+| `APITRACK_RUNNER_ALLOW_DIND`             | `yes`                    | 容器档默认开——Runner 自身跑在容器里时**默认豁免** docker-in-docker 检测并自报 container；追求真隔离设 `no` 只跑进程档 |
 | `APITRACK_RUNNER_CA_BUNDLE`              | —                       | **start.sh 的变量**（进程本身不读）：PEM 路径，注入 `NODE_EXTRA_CA_CERTS` 以打通自签证书的平台                        |
 
 注意：Runner 自己的配置用 `APITRACK_RUNNER_*` 前缀。`APITRACK_URL` / `APITRACK_TOKEN` /
@@ -121,8 +135,9 @@ Windows 没有 POSIX `SIGTERM`：停止是 `taskkill /T`（进程树）——先
 
 **docker-in-docker 检测**（8.5）：Runner 自己跑在容器里时，挂 `/var/run/docker.sock`
 拿到的「容器隔离」是假的（起出来的容器是 Runner 的兄弟，共享同一个宿主内核与文件
-系统视野）。默认检测到就**不自报 container**（这台机器只领进程档任务）；确认过隔离
-语义的部署可以 `APITRACK_RUNNER_ALLOW_DIND=yes` 豁免。首版建议 Runner 直接跑在宿主机上。
+系统视野）。**默认豁免**（`APITRACK_RUNNER_ALLOW_DIND=yes`，约定「默认即支持容器档」）：
+容器部署是常规形态，默认就要能自报 container。追求真隔离的部署把 `ALLOW_DIND` 设为
+`no`（这台机器只领进程档任务），或把 Runner 直接装到宿主机上。
 **这一条对两条通道一视同仁**：能通过 socket 说话不代表隔离成立，恰恰相反——容器里
 能摸到 socket 通常就是因为宿主把它挂进来了。通道是「怎么连 daemon」，DinD 是「隔离
 是否成立」，两件事不能互相抵消。
@@ -259,4 +274,69 @@ cd apitest-runner
 .\start.ps1 fg api       # 前台调试
 .\start.ps1 start        # 不指定 → 用 .env 的 APITRACK_RUNNER_DOCKER_TRANSPORT（缺省 cli）
 ```
+
+## Docker 部署
+
+多阶段构建（node 构建 → 运行层）。运行层含 `git` / `ssh` / `ca-certificates` / `tini`，
+**默认带 docker CLI**（从官方 `docker:27-cli` 镜像 COPY 其静态二进制，约 40MB、无 glibc 依赖），
+所以容器档开箱可用；以 `tini` 作 PID 1 正确转发 `SIGTERM` 触发优雅停机。运行时**非 root**
+（node 用户），`dataDir` 默认落在独立卷 `/var/lib/apitrack-runner`。
+
+### 构建
+
+```bash
+# 默认即带 docker CLI（容器档开箱可用）
+docker build -t apitest-runner:latest apitest-runner
+
+# 只跑进程档、想瘦身：
+docker build -t apitest-runner:latest --build-arg INSTALL_DOCKER_CLI=false apitest-runner
+
+# 内网仓库覆盖 docker CLI 来源镜像：
+docker build -t apitest-runner:latest \
+  --build-arg DOCKER_CLI_IMAGE=<私有 registry>/docker:27-cli apitest-runner
+```
+
+### 运行（进程档 / 基础）
+
+```bash
+docker run -d --name runner \
+  -e APITRACK_RUNNER_URL=https://apitest.example.com \
+  -e APITRACK_RUNNER_TOKEN=apirunner_xxxxxxxx \
+  -e APITRACK_RUNNER_LABELS=default \
+  -v apitest-runner-data:/var/lib/apitrack-runner \
+  apitest-runner:latest
+```
+
+### 运行（容器档，docker-in-docker）
+
+Runner 容器跑容器 = DinD：挂宿主 `/var/run/docker.sock` 时，测试容器是宿主的**兄弟容器**，
+隔离是共享宿主级别。镜像默认已豁免 DinD 检测，故**无需再设 `ALLOW_DIND`**。关键约束：
+`APITRACK_RUNNER_DATA_DIR` 必须是**宿主真实路径**并以**相同绝对路径**挂进 runner 容器
+（bind 挂载源由宿主 daemon 解析）。
+
+```bash
+# 先在宿主建目录（示例路径，按需替换；容器内外必须同名）
+sudo mkdir -p /srv/apitrack-runner
+
+docker run -d --name runner \
+  -e APITRACK_RUNNER_URL=https://apitest.example.com \
+  -e APITRACK_RUNNER_TOKEN=apirunner_xxxxxxxx \
+  -e APITRACK_RUNNER_LABELS=default \
+  -e APITRACK_RUNNER_DOCKER_TRANSPORT=api \
+  -e APITRACK_RUNNER_DATA_DIR=/srv/apitrack-runner \
+  -v /srv/apitrack-runner:/srv/apitrack-runner \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --group-add "$(getent group docker | cut -d: -f3)" \
+  apitest-runner:latest
+```
+
+- `--group-add <docker gid>` 让容器内非 root 的 `node` 用户能读写宿主 socket（通常是
+  `root:docker`）。Docker Desktop / OrbStack 上该 socket 在容器内常映射为 `root:root 660`，
+  此时用 `--group-add 0` 更直接。
+- `APITRACK_RUNNER_DOCKER_TRANSPORT`：`api`（Engine API over socket）或 `cli`（`docker run`），
+  镜像两条通道都支持，见「容器档的两条通道」。
+- 平台在自签证书反代后面时，把 PEM 挂进容器并设 `APITRACK_RUNNER_CA_BUNDLE`（脚本会注入
+  `NODE_EXTRA_CA_CERTS`）。
+
+> 完整单机部署（与后端 / 前端同网络编排）见根仓库 `DOCKER_DEPLOY.md`。
 

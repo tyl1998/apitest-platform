@@ -11,13 +11,21 @@
 #   - ca-certs     连平台 HTTPS
 #
 # 容器档（把测试跑进独立容器）注意事项，详见 DOCKER_DEPLOY.md：
+#   - **默认即支持容器档**：镜像默认带 docker CLI，DIND 默认豁免，挂上宿主 socket 即可
+#     跑容器任务。
 #   - runner 在容器里时，挂宿主 /var/run/docker.sock → 测试容器是宿主上的「兄弟容器」，
-#     隔离是共享宿主级别（假隔离），默认被 DIND 检测拦下，需 APITRACK_RUNNER_ALLOW_DIND=yes。
-#   - cli 通道需要镜像内有 docker 可执行文件：用 --build-arg INSTALL_DOCKER_CLI=true 构建；
-#     api 通道（APITRACK_RUNNER_DOCKER_TRANSPORT=api）只连 socket，无需 CLI。
+#     隔离是共享宿主级别（假隔离）。追求真隔离时把 runner 部署在宿主机上，
+#     或设 APITRACK_RUNNER_ALLOW_DIND=no 只跑进程档。
+#   - cli 通道需要镜像内有 docker 可执行文件（默认已装）；api 通道
+#     （APITRACK_RUNNER_DOCKER_TRANSPORT=api）只连 socket，也无需 CLI，两者都可用。
 #   - 挂载路径要两边对齐：APITRACK_RUNNER_DATA_DIR 必须是宿主真实路径，且以相同绝对
 #     路径挂进本容器，否则宿主 daemon 解析 bind 源找不到 workspace，job 失败。
 # ─────────────────────────────────────────────────────────────────────────────
+
+# docker CLI 的来源镜像（只取其中的静态二进制，带默认值，内网仓库可用
+# --build-arg DOCKER_CLI_IMAGE=... 覆盖）。必须声明在第一个 FROM 之前才能被所有阶段看到。
+ARG DOCKER_CLI_IMAGE=docker:27-cli
+FROM ${DOCKER_CLI_IMAGE} AS docker-cli-src
 
 FROM node:22-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm
@@ -53,20 +61,21 @@ RUN apt-get update \
       git openssh-client ca-certificates tini \
  && rm -rf /var/lib/apt/lists/*
 
-# 可选：cli 通道需要 docker 可执行文件。api 通道无需，默认不装。
-ARG INSTALL_DOCKER_CLI=false
+# 容器档默认可用：cli 通道需要镜像内有 docker 可执行文件，所以**默认装上**（约定「默认
+# 即支持容器档」）。只跑进程档、想缩小镜像时用 --build-arg INSTALL_DOCKER_CLI=false 关掉，
+# 或部署时 APITRACK_RUNNER_DOCKER=off。
+#
+# CLI 来源：从官方 `docker:27-cli` 镜像 COPY 它的静态 `/usr/local/bin/docker`（约 40MB，
+# 无 glibc 依赖，已验证可在 bookworm-slim 运行）。**不用** `apt install docker.io`：那个包
+# 会拖进 containerd/runc/daemon，镜像凭空胖几百 MB，而 Runner 只需要一个客户端。
+# 也不走 `download.docker.com` apt 源：那台在受限网络里常被挡（本环境实测
+# `curl: (35) SSL_ERROR_SYSCALL`），构建会直接失败。内网仓库可用 DOCKER_CLI_IMAGE 覆盖。
+ARG INSTALL_DOCKER_CLI=true
+COPY --from=docker-cli-src /usr/local/bin/docker /tmp/docker-cli-bin
 RUN if [ "$INSTALL_DOCKER_CLI" = "true" ]; then \
-      apt-get update \
-      && apt-get install -y --no-install-recommends curl gnupg \
-      && install -m 0755 -d /etc/apt/keyrings \
-      && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
-      && chmod a+r /etc/apt/keyrings/docker.asc \
-      && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
-      && apt-get update \
-      && apt-get install -y --no-install-recommends docker-ce-cli \
-      && apt-get purge -y curl gnupg && apt-get autoremove -y \
-      && rm -rf /var/lib/apt/lists/* ; \
-    fi
+      install -m 0755 /tmp/docker-cli-bin /usr/local/bin/docker; \
+    fi \
+ && rm -f /tmp/docker-cli-bin
 
 WORKDIR /app
 

@@ -53,11 +53,11 @@ export async function resolveSandboxModes(config: RunnerConfig): Promise<{ modes
     console.warn(`[runner] container mode unavailable via ${probe.transport} transport (${probe.reason}); registering with process only`);
     return { modes: ["process"], probe };
   }
-  if (runningInsideContainer() && !process.env.APITRACK_RUNNER_ALLOW_DIND) {
+  if (runningInsideContainer() && !config.allowDind) {
     console.warn(
       "[runner] docker is reachable but this runner appears to run inside a container (docker-in-docker); " +
         "containers would be siblings of the runner, not isolated. Not reporting container mode. " +
-        "Set APITRACK_RUNNER_ALLOW_DIND=yes to override if you know what this means.",
+        "Unset APITRACK_RUNNER_ALLOW_DIND=no (or set yes) to override if you know what this means.",
     );
     return { modes: ["process"], probe };
   }
