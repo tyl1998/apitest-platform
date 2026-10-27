@@ -445,6 +445,14 @@ function toLine(event: AssistantEvent): TestLine {
   return { kind: "error", text: "" };
 }
 
+/** 409 导入冲突的载荷：已存在同名 provider 时服务端回 `{ existingId }`。 */
+function conflictExistingId(error: unknown): string | undefined {
+  const response = (error as { response?: { status?: number; data?: { data?: { existingId?: unknown } } } })?.response;
+  if (response?.status !== 409) return undefined;
+  const existingId = response.data?.data?.existingId;
+  return typeof existingId === "string" ? existingId : undefined;
+}
+
 function apiMessage(error: unknown): string | undefined {
   const message = (error as { response?: { data?: { message?: unknown } } })?.response?.data?.message;
   return typeof message === "string" && message ? message : undefined;
@@ -670,16 +678,46 @@ export function AssistantProvidersPanel() {
       message.error(t("assistantProviders.importShapeInvalid"));
       return;
     }
-    setImporting(true);
-    try {
-      const created = await api.importAssistantProvider({
-        name: parsed.name.trim(),
-        protocol: parsed.protocol as AssistantProtocol,
-        ...(Array.isArray(parsed.userParams) ? { userParams: parsed.userParams as AssistantUserParam[] } : {}),
-      });
+    /* 一条导入流程分两步：先试导入（同名会被服务端拒成 409），再把 409 变成
+       「覆盖 / 改名 / 取消」——**绝不静默覆盖**，也绝不重复插入（2026-10-27）。 */
+    const baseName = parsed.name.trim();
+    const payload = {
+      protocol: parsed.protocol as AssistantProtocol,
+      ...(Array.isArray(parsed.userParams) ? { userParams: parsed.userParams as AssistantUserParam[] } : {}),
+    };
+    const runImport = async (name: string) => {
+      const created = await api.importAssistantProvider({ name, ...payload });
       message.success(t("assistantProviders.imported", { name: created.name }));
       closeImport();
       await load();
+    };
+    setImporting(true);
+    try {
+      try {
+        await runImport(baseName);
+      } catch (error) {
+        const existingId = conflictExistingId(error);
+        if (!existingId) throw error;
+        /* 已有同名行：导入**不会**覆盖它（预置同款纪律）。要让位给新配置，只有
+           「覆盖」这一条显式路径——改名导入则另存一行。 */
+        Modal.confirm({
+          title: t("assistantProviders.importConflictTitle", { name: baseName }),
+          content: t("assistantProviders.importConflictHint"),
+          okText: t("assistantProviders.importOverwrite"),
+          okButtonProps: { danger: true },
+          /* 取消 = **什么都不做**（不覆盖、不重复插）。要另存一份就走「改名」——
+             弹窗里不藏第二个写操作，否则"取消"会偷偷写库。 */
+          cancelText: t("action.cancel"),
+          onOk: async () => {
+            try {
+              await api.updateAssistantProvider(existingId, { protocol: payload.protocol, userParams: payload.userParams });
+              message.success(t("assistantProviders.importOverwritten", { name: baseName }));
+              closeImport();
+              await load();
+            } catch (cause) { message.error(apiMessage(cause) ?? t("assistantProviders.importFailed")); }
+          },
+        });
+      }
     } catch (error) {
       message.error(apiMessage(error) ?? t("assistantProviders.importFailed"));
     } finally { setImporting(false); }
