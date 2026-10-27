@@ -1,0 +1,144 @@
+{
+  "name": "doubulea-open-v1",
+  "protocol": {
+    "baseUrl": "https://api.doubulea.example.com",
+    "success": {
+      "field": "code",
+      "ok": [
+        "0"
+      ]
+    },
+    "auth": {
+      "header": "Authorization",
+      "value": "Bearer {{user.apiKey}}"
+    },
+    "createConversation": {
+      "method": "POST",
+      "path": "/open/v1/conversations",
+      "body": {
+        "title": "Apitest Assistant"
+      },
+      "conversationId": "data.id"
+    },
+    "chat": {
+      "method": "POST",
+      "path": "/open/v1/conversations/{{conversationId}}/chat",
+      "body": {
+        "content": "{{message}}"
+      }
+    },
+    "stop": {
+      "method": "POST",
+      "path": "/open/v1/conversations/{{conversationId}}/stop"
+    },
+    "delete": {
+      "method": "DELETE",
+      "path": "/open/v1/conversations/{{conversationId}}"
+    },
+    "history": {
+      "method": "GET",
+      "path": "/open/v1/conversations/{{conversationId}}/messages?parts=timeline",
+      "indexParam": "beforeId",
+      "pageSizeParam": "limit",
+      "pageSize": 100,
+      "cursorParam": "data.nextCursor",
+      "cursorSource": "envelope",
+      "maxPages": 5,
+      "direction": "cursor",
+      "totalPath": "data.hasMore",
+      "messages": "data.items",
+      "fields": {
+        "id": "id",
+        "role": "role",
+        "text": "content",
+        "time": "createdAt",
+        "parts": "parts",
+        "partsType": "type",
+        "partsText": "text",
+        "partsTool": "tool"
+      }
+    },
+    "attachments": false,
+    "streamEnd": "close",
+    "sse": {
+      "eventField": "event",
+      "token": {
+        "on": "delta",
+        "text": "text|delta|content"
+      },
+      "tool": {
+        "on": "tool_call",
+        "name": "toolName",
+        "status": "status",
+        "kind": "kind",
+        "callId": "callId",
+        "input": "inputSummary",
+        "output": "output"
+      },
+      "thinking": {
+        "on": "thinking",
+        "text": "text",
+        "newSegment": "newSegment"
+      },
+      "done": {
+        "on": "done",
+        "successRule": {
+          "field": "finishReason",
+          "ok": [
+            "COMPLETE",
+            "STOPPED"
+          ]
+        }
+      },
+      "error": {
+        "on": "error",
+        "message": "message"
+      },
+      "ignore": [
+        "ping",
+        "citations",
+        "queued",
+        "status",
+        "steer",
+        "steer_queue",
+        "artifact"
+      ],
+      "elicit": {
+        "on": "confirm",
+        "text": "text|inputSummary",
+        "tool": "toolName",
+        "confirmId": "confirmId",
+        "expiresAt": "expiresAt",
+        "source": "source",
+        "inputSummary": "inputSummary",
+        "duplicate": "duplicate"
+      }
+    },
+    "autoApprove": {
+      "method": "POST",
+      "path": "/open/v1/conversations/{{conversationId}}/auto-approve",
+      "body": {
+        "enabled": "{{autoApprove:boolean}}"
+      },
+      "result": "data.autoApprove"
+    },
+    "elicitRespond": {
+      "method": "POST",
+      "path": "/open/v1/conversations/{{conversationId}}/confirm",
+      "body": {
+        "confirmId": "{{confirmId}}",
+        "accepted": "{{accepted:boolean}}"
+      },
+      "applied": "data.applied",
+      "id": "data.id"
+    }
+  },
+  "userParams": [
+    {
+      "key": "apiKey",
+      "label": "API Key",
+      "secret": true,
+      "required": true
+    }
+  ]
+}

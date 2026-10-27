@@ -261,6 +261,15 @@ async function nameTaken(name: string, excludeId?: string): Promise<boolean> {
   return Boolean(result.rowCount);
 }
 
+/**
+ * 同名 provider 的现有 id（大小写不敏感）。导入用于区分「全新导入」与「已存在」：
+ * 已存在的行**不覆盖**（重启预置同款纪律，见 lib/assistant/seed.ts），由前端问用户要不要覆盖。
+ */
+async function existingProviderId(name: string): Promise<string | undefined> {
+  const result = await pool.query("SELECT id FROM assistant_providers WHERE lower(name) = lower($1)", [name]);
+  return result.rowCount ? String(result.rows[0].id) : undefined;
+}
+
 /** 单行读取（404 的口径与全站一致：uuid 先拦，行不存在不泄露任何东西）。 */
 async function loadProviderRow(id: string): Promise<Record<string, unknown> | undefined> {
   const result = await pool.query("SELECT * FROM assistant_providers WHERE id = $1", [id]);
@@ -302,7 +311,8 @@ export async function assistantProviderRoutes(app: FastifyInstance) {
        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5) RETURNING *`,
       [randomUUID(), name, JSON.stringify(protocol), JSON.stringify(userParams), request.body?.enabled ?? true],
     ).catch((error: unknown) => (isUniqueViolation(error) ? undefined : Promise.reject(error)));
-    if (!result) return fail(reply, 409, 2003, "an assistant provider with this name already exists");
+    /* 并发兜底：`WHERE NOT EXISTS` 与唯一约束都可能让 INSERT 返回 0 行/抛约束错。 */
+    if (!result || !result.rowCount) return fail(reply, 409, 2003, "an assistant provider with this name already exists");
     writeAuditLogAsync({
       action: "assistant_provider.create",
       targetType: "assistant_provider",
@@ -433,11 +443,19 @@ export async function assistantProviderRoutes(app: FastifyInstance) {
     if (typeof protocol === "string") return fail(reply, 400, 1001, protocol);
     const userParams = readUserParams(request.body?.userParams);
     if (typeof userParams === "string") return fail(reply, 400, 1001, userParams);
-    if (await nameTaken(name)) return fail(reply, 409, 2003, "an assistant provider with this name already exists");
+    /* 已存在 ⇒ 不插入、不覆盖（2026-10-27：「已经存在的不要重复插」）。`data.existingId`
+       让前端把 409 变成「覆盖 / 改名 / 取消」三选一，而不是只说一句冲突。 */
+    const existingId = await existingProviderId(name);
+    if (existingId) {
+      /* 失败响应带 data（失败仍带载荷的先例：failNoRunner）——前端用它给出「覆盖/改名」。 */
+      return reply.code(409).send({ code: 2003, message: "an assistant provider with this name already exists", data: { existingId } });
+    }
 
     const result = await pool.query(
       `INSERT INTO assistant_providers (id, name, protocol, user_params, enabled)
-       VALUES ($1, $2, $3::jsonb, $4::jsonb, true) RETURNING *`,
+       SELECT $1::uuid, $2, $3::jsonb, $4::jsonb, true
+       WHERE NOT EXISTS (SELECT 1 FROM assistant_providers WHERE lower(name) = lower($2))
+       RETURNING *`,
       [randomUUID(), name, JSON.stringify(protocol), JSON.stringify(userParams)],
     ).catch((error: unknown) => (isUniqueViolation(error) ? undefined : Promise.reject(error)));
     if (!result) return fail(reply, 409, 2003, "an assistant provider with this name already exists");

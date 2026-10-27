@@ -12,6 +12,8 @@
 #
 # 迁移文件随镜像带入 /app/migrations：migrate.js 用 `new URL("../migrations/")`
 # 相对自身解析，dist/migrate.js → /app/migrations，必须存在。
+# 同理 data/assistant-providers 随镜像带入 /app/data：seed.js 相对 dist/lib/assistant/
+# 往上三级解析。
 #
 # 基础镜像用 Debian(bookworm-slim) 而非 alpine：依赖里的原生模块
 # （oracledb / mssql / mysql2 / mongodb）依赖 glibc 预编译二进制，musl 会拉胯。
@@ -52,6 +54,8 @@ COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=build     --chown=node:node /app/dist          ./dist
 COPY --chown=node:node package.json ./
 COPY --chown=node:node migrations ./migrations
+# 助手上游默认清单：启动时按名字「只插不改」预置（src/lib/assistant/seed.ts 相对 dist 解析）。
+COPY --chown=node:node data/assistant-providers ./data/assistant-providers
 
 USER node
 EXPOSE 3000

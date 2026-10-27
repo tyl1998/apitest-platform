@@ -2,4 +2,6 @@ node_modules/
 dist/
 .env
 # 产物存储（ARTIFACT_FS_ROOT 的缺省落点，P4.5-7）。
-data/
+data/*
+# 例外：助手上游默认清单随包入库，服务启动时按名字「只插不改」预置（src/lib/assistant/seed.ts）。
+!data/assistant-providers/
