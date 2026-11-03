@@ -1,0 +1,23 @@
+# 构建产物（`python -m build` 的输出）
+dist/
+dist-placeholder/
+build/
+*.egg-info/
+
+# 字节码与缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 二期的崩溃兜底落盘目录（计划 7.0 边界 12）：接入方仓库里也该忽略它，
+# 所以这行在 README 的接入说明里同样提一次。
+.apitrack/
+
+# macOS 元数据
+.DS_Store
