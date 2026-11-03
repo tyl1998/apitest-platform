@@ -70,7 +70,21 @@ Windows 用 `start.ps1` / `stop.ps1`（或双击 `start.cmd` / `stop.cmd`）。
 | [`docs/智能体平台-第三方接入接口文档.md`](docs/智能体平台-第三方接入接口文档.md) | 第三方 agent 平台接入契约 |
 | [`docs/issue_fix/`](docs/issue_fix/README.md) | 缺陷记录（现象 / 根因 / 修法 / 状态） |
 
-各子项目的构建、开发与部署细节见其自身的 `README.md`。
+## 部署与开发文档
+
+部署相关的文档分布在两个层级，按需跳转：
+
+| 主题 | 文档 |
+|---|---|
+| 全局容器化部署（拓扑、镜像、反代、数据卷） | [`docs/DOCKER_DEPLOY.md`](docs/DOCKER_DEPLOY.md) |
+| 后端三进程：环境变量、本地开发、镜像构建与运行 | [`apitest-server/README.md`](apitest-server/README.md#docker-部署) |
+| 前端 SPA：API 地址与同源反代、镜像构建与运行 | [`apitest-web/README.md`](apitest-web/README.md#docker-部署) |
+| Runner：自托管部署、安全边界、容器档两条通道 | [`apitest-runner/README.md`](apitest-runner/README.md#部署) |
+| Runner 镜像（Docker 构建 / 运行） | [`apitest-runner/README.md`](apitest-runner/README.md#docker-部署) |
+| SDK：接入三步、环境变量、发布流程 | [`apitrack-sdk-python/README.md`](apitrack-sdk-python/README.md#接入三步测试代码一行都不改) |
+| 本地一键启动 / 停止 | 本文「快速开始」+ [`AGENTS.md`](AGENTS.md)「Start / Stop Services」 |
+| 第三方 agent 平台接入 | [`docs/智能体平台-第三方接入接口文档.md`](docs/智能体平台-第三方接入接口文档.md) |
+| 缺陷记录索引 | [`docs/issue_fix/README.md`](docs/issue_fix/README.md) |
 
 ## 许可
 
