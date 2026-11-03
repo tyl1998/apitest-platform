@@ -5,11 +5,6 @@ apitest-web/node_modules/
 apitest-web/dist/
 apitest-runner/node_modules/
 apitest-runner/dist/
-apitest-e2e-python/__pycache__/
-apitest-e2e-python/**/__pycache__/
-apitest-e2e-python/.pytest_cache/
-apitest-e2e-python/*.log
-apitest-e2e-python/env.local.sh
 apitrack-sdk-python/**/__pycache__/
 # 运行时产物
 .dev-logs/

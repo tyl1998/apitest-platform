@@ -22,9 +22,9 @@ Large edits risk connection timeouts mid-stream. When an edit spans many functio
 
 ## Plan Tracking
 
-1. After the user confirms a feature scope, update the corresponding phase in `DEVELOPMENT_PLAN.md` to reflect the confirmed scope, boundary decisions, and implementation status.
+1. After the user confirms a feature scope, update the corresponding phase in `docs/DEVELOPMENT_PLAN.md` to reflect the confirmed scope, boundary decisions, and implementation status.
 2. When a feature from the plan is implemented in code, check off or mark the item (e.g., `[x]` or **已实现**) so the plan stays current.
-3. `DEVELOPMENT_PLAN.md` records **development content only**: features, scope, boundaries, decisions, and implementation status. It does **not** record bug fixes. Actual defects go to `issue_fix/` (see the index `issue_fix/README.md`); each record includes 现象 / 根因 / 修法 / 状态. When a fix arrives, keep the bug detail in `issue_fix/` and only reflect any resulting scope/decision change in the plan.
+3. `docs/DEVELOPMENT_PLAN.md` records **development content only**: features, scope, boundaries, decisions, and implementation status. It does **not** record bug fixes. Actual defects go to `docs/issue_fix/` (see the index `docs/issue_fix/README.md`); each record includes 现象 / 根因 / 修法 / 状态. When a fix arrives, keep the bug detail in `docs/issue_fix/` and only reflect any resulting scope/decision change in the plan.
 
 ## Data Compatibility
 
@@ -32,12 +32,12 @@ The project is in active development and has never shipped. Do not write code to
 
 ## Repository Hygiene — no company identifiers, no real credentials
 
-These repos are **public on GitHub** — this one and every sibling (`apitest-server`, `apitest-web`, `apitest-runner`, `apitrack-sdk-python`, `apitest-e2e-python`). Nothing that identifies the company or grants access may leave the machine through a commit. That covers **everything that ships with the repo**: code, defaults, comments, docs, issue records, test data, fixtures, examples, and commit messages.
+This repo is **public on GitHub**. Nothing that identifies the company or grants access may leave the machine through a commit. That covers **everything that ships with the repo**: code, defaults, comments, docs, issue records, test data, fixtures, examples, and commit messages — **including git history**: redacted text must also be scrubbed from past commits before a push.
 
 1. Never commit company-identifying material: the brand/company name in any casing, internal hostnames or domains, internal IPs, real business identifiers (`agentId`, store numbers, `fohNos`, tenant ids), or real credentials (API keys, tokens, passwords, MCP tokens).
 2. Do not write the company name **in this file either** — describe it by shape when you must ("the brand name", "the internal domain"). To find occurrences, grep case-insensitively for the name exactly as it appears in the environment you were handed, and treat that string as a search key, never as text to add.
 3. Anything committed uses placeholders: `***` for the name and host (`stgstplatform.***.net`), `ak-xxx` / `xxxx` for credentials, `example.com` for hosts in examples.
-4. Real values live only in gitignored files (`apitest-server/.env`, `apitest-e2e-python/env.local.sh`, `.dev-certs/`). Code reads them from the environment; comments say **which variable to export**, not what the value is. If a value needs to be runnable, that is what the variable is for.
+4. Real values live only in gitignored files (`apitest-server/.env`, `apitest-runner/.env`, `apitest-web/.env.local`, `.dev-certs/`). Code reads them from the environment; comments say **which variable to export**, not what the value is. If a value needs to be runnable, that is what the variable is for.
 5. When a literal is functional rather than descriptive (a certificate path, a keychain filter name, a base-URL default), parameterize it through an environment variable instead of hardcoding the company value, so the repo keeps working without the name.
 6. Before every commit or push, self-check what you staged: `git grep -ilI "<name>"` plus a credential-shape scan (`ak-[0-9a-f]{16,}`, `sk-…`, `Bearer <long>`, `eyJ…`), and do the same over the untracked-but-destined files. Never `git add -A` while a real credential sits in the working tree — confirm it is ignored first (`git check-ignore -v <file>`).
 7. Redacting the working tree does **not** clean history. If the material already reached GitHub, say so plainly and let the user decide (history rewrite, private repo, key rotation); never rewrite published history or force-push on your own.
