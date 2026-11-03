@@ -1,0 +1,19 @@
+# 依赖与构建产物：镜像内重新安装/构建
+node_modules
+dist
+*.tsbuildinfo
+
+# 本地运行态与密钥
+.env
+.env.*
+*.log
+
+# 版本控制与编辑器噪音
+.git
+.gitignore
+.vscode
+.idea
+
+# 预览页与文档（不进生产镜像）
+theme-preview.html
+README.md

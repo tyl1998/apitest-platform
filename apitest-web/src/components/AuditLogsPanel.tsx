@@ -1,0 +1,224 @@
+import { useCallback, useEffect, useState } from "react";
+import { Pagination, Select, message } from "antd";
+import { useTranslation } from "react-i18next";
+import { useParams } from "react-router-dom";
+import { api, type AuditLog } from "../api";
+import { Empty, PageToolbar } from "../ui";
+
+/**
+ * 审计日志（P6-2，计划 10.0 边界 11「从只写到可读」；系统管理员）。
+ *
+ * 表在 P4.5-8 就开始写、写入点遍布触发/Token/成员路径，本页缺的从来只是一条 SELECT
+ * 和一张表。action 筛选用**服务端出现过的动作**做候选（不硬编码清单——新动作随批
+ * 次长出来，这里自动跟上演示，不需要同步两份列表）。
+ *
+ * detail 渲染为键值行而不是原始 JSON 转储：它已经被写入侧的护栏限制成决策证据
+ * （≤4KB、无 secret），但仍然可能只是个 `{}`——空 detail 显示「—」而不是空括号。
+ *
+ * P11-10（边界 7/8）：同一份面板多了**项目作用域**（`projectId` 属性）——项目审计路由
+ * 从 project_admin 放宽到 developer（viewer 仍 403），项目内入口在项目配置 → 审计日志页，
+ * 另外多了 `targetType` 过滤。
+ *
+ * P10-6（2026-09-20）：资源详情里按 `target_type + target_id` 下钻的「变更历史」抽屉
+ * （原 `ChangeHistoryDrawer`）已整体下线——用户编写型资产改看 `VersionHistoryDrawer`
+ * 的版本历史（含 diff + 回滚），调度/通知渠道/告警规则回看本项目级审计页即可。
+ */
+
+const PAGE_SIZES = [20, 50, 100];
+
+/** detail 里最常见的几个键的展示顺序；其余键按对象序跟在后面。 */
+const DETAIL_KEYS = ["email", "name", "from", "to", "role", "triggeredBy", "gate", "outcome", "scope", "count", "fields", "ids", "imported"];
+
+/**
+ * detail 的键值行渲染，全局面板与项目成员页的「最近审计」共用同一形状（P6-4 起导出）。
+ * detail 已被写入侧的护栏限制成决策证据（≤4KB、无 secret），空对象显示「—」。
+ */
+export function AuditDetail({ detail }: { detail: Record<string, unknown> }) {
+  const entries = Object.entries(detail ?? {});
+  if (!entries.length) return <span className="muted">—</span>;
+  const ordered = [
+    ...DETAIL_KEYS.filter((key) => key in detail).map((key) => [key, detail[key]] as const),
+    ...entries.filter(([key]) => !DETAIL_KEYS.includes(key)),
+  ];
+  return <div className="audit-detail">
+    {ordered.map(([key, value]) => <div key={key} className="mono">
+      <span className="muted">{key}</span>
+      <span>{formatValue(value)}</span>
+    </div>)}
+  </div>;
+}
+
+/**
+ * 审计表的数据与筛选状态（系统作用域与项目作用域共用）。
+ *
+ * 抽成控制器而不是把整块渲染塞进一个组件：项目页要把提示行与筛选条放进工具卡，而系统页
+ * 的标签里没有独立工具卡、需要它们跟表待在一起——同一份状态两处摆放，只能是「状态在
+ * 控制器、摆放交给调用方」。
+ *
+ * `projectId` 存在时走项目路由，并且：
+ * - 不再需要「项目」这一列（每一行都属于当前项目），第二行改标 target_id 短前缀；
+ * - 提示文案换成项目口径；
+ * - `targetType` 过滤可用。
+ */
+function useAuditLogs(projectId?: string) {
+  const { t } = useTranslation();
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [action, setAction] = useState<string | undefined>();
+  const [targetType, setTargetType] = useState<string | undefined>();
+  /* 初值 true（P10-7 纪律）：首帧取数尚未发出，false 会让有数据的审计列表先闪一帧空态。 */
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async (next: { page: number; pageSize: number; action?: string; targetType?: string }) => {
+    setLoading(true);
+    try {
+      const result = projectId ? await api.projectAuditLogs(projectId, next) : await api.auditLogs(next);
+      setLogs(result.items);
+      setTotal(result.total);
+    } catch {
+      message.error(t("audit.loadFailed"));
+    } finally { setLoading(false); }
+  }, [projectId, t]);
+
+  useEffect(() => {
+    void load({ page, pageSize, action, targetType });
+  }, [load, page, pageSize, action, targetType]);
+
+  /* 候选 = 当前页出现过的动作 / 目标类型（下一页的自然补进来）。硬编码清单会在新批次
+     加动作时过期，这里宁可窄一点也不造假（P6-2 的纪律，P11-10 扩到 targetType）。 */
+  const actionOptions = [...new Set(logs.map((log) => log.action))].sort().map((value) => ({ value, label: value }));
+  const targetTypeOptions = [...new Set(logs.map((log) => log.targetType))].sort().map((value) => ({ value, label: value }));
+
+  return {
+    projectId, logs, total, loading, page, pageSize, setPage, setPageSize,
+    action, setAction, targetType, setTargetType, actionOptions, targetTypeOptions,
+  };
+}
+
+type AuditLogsController = ReturnType<typeof useAuditLogs>;
+
+/** action / targetType 两个筛选 + 总数（P6-2 的头部，项目页把它放进工具卡）。 */
+function AuditLogsFilters({ controller }: { controller: AuditLogsController }) {
+  const { t } = useTranslation();
+  const { action, setAction, targetType, setTargetType, actionOptions, targetTypeOptions, total, setPage } = controller;
+  return <div className="filter-bar">
+    <Select
+      allowClear
+      value={action}
+      onChange={(value) => { setAction(value); setPage(1); }}
+      options={actionOptions}
+      placeholder={t("audit.actionFilter")}
+      style={{ width: 240 }}
+    />
+    <Select
+      allowClear
+      value={targetType}
+      onChange={(value) => { setTargetType(value); setPage(1); }}
+      options={targetTypeOptions}
+      placeholder={t("audit.targetTypeFilter")}
+      style={{ width: 200 }}
+    />
+    <span className="filter-spacer" />
+    <span className="muted mono">{t("audit.totalCount", { count: total })}</span>
+  </div>;
+}
+
+/** 表格 + 分页（两个作用域共用；系统作用域多一列项目归属）。 */
+function AuditLogsTable({ controller }: { controller: AuditLogsController }) {
+  const { t } = useTranslation();
+  const { projectId, logs, total, loading, page, pageSize, setPage, setPageSize } = controller;
+  return <>
+    {logs.length ? <div className="table-scroll"><table className="grid">
+      <thead><tr>
+        <th>{t("audit.action")}</th>
+        <th>{t("audit.operator")}</th>
+        <th>{t("audit.target")}</th>
+        <th>{t("audit.detailColumn")}</th>
+        <th>{t("audit.time")}</th>
+      </tr></thead>
+      <tbody>
+        {logs.map((log) => <tr key={log.id}>
+          <td><span className="mono">{log.action}</span></td>
+          <td className="mono muted">{log.userEmail ?? t("audit.nonUser")}</td>
+          <td>
+            {/* 多态目标只展示类型（完整 target_id 是 UUID，对人没有意义；detail 里才有
+                email/name 这类可读证据）。系统作用域的第三行是项目归属（或「系统级」），
+                项目作用域下每行都属于当前项目，改标目标 id 短前缀——「这一行打的是哪一个」。 */}
+            <span className="mono">{log.targetType}</span>
+            <div className="muted mono">
+              {projectId ? (log.targetId ? log.targetId.slice(0, 8) : "—") : (log.projectName ?? t("audit.systemLevel"))}
+            </div>
+          </td>
+          <td><AuditDetail detail={log.detail} /></td>
+          <td className="mono muted">{new Date(log.createdAt).toLocaleString()}</td>
+        </tr>)}
+      </tbody>
+    </table></div> : !loading && <Empty title={t("audit.emptyTitle")} hint={t("audit.emptyHint")} />}
+
+    {total > pageSize && <div className="pager">
+      <Pagination
+        current={page}
+        pageSize={pageSize}
+        total={total}
+        pageSizeOptions={PAGE_SIZES}
+        showSizeChanger
+        onChange={(nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); }}
+      />
+    </div>}
+  </>;
+}
+
+/**
+ * 审计表（系统作用域与项目作用域共用）。
+ *
+ * `projectId` 存在时走项目路由，并且：
+ * - 不再需要「项目」这一列（每一行都属于当前项目），第二行改标 target_id 短前缀；
+ * - 提示文案换成项目口径；
+ * - `targetType` 过滤可用。
+ *
+ * 系统作用域下行为与 P6-2 完全一致（`/system/audit-logs`，含项目列）：它是一个自带
+ * 提示行与筛选条的自足面板；项目页（`ProjectAuditPage`）则用同一个控制器把这两样搬进
+ * 工具卡——那里有独立的标题卡，重复一份只会让页头与卡内各说一遍同样的话。
+ */
+export function AuditLogsPanel({ projectId }: { projectId?: string } = {}) {
+  const { t } = useTranslation();
+  const controller = useAuditLogs(projectId);
+  return <>
+    <p className="form-note">{projectId ? t("audit.projectHint") : t("audit.hint")}</p>
+    <AuditLogsFilters controller={controller} />
+    <AuditLogsTable controller={controller} />
+  </>;
+}
+
+/**
+ * 项目审计页（P11-10 边界 7）：项目配置 → 审计日志。页面不做角色判断——入口在
+ * `ProjectShell` 里对 viewer 隐藏，路由不藏（P6-4 边界 6：后端守卫才是权限的单一事实，
+ * viewer 直达时后端照拒）。
+ *
+ * 描述与筛选项在工具卡（2026-09-19）：下面那张卡只放表，卡片形态才读得成「上面是这一页
+ * 的抬头与范围，下面是范围里的行」。
+ */
+export function ProjectAuditPage() {
+  const { t } = useTranslation();
+  const { projectId } = useParams();
+  const controller = useAuditLogs(projectId);
+  return <main className="content content-split">
+    <PageToolbar>
+    <div className="page-head"><div><h1>{t("audit.title")}</h1><p>{t("audit.projectHint")}</p></div></div>
+    <AuditLogsFilters controller={controller} />
+    </PageToolbar>
+    <div className="list-card">
+    <AuditLogsTable controller={controller} />
+    </div>
+  </main>;
+}
+
+/** detail 值的展示：数组拍平、对象递归一层、null/undefined 显示 —。 */
+function formatValue(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(", ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
