@@ -82,7 +82,7 @@ Windows 用 `start.ps1` / `stop.ps1`（或双击 `start.cmd` / `stop.cmd`）。
 | Runner：自托管部署、安全边界、容器档两条通道 | [`apitest-runner/README.md`](apitest-runner/README.md#部署) |
 | Runner 镜像（Docker 构建 / 运行） | [`apitest-runner/README.md`](apitest-runner/README.md#docker-部署) |
 | SDK：接入三步、环境变量、发布流程 | [`apitrack-sdk-python/README.md`](apitrack-sdk-python/README.md#接入三步测试代码一行都不改) |
-| 本地一键启动 / 停止 | 本文「快速开始」+ [`AGENTS.md`](AGENTS.md)「Start / Stop Services」 |
+| 本地一键启动 / 停止 | 本文「快速开始」+ [`docs/AGENTS.md`](docs/AGENTS.md#start--stop-services)「Start / Stop Services」 |
 | 第三方 agent 平台接入 | [`docs/智能体平台-第三方接入接口文档.md`](docs/智能体平台-第三方接入接口文档.md) |
 | 缺陷记录索引 | [`docs/issue_fix/README.md`](docs/issue_fix/README.md) |
 
