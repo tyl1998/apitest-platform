@@ -1,0 +1,20 @@
+# 真实代码仓库不入此文档仓库：各自独立提交、推送到自己的远程（apitest-server / apitest-web）。
+# 后续新增的代码仓库一律加在这里。
+apitest-server/
+apitest-web/
+apitrack-sdk-python/
+apitest-e2e-python/
+apitest-runner/
+# 运行时产物
+.dev-logs/
+.dev-pids
+.dev-pids.windows.json
+.dev-certs/
+.playwright-mcp/
+.vscode/
+.workbuddy/
+# 含 MCP Token 明文，不入库
+kilo.json
+
+# macOS 元数据
+.DS_Store
