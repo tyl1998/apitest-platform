@@ -20,7 +20,7 @@ UPDATE assistant_providers p SET
   protocol = jsonb_build_object(
     'baseUrl', p.config->>'baseUrl',
     'auth', jsonb_build_object('header', 'Authorization', 'value', 'Bearer {{user.apiKey}}'),
-    'successCode', jsonb_build_object('field', 'code', 'value', '0000'),
+    'successCode', jsonb_build_object('field', 'code', 'value', '0'),
     'createConversation', jsonb_build_object(
       'method', 'POST', 'path', '/api/v1/chat/conversation/add',
       'body', jsonb_build_object('agentId', '{{user.agentId}}'),
