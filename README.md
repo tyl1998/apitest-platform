@@ -2,7 +2,7 @@
 
 ApiTrack 是一个一体化 API 测试与编排平台：接口管理、用例与套件、DAG 流程编排、断言与变量、Mock、定时调度、Webhook、报告与趋势、告警、MCP Server、站内 AI 助手，以及「测试代码留在自己仓库」的仓库模式（上报式 SDK + 自研 Runner）。
 
-后端、前端、Runner 与 SDK 在同一个 monorepo 里，文档在 `docs/`。
+后端、前端与 Runner 在同一个 monorepo 里，文档在 `docs/`；上报式 SDK 独立成仓发布到 PyPI。
 
 ## 目录
 
@@ -11,8 +11,7 @@ ApiTrack 是一个一体化 API 测试与编排平台：接口管理、用例与
 ├── apitest-server/        # 后端：API + 执行 Worker + 调度器（Fastify + TypeScript + PostgreSQL/Redis/S3）
 ├── apitest-web/           # 前端 SPA（Vite + React 18 + antd + React Flow + Monaco）
 ├── apitest-runner/        # 自研 CI Runner：主动外连领任务，进程档 / 容器档，可自托管
-├── apitrack-sdk-python/   # 上报式采集 SDK（pip install apitrack-sdk）
-├── docs/                  # 设计规格、开发计划、协议文档、缺陷记录
+├── docs/                  # 设计规格、开发计划、协议文档、缺陷记录、协作约定
 ├── start.sh / stop.sh     # 一键启动 / 停止四个应用进程（POSIX）
 └── start.ps1 / stop.ps1   # Windows 同等脚本
 ```
@@ -26,7 +25,7 @@ ApiTrack 是一个一体化 API 测试与编排平台：接口管理、用例与
 
 仓库模式有两条接入路径，结果统一归一到同一份执行索引：
 
-- **上报式（SDK）**：`pip install apitrack-sdk`，配两个环境变量，`pytest` 命令不变，跑完把用例结果归位到「系统 → 接口 → 用例」树。
+- **上报式（SDK）**：`pip install apitrack-sdk`，配两个环境变量，`pytest` 命令不变，跑完把用例结果归位到「系统 → 接口 → 用例」树。SDK 独立仓维护：[`apitrack-sdk-python`](https://github.com/tyl1998/apitrack-sdk-python)。
 - **CI 任务（Runner）**：平台 Runner 主动外连领取任务 → clone → 沙箱执行 → 推日志 → 上报终态，不依赖 Jenkins，可自托管（只需出站 443）。
 
 ## 快速开始
@@ -81,7 +80,7 @@ Windows 用 `start.ps1` / `stop.ps1`（或双击 `start.cmd` / `stop.cmd`）。
 | 前端 SPA：API 地址与同源反代、镜像构建与运行 | [`apitest-web/README.md`](apitest-web/README.md#docker-部署) |
 | Runner：自托管部署、安全边界、容器档两条通道 | [`apitest-runner/README.md`](apitest-runner/README.md#部署) |
 | Runner 镜像（Docker 构建 / 运行） | [`apitest-runner/README.md`](apitest-runner/README.md#docker-部署) |
-| SDK：接入三步、环境变量、发布流程 | [`apitrack-sdk-python/README.md`](apitrack-sdk-python/README.md#接入三步测试代码一行都不改) |
+| SDK：接入三步、环境变量、发布流程（独立仓库） | [`apitrack-sdk-python`](https://github.com/tyl1998/apitrack-sdk-python) — PyPI 包 `apitrack-sdk` |
 | 本地一键启动 / 停止 | 本文「快速开始」+ [`docs/AGENTS.md`](docs/AGENTS.md#start--stop-services)「Start / Stop Services」 |
 | 第三方 agent 平台接入 | [`docs/智能体平台-第三方接入接口文档.md`](docs/智能体平台-第三方接入接口文档.md) |
 | 缺陷记录索引 | [`docs/issue_fix/README.md`](docs/issue_fix/README.md) |

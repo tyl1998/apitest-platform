@@ -22,6 +22,8 @@
 | 4 | **apitest-runner** | Node.js + 容器 | 容器镜像 (可自托管) | P4.5 |
 
 > **P0 只需建 1、2 两个仓**。3、4 分别在「仓库用例(上报式)」与「自研 Runner」阶段才需要。
+>
+> **2026-11-03 现状（开源版）**：1、2、4 已合入单仓 **`apitest-platform`**（子目录 `apitest-server/`、`apitest-web/`、`apitest-runner/`，文档在 `docs/`）。**3 `apitrack-sdk-python` 仍独立成仓**——它发布到 PyPI、面向外部开发者，语言生态与版本节奏都不同（见 1.2 的第一条边界），合进去反而会把 SDK 的发布流程绑到平台发版上。
 
 ### 1.2 划分依据
 
