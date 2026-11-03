@@ -1,6 +1,25 @@
 # ApiTrack — 接口自动化平台
 
-> 接口自动化平台（ApiTrack）的**开发记录仓库**：承载平台的设计规格、开发计划、跨仓协议、缺陷记录与一键启动脚本。平台代码按仓库边界拆分、各自独立提交与发布，见[仓库结构](#仓库结构)。
+> 接口自动化平台（ApiTrack）：设计规格、开发计划、后端 / 前端 / Runner / SDK / e2e 代码与一键启动脚本同仓管理。
+
+## 仓库结构
+
+平台是一个 **monorepo**：后端、前端、Runner、SDK、e2e 与文档同仓管理，便于跨目录改动与一键启动。
+
+| 目录 | 说明 |
+|---|---|
+| `apitest-server/` | 平台核心（API + Worker + Scheduler），Fastify + PostgreSQL / Redis / 对象存储 |
+| `apitest-web/` | 前端 SPA（Vite + React 18 + antd） |
+| `apitest-runner/` | 自研 CI Runner（进程档 / 容器档，可自托管） |
+| `apitrack-sdk-python/` | 上报式采集 SDK（PyPI 分发名 `apitrack-sdk`） |
+| `apitest-e2e-python/` | 平台接口 e2e 测试（pytest + requests） |
+| 根目录 | 设计规格、开发计划、缺陷记录、一键启动脚本 |
+
+想直接跑起来：按下文[快速开始](#快速开始)执行 `./start.sh` 即可（各目录已在正确位置）。
+
+## 许可
+
+[MIT](LICENSE)，可自由使用、修改与分发。
 
 ## 项目简介
 
@@ -30,19 +49,6 @@ ApiTrack 是一个面向 API 测试与编排的一体化自动化平台，覆盖
 - **站内助手**：provider 化的站内助手（多 provider、加密 Key、SSE 流式），「AI 起草、人确认」的 proposal 工作流
 - **用户与权限**：RBAC 四角色、项目资源隔离、审计日志（操作 + 触发人）、个人中心与用户级 MCP Token
 - **多语言**：简体中文 / English（i18n）
-
-## 仓库结构
-
-| 仓库 | 语言 / 形态 | 职责 |
-|---|---|---|
-| `apitest-server` | Node.js + TypeScript | 平台核心（API + Worker + Scheduler），Fastify + PostgreSQL / Redis / 对象存储 |
-| `apitest-web` | React 18 + TypeScript | 前端 SPA（Vite + antd + React Flow + Monaco） |
-| `apitrack-sdk-python` | Python（≥ 3.9） | 上报式采集 SDK，PyPI 分发名 `apitrack-sdk`（已发布 v0.1.x） |
-| `apitest-runner` | Node.js（≥ 20） | 自研 CI Runner，可自托管（进程档 / 容器档） |
-| `apitest-e2e-python` | Python | 平台接口 e2e 自动化测试（pytest + requests） |
-| **本仓库** | Markdown / 脚本 | 开发记录：规格、计划、协议、缺陷记录、启动脚本 |
-
-> 代码仓库均各自独立提交与发布，不提交在本仓库内；本仓库的 `.gitignore` 已忽略它们。
 
 ## 技术栈
 

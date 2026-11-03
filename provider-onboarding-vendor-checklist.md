@@ -51,7 +51,7 @@ This is what the administrator actually fills in (also the import/export format;
   "protocol": {
     "baseUrl": "https://your-agent.example.com",
     "auth": { "header": "Authorization", "value": "Bearer {{user.apiKey}}" },
-    "successCode": { "field": "code", "value": "0000" },
+    "successCode": { "field": "code", "value": "0" },
     "createConversation": { "...": "see 3.1" },
     "chat": { "...": "see 3.2" },
     "stop": { "...": "see 3.3" },
@@ -95,7 +95,7 @@ For each endpoint, provide: **method + path + request example + success response
 |---|---|
 | Method + path | e.g. `POST /api/v1/chat/conversation/add` |
 | Request body | Fields required (agent id, variables, …) |
-| **Where the conversation id lives in the response** | Dot path, e.g. `data` for `{"code":"0000","data":"57"}`, or `data.id`, or `id` |
+| **Where the conversation id lives in the response** | Dot path, e.g. `data` for `{"code":"0","data":"57"}`, or `data.id`, or `id` |
 | Id type | String or number (whole-placeholder values are sent as numbers, unquoted) |
 | Failure response | Business-code field and failure value |
 
@@ -173,7 +173,7 @@ data: {"requestId":"...","eventType":"MESSAGE","data":{"text":"你"},"completed"
 | `sse.tool` | Recommended | Tool event name + name/status fields + fallback name + **input** field | `on: PROCESSING`, `name: data.name`, `status: data.status`, `input: data.result.input` |
 | `sse.ignore` | Optional | Events not to forward | `["HEART_BEAT"]` |
 | `sse.elicit` | Optional | Confirmation-form event: event name (+ optional discriminator `type`/`typeValue`), text/tool paths, optional `schema` / `allowResume` | `on: MESSAGE`, `type: data.type`, `typeValue: ELICITATION` |
-| `protocol.success` / `successCode` | Optional | Envelope failure rule for JSON endpoints (create / stop / delete / history) | `{field: "code", ok: ["0000"]}` |
+| `protocol.success` / `successCode` | Optional | Envelope failure rule for JSON endpoints (create / stop / delete / history) | `{field: "code", ok: ["0"]}` |
 | `protocol.attachmentsField` | Optional | Chat body field that carries the attachment array | `attachments` |
 | `protocol.streamEnd` | Optional | `close` (default: drop the connection after the terminal event) or `continue` (read until the upstream closes) | `close` |
 
@@ -305,7 +305,7 @@ Our "Test connection" does: **create conversation → send `ping` → echo norma
   "vendor": "vendor / product",
   "env": { "test": "https://…", "prod": "https://…" },
   "auth": { "header": "Authorization", "value": "Bearer {{user.apiKey}}" },
-  "successCode": { "field": "code", "value": "0000" },
+  "successCode": { "field": "code", "value": "0" },
   "createConversation": {
     "method": "POST", "path": "/…", "body": { "agentId": "{{user.agentId}}" }, "conversationId": "data"
   },

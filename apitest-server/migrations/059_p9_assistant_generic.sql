@@ -4,18 +4,18 @@
 -- 1. provider 从「每平台一个 adapter 代码 + 注册表」改为**通用协议配置**——管理员填
 --    4 个接口（建会话 / 发消息 SSE / 停止 / 历史）+ SSE 事件映射 + 认证模板，换平台
 --    零开发（原 type/config/capabilities/api_key_encrypted 列作废，adapter 注册表
---    与 agent-vendor.ts 删除）；
+--    与厂商专用 adapter 删除）；
 -- 2. 凭据从系统行挪到**用户级**：系统共享 Key 作废，每个用户按 provider 的
 --    user_params 模式自配（agentId / apiKey / mcpToken 等），明文不落库、secret 项
 --    AES-GCM 加密；
--- 3. 存量 agent-vendor 行原地翻译成标准 agent-vendor 协议配置（baseUrl 从原 config 继承），共享
+-- 3. 存量厂商方言行原地翻译成标准协议配置（baseUrl 从原 config 继承），共享
 --    agentId/Key 不再迁移——用户侧重新自配。
 --
 -- 编号顺延：本文件占用 059，P11 由 059 顺延为 060（16 章同步）。
 ALTER TABLE assistant_providers ADD COLUMN IF NOT EXISTS protocol JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE assistant_providers ADD COLUMN IF NOT EXISTS user_params JSONB NOT NULL DEFAULT '[]'::jsonb;
 
--- 存量 agent-vendor 行 → 标准协议配置（唯一合法 type，CHECK 保证没有别的形状）。
+-- 存量厂商方言行 → 标准协议配置（唯一合法 type，CHECK 保证没有别的形状）。
 UPDATE assistant_providers p SET
   protocol = jsonb_build_object(
     'baseUrl', p.config->>'baseUrl',
@@ -49,7 +49,7 @@ UPDATE assistant_providers p SET
     {"key": "apiKey", "label": "API Key", "secret": true, "required": true},
     {"key": "mcpToken", "label": "MCP Token", "secret": true, "required": false}
   ]'::jsonb
-WHERE p.type = 'agent-vendor';
+WHERE p.type = 'vendor-v1';
 
 ALTER TABLE assistant_providers DROP CONSTRAINT IF EXISTS assistant_providers_type_check;
 ALTER TABLE assistant_providers DROP COLUMN IF EXISTS type;

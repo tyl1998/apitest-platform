@@ -14,7 +14,7 @@ import type { HookConfig, HookResult } from "../models/types.js";
  *
  * 签名算法千奇百怪，但「在发出前改写请求」这件事只有一种形状：
  * `(request, variables) => patch`。把它定成接口，脚本只是第一个实现；将来接
- * 「调用公司签名服务」的 webhook provider、或内置几个常见签名算法，都只是往
+ * 「调用企业签名服务」的 webhook provider、或内置几个常见签名算法，都只是往
  * `PROVIDERS` 里加一个键，`run.ts` 一行不用改。
  *
  * 反过来，如果让 `run.ts` 直接调 `runScriptHook`，第二种签名方式来的时候就得在

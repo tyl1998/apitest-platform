@@ -54,7 +54,7 @@ PROVIDER_NAME = os.environ.get("PROVIDER_NAME", "assistant-stg")
 ASSISTANT_PROTOCOL = {
     "baseUrl": ASSISTANT_BASE_URL,
     "auth": {"header": "Authorization", "value": "Bearer {{user.apiKey}}"},
-    "successCode": {"field": "code", "value": "0000"},
+    "successCode": {"field": "code", "value": "0"},
     "createConversation": {
         "method": "POST",
         "path": "/api/v1/chat/conversation/add",

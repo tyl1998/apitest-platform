@@ -17,7 +17,7 @@
  * 项目级命名凭据池。
  *
  * 这不是一个新概念，是把 `repositories.credential_encrypted` 这一列搬到自己的表上并给
- * 它一个名字：一个项目通常只有一两把 key（「公司 GitLab 只读 token」），多个任务共用；
+ * 它一个名字：一个项目通常只有一两把 key（「团队 GitLab 只读 token」），多个任务共用；
  * 换 token 只改一处，而不是逐个任务改一遍。
  *
  * `method` 就是原来的 `clone_method`，但**少了 `none`**：「公开仓库不需要凭据」由任务

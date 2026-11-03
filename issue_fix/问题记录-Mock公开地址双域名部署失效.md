@@ -2,7 +2,7 @@
 
 ## 背景（部署拓扑）
 
-公司内网双域名：办公网浏览器经**域名 A** 访问前端页面，后端 API 只在**域名 B** 上可达
+内网双域名：办公网浏览器经**域名 A** 访问前端页面，后端 API 只在**域名 B** 上可达
 （办公网浏览器可直达 B，跨域由 `@fastify/cors` `origin: true` 放行，SSE 的 CORS 头已在
 P1-3 修法里手动搬进 `writeHead`）。前端构建期烧死 `VITE_API_BASE_URL=https://<B>/api/v1`。
 

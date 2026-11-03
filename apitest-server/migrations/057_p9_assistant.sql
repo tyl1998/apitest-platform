@@ -24,7 +24,7 @@ ALTER TABLE project_settings ADD COLUMN IF NOT EXISTS assistant_enabled BOOLEAN 
 /*
  * agent 平台 provider（系统级，多份并存 + 默认切换，13.0 边界 4）。
  *
- * - type 必须是 adapter 注册表内已实现的值（v1 仅 'agent-vendor'，边界 13——资格线：建会话
+ * - type 必须是 adapter 注册表内已实现的值（v1 仅一个厂商方言，边界 13——资格线：建会话
  *   + SSE 流式 + 按会话查历史）。CHECK 在迁移里锁住 v1 词表；第二个 adapter 落地时
  *   新迁移放宽（枚举走 TEXT + CHECK 的既定纪律，不用 PG enum）。
  * - config 是类型特有参数（baseUrl / agentId 等）；capabilities 是能力面
@@ -36,7 +36,7 @@ ALTER TABLE project_settings ADD COLUMN IF NOT EXISTS assistant_enabled BOOLEAN 
 CREATE TABLE IF NOT EXISTS assistant_providers (
   id UUID PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
-  type TEXT NOT NULL CHECK (type IN ('agent-vendor')),
+  type TEXT NOT NULL CHECK (type IN ('vendor-v1')),
   config JSONB NOT NULL DEFAULT '{}'::jsonb,
   capabilities JSONB NOT NULL DEFAULT '{}'::jsonb,
   api_key_encrypted TEXT,
@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS assistant_conversations (
   provider_id UUID NOT NULL REFERENCES assistant_providers(id) ON DELETE CASCADE,
   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  upstream_conversation_id TEXT NOT NULL,   -- 上游 conversationId（agent-vendor 为 Long 文本）
+  upstream_conversation_id TEXT NOT NULL,   -- 上游 conversationId（厂商侧为 Long 文本）
   topic TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_active_at TIMESTAMPTZ NOT NULL DEFAULT now()

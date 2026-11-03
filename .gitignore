@@ -1,10 +1,16 @@
-# 真实代码仓库不入此文档仓库：各自独立提交、推送到自己的远程（apitest-server / apitest-web）。
-# 后续新增的代码仓库一律加在这里。
-apitest-server/
-apitest-web/
-apitrack-sdk-python/
-apitest-e2e-python/
-apitest-runner/
+# 各子目录已并入本仓（monorepo），不再忽略。仅忽略其构建产物与本地依赖。
+apitest-server/node_modules/
+apitest-server/dist/
+apitest-web/node_modules/
+apitest-web/dist/
+apitest-runner/node_modules/
+apitest-runner/dist/
+apitest-e2e-python/__pycache__/
+apitest-e2e-python/**/__pycache__/
+apitest-e2e-python/.pytest_cache/
+apitest-e2e-python/*.log
+apitest-e2e-python/env.local.sh
+apitrack-sdk-python/**/__pycache__/
 # 运行时产物
 .dev-logs/
 .dev-pids

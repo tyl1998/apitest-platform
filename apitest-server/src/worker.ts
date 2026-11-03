@@ -30,7 +30,7 @@ const WORKER_MODE = process.env.WORKER_MODE ?? "endpoint";
 /**
  * 这个 worker 服务哪些执行分区（P2-8）。
  *
- * 公司内网存在互不连通的网段，而 worker 只能从**自己所在网段**出站。分区标签就是
+ * 内网常存在互不连通的网段，而 worker 只能从**自己所在网段**出站。分区标签就是
  * 「我这台机器能打到哪套系统」，队列按标签分裂（`executions-<label>`），所以一个只服务
  * `prod-dmz` 的 worker 领不到 `default` 的任务，反之亦然。
  *

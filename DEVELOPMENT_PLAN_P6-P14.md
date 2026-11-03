@@ -12,7 +12,7 @@
 > 2026-09-10 P8-1~P8-8 全部实现 + **P8 暂记验收通过**——含验收期多轮反馈修复
 > 与 P8-8 两刀性能收口，见十二章 12.6 末尾实现状态；2026-09-11 **P9 范围修订**
 > （用户确认，尚未实现）——账号操作并入助手（本地通道）、助手代理 provider 化
-> （多 provider + 加密 Key + JSON 导入，adapter 契约 + 注册表，v1 仅 agent-vendor、
+> （多 provider + 加密 Key + JSON 导入，adapter 契约 + 注册表，v1 仅厂商侧、
 > 只接 agent 平台不接裸 LLM）、迁移顺延 057、新增 13.6 agent 方接入要求与
 > 对接契约（P11 同步顺延 058），见十三章 13.0 修订与 13.4 重排；
 > 2026-09-14 **P9-4 落地后范围修订**（用户四条反馈）——助手默认开启去项目闸门
@@ -2039,7 +2039,7 @@ Flaky 判定（写死在 `lib/metrics.ts`，与通过率同处口径库）：窗
 session / token / function call**，链路是
 
 ```
-浏览器 → 平台助手代理（只转发 SSE）→ 外部 agent 平台（agent-vendor）→ 平台 /mcp → 库
+浏览器 → 平台助手代理（只转发 SSE）→ 外部 agent 平台（厂商侧）→ 平台 /mcp → 库
 ```
 
 平台在这条链里出现两次：哑管道 + 工具提供方。
@@ -2054,13 +2054,13 @@ session / token / function call**，链路是
    表**——多 provider、AES-GCM 加密 Key、JSON 导入/导出、测试连接、默认切换
    （原边界 4 作废改写）。代理底座按 **adapter 契约 + 注册表**实现（形制照
    `lib/adapters`：一个 type 一个实现文件 + 查表分发），v1 只实现 `agent-vendor` 一个
-   adapter；第二个 adapter（Dify / Coze / 公司自研平台）等真实平台出现再写，
+   adapter；第二个 adapter（Dify / Coze / 自研平台）等真实平台出现再写，
    契约不变。agent 方接入要求与对接契约见 13.6。
 3. **只接 agent 平台，不接裸 LLM**（收界）：provider 资格线 = 有会话管理 + 流式
    + 历史 API，缺一不叫 agent 平台。裸 OpenAI 兼容端点（one-api / vLLM / 自建
    LLM 服务）没有会话存储：接进来要么平台自己管上下文（冲掉「平台不实现 agent」
    边界）、要么退化成接不进 `/mcp` 的通用聊天框（无工具面，「站内」二字不成立）。
-   真想用裸 LLM 的人，在 agent-vendor/Dify 里包一个 agent 再接我们——门户守在 agent
+   真想用裸 LLM 的人，在厂商侧/Dify 里包一个 agent 再接我们——门户守在 agent
    平台这层。
 4. **连带简化**：无状态 provider 不存在 → 多轮上下文与会话历史**全部由 agent 方
    持有**，平台只代理展示、不存不缓存不代管窗口（「谁有会话谁记上下文」）。
@@ -2080,10 +2080,10 @@ session / token / function call**，链路是
    provider 后置 preferences」的旧口径；**2026-09-14 已实现**，见 13.4.5）：
    - provider 行降格为**通用协议模板**——4 个接口（建会话 / 发消息 SSE / 停止 /
      历史）+ SSE 事件映射 + 认证模板，外加 `user_params`（用户选这个上游时要填的
-     参数模式，如 agent-vendor 的 agentId、apiKey、mcpToken）。**换平台 = 填一份配置，
+     参数模式，如厂商侧的的 agentId、apiKey、mcpToken）。**换平台 = 填一份配置，
      零开发**（作废 2026-09-11 边界 12 的「不做协议映射引擎」与边界 1 的 adapter
-     注册表模型——`lib/assistant/agent-vendor.ts` 与注册表删除，引擎 `engine.ts` 按配置
-     执行；存量 agent-vendor 行由迁移 059 原地翻译成标准协议配置）；
+     注册表模型——`lib/assistant/厂商平台.ts` 与注册表删除，引擎 `engine.ts` 按配置
+     执行；存量厂商侧行由迁移 059 原地翻译成标准协议配置）；
    - 每个用户自配凭据（`assistant_user_agents` 表，secret 项 AES-GCM 加密、接口只
      回键名）、自选默认（第一个配置的自动戴默认帽）；**系统行不再存共享 Key、
      不留兜底**——用户原话「要配置自己的」；
@@ -2152,7 +2152,7 @@ session / token / function call**，链路是
 1. **事件归一升格为 adapter 契约（2026-09-11）**：归一事件 `token(text)` /
    `tool(name, status)` / `done(fullText)` / `error(message)` 是代理路由与前端
    唯一认知的事件形状；每个 adapter 只干「把自家协议翻译成归一事件」一件事，
-   路由层按注册表查表分发（形制照 `lib/adapters/index.ts`）。agent-vendor 映射：
+   路由层按注册表查表分发（形制照 `lib/adapters/index.ts`）。厂商侧映射：
    `MESSAGE` 的 token 流原样拼；`PROCESSING`
    映射为「正在调用 list_endpoints…」的工具行（**用户能看见 AI 在调什么工具——信任
    的关键**）；`HEART_BEAT` 不转发，代理自己按 15s 发 SSE 注释行保活（长空闲连接
@@ -2257,7 +2257,7 @@ CREATE TABLE IF NOT EXISTS assistant_conversations (
   provider_id UUID NOT NULL REFERENCES assistant_providers(id) ON DELETE CASCADE,
   project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  upstream_conversation_id TEXT NOT NULL,   -- 上游 conversationId（agent-vendor 为 Long 文本）
+  upstream_conversation_id TEXT NOT NULL,   -- 上游 conversationId（厂商侧为 Long 文本）
   topic TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_active_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -2352,7 +2352,7 @@ POST   /api/v1/notifications/read-all                   全部已读
 | 步 | 内容 | 产出 | 状态 |
 | --- | --- | --- | --- |
 | P9-1 | 迁移 057（providers + conversations + notifications）+ inbox + 铃铛 + 列表页 + 两个新源回补 | 通知闭环（小红点 + 弹窗） | 已实现（2026-09-11，见 13.4.1） |
-| P9-2 | 代理底座 provider 化：adapter 契约 + 注册表 + agent-vendor 实现 + 助手五条路由 SSE + 事件归一；**联调实测清单**（13.6：elicitation/MRTR 转述 + 按会话注入凭据两项问询） | curl 能对话 | 已实现；stg 联调正常流式 + e2e 8/8 已过；13.6 两项问询已答复（均不支持，见 13.4.2）——功能请求 `智能体平台-MCP支持需求.md` 待 agent-vendor 排期 |
+| P9-2 | 代理底座 provider 化：adapter 契约 + 注册表 + 厂商侧实现 + 助手五条路由 SSE + 事件归一；**联调实测清单**（13.6：elicitation/MRTR 转述 + 按会话注入凭据两项问询） | curl 能对话 | 已实现；stg 联调正常流式 + e2e 8/8 已过；13.6 两项问询已答复（均不支持，见 13.4.2）——功能请求 `智能体平台-MCP支持需求.md` 待厂商侧排期 |
 | P9-3 | provider 管理：CRUD + 加密 Key + JSON 导入导出 + 测试连接 + `assistant_enabled` 闸门 + 无默认 provider 引导 | 运行期可换上游 | 已实现（2026-09-11，见 13.4.3） |
 | P9-4 | 聊天抽屉 UI（消息流/工具行/输入/快捷 chips） | 手工验收链路 | 已实现（2026-09-14，见 13.4.4；同日修订：助手默认开启 + topic 标题，迁移 058） |
 | P9-4b | 用户级 agent 凭据 + 上游通用协议化（2026-09-14 修订新增）：系统 provider = 通用协议模板（4 接口 + SSE 映射 + 用户参数模式），用户自配 agentId/apiKey/mcpToken、未配置时抽屉内引导 | 每人能用自己的 agent；换平台零开发 | 已实现（2026-09-14，见 13.4.5） |
@@ -2448,13 +2448,13 @@ POST   /api/v1/notifications/read-all                   全部已读
     在，不进日志不回响应）。`loadEnabledDefaultProvider` 按 `is_default AND
     enabled`（默认行被停用即视为无默认）；解密失败按 provider 不可用抛清楚，
     不静默降级成无 Key——那只会得到一个更难排查的上游 401。
-  - `agent-vendor.ts`：建会话（`conversation/add`，`data` 即 conversationId，Long 落库
+  - `厂商平台.ts`：建会话（`conversation/add`，`data` 即 conversationId，Long 落库
     统一 TEXT）/ 流式（`MESSAGE`→token（`think` 不在归一契约里，丢弃）、
     `PROCESSING`→tool（名称缺省退 `data.type`）、`FINAL_RESULT`→done（
     `outputText` 空时退 token 累计值）、`ERROR`→error、**`HEART_BEAT` 吸收不转
     发**）/ stop / 历史（上游「会话列表」接口刻意不用——抽屉列表读映射表，边界
-    2/修订 4）。一问一答接口 15s 超时 + `code === "0000"` 业务码判定（HTTP 200
-    但业务码非 0000 是其常态错误形状）；未知 eventType / 解析失败按协议噪音丢弃
+    2/修订 4）。一问一答接口 15s 超时 + `code === "0"` 业务码判定（HTTP 200
+    但业务码非 0 是其常态错误形状）；未知 eventType / 解析失败按协议噪音丢弃
     ——上游加事件类型时旧前端不掉线。
 - **五条路由（`routes/assistant.ts`）**：
   - 闸门顺序：`requireProjectAccess`（POST 一律 write——viewer 能读列表/历史，
@@ -2513,16 +2513,16 @@ POST   /api/v1/notifications/read-all                   全部已读
   - **对接材料**：`智能体平台-联调问题清单.md`（仓库根）——问题明细（P0 已
     解除、P1×3 已随文档确认收口）+ 待补信息 5–9 项（data 空格稳定性 /
     attachments 开放性 / stop 语义 / elicitation 转述 / 按会话注入凭据）+
-    我们的调用流程与复现命令，可直接转 agent-vendor 侧。
+    我们的调用流程与复现命令，可直接转厂商侧。
 - **验证**：`pnpm check` 通过；stg 联调（正常流式 + 错误路径两条终态）与 e2e
-  8/8 已过。仍待补（**MCP 接线整体被网络阻断后置**：平台本地部署、agent-vendor 在
-  公司内网，其智能体出站打不到我们的 /mcp——部署到可达网段是硬前置，P2-8 同类
+  8/8 已过。仍待补（**MCP 接线整体被网络阻断后置**：平台本地部署、厂商侧在
+  内网，其智能体出站打不到我们的 /mcp——部署到可达网段是硬前置，P2-8 同类
   问题；问题清单第 10 项）：PROCESSING 事件的真实字段形状（等接线后智能体真
   调起工具）。**13.6 两项问询已答复（2026-09-11，均「不支持」，对方附了代码
   证据：McpExecutor/ModelInvoker 无确认环节、serverConfig 静态共用、ak-Key →
   单一 userId）——与 13.6 的预期完全一致，proposal-first 与 read-only 工具面
   的收口维持不变**；功能请求整理成 `智能体平台-MCP支持需求.md`（需求 A
-  elicitation 转述 / 需求 B 会话级凭据三档方案），待 agent-vendor 排期——A 落地才
+  elicitation 转述 / 需求 B 会话级凭据三档方案），待厂商侧排期——A 落地才
   开放 delete 类工具，B 落地才把「确认应用」留在会话内。
 
 #### 13.4.3 P9-3 实现状态（2026-09-11）
@@ -2650,10 +2650,10 @@ POST   /api/v1/notifications/read-all                   全部已读
   + 认证模板 + 业务码判定；`user_params` JSONB：用户参数模式）；凭据 = **用户级**
   （`assistant_user_agents`：params 明文 + secrets 密文，(user, provider) 唯一）。
   系统共享 Key 彻底作废（不留兜底）。迁移 **059**：新表 + provider 列改造，存量
-  agent-vendor 行原地翻译成标准协议配置（baseUrl 从原 config 继承）；P11 顺延 060。
-- **引擎**（`lib/assistant/engine.ts`，取代 agent-vendor adapter + 注册表）：模板渲染
+  厂商侧行原地翻译成标准协议配置（baseUrl 从原 config 继承）；P11 顺延 060。
+- **引擎**（`lib/assistant/engine.ts`，取代厂商侧 adapter + 注册表）：模板渲染
   （`{{user.x}}` / `{{conversationId}}` / `{{message}}` / `{{index}}` / `{{limit}}`；
-  值整体是占位符且渲染为数字时按数字进 JSON——agent-vendor Long 型 id 兼容）+ 点路径取值
+  值整体是占位符且渲染为数字时按数字进 JSON——厂商侧 Long 型 id 兼容）+ 点路径取值
   + SSE 映射翻译（token/tool/done/error + ignore 列表；done 带 success 标记且为
   false 时按错误终态）+ 两段式流（响应头 OK 才 resolve，此前抛错让路由回干净
   JSON）。终态纪律与原 adapter 同款。
@@ -2686,9 +2686,9 @@ POST   /api/v1/notifications/read-all                   全部已读
 - **e2e**：seed 直插通用协议 provider 行 + 经 API 为种子管理员配用户 agent（不再
   借 server 的 crypto.ts 本地加密）；用例断言不变（协议不变量天然与引擎解耦）。
 - **空库默认上游种子（2026-09-17 增补，用户要求）**：`seedAssistantProvider()`（照
-  `seedAdmin()` 先例在启动时跑一次）按名字幂等插入 `agent-vendor-agent`（固定名，agent-vendor 通用
+  `seedAdmin()` 先例在启动时跑一次）按名字幂等插入 `agent-platform`（固定名，厂商侧通用
   协议 + `user_params`）；`assistant_providers` 原本为空时它同时是默认行，已有库则只补
-  一行、不抢默认位、不覆盖任何已有配置。baseUrl 从 **`agent-vendor_BASE_URL`** 读（内网地址
+  一行、不抢默认位、不覆盖任何已有配置。baseUrl 从 **`AGENT_PLATFORM_BASE_URL`** 读（内网地址
   不入库），未配置则整体跳过。这样空库开箱不必等管理员手配即可到「配置我的 agent」
   这一步。
   同批修一条守卫缺陷（见 `issue_fix/问题记录-助手未配置空体两缺陷.md`）：
@@ -2820,13 +2820,13 @@ POST   /api/v1/notifications/read-all                   全部已读
 ##### 13.4.7.1 MRTR 删除确认表单卡（2026-09-15 增补，验收驱动）
 
 用户实测「让 agent 删环境」暴露：/mcp 的 MRTR 闸门与上游转述都正常，但确认请求
-（agent-vendor 以 `MESSAGE + data.type=ELICITATION + elicitationSchema` 混进聊天流）被
+（厂商侧以 `MESSAGE + data.type=ELICITATION + elicitationSchema` 混进聊天流）被
 引擎 token 映射当普通文字吞掉——表单结构整个丢弃，抽屉里没有任何确认入口。缺陷
 细节与上游 resume 通道（`/api/v1/chat/resume-elicitation`）对 API-Key 会话稳定
 5000 的复现证据见 `issue_fix/问题记录-助手MRTR删除确认被当文字吞掉.md`。落地：
 
 - 协议映射新增 `sse.elicit`（与 token 同 kind、判别字段分流）与 `sse.tool.input`
-  （确认卡拿删除目标），迁移 060 给 agent-vendor 方言协议补齐；归一事件新增
+  （确认卡拿删除目标），迁移 060 给厂商侧方言协议补齐；归一事件新增
   `{type:"elicit", text, tool, input, schema}`（后端 `lib/assistant`，前端同形）。
 - 前端 `AssistantElicitationCard`：MRTR 确认请求渲染成**表单**——文案 + 后果 +
   「确认删除 / 放弃」；确认动作走**本人 JWT 的既有 REST**（`GET usage` 两段式，
@@ -2836,7 +2836,7 @@ POST   /api/v1/notifications/read-all                   全部已读
 - 上游第三方 resume 通道修复后，确认动作可切回 MCP 往返（枚举映射的形状已留好）。
 - **两轮后补（同日用户实测）**：① 确认记录平台侧持久化——`elicit_log` jsonb
   （迁移 061）+ `POST …/conversations/:id/elicit` 记录接口 + 历史代理按时间戳并回
-  system 行（前端 i18n 渲染），回放后确认记录仍在；② agent 回复里 agent-vendor 的
+  system 行（前端 i18n 渲染），回放后确认记录仍在；② agent 回复里厂商侧的的
   `<markdown-custom-process>` 过程标记在 `AssistantMarkdown` 渲染层剥离（工具状态
   我们已有工具行呈现，标记是重复噪音；只剥该已知标记不泛化清洗）。
 - **2026-10-21 撤销（用户决策）**：`/mcp` 的 MRTR 闸门整体移除，`delete_*` 改为一次
@@ -3002,12 +3002,12 @@ POST   /api/v1/notifications/read-all                   全部已读
   破门槛 12）→ 现 400 拒收；② 凭据解密失败冒 500 → 统一 `loadResolvedDefaultAgent`
   降级 503/2005「去设置卡重填」。两处都是门槛 2/12 的前置。
 - **演练物料**（`apitest-e2e-python/drill/`）：`stub_upstream.py` 是零依赖假上游，
-  按迁移 059 的 agent-vendor 方言实现 5 条接口 + `eventType` SSE，12 个故障模式（ok /
+  按迁移 059 的厂商侧方言实现 5 条接口 + `eventType` SSE，12 个故障模式（ok /
   silent / stall_mid / heartbeat_only / drop / empty / error_event / fail_result /
   ratelimit / ratelimit_create / http500 / bad_content_type）；`POST /__mode` 切
   模式、`?mode=` 单次覆盖、按会话记忆历史。`README.md` 是逐项演练清单（「期望后端 /
   期望界面」两列 + 门槛 2/3/5/12/14 对应项 + 凭据可见性回归步骤），准备三步只把
-  种子脚本的 `agent-vendor_BASE_URL` 换成桩，**不动协议配置**。
+  种子脚本的 `AGENT_PLATFORM_BASE_URL` 换成桩，**不动协议配置**。
 - **验证**：按 AGENTS.md 留给用户——本批无新迁移，`./start.sh --restart api worker`
   后照 `drill/README.md` 逐项走。重点三项：silent 约 60s 收尾成「上游长时间没有
   回应」、ratelimit 回 429/2007 + `Retry-After` 且气泡是「上游限流，稍后重试」、
@@ -3081,7 +3081,7 @@ P9-5 的指令通道只在**回车发送时**解析：老手够用，新用户�
 
 **一、运行接口 — 必备三项 + 可选一项**
 
-| # | 能力 | agent-vendor 对照 | 为什么 |
+| # | 能力 | 厂商侧对照 | 为什么 |
 | --- | --- | --- | --- |
 | 1 | 创建会话 | `POST /conversation/add` → conversationId | 资格线：没有会话概念的不算 agent 平台，进不了注册表 |
 | 2 | 发消息（SSE 流式） | `POST /chat/{id}` 逐 token 事件 | 事件字段名可任意（adapter 翻译），但语义必须能区分**文字增量 / 完成 / 错误** |
@@ -3097,7 +3097,7 @@ P9-5 的指令通道只在**回车发送时**解析：老手够用，新用户�
 
 1. **Base URL**：我们服务端可出站访问的 API 地址。⚠️ 部署硬前置——apitest-server
    所在网段必须能出站打通 agent 平台（P2-8 同类教训，启动前实测）。
-2. **API Key**：绑定目标智能体（agent-vendor 为 `ak-xxx`，Bearer 头）；我们侧 AES-GCM
+2. **API Key**：绑定目标智能体（厂商侧为 `ak-xxx`，Bearer 头）；我们侧 AES-GCM
    加密落库，接口只回「已配置」。
 3. **agentId**（或等价标识）：有些平台 Key 自动关联智能体，有些要显式传。
 
@@ -3107,7 +3107,7 @@ P9-5 的指令通道只在**回车发送时**解析：老手够用，新用户�
 
 - **我们给 agent 方**：`/mcp` 端点 URL（Streamable HTTP 无状态形态）+ 一枚
   **read scope 的 MCP Token**（P5 机制，最小权限）；他们在自己后台把 `/mcp`
-  装进智能体（agent-vendor 的 `STREAMABLE_HTTP` 安装方式）。
+  装进智能体（厂商侧的的 `STREAMABLE_HTTP` 安装方式）。
 - **agent 方的活**：智能体人设/提示词/工具编排都在他们侧配置；只用 read 工具、
   写操作产出**草稿**。
 
@@ -3134,7 +3134,7 @@ entities / focus / filters / selection——标识符 + 面包屑，无 secret �
 | 层 | 谁实现 | 现状 |
 | --- | --- | --- |
 | 两回合协议（`inputRequired` + 确认判定 + 拒绝文案） | **我们** | P5 已实现（`mcpToolResult.ts` 的 `mrtrGate`） |
-| 转述到人（确认请求变会话一问、人的回答带回第二次调用） | **agent 方** | MCP 会话是 agent-vendor ↔ `/mcp` 直连，助手代理只转聊天 SSE、不在工具调用回路上——这层我们写不了 |
+| 转述到人（确认请求变会话一问、人的回答带回第二次调用） | **agent 方** | MCP 会话是厂商侧 ↔ `/mcp` 直连，助手代理只转聊天 SSE、不在工具调用回路上——这层我们写不了 |
 | 等效替代（确认由真人完成） | **我们** | proposal 卡 / 页面引导——L3 proposal-first 的由来 |
 
 上游不支持转述时的三种典型结局（为何按「不支持」收口）：**幻觉**（「已删除 ✓」
@@ -4490,7 +4490,7 @@ ALTER TABLE executions ADD COLUMN IF NOT EXISTS triggered_by UUID REFERENCES use
 
 **背景**：双域名部署（办公网页面域名 A / 内网 API 域名 B）下，办公网浏览器不可达 MinIO
 端点。dev 一直在用 s3 驱动（`apitest-server/.env` `ARTIFACT_STORAGE_DRIVER=s3`，MinIO 由
-compose 起），本地没炸只是因为浏览器可达本地端点；公司部署时 s3 驱动的浏览器下载直链
+compose 起），本地没炸只是因为浏览器可达本地端点；内网部署时 s3 驱动的浏览器下载直链
 （presigned URL 直指 `ARTIFACT_S3_ENDPOINT`，不经 B）当天即断。四条数据路径只有这一条断：
 Runner 上传（`presignPut`）内网仍可直传，`reportPayload` 服务端读取与 `objectExists` 都是
 API 主机 → MinIO，不受影响。
@@ -4507,7 +4507,7 @@ API 主机 → MinIO，不受影响。
 「200MB allure 报告占住一个 Node 进程」改由流式纪律（恒定内存、不 Buffer 整个对象）与
 带宽成本回应，不再一票否决。
 
-**临时退路**：实现落地前如需先上公司环境，把该环境 `ARTIFACT_STORAGE_DRIVER` 临时切回
+**临时退路**：实现落地前如需先上内网环境，把该环境 `ARTIFACT_STORAGE_DRIVER` 临时切回
 `fs`（零代码，产物落 API 主机磁盘，直链即 B 的 API 路由），落地后切回 s3。
 
 技术细节与双域名同族问题全量盘点见 `issue_fix/问题记录-通知reportUrl双域名部署失效.md`。

@@ -12,9 +12,9 @@
 
 平台**支持** HTTPS：执行器 `apitest-server/src/lib/run.ts` 的 `executeRequest` 用 Node 20 内置 `fetch`（undici），对 http/https 无任何限制。失败原因是企业证书信任链：
 
-1. 该 STG 域名解析到内网 IP（10.0.0.10），证书由 `*** Corporate Issuing CA 07`（企业内部 CA，向上链到 `*** Root CA`）签发，非公共 CA。
+1. 该 STG 域名解析到内网 IP（`10.0.0.10`，示意），证书由 `*** Corporate Issuing CA 07`（企业内部 CA，向上链到 `*** Root CA`）签发，非公共 CA。
 2. Node 20 的 `fetch` 只信任内置 Mozilla 公共 CA 列表，不读 macOS 系统钥匙串（`--use-system-ca` 需 Node 22.15+），因此 TLS 握手即失败。
-3. 终端 `curl` 走 macOS 系统钥匙串（企业 CA 已由公司 MDM 下发并信任），所以 curl 正常、平台报错，造成「平台不支持 HTTPS」的错觉。
+3. 终端 `curl` 走 macOS 系统钥匙串（企业 CA 已由 MDM 下发并信任），所以 curl 正常、平台报错，造成「平台不支持 HTTPS」的错觉。
 
 ## 修法
 

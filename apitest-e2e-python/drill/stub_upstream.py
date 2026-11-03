@@ -189,7 +189,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(segments) == 5 and segments[:3] == ["api", "v1", "chat"] and segments[4] == "messages":
             with LOCK:
                 rows = list(CONVERSATIONS.get(segments[3], []))
-            self._send_json({"code": "0000", "message": "success", "data": rows})
+            self._send_json({"code": "0", "message": "success", "data": rows})
             return
         self._send_json({"code": "9999", "message": f"drill stub: unknown path {parsed.path}"}, status=404)
 
@@ -214,19 +214,19 @@ class Handler(BaseHTTPRequestHandler):
             conversation_id = str(uuid.uuid4())
             with LOCK:
                 CONVERSATIONS[conversation_id] = []
-            self._send_json({"code": "0000", "message": "success", "data": conversation_id})
+            self._send_json({"code": "0", "message": "success", "data": conversation_id})
             return
 
         # /api/v1/chat/conversation/<id>/delete
         if len(segments) == 6 and segments[:4] == ["api", "v1", "chat", "conversation"] and segments[5] == "delete":
             with LOCK:
                 CONVERSATIONS.pop(segments[4], None)
-            self._send_json({"code": "0000", "message": "success", "data": None})
+            self._send_json({"code": "0", "message": "success", "data": None})
             return
 
         # /api/v1/chat/<id>/stop
         if len(segments) == 5 and segments[:3] == ["api", "v1", "chat"] and segments[4] == "stop":
-            self._send_json({"code": "0000", "message": "success", "data": {"stopped": True}})
+            self._send_json({"code": "0", "message": "success", "data": {"stopped": True}})
             return
 
         # /api/v1/chat/<id>  （发消息）

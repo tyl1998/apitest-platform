@@ -50,7 +50,7 @@
   "protocol": {
     "baseUrl": "https://your-agent.example.com",
     "auth": { "header": "Authorization", "value": "Bearer {{user.apiKey}}" },
-    "successCode": { "field": "code", "value": "0000" },
+    "successCode": { "field": "code", "value": "0" },
     "createConversation": { "...": "见 3.1" },
     "chat": { "...": "见 3.2" },
     "stop": { "...": "见 3.3" },
@@ -99,7 +99,7 @@
 | -------------------------- | -------------------------------------------------------------------------------------- |
 | 方法 + 路径              | 例：`POST /api/v1/chat/conversation/add`                                             |
 | 请求体                   | 需要哪些字段（如 agentId / 变量）                                                    |
-| **响应里会话 id 的位置** | 点路径，如 `data`（响应 `{"code":"0000","data":"57"}` 就是 `data`）、`data.id`、`id` |
+| **响应里会话 id 的位置** | 点路径，如 `data`（响应 `{"code":"0","data":"57"}` 就是 `data`）、`data.id`、`id` |
 | id 类型                  | 字符串还是数字（数字会按数字发送，不带引号）                                         |
 | 失败响应                 | 业务码字段与失败值                                                                   |
 
@@ -318,7 +318,7 @@ data:{"eventType":"HEART_BEAT"}
   "vendor": "厂商名 / 产品名",
   "env": { "test": "https://…", "prod": "https://…" },
   "auth": { "header": "Authorization", "value": "Bearer {{user.apiKey}}" },
-  "successCode": { "field": "code", "value": "0000" },
+  "successCode": { "field": "code", "value": "0" },
   "createConversation": {
     "method": "POST", "path": "/…", "body": { "agentId": "{{user.agentId}}" }, "conversationId": "data"
   },

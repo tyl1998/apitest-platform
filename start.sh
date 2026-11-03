@@ -49,7 +49,7 @@ fi
 # 企业内部 CA（*.***.net 之类内网 https 域名；厂商名不入库）：Node 不读 macOS
 # 系统钥匙串，没有这份 PEM 时 fetch 会报 SELF_SIGNED_CERT_IN_CHAIN。文件存在才
 # 注入，不存在则保持原生行为（公共 CA 站点不受影响）。
-# macOS 公司机器：钥匙串里有 MDM 下发的企业 CA，缺文件时下面自动导出（自愈）。
+# macOS 企业机器：钥匙串里有 MDM 下发的企业 CA，缺文件时下面自动导出（自愈）。
 # 导出要按 CA 名筛选，而那个名字是环境事实、不是仓库资产，所以从
 # CORP_CA_KEYCHAIN_NAME 取（shell profile / .env.local 里 export 一次即可；
 # 没设就跳过自愈，行为与「文件不存在」一致）。
@@ -65,7 +65,7 @@ if [ ! -f "$CA_BUNDLE" ] && [ -n "$CORP_CA_KEYCHAIN_NAME" ] && command -v securi
   mkdir -p "$ROOT/.dev-certs"
   security find-certificate -a -c "$CORP_CA_KEYCHAIN_NAME" -p /Library/Keychains/System.keychain 2>/dev/null \
     | awk '/BEGIN CERT/,/END CERT/' > "$CA_BUNDLE"
-  # 非公司机器导出为空文件, 删掉以免注入空 PEM
+  # 没有企业 CA 的机器会导出为空文件, 删掉以免注入空 PEM
   [ -s "$CA_BUNDLE" ] || rm -f "$CA_BUNDLE"
 fi
 if [ -f "$CA_BUNDLE" ]; then

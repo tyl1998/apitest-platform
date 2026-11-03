@@ -9,13 +9,13 @@
 - 抽屉里让 agent「删除 test 环境」：`delete_environment` 工具行 EXECUTING→FINISHED，
   agent 文字说「已发送确认表单，请确认后我才能继续」——但消息流里没有任何可点的
   确认入口；用户在聊天里回「确认」也无效（LLM 重调工具，又被闸门拦下，循环）。
-- 复现路径（2026-09-15，agent-vendor-stg + agentId 38 + read/write/execute 全 scope MCP
+- 复现路径（2026-09-15，厂商 STG + agentId 38 + read/write/execute 全 scope MCP
   Token）：直连上游 SSE 抓包可见确认请求确实到达了聊天流。
 
 ## 根因（链路三段，逐段实测定位）
 
 1. **/mcp 侧（平台）工作正常**：delete_* 类工具首轮回 `input_required` + 表单
-   （`mcpToolResult.ts` 的 `mrtrRequired`）。agent-vendor 运行时用**现代 per-request 线路**
+   （`mcpToolResult.ts` 的 `mrtrRequired`）。厂商侧运行时用**现代 per-request 线路**
    （2026-07-28 信封：`MCP-Protocol-Version` + `Mcp-Method/Mcp-Name` 头 +
    `params._meta.io.modelcontextprotocol/*`）调 /mcp，input_required 正常送达；
    运行时暂停动作（给 LLM 注入 `[ACTION PAUSED]`），把确认请求转述进聊天 SSE。
@@ -28,7 +28,7 @@
 
 ### 附带发现（上游侧，平台不可控）
 
-- agent-vendor 第三方面的应答通道 `POST /api/v1/chat/resume-elicitation`
+- 厂商侧第三方面的应答通道 `POST /api/v1/chat/resume-elicitation`
   （`{conversationId, inputResponses: {confirm: {action, content}}}`——其自家 UI 走
   `/api/agent/…` 同名端点 + 会话 Cookie）对 **API-Key 会话稳定回 5000「系统开小差」**
   （新会话 + 与其 UI 完全同形的 payload 多轮复现）。上游修复前，聊天内的确认动作
@@ -41,7 +41,7 @@
   （工具入参路径，确认卡靠它拿删除目标 id）；产出新归一事件
   `{type:"elicit", text, tool, input, schema}`（`types.ts` / `engine.ts`）。
 - **迁移 060**：给「token.on=MESSAGE 且 tool.on=PROCESSING」形状的 provider 协议
-  （agent-vendor 方言签名，不点名）补上述两块映射。
+  （厂商侧方言签名，不点名）补上述两块映射。
 - **前端确认表单卡**（`AssistantElicitationCard.tsx` + AssistantDock 落块渲染）：
   确认文案 + 后果摘要 + 「确认删除 / 放弃」；**确认动作不走上游**（第三方 resume
   通道 5000，见上），走**本人 JWT 的既有 REST**（`GET usage` → 无独占依赖直接删、
@@ -59,7 +59,7 @@
 ## 状态
 
 已修复（引擎映射 + 迁移 060 + 前端确认卡）。上游 `/api/v1/chat/resume-elicitation`
-对 API-Key 会话 5000 的问题属 agent-vendor 侧，待其修复后可切回协议往返。
+对 API-Key 会话 5000 的问题属厂商侧侧，待其修复后可切回协议往返。
 
 ## 后续两轮（2026-09-15 用户实测确认卡后的反馈）
 
@@ -80,7 +80,7 @@
 
 ### ② agent 回复里的 `<div><markdown-custom-process …/></div>` 裸标签
 
-- **现象**：agent 最终回复（outputText）里夹 agent-vendor 自家的过程组件标记，抽屉里
+- **现象**：agent 最终回复（outputText）里夹厂商侧自家的过程组件标记，抽屉里
   整段裸 HTML 进气泡。
 - **根因**：react-markdown 默认不解析原始 HTML（安全底线，刻意不放开），标记按
   文本显示；工具执行状态我们另有呈现（PROCESSING 事件 → 工具行），这些标记对本

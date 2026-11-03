@@ -54,7 +54,7 @@ origin）、报告分享（`ShareReportButton`）、邀请链接（`UsersPanel`�
 2. **S3 驱动产物直链（现状确认 + 办公网不可直达，2026-09-11）**：presigned URL 指向
    `ARTIFACT_S3_ENDPOINT` 本身、不经 B。**当前 dev 已在用 S3**（`apitest-server/.env`
    `ARTIFACT_STORAGE_DRIVER=s3`，MinIO 由 compose 起），本地不炸只是因为浏览器可达
-   本地端点；公司双域名部署里端点是内网地址，**浏览器下载（`presignGet`）这条腿当天
+   本地端点；企业双域名部署里端点是内网地址，**浏览器下载（`presignGet`）这条腿当天
    即断**——四条数据路径只有它断：Runner 上传（`presignPut`）内网仍可直传，
    `reportPayload` 服务端读取与 `objectExists` 都是 API 主机 → MinIO，不受影响。
    已定方向（2026-09-11 用户确认：实现下载侧转发，不着急、放后续计划；边界修订已
@@ -64,6 +64,6 @@ origin）、报告分享（`ShareReportButton`）、邀请链接（`UsersPanel`�
    MinIO `GetObject` **流式**转吐（pipe 不缓冲；Content-Length / Content-Disposition
    改由平台头下发）；上传保持 presigned 直传不动。这是对 P4.5 边界 14「平台永不代理
    大文件流」的修订（收窄为：上传不代理，下载侧允许转发），修订条目已落
-   `DEVELOPMENT_PLAN_P6-P14.md` 十七，实现时按此执行。替代项：公司环境切回 fs 驱动
+   `DEVELOPMENT_PLAN_P6-P14.md` 十七，实现时按此执行。替代项：内网环境切回 fs 驱动
    （零代码，产物落 API 主机磁盘）或 MinIO 过办公网入口（纯基建，专属域名走 B 同一
    入口反代、Host/路径原样透传以保 SigV4 签名）。
