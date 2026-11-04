@@ -228,6 +228,13 @@ export type Endpoint = {
   auth: EndpointAuth;
   tags: string[];
   defaultEnvironmentId?: string;
+  /**
+   * 接口级前置脚本（迁移 080）：变量展开后、请求发出前改写这次调试请求。
+   *
+   * 用例有自己的同名一份，两者互不影响——这里是「还没保存成用例，只想先换 token /
+   * 算签名」的那一槽。
+   */
+  preRequestHooks?: PreRequestHook[];
   /** How many saved cases this endpoint has. 0 truthfully means "none yet". */
   caseCount?: number | null;
   /** 最近一次执行（不含流程步骤）的状态与耗时：服务端 LATERAL 随行带出，列表页不再
@@ -554,6 +561,7 @@ export type EndpointInput = {
   auth?: EndpointAuth;
   tags?: string[];
   defaultEnvironmentId?: string | null;
+  preRequestHooks?: PreRequestHook[];
 };
 export type EndpointFilters = { keyword?: string; method?: string; environmentId?: string; coverage?: "covered" | "uncovered" | "all" };
 

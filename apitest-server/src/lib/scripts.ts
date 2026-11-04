@@ -65,6 +65,27 @@ export async function persistCaseLifecycleScripts(
 }
 
 /**
+ * 接口级前置脚本（迁移 080）。
+ *
+ * 与用例同一套 follow/copy 规则：公开脚本只能跟随，私有正文写进 `owner_endpoint_id`
+ * 归属的匿名脚本行。必须跑在写接口行的事务里——接口与它的脚本要么一起成功，要么
+ * 一起回滚；否则编辑中途失败会留下指向不存在脚本的引用。
+ */
+export async function persistEndpointHooks(
+  client: PoolClient,
+  projectId: string,
+  endpointId: string,
+  hooks: HookConfig[],
+  actorId: string | null = null,
+): Promise<HookConfig[]> {
+  const owner = { column: "owner_endpoint_id", id: endpointId, label: "endpoint" } as const;
+  const seen: string[] = [];
+  const normalized = await persistHookRefs(client, projectId, owner, hooks, seen, actorId);
+  await collectGarbage(client, owner, seen);
+  return normalized;
+}
+
+/**
  * The same upsert for a flow's node assertions **and** its 前置钩子 (P1-2).
  *
  * Takes every node at once rather than one per call: the garbage collection at
@@ -150,7 +171,7 @@ export async function persistFlowScripts(
   return normalized;
 }
 
-type ScriptOwner = { column: "owner_case_id" | "owner_flow_id"; id: string; label: string };
+type ScriptOwner = { column: "owner_case_id" | "owner_flow_id" | "owner_endpoint_id"; id: string; label: string };
 
 /**
  * Writes one script reference and returns it holding an id only.

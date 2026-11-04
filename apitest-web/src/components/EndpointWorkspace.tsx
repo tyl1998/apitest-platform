@@ -25,7 +25,7 @@ import { CopyButton } from "./CopyButton";
 import { VariableField } from "./VariableField";
 import type { VariableOption } from "./VariablePicker";
 import { PageToolbar, toRunStatus } from "../ui";
-import { PreRequestHookEditor } from "./PreRequestHookEditor";
+import { HookOutcome, PreRequestHookEditor } from "./PreRequestHookEditor";
 import { ResponseScriptEditor, ResponseScriptResults } from "./ResponseScriptEditor";
 import { JsonPathPicker } from "./JsonPathPicker";
 import { HeaderPicker } from "./HeaderPicker";
@@ -53,12 +53,18 @@ type Draft = {
   auth: EndpointAuth;
   tags: string;
   defaultEnvironmentId?: string;
+  /**
+   * 接口级前置脚本（迁移 080）。和用例的同名字段是两份：这份属于接口定义，随
+   * 「保存」落库，每次调试发送都会先执行——换 token、算签名放在这里。
+   */
+  preRequestHooks: PreRequestHook[];
 };
 
 const EMPTY: Draft = {
   name: "", description: "", method: "GET", url: "",
   headers: [], queryParams: [], pathParams: [],
   bodyType: "none", bodyText: "", auth: { type: "none" }, tags: "",
+  preRequestHooks: [],
 };
 
 /** Splits a stored URL into base + query pairs so the bar and the table agree. */
@@ -111,6 +117,7 @@ function toDraft(endpoint: Endpoint): Draft {
     auth: endpoint.auth,
     tags: endpoint.tags.join(", "),
     defaultEnvironmentId: endpoint.defaultEnvironmentId,
+    preRequestHooks: endpoint.preRequestHooks ?? [],
   };
 }
 
@@ -164,6 +171,7 @@ function prefillToDraft(prefill: SourcePrefill): Draft {
     bodyText: prefill.bodyType === "json" && prefill.body !== undefined ? JSON.stringify(prefill.body, null, 2) : "",
     tags: "",
     auth: { type: "none" },
+    preRequestHooks: [],
   };
 }
 
@@ -515,6 +523,8 @@ export function EndpointWorkspace() {
       /* 标签不预填：来源的 tags 常是来源侧的目录标记，不等于当前接口想打的标签。 */
       tags: "",
       defaultEnvironmentId: draft.defaultEnvironmentId,
+      /* 前置脚本也不预填：来源描述的是接口形状，跟「怎么认证」没关系。 */
+      preRequestHooks: [],
     };
     setDraft(next);
     setUrlText(composeUrl(next.url, next.queryParams));
@@ -540,6 +550,7 @@ export function EndpointWorkspace() {
       bodyType: draft.bodyType, body, bodyText, auth: draft.auth,
       tags: draft.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
       defaultEnvironmentId: draft.defaultEnvironmentId ?? null,
+      preRequestHooks: draft.preRequestHooks,
     };
   }
 
@@ -1022,7 +1033,8 @@ export function EndpointWorkspace() {
     body: draft.bodyType === "none" ? 0 : 1,
     auth: draft.auth.type === "none" ? 0 : 1,
     assertions: caseAssertions.length,
-    pre: caseHooks.length,
+    /* 调试态看接口自己的前置脚本，加载用例后看用例那一份——同一个 tab 头，两个宿主。 */
+    pre: (activeCase ? caseHooks : draft.preRequestHooks).length,
     post: caseExtracts.length + caseResponseScripts.length,
     /* 绑定条数要发一次请求才知道，而 tab 头是同步渲染的：不给它一个数字，而不是让
        这个 tab 的角标去驱动一次额外的列表请求。 */
@@ -1031,10 +1043,10 @@ export function EndpointWorkspace() {
   const tabs: [Tab, string][] = [
     ["params", t("editor.params")], ["headers", t("editor.headers")],
     ["body", t("editor.body")], ["auth", t("editor.auth")],
-    /* 校验 belongs to the case, not the endpoint definition, so it is only
-       offered while a case is loaded (see the tab body for why). */
+    /* 前置处理 belongs to whatever is being sent: the endpoint being debugged,
+       or the case loaded over it. 校验/后置 stay case-only (see the tab body). */
+    ["pre", t("flows.tabHooks")] as [Tab, string],
     ...(activeCase ? [
-      ["pre", t("flows.tabHooks")] as [Tab, string],
       ["post", t("flows.tabPost")] as [Tab, string],
       ["assertions", t("editor.assertions")] as [Tab, string],
       /* 同步排在校验之后：前面几个 tab 说「这条用例是什么」，这一个说「把它推到哪儿」，
@@ -1248,7 +1260,15 @@ export function EndpointWorkspace() {
 
             {tab === "auth" && <AuthEditor auth={draft.auth} onChange={(auth) => patch({ auth })} options={variableChoices} />}
 
-            {tab === "pre" && activeCase && <PreRequestHookEditor projectId={projectId!} hooks={caseHooks} onChange={setCaseHooks} results={result?.caseId === activeCase.id ? result.hookResults : undefined} environmentId={activeCase.environmentId ?? draft.defaultEnvironmentId ?? undefined} />}
+            {/* 调试态编辑接口自己的前置脚本（迁移 080）：换 token / 算签名这类认证动作
+                要在还没保存成用例时就能跑。加载用例时改的是用例那一份，因为那时发送的
+                是快照——两份互不影响。 */}
+            {tab === "pre" && (activeCase
+              ? <PreRequestHookEditor projectId={projectId!} hooks={caseHooks} onChange={setCaseHooks} results={result?.caseId === activeCase.id ? result.hookResults : undefined} environmentId={activeCase.environmentId ?? draft.defaultEnvironmentId ?? undefined} />
+              : <>
+                <p className="form-note">{t("hooks.debugHint")}</p>
+                <PreRequestHookEditor projectId={projectId!} hooks={draft.preRequestHooks} onChange={(preRequestHooks) => patch({ preRequestHooks })} results={result && !result.caseId ? result.hookResults : undefined} environmentId={draft.defaultEnvironmentId ?? undefined} />
+              </>)}
 
             {tab === "post" && activeCase && <>
               <h3 className="subhead">{t("flows.simpleExtracts")}</h3>
@@ -1513,6 +1533,12 @@ function ResponsePanel({ result, running, pending, canceling, onCancel, tab, onT
               mistaken for the one being waited on. */}
           <div className="panel-body" data-stale={busy || undefined}>
             {result.error && <div className="code-block"><span className="label">{t("snapshot.error")}</span><pre className="code" data-tone="fail">{result.error}</pre></div>}
+            {/* 前置脚本的产物与响应并排：签名/换 token 失败时请求根本没发出去，
+                「为什么没发」只能从这里读。调试与用例执行共用同一个渲染。 */}
+            {result.hookResults?.length > 0 && <div className="code-block">
+              <span className="label">{t("flows.tabHooks")}</span>
+              {result.hookResults.map((hook, index) => <HookOutcome key={index} outcome={hook} />)}
+            </div>}
             {/* A case run's verdict comes from its assertions, so they are shown with
                 the response rather than only in the drawer. */}
             <AssertionResults results={result.assertionResults} />

@@ -7,6 +7,7 @@ import { NoRunnerError, cancelBatch, cancelRun, enqueueRun } from "../lib/enqueu
 import { getSharedObjectStore, requestBaseUrl, storageDriverName } from "../lib/objectStore.js";
 import { endpointSnapshot, recordAssetVersion } from "../lib/assetVersions.js";
 import { requireProjectAccess } from "../lib/rbac.js";
+import { persistEndpointHooks } from "../lib/scripts.js";
 import { fail, failNoRunner, success } from "../lib/response.js";
 import { detachSuiteMember } from "../lib/suiteMembers.js";
 import { isUuid } from "../lib/uuid.js";
@@ -16,7 +17,7 @@ import { mapBatchExecution, mapEndpoint, mapExecution, type Endpoint, type Reque
 type ImportItem = EndpointInput;
 
 /** Column list shared by insert and import so the two cannot drift apart. */
-const WRITE_COLUMNS = "name, description, method, url, headers, query_params, path_params, body_type, body, body_text, auth, tags, default_environment_id, created_by";
+const WRITE_COLUMNS = "name, description, method, url, headers, query_params, path_params, body_type, body, body_text, auth, tags, default_environment_id, pre_request_hooks, created_by";
 
 function writeValues(input: EndpointInput, createdBy: string) {
   return [
@@ -33,6 +34,9 @@ function writeValues(input: EndpointInput, createdBy: string) {
     JSON.stringify(input.auth ?? { type: "none" }),
     input.tags ?? [],
     input.defaultEnvironmentId ?? null,
+    /* 脚本正文不在这里写：`{content}` 要被拆成 scripts 行并在同一事务里换回 id，
+       所以 INSERT 先落空数组，写完之后再由 `persistEndpointHooks` 补上（迁移 080）。 */
+    JSON.stringify([]),
     /* P11-1 列级归属：建的人。MCP 写路径走 mcpToolsWriteCore 自己的列常量，不共享这里。 */
     createdBy,
   ];
@@ -102,6 +106,68 @@ async function writeEndpointWithVersion(
   }
 }
 
+/**
+ * 写接口行的前置脚本（迁移 080），返回带 id 的行。
+ *
+ * 钩子里的 `{ content }` 要在 `scripts` 表里新开一行匿名脚本，所以接口行必须先在
+ * 同一事务里存在（`owner_endpoint_id` 有外键）。调用方拿到首尾两行：INSERT 的
+ * `RETURNING *` 与这里的，两者都在同一事务内，任何一步失败都整体回滚。
+ */
+async function writeEndpointHooks(
+  client: PoolClient,
+  projectId: string,
+  created: { rows: Record<string, unknown>[]; rowCount: number | null },
+  input: EndpointInput,
+  actorId: string,
+) {
+  if (!created.rowCount) return created;
+  const endpointId = String(created.rows[0].id);
+  const hooks = await persistEndpointHooks(client, projectId, endpointId, input.preRequestHooks ?? [], actorId);
+  const refreshed = await client.query(
+    "UPDATE endpoints SET pre_request_hooks = $2::jsonb WHERE id = $1 RETURNING *",
+    [endpointId, JSON.stringify(hooks)],
+  );
+  return refreshed;
+}
+
+/** 创建接口行（含前置脚本）。 */
+async function createEndpointRow(
+  client: PoolClient,
+  projectId: string,
+  input: EndpointInput,
+  actorId: string,
+) {
+  const created = await client.query(
+    `INSERT INTO endpoints (id, project_id, ${WRITE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13::jsonb, $14, $15, $16::jsonb, $17) RETURNING *`,
+    [randomUUID(), projectId, ...writeValues(input, actorId)],
+  );
+  return writeEndpointHooks(client, projectId, created, input, actorId);
+}
+
+/**
+ * 复制接口（含它自己的前置脚本）。
+ *
+ * 钩子在副本里**重新写一遍**：直接复制 `pre_request_hooks` 会让两个接口指向同一批
+ * 匿名脚本行，而匿名脚本随宿主生灭——删掉源接口，副本的脚本就没了。跟随公共脚本
+ * 的引用不受影响：`persistEndpointHooks` 看到具名的就保持跟随，只有私有正文会另存
+ * 一份归副本所有。
+ */
+async function duplicateEndpointRow(client: PoolClient, projectId: string, sourceId: string, name: string, actorId: string) {
+  const source = await client.query(
+    "SELECT pre_request_hooks FROM endpoints WHERE id = $1 AND project_id = $2",
+    [sourceId, projectId],
+  );
+  const created = await client.query(
+    `INSERT INTO endpoints (id, project_id, ${WRITE_COLUMNS})
+     SELECT $1, project_id, $2, description, method, url, headers, query_params, path_params, body_type, body, body_text, auth, tags, default_environment_id, '[]'::jsonb, $5
+     FROM endpoints WHERE id = $3 AND project_id = $4 RETURNING *`,
+    [randomUUID(), name, sourceId, projectId, actorId],
+  );
+  if (!created.rowCount) return created;
+  const hooks = await persistEndpointHooks(client, projectId, String(created.rows[0].id), (source.rows[0]?.pre_request_hooks ?? []) as EndpointInput["preRequestHooks"] ?? [], actorId);
+  return client.query("UPDATE endpoints SET pre_request_hooks = $2::jsonb WHERE id = $1 RETURNING *", [String(created.rows[0].id), JSON.stringify(hooks)]);
+}
+
 /** The runnable part of an endpoint, in the shape a case also freezes. */
 export function toRequestSnapshot(endpoint: Endpoint): RequestSnapshot {
   return {
@@ -157,6 +223,11 @@ export async function queueEndpointRun(projectId: string, endpointId: string, re
     environmentId,
     environmentName,
     source: "endpoint_debug",
+    /**
+     * 接口自己的前置脚本（迁移 080）：调试时也要先换 token / 算签名。与请求同时
+     * 内联进 run_spec，保证排队期间改脚本不会改变已经排上的这一次。
+     */
+    hooks: endpoint.preRequestHooks ?? [],
     batchId,
     /* P11 边界 11：单条执行也要答「谁按的按钮」。批量走同一个入口，因此批量里的每一行
        都带同一个触发人（调用方传的就是按批量按钮的那个人）。 */
@@ -363,10 +434,7 @@ export async function endpointRoutes(app: FastifyInstance) {
     if (invalid) return fail(reply, 400, 1001, invalid);
     if (!await validEnvironment(context.project.id, request.body.defaultEnvironmentId)) return fail(reply, 400, 1001, "default environment must belong to the project");
     /* P10-4：行与首版快照同事务落 —— 版本是内容的序列，保存即产出一版，失败整体回滚。 */
-    const endpoint = await writeEndpointWithVersion(context, "创建", (client) => client.query(
-      `INSERT INTO endpoints (id, project_id, ${WRITE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11::jsonb, $12, $13::jsonb, $14, $15, $16) RETURNING *`,
-      [randomUUID(), context.project.id, ...writeValues(request.body, context.user.id)],
-    ));
+    const endpoint = await writeEndpointWithVersion(context, "创建", (client) => createEndpointRow(client, context.project.id, request.body, context.user.id));
     if (!endpoint) return fail(reply, 404, 2001, "endpoint not found");
     /* P11-9 审计（边界 5/6）：成功后 fire-and-forget；detail 只有字段名。 */
     writeAuditLogAsync({
@@ -389,7 +457,8 @@ export async function endpointRoutes(app: FastifyInstance) {
      * unchanged" from "clear it". Each is only written when the key is
      * present in the payload.
      */
-    const endpoint = await writeEndpointWithVersion(context, "更新", (client) => client.query(
+    const endpoint = await writeEndpointWithVersion(context, "更新", async (client) => {
+      const updated = await client.query(
       `UPDATE endpoints SET
          name = COALESCE($1, name),
          description = COALESCE($2, description),
@@ -421,10 +490,13 @@ export async function endpointRoutes(app: FastifyInstance) {
          b.auth ? JSON.stringify(b.auth) : null,
          b.tags ?? null,
          "defaultEnvironmentId" in b, b.defaultEnvironmentId ?? null,
-         request.params.endpointId, context.project.id,
-         context.user.id,
+        request.params.endpointId, context.project.id,
+        context.user.id,
       ],
-    ));
+      );
+      if (updated.rowCount) return writeEndpointHooks(client, context.project.id, updated, b, context.user.id);
+      return updated;
+    });
     if (!endpoint) return fail(reply, 404, 2001, "endpoint not found");
     writeAuditLogAsync({
       action: AUDIT_ACTIONS.endpointUpdate, targetType: "endpoint", targetId: request.params.endpointId,
@@ -457,12 +529,7 @@ export async function endpointRoutes(app: FastifyInstance) {
     for (let index = 2; names.has(name); index += 1) name = `${requested} ${index}`;
 
     /* 复制也是创建：副本落一版首快照（changeSummary 记"复制"，与手工建区分）。 */
-    const endpoint = await writeEndpointWithVersion(context, "复制", (client) => client.query(
-      `INSERT INTO endpoints (id, project_id, ${WRITE_COLUMNS})
-       SELECT $1, project_id, $2, description, method, url, headers, query_params, path_params, body_type, body, body_text, auth, tags, default_environment_id, $5
-       FROM endpoints WHERE id = $3 AND project_id = $4 RETURNING *`,
-      [randomUUID(), name, request.params.endpointId, context.project.id, context.user.id],
-    ));
+    const endpoint = await writeEndpointWithVersion(context, "复制", (client) => duplicateEndpointRow(client, context.project.id, request.params.endpointId, name, context.user.id));
     if (!endpoint) return fail(reply, 404, 2001, "endpoint not found");
     /* 复制也是创建：动作与普通 create 同一行，detail 记来源（动作证据）与请求体字段名。 */
     writeAuditLogAsync({

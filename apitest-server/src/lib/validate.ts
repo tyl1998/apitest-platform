@@ -17,6 +17,7 @@ export type EndpointInput = {
   auth?: EndpointAuth;
   tags?: string[];
   defaultEnvironmentId?: string | null;
+  preRequestHooks?: HookConfig[];
 };
 
 export type CaseInput = {
@@ -56,7 +57,8 @@ export function validateEndpoint(input: EndpointInput, partial = false): string 
   if (effectiveBodyType === "json" && input.body !== undefined && input.body !== null && typeof input.body !== "object") {
     return "body must be an object when bodyType is json";
   }
-  return undefined;
+  /* 前置脚本（迁移 080）：与用例同一条校验，出错时保存就失败，而不是等到执行才报。 */
+  return validateHooks(input.preRequestHooks, "endpoint");
 }
 
 export function validateCase(input: CaseInput, partial = false): string | undefined {

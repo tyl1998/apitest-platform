@@ -94,6 +94,14 @@ export type Endpoint = {
   auth: EndpointAuth;
   tags: string[];
   defaultEnvironmentId?: string;
+  /**
+   * 前置脚本（迁移 080）：在变量展开后、请求发出前改写这次调试请求。
+   *
+   * 与用例同名同形的字段，但**各存一份**：快照隔离不变——改接口的钩子不会改动已存
+   * 用例，反之亦然。它只影响调试执行，那里是唯一「还没保存成用例也想先换 token /
+   * 算签名」的位置。
+   */
+  preRequestHooks: HookConfig[];
   createdAt: string;
   updatedAt: string;
 } & Ownership;
@@ -1732,6 +1740,7 @@ export function mapEndpoint(row: Record<string, unknown>): Endpoint {
     auth: (row.auth ?? { type: "none" }) as EndpointAuth,
     tags: (row.tags as string[]) ?? [],
     defaultEnvironmentId: row.default_environment_id ? String(row.default_environment_id) : undefined,
+    preRequestHooks: (row.pre_request_hooks ?? []) as HookConfig[],
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at ?? row.created_at)).toISOString(),
     createdByEmail: ownershipEmail(row.created_by_email),
